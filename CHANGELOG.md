@@ -462,6 +462,13 @@ them. A model that lists platform variables one by one must add each.
   ...]`) or the `*Args` constructors, or add `tids |-> <<>>, amts |-> <<>>` (`<<tid>>`,
   `<<amt>>` for an NEP-245 record); rename such burn keys, or give them the burn you mean.
   Every repo model and table keeps its state counts and verdicts.
+- **Gas mode charges a declared promise-result read** (`ResultReadGas == TRUE`; SEMANTICS
+  C4). The NEP-141 resolver now declares its read of the receiver's result, so in gas mode a
+  result that states its size (`RValLen`, `RValSz`) and is read within the resolver's bound,
+  or by an unbounded resolver (`TokResolveMaxLen` -1), adds 2,822,334 gas per byte (rounded
+  up to whole Ggas) to the resolver's need: a few Ggas for a short stated result, and an
+  out-of-gas for a multi-MB one. Results without a stated size cost nothing. No repo run
+  changed verdict or state count. Migration: `ResultReadGas <- FALSE` restores the old need.
 - **`Nep245`'s vector codes changed** (`MtVecCode`, `MtVecOf`). A vector of length other
   than 1 now packs its entries at the fewest bits that hold the largest (it was base 64, and
   any entry of 64 or more stopped TLC, even for a valid call such as amounts 100 and 20), so
