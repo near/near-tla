@@ -361,7 +361,8 @@ DelegInner(r) == [r.a.inner EXCEPT !.fr = r.to]
 \* A user outside KeyAccts gets no key, nonce or permission check.
 DelegErr(r) ==
     LET sd == r.a  s == r.to IN
-    CASE ~AcctExists(s) \/ (s \in created /\ KindOf(s) = "universal") -> "AccountDoesNotExist"
+    CASE ~AcctExists(s)                                       -> "AccountDoesNotExist"
+      [] UninitUniversal(s)                                   -> "AccountNotInitialized"
       [] sd.snd # s                                           -> "SenderDoesNotMatchTxReceiver"
       [] s \in KeyAccts /\ ~KeyPresent(s, sd.k)               -> "AccessKeyNotFound"
       [] s \in KeyAccts /\ sd.n <= KeyNonce(s, sd.k)          -> "InvalidNonce"

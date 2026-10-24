@@ -1096,7 +1096,9 @@ in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 | `NearKeys.WithAcctKeys(r, acts)` | adds key actions (`AddKeyAct`, `DelKeyAct`) after the Transfer, e.g. the new account's first key |
 
 In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee
-table. A handler emits these like any child; a script submits them like any transaction
+table, the prepaid reservation, whether the receipt succeeds or fails (nearcore refunds a
+failed receipt the exec fees of the actions after the failing one as gas, which is not
+modelled; SEMANTICS A6). A handler emits these like any child; a script submits them like any transaction
 (`Submit(DeleteAcctRcpt(nid, t, "p", args, "b", 0))`: `p` deletes itself, its balance goes to
 `b`).
 

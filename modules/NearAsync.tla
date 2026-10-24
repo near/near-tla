@@ -230,6 +230,11 @@ UniversalOn == TRUE
 IsImplicit(a) ==
     \/ KindOf(a) \in {"near_implicit", "eth_implicit", "deterministic"}
     \/ KindOf(a) = "universal" /\ UniversalOn
+\* An uninitialised universal account: created by a Transfer and waiting for
+\* its state init (actions.rs:276-282).  Every action but a Transfer fails on
+\* it with AccountNotInitialized (:880-887).  Without UniversalOn a 0u id is
+\* named, and an account with it is an ordinary one.
+UninitUniversal(a) == UniversalOn /\ KindOf(a) = "universal" /\ a \in created
 
 \* Key id used by Submit(r), which carries no key information.
 DefaultKey == "default"
@@ -513,7 +518,7 @@ AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
 \* Can a function call on a run?  An account created by a Transfer has no
 \* code, except an eth-implicit one, which gets a protocol-defined global
 \* contract (actions.rs:221-290); a universal one is also uninitialised
-\* (actions.rs:880-887, AccountNotInitialized).
+\* (UninitUniversal; actions.rs:880-887, AccountNotInitialized).
 HasCode(a) == /\ AcctExists(a)
               /\ a \in Contracts
               /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
@@ -1044,10 +1049,14 @@ LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
 \* Fees (gas mode).  gf convention: an ACCOUNT receipt's gf is the whole
 \* receipt's send + exec fees, ReceiptFee plus each action's ActionFee
 \* (NearFees), charged to its creator at creation whatever the outcome.
-\* That is nearcore's: the exec fees are prepaid and a failed receipt burns
-\* them all; only the creation charge is withheld on failure, and gas money
-\* is not modelled (N-gas-money; sim lifecycle.rs account_action_fees,
-\* create_batch_atomic).  NearKeys.WithAcctKeys adds the key actions' fees.
+\* That is the prepaid reservation, not the burn: nearcore stops a failed
+\* receipt at its failing action (lib.rs:997-1001) and burns the receipt's
+\* exec fee plus the exec fees of the actions it attempted (each burns its
+\* own as it starts, :588-592); the exec fees of the actions after it come
+\* back with the gas refund (:1296-1307).  Gas refunds, like the creation
+\* charge withheld on failure, are gas money, which is not modelled
+\* (N-gas-money; sim lifecycle.rs account_action_fees, create_batch_atomic).
+\* NearKeys.WithAcctKeys adds the key actions' fees.
 \* sir: the receipt is on its predecessor's own account.
 AcctFee(fr, to, mk, dep, bnf) ==
     IF GasMode # "gas" THEN 0
@@ -1081,7 +1090,7 @@ AcctActor(r) == IF r.ac.mk THEN r.to ELSE r.fr
 \* account created by a Transfer is uninitialised: only a Transfer accepts it
 \* (actions.rs:880-887).
 AcctThere(r) == r.ac.mk \/ AcctExists(r.to)
-AcctInit(r)  == r.ac.mk \/ ~(r.to \in created /\ KindOf(r.to) = "universal")
+AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
 
 \* The first failing action check, as nearcore's error name, or "".  Per
 \* action: existence, then the actor, then the action (lib.rs:599-610).

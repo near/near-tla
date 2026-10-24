@@ -222,7 +222,10 @@ fn create_batch_atomic() {
     assert_eq!(fail_cost, yocto(o.effects().gas_paid()), "alice lost only gas");
     let fail_gas: u64 = o.transaction.as_ref().unwrap().gas_burnt.as_gas()
         + o.receipts.iter().filter(|r| r.refund.is_none()).map(|r| r.gas_burnt.as_gas()).sum::<u64>();
-    println!("failed batch burnt {:.3} Ggas (all exec fees, create_account's 7200 included)", fail_gas as f64 / 1e9);
+    println!(
+        "failed batch burnt {:.3} Ggas (it failed at its last action, so every exec fee, create_account's 7200 included)",
+        fail_gas as f64 / 1e9
+    );
     assert_eq!(fail_cost, fail_gas as i128 * yocto(sim.config.gas_price), "no creation charge on failure");
 
     // The same shape succeeding: the account creation charge (85+,
@@ -252,6 +255,31 @@ fn create_batch_atomic() {
         ok_cost == gas(&o) * price + charge - create_exec * price
     );
     assert_eq!(ok_cost, gas(&o) * price + charge - create_exec * price, "the charge on success");
+
+    // Early failure: the same batch on the account that now exists fails at
+    // its first action. nearcore stops at the failing action (lib.rs:997-1001);
+    // each attempted action burns its exec fee as it starts (lib.rs:588-592),
+    // so the receipt burns its base exec fee (lib.rs:908) plus create_account's.
+    // The Transfer's and AddKey's exec fees, never attempted, come back with
+    // the gas refund (prepaid exec gas less gas_burnt, lib.rs:1296-1307).
+    let o = sim
+        .tx(ALICE, "d.alice.near")
+        .create_account()
+        .transfer(near(1))
+        .add_key(sk("early").public_key(), AccessKey::full_access())
+        .transact();
+    let rcpt = o.receipts.iter().find(|r| r.executor_id.as_str() == "d.alice.near" && r.refund.is_none()).unwrap();
+    let base_exec = rc.fees.fee(ActionCosts::new_action_receipt).exec_fee().gas.as_gas();
+    println!(
+        "[CreateAccount, Transfer, AddKey] on an existing account: {}; receipt burnt {:.3} Ggas = receipt base {:.3} + create_account {:.3}: {}",
+        rerr(rcpt),
+        rcpt.gas_burnt.as_gas() as f64 / 1e9,
+        base_exec as f64 / 1e9,
+        create_exec as f64 / 1e9,
+        rcpt.gas_burnt.as_gas() == base_exec + create_exec as u64
+    );
+    assert!(rerr(rcpt).contains("AccountAlreadyExists"), "{o}");
+    assert_eq!(rcpt.gas_burnt.as_gas(), base_exec + create_exec as u64, "only the attempted actions' exec fees");
 
     // A contract-made batch (p.spawn: [CreateAccount, Transfer, AddKey]) that
     // fails: the deposit goes back to p, the predecessor, not to alice.

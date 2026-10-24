@@ -389,15 +389,20 @@ Each entry ends with its migration.
   beneficiary), clears `near`, `stor` and keys and adds the account to `deleted`; postponed
   callbacks, data and yields survive it and run on the account if it is created again.
   `DeletesAcct(r)` tells a model to reset its own state. In gas mode `AcctFee` puts the
-  receipt's whole send + exec fee in `gf`. `ExecTransfer` takes a deleted implicit account
+  receipt's whole send + exec fee in `gf`: the prepaid reservation, whatever the outcome
+  (nearcore stops a failed receipt at its failing action and refunds the exec fees of the
+  actions after it as gas, which is not modelled). An uninitialised universal account
+  (`UninitUniversal`, which needs `UniversalOn`) fails key actions, DeleteAccount and the
+  delegates it signs with `AccountNotInitialized`; with `UniversalOn <- FALSE` a `0u` id is
+  an ordinary named account. `ExecTransfer` takes a deleted implicit account
   out of `deleted` when it creates it again, and `NearKeys.ExecTransferK` / `ExecBuiltinK`
   give a NEAR-implicit account a Transfer creates its full-access key (`ImplicitKeyId`).
   Validated against the sim (`conformance/tests/lifecycle.rs`, 13 tests: creation rules,
   atomic batches, payouts, the actor and staking checks, the 10,000-byte limit at its
   boundary, receipts to a deleted account, re-creation, postponed callbacks, data and yields
   surviving deletion, deploy storage, an instant delete via a delegate, fees). New
-  `platform-selftest` runs `selftest_lifecycle`, `selftest_lifecycle_gas` and
-  `selftest_lifecycle_storage` (17 scenarios), and a new example `account-lifecycle`
+  `platform-selftest` runs `selftest_lifecycle`, `selftest_lifecycle_gas`,
+  `selftest_lifecycle_storage` and `selftest_universal_off` (18 scenarios), and a new example `account-lifecycle`
   (`escrow_pays_deleted` must fail, `escrow_pays_cb` passes, `refund_to_deleted_burns` must
   fail; with witnesses and mutants). SEMANTICS: N-create-account and N-delete-account are
   gone; new N-acct-ids, N-delete-large and N-wipe; N-refund-stuck, N-storage, N-universal,

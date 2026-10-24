@@ -718,7 +718,12 @@ Each rule has four fields:
   factory, not its user), and a waiting callback gets Failed (R4, R5). The storage check runs
   once, after all actions. The account creation charge (A3) applies on success only.
   **Fee:** the creator pays the receipt base plus each action's send and exec fee
-  (create_account 500 + 7,200 Ggas at 88, "up"); a failed receipt burns all the exec fees.
+  (create_account 500 + 7,200 Ggas at 88, "up"). The model charges the whole sum, the
+  prepaid reservation, whatever the outcome. nearcore burns less on failure: it stops at
+  the failing action and burns the receipt's exec fee plus the exec fees of the actions it
+  attempted, refunding the rest as gas (gas money, N-gas-money); a CreateAccount on an
+  existing account burns 7,308 Ggas of the batch's exec fees (measured: the receipt's
+  108.06 plus create_account's 7,200).
   `[CreateAccount, Transfer, AddKey(full)]` costs what a Transfer creating a NEAR-implicit
   account costs.
 - **nearcore:** `runtime/runtime/src/actions.rs:166-209` (`action_create_account`; top-level
@@ -726,7 +731,9 @@ Each rule has four fields:
   implicit ids); order `runtime/runtime/src/lib.rs:595-610`; atomicity and storage
   `lib.rs:946-1031`; `core/parameters/res/runtime_configs/64.yaml:2`; near-account-id 3.0.0
   `src/validation.rs:6-8`, `src/account_id_ref.rs:153-155`, `:216-221`. Fees
-  `runtime/runtime/src/config.rs:98-108`, `:143`.
+  `runtime/runtime/src/config.rs:98-108`, `:143`; on failure `lib.rs:588-592` (each action
+  burns its exec fee as it starts), `:997-1001` (the loop stops), `:1296-1307` (the gas
+  refund).
 - **Model:** an ACCOUNT receipt (`m = ACCT`, `IsAcctRcpt`) holds `[CreateAccount]?
   [Transfer(dep)]? [key actions]* [DeleteAccount]?`, recorded in its `ac` field.
   `CreateAcctRcpt(id, tx, new, fr, a, dep, cb)` builds a create; `NearKeys.WithAcctKeys` adds
@@ -734,13 +741,13 @@ Each rule has four fields:
   (`AcctErr`, then `AcctStorOK`). Toy ids carry no structure, so the model states it:
   `AcctParent` (overridable; `Parents({<<child, parent>>, ...})`, default every account
   top-level) and `TopCreator` (the `registrar_account_id`, overridable) (N-acct-ids). The
-  receipt's `gf` is its whole send + exec fee (`AcctFee`). An ACCOUNT receipt never creates an
+  receipt's `gf` is its whole send + exec fee, the reservation (`AcctFee`). An ACCOUNT receipt never creates an
   implicit account: a batched Transfer to an absent id fails (A4; N-universal). Calls in the
   same receipt as account actions (a factory's `[CreateAccount, Transfer, AddKey,
   FunctionCall(init)]`) and DeployContract are not modelled (N-deploy).
 - **Validated:** sim (`conformance/tests/lifecycle.rs`: `create_account_rules`,
-  `create_batch_atomic`, `account_action_fees`); `examples/platform-selftest` (the `acct_`
-  scenarios).
+  `create_batch_atomic`, with the early-failure burn, `account_action_fees`);
+  `examples/platform-selftest` (the `acct_` scenarios).
 
 ### A7. DeleteAccount
 
@@ -1698,9 +1705,11 @@ against the current module code; some may be fixed in the modules later.
 - **N-universal. Universal accounts are created uninitialised.** nearcore creates a `0u`
   account from a Transfer without code, keys or data; every action but Transfer and its own state
   init then fails with `AccountNotInitialized` (`runtime/runtime/src/actions.rs:276-282`,
-  `:880-887`). The model fails function calls to it (`HasCode`), and the key actions and
-  DeleteAccount of an ACCOUNT receipt (`AccountNotInitialized`, A6); `ExecKeyAct` and Stake do
-  not check initialisation. A batched Transfer to an absent universal id creates it in nearcore
+  `:880-887`). The model fails function calls to it (`HasCode`), the key actions and
+  DeleteAccount of an ACCOUNT receipt (`AccountNotInitialized`, A6) and a delegate it signs
+  (`NearKeys.DelegErr`), all through `UninitUniversal`, which needs `UniversalOn` (without it
+  a `0u` id is named and its account an ordinary one); `ExecKeyAct` and Stake do not check
+  initialisation. A batched Transfer to an absent universal id creates it in nearcore
   (A3); in an ACCOUNT receipt it fails.
 - **N-reward. Gas rewards.** Up to 86, a contract earned 30% of the gas its function calls
   burnt; 87 sets that to 0 (`core/parameters/res/runtime_configs/87.yaml:1-7`,

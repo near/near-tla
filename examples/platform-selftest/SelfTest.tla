@@ -26,9 +26,10 @@
 (* sub-account of c, top (top-level; only w, the TopCreator here, may      *)
 (* create it) and nimp (NEAR-implicit) do not exist; 0xa (eth-implicit,    *)
 (* with code) does.  A script entry Ac is an ACCOUNT transaction           *)
-(* (CreateAccount, Transfer, key actions, DeleteAccount); s.c and nimp     *)
-(* have modelled keys.  The lifecycle_storage run gives w 10,001 bytes and *)
-(* v 10,500, 600 of them code, at 2,000 bytes a unit.                      *)
+(* (CreateAccount, Transfer, key actions, DeleteAccount); s.c, nimp and    *)
+(* 0u1 have modelled keys (universal_off: without UniversalOn 0u1 is an    *)
+(* ordinary id).  The lifecycle_storage run gives w 10,001 bytes and v     *)
+(* 10,500, 600 of them code, at 2,000 bytes a unit.                        *)
 (***************************************************************************)
 EXTENDS Tokens, NearKeys
 
@@ -75,8 +76,8 @@ STokBytes == [t \in {FT} |-> [h \in STokHolders[t] |-> IF h = W THEN 180 ELSE 15
 Tok0 == [t \in {FT} |-> Ledger([h \in {U, W, C, D} |-> CASE h = U -> 5 [] h = C -> 3 [] OTHER -> 0],
                                {U, C, D})]
 
-\* Keys: c has k0 (full), k1 (c, {ping}), k2 (c, any method); d has k0; s.c and nimp none.
-SKeyAccts == {C, D, SB, NI}
+\* Keys: c has k0 (full), k1 (c, {ping}), k2 (c, any method); d has k0; s.c, nimp and 0u1 none.
+SKeyAccts == {C, D, SB, NI, UA}
 PermOf(k) == CASE k = "k0" -> FullPerm
                [] k = "k2" -> Perm(C, {}, FALSE)
                [] OTHER    -> Perm(C, {"ping"}, FALSE)
@@ -535,6 +536,11 @@ Script(s) ==
                                     Tx(C, U, "send", G("", "", EA, 1, 0, "", ""), 0),    \* 0xa again
                                     Ans(EA, 2, 5) >>
     [] s = "del_large"        -> << Ac(W, W, FALSE, 0, U, <<>>), Ac(V, V, FALSE, 0, U, <<>>) >>
+    \* Without UniversalOn (protocol < 87) 0u1 is a named top-level id.
+    [] s = "universal_off"    -> << Ac(UA, W, TRUE, 2, "", <<AddK("k0")>>),             \* w creates it
+                                    Ac(UA, UA, FALSE, 0, "", <<AddK("k1")>>),            \* a key action
+                                    Dl(U, "ku", UA, "k1", 1, NoExpiry, C, "ping", 0),    \* a delegate (k1)
+                                    Ac(UA, UA, FALSE, 0, W, <<>>) >>                     \* a delete
     [] s = "acct_bytes"       -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>) >>
     [] s = "acct_bytes_del"   -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>),
                                     Ac(SB, SB, FALSE, 0, C, <<>>) >>
@@ -952,6 +958,11 @@ Expect(s) ==
          \* core/store/src/utils/mod.rs:504-575; ext.rs:406-428
          deleted = {} /\ EA \in created /\ near[EA] = 1 /\ post = {}
          /\ S1("ycb", 5) \in seen /\ S(4, "ans", 1) \in seen
+    [] s = "universal_off" ->     \* before 87 a 0u id is named: created by CreateAccount, it is an
+         \* ordinary account (no AccountNotInitialized): its key action, its delegate (signed with
+         \* the key it added) and its delete succeed.  actions.rs:880-887, :918-924
+         created = {UA} /\ deleted = {UA} /\ DOMAIN keys[UA] = {} /\ near[UA] = 0 /\ near[W] = 10
+         /\ acc = <<TRUE, TRUE, TRUE, TRUE>> /\ <<3, C, "ping">> \in ran /\ burnt = 0
     [] s = "del_large" ->         \* storage minus code over 10,000 bytes: DeleteAccountWithLargeState
          \* actions.rs:342-369, account.rs:248
          deleted = {V} /\ stor[W] = 10001 /\ stor[V] = 0 /\ near[U] = 20 /\ near[W] = 10
