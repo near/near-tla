@@ -36,6 +36,8 @@ TokStorageMin = "STokMin"
 TokDev = "STokDev"
 TokCallReserve = "STokReserve"
 KeyAccts = "SKeyAccts"
+AcctParent = "SParents"
+TopCreator = '"w"'
 
 # Receipts, results, accounts, refunds, staking, storage.
 [[run]]
@@ -313,3 +315,39 @@ StorageByteCost = "SCost"
 TokRegBytes = "STokBytes"
 Scns = '''{"stor_grow", "stor_revert", "stor_shrink", "stor_zero_balance", "stor_locked",
           "stor_keys", "stor_implicit", "stor_signer", "stor_tokens"}'''
+
+# Account lifecycle: CreateAccount (parent, TopCreator, implicit ids, atomic batches with
+# keys), DeleteAccount (actor, beneficiary present / absent / self, staking), receipts to a
+# deleted account, creating it again (NEAR-implicit by a Transfer, with its key), and a
+# yield that outlives its account (D4).  MaxBlk 2 so that no yield times out unscripted.
+[[run]]
+name = "selftest_lifecycle"
+expect = "pass"
+[run.constants]
+MaxBlk = "2"
+YieldTicks = "1"
+Scns = '''{"acct_create", "acct_keys", "acct_not_parent", "acct_implicit", "acct_top",
+          "del_beneficiary", "del_absent", "del_self", "del_staking", "del_receipts", "recreate",
+          "implicit_recreate", "stale_cb_recreate"}'''
+
+# The same in gas mode, with the creator-side fees of account receipts (acct_fee).
+[[run]]
+name = "selftest_lifecycle_gas"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"acct_fee", "acct_keys", "acct_top", "del_beneficiary", "del_absent", "recreate"}'
+
+# Per-byte storage: a new account's bytes, freed by its deletion, and the 10,000-byte delete
+# limit with the code subtracted (CodeSize).
+[[run]]
+name = "selftest_lifecycle_storage"
+expect = "pass"
+[run.constants]
+StoragePerByte = "TRUE"
+StorageInit = "LStor"
+StorageByteCost = "LCost"
+CodeSize = "LCode"
+Scns = '{"del_large", "acct_bytes", "acct_bytes_del"}'

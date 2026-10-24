@@ -138,6 +138,9 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
 - Per-byte storage staking, opt-in next to the fixed floor (`StoragePerByte`, SEMANTICS B2,
   `examples/storage-stake`): the bytes of writes, keys, created accounts and token
   registrations, checked after every receipt with the 770-byte zero-balance exemption.
+- CreateAccount and DeleteAccount (SEMANTICS A6, A7, `examples/account-lifecycle`): the
+  creation rules, deletion with its payout, receipts to a deleted account, and an account
+  created again. Instant receipts and DeployContract are still open.
 
 ### Later
 
@@ -152,8 +155,8 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   bytes by hand.
 - **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:** the
   function-call AddKey per-byte fee; access-key allowances and transaction validity (nonces);
-  DeleteAccount, CreateAccount restrictions, deterministic-account state init, global
-  contracts and gas keys.
+  instant receipts, DeployContract, deterministic-account state init, global contracts and
+  gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 
 ## License

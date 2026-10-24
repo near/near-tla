@@ -588,8 +588,10 @@ Each rule has four fields:
   At 87+ the account must also be initialized; an uninitialised `0u` account counts as absent.
 - **nearcore:** `runtime/runtime/src/actions.rs:814-895` (`check_account_existence`), called at
   `runtime/runtime/src/lib.rs:600-605`.
-- **Model:** the `Exists` constant (initial accounts) and `AcctExists`.
-- **Validated:** nearcore reading.
+- **Model:** the `Exists` constant (initial accounts) and `AcctExists`: an account exists if
+  it is in `Exists` or `created` and not in `deleted` (A7).
+- **Validated:** nearcore reading. A deleted account: sim (`conformance/tests/lifecycle.rs`,
+  `receipts_to_deleted`).
 
 ### A2. Account types (by id pattern)
 
@@ -656,9 +658,11 @@ Each rule has four fields:
 - **Model:** `ExecTransfer` creates a missing implicit receiver as an existing account (in
   `created`); it does not check the "only action" condition (built-in Transfer receipts hold one
   action). A created account has no code (`HasCode`) unless it is eth-implicit, so calls to a
-  created NEAR-implicit, deterministic or universal account fail; the NEAR-implicit key, the
-  rest of the universal uninitialised state (N-universal) and the charge (N-gas-money) are not
-  modelled. With `StoragePerByte` the created account's bytes are counted (`CreatedBytes`, B2),
+  created NEAR-implicit, deterministic or universal account fail. The NEAR-implicit key is
+  added by `NearKeys.ExecTransferK` (key id `ImplicitKeyId`) for an account in `KeyAccts`;
+  `ExecTransfer` alone leaves keys to the model. The rest of the universal uninitialised state
+  (N-universal) and the charge (N-gas-money) are not modelled. A Transfer to a deleted implicit
+  id creates it again the same way (A7). With `StoragePerByte` the created account's bytes are counted (`CreatedBytes`, B2),
   the NEAR-implicit key's included.
 - **Validated:** a lone Transfer to an absent NEAR-implicit or eth-implicit id succeeds and
   its creator pays the creation fees: sim (`send_nimp_new`, `send_eth_new`, `send_eth_new_cb`).
@@ -692,6 +696,95 @@ Each rule has four fields:
   explicit step.
 - **Validated:** nearcore reading. <!-- conformance --> No flow calls an account without code,
   so the sim does not check this rule.
+
+### A6. CreateAccount
+
+- **Rule:** `CreateAccount` makes a new named account; the actions after it in the receipt
+  (Transfer, AddKey, DeleteAccount) act as the new account. Checked in this order, before each
+  action existence, then the actor, then the action (A1):
+  - the account must not exist (`AccountAlreadyExists`);
+  - the id must not be implicit (`OnlyImplicitAccountCreationAllowed`; NEAR-implicit,
+    eth-implicit, deterministic and, at 87+, universal ids are created only by a Transfer, A3);
+  - a top-level id shorter than `min_allowed_top_level_account_length` only by the creation
+    config's `registrar_account_id` (`CreateAccountOnlyByRegistrar`). That length is 65 from
+    64 on and ids have at most 64 characters, so at 88 **every** named top-level id needs that
+    account;
+  - a sub-account only by its **direct** parent (`CreateAccountNotAllowed`): `a.b.near` by
+    `b.near`, not by `near`.
+
+  The new account has 0 balance, no code, no keys and 100 bytes; the Transfer that follows
+  funds it. The receipt is atomic: a failure anywhere (a duplicate key, a failed storage check)
+  reverts it all, the deposit goes back to `refund_to` or the predecessor (for a factory, the
+  factory, not its user), and a waiting callback gets Failed (R4, R5). The storage check runs
+  once, after all actions. The account creation charge (A3) applies on success only.
+  **Fee:** the creator pays the receipt base plus each action's send and exec fee
+  (create_account 500 + 7,200 Ggas at 88, "up"); a failed receipt burns all the exec fees.
+  `[CreateAccount, Transfer, AddKey(full)]` costs what a Transfer creating a NEAR-implicit
+  account costs.
+- **nearcore:** `runtime/runtime/src/actions.rs:166-209` (`action_create_account`; top-level
+  `:175-186`, sub-account `:190-197`, the new account `:202-208`), `:822-840` (existence and
+  implicit ids); order `runtime/runtime/src/lib.rs:595-610`; atomicity and storage
+  `lib.rs:946-1031`; `core/parameters/res/runtime_configs/64.yaml:2`; near-account-id 3.0.0
+  `src/validation.rs:6-8`, `src/account_id_ref.rs:153-155`, `:216-221`. Fees
+  `runtime/runtime/src/config.rs:98-108`, `:143`.
+- **Model:** an ACCOUNT receipt (`m = ACCT`, `IsAcctRcpt`) holds `[CreateAccount]?
+  [Transfer(dep)]? [key actions]* [DeleteAccount]?`, recorded in its `ac` field.
+  `CreateAcctRcpt(id, tx, new, fr, a, dep, cb)` builds a create; `NearKeys.WithAcctKeys` adds
+  key actions; `ExecAcct` (or `NearKeys.ExecAcctK`, with keys) runs it, in the rule's order
+  (`AcctErr`, then `AcctStorOK`). Toy ids carry no structure, so the model states it:
+  `AcctParent` (overridable; `Parents({<<child, parent>>, ...})`, default every account
+  top-level) and `TopCreator` (the `registrar_account_id`, overridable) (N-acct-ids). The
+  receipt's `gf` is its whole send + exec fee (`AcctFee`). An ACCOUNT receipt never creates an
+  implicit account: a batched Transfer to an absent id fails (A4; N-universal). Calls in the
+  same receipt as account actions (a factory's `[CreateAccount, Transfer, AddKey,
+  FunctionCall(init)]`) and DeployContract are not modelled (N-deploy).
+- **Validated:** sim (`conformance/tests/lifecycle.rs`: `create_account_rules`,
+  `create_batch_atomic`, `account_action_fees`); `examples/platform-selftest` (the `acct_`
+  scenarios).
+
+### A7. DeleteAccount
+
+- **Rule:** `DeleteAccount(beneficiary)` must be the receipt's last action. It needs the
+  account to exist, the actor to be the account itself (`ActorNoPermission`; so only the
+  account's own transactions and receipts, or a CreateAccount earlier in the batch), no locked
+  balance (`DeleteAccountStaking`), and storage minus the contract code (from 85 also minus a
+  global contract's identifier) at most 10,000 bytes (`DeleteAccountWithLargeState`). Then:
+  - the liquid balance, if > 0, goes to the beneficiary as a balance refund, a **separate
+    receipt** from `system` that runs later. A refund never creates an account: if the
+    beneficiary is absent (an implicit id included), or is the deleted account itself, the
+    amount is **burnt**;
+  - the account record, its code, keys and contract data are removed, and the storage check is
+    skipped;
+  - **not removed:** postponed receipts, received data and yields addressed to the account,
+    which are keyed by account id. While the account is deleted they fail when they run
+    (`AccountDoesNotExist`); once it is created again they run against the **new** account.
+
+  Receipts that reach a deleted account: a call, a key action and a Stake fail with
+  `AccountDoesNotExist`; a Transfer fails and its deposit is refunded to its sender, unless
+  the id is implicit, in which case the Transfer creates it again (A3, a NEAR-implicit one
+  with its key); a refund to it is burnt. A deleted account cannot sign
+  (`SignerDoesNotExist`). An account created again is a new account: no code (unless
+  eth-implicit), no keys, no data.
+- **nearcore:** `runtime/runtime/src/actions.rs:330-406` (`action_delete_account`; large
+  state `:342-369`, payout `:380-386`), `:776-790` (actor, staking),
+  `runtime/runtime/src/action_validation.rs:139-142` (last action);
+  `core/primitives-core/src/account.rs:248`; `core/store/src/utils/mod.rs:504-575`
+  (`remove_account`); refund burn `runtime/runtime/src/lib.rs:1046-1054`; signer
+  `runtime/runtime/src/verifier.rs:170-175`.
+- **Model:** `DeleteAcctRcpt(id, tx, acct, a, b, cb)` (or `WithDeleteTo(r, b)` on an ACCOUNT
+  receipt), run by `ExecAcct` / `NearKeys.ExecAcctK`. On success the account joins the
+  platform variable `deleted` (a later creation removes it again); `near` and `stor` become 0,
+  `NearKeys` clears its keys, and a `REFND` receipt from `"system"` carries the payout
+  (`ExecTransfer` credits a present beneficiary, `RefundBurn` burns it otherwise).
+  `CallTargetOK`, `ExecStake`, `ExecKeyAct`, `CanSubmit` and `DelegErr` refuse a deleted
+  account even with `CallsNeedCode = FALSE`. The large-state check reads `stor`, so it needs
+  `StoragePerByte` and `CodeSize` (N-delete-large). The library wipes only its own state; the
+  model resets its own variables for the account, using `DeletesAcct(r)` (N-wipe).
+- **Validated:** sim (`conformance/tests/lifecycle.rs`: `delete_beneficiary`,
+  `delete_actor_and_staking`, `delete_large_state`, `receipts_to_deleted`,
+  `recreate_clears_keys_and_data`, `delete_leaves_postponed_callback`,
+  `delete_leaves_received_data`, `delete_leaves_yield`); `examples/platform-selftest` (the
+  `del_`, `recreate` and `stale_cb_recreate` scenarios); `examples/account-lifecycle`.
 
 ---
 
@@ -1378,9 +1471,11 @@ against the current module code; some may be fixed in the modules later.
   real scheduler. Congestion can also reject new transactions, which the model treats as "not
   submitted".
 - **N-instant. Instant receipts.** A receipt holding a single `DeleteAccount` with no inputs
-  runs immediately after its creator in the same chunk (`core/primitives/src/receipt.rs:467-491`,
-  `runtime/runtime/src/lib.rs:1222-1224`, `:2748-2775`). The model lets other receipts
-  interleave. A `PromiseYield` receipt is instant too, but processing it only stores it
+  runs immediately after its creator in the same chunk, whatever the chunk's load
+  (`core/primitives/src/receipt.rs:467-491`, `runtime/runtime/src/lib.rs:1222-1224`,
+  `:2748-2775`), also as a delegate's inner receipt (sim: `conformance/tests/lifecycle.rs`,
+  `instant_delete_via_delegate`). The model lets other receipts interleave between a receipt
+  and the `DeleteAcctRcpt` it creates (A7). Still open. A `PromiseYield` receipt is instant too, but processing it only stores it
   (`lib.rs:1549-1553`); the model puts the yield in `post` at its creator's commit, which is
   the same.
 - **N-local-off.** With the local-priority switch (S1) off, a self-signed first receipt may run
@@ -1413,7 +1508,8 @@ against the current module code; some may be fixed in the modules later.
   such replay, which is sound. A per-key high-water mark that survives a re-add would forbid
   that last replay, which nearcore allows: an under-approximation, so the model does not keep
   one. A model that deletes and re-adds a key id may see replays nearcore refuses; replay
-  them in the sim.
+  them in the sim. The same holds for an account deleted and created again (A7): its keys, and
+  their nonces, start afresh.
 - **N-delegate-expiry. Delegate expiry without a clock.** With `MaxBlk = 0` a delegate that has
   an expiry (`mbh # NoExpiry`) may fail at any time (`DelegMayExpire`). This also stands in for
   the outer-receipt failures the model leaves out (`DelegateActionNonceTooLarge`, a racing
@@ -1428,11 +1524,6 @@ against the current module code; some may be fixed in the modules later.
   for any account. A model must build a user's delegate only in that user's own step; a
   relayer step that builds one for another account models a forgery, which nearcore rejects
   (`DelegateActionInvalidSignature`, `runtime/runtime/src/actions.rs:474-477`).
-- **N-create-account. CreateAccount restrictions.** There is no `CreateAccount` action in the
-  modules. Its rules (a short top-level id only by one privileged account, a sub-account only by its
-  parent, no explicit creation of implicit ids; `runtime/runtime/src/actions.rs:166-202`,
-  `:822-839`) are not enforced. A model that puts accounts into existence by fiat allows
-  creations nearcore refuses.
 - **N-time. Block timing.** The block clock (S3) is a bounded counter: any number of receipts
   may run at one height, a callback even at its creator's height (nearcore: at least one block
   later), and any number of blocks may pass while a receipt is in flight. There is no latency
@@ -1581,8 +1672,8 @@ against the current module code; some may be fixed in the modules later.
     uncovered is accepted. Receivers pay no gas, and from 87 earn no share of it
     (`burnt_gas_reward` 0, `core/parameters/res/runtime_configs/87.yaml:1-7`), so their check is
     not affected;
-  - the bytes of DeployContract, DeleteAccount, global contracts and gas-key nonces are absent
-    with those features (Scope limits).
+  - the bytes of DeployContract, global contracts and gas-key nonces are absent with those
+    features (Scope limits). CreateAccount and DeleteAccount bytes are counted (A6, A7).
 - **N-gas-money. Gas price and gas money.** Gas is a quantity, not NEAR. Purchase, the price
   floor (`min_gas_purchase_price`), price changes between blocks, the account-creation charge
   (A3) and burning are absent (`runtime/runtime/src/config.rs:481` `calculate_tx_cost`;
@@ -1599,13 +1690,18 @@ against the current module code; some may be fixed in the modules later.
 - **N-refund-stuck. Refunds to an absent account.** A deposit refund to an absent account is
   burnt in nearcore (`runtime/runtime/src/lib.rs:1046-1054`) and in the model (R5). Only with
   `BurnLostRefunds <- FALSE` does such a `REFND` stay in flight, and then invariants guarded by
-  "when idle" are never checked on that path. A `DeleteAccount` beneficiary payment
-  (`runtime/runtime/src/actions.rs:382-386`) is not modelled.
+  "when idle" are never checked on that path. With account deletion (A7) a refund meets an
+  absent account in three ways: its predecessor deleted itself before the refund arrived
+  (`examples/account-lifecycle`, `refund_to_deleted_burns`); a `DeleteAccount` payout to an
+  absent beneficiary, or to the account itself; a yield's deposit on a deleted account (its
+  `refund_to` is the account).
 - **N-universal. Universal accounts are created uninitialised.** nearcore creates a `0u`
   account from a Transfer without code, keys or data; every action but Transfer and its own state
   init then fails with `AccountNotInitialized` (`runtime/runtime/src/actions.rs:276-282`,
-  `:880-887`). The model fails function calls to it (`HasCode`); other actions on it (key
-  actions, Stake) are not checked for initialisation.
+  `:880-887`). The model fails function calls to it (`HasCode`), and the key actions and
+  DeleteAccount of an ACCOUNT receipt (`AccountNotInitialized`, A6); `ExecKeyAct` and Stake do
+  not check initialisation. A batched Transfer to an absent universal id creates it in nearcore
+  (A3); in an ACCOUNT receipt it fails.
 - **N-reward. Gas rewards.** Up to 86, a contract earned 30% of the gas its function calls
   burnt; 87 sets that to 0 (`core/parameters/res/runtime_configs/87.yaml:1-7`,
   `runtime/runtime/src/lib.rs:1108-1137`). At 84-86 a contract's balance grows in a way the model
@@ -1643,9 +1739,23 @@ against the current module code; some may be fixed in the modules later.
   check it (`OResume` sizes are in KB, which cannot express the bound), so a resume nearcore
   rejects succeeds in the model. A handler whose payloads can exceed 1024 bytes should fail
   on an oversized one itself (`OErr`), and so model the resumer's failure.
-- **N-delete-account. DeleteAccount details.** Large-state refusal, the staking check, gas-key
-  burning and the beneficiary transfer (`runtime/runtime/src/actions.rs:330-410`, `:777-792`) are
-  not modelled.
+- **N-acct-ids. Account-id structure is a modelling input.** Toy ids carry no structure, so
+  the parent of each account (`AcctParent`, `Parents`) and the account allowed to create
+  top-level ids (`TopCreator`) are constants the model states (A6). A wrong map refuses
+  creations nearcore allows or allows ones it refuses. The default makes every account
+  top-level and `TopCreator` an id outside the model, so every CreateAccount fails until the
+  model states its parents. Testnet has no top-level restriction
+  (`min_allowed_top_level_account_length` 0, `core/parameters/res/runtime_configs/parameters_testnet.yaml:27`).
+- **N-delete-large. The large-state refusal needs per-byte storage.** Without
+  `StoragePerByte` the model has no byte counts, so `DeleteAccountWithLargeState` (A7) never
+  happens and a delete nearcore refuses succeeds. Put `ACCT` in `MayFail` to explore the
+  failure anyway. With `StoragePerByte`, `CodeSize` must state each contract's code bytes
+  (counted in its `StorageInit`), or the deletes of large contracts fail falsely.
+- **N-wipe. A deleted account's model state.** The library removes the account's balance,
+  bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
+  touched. A model whose accounts can be deleted and created again must reset them, with
+  `DeletesAcct(r)` after `ExecAcct`; otherwise the new account runs on the old one's state,
+  which can both hide bugs and report false ones.
 
 ### Scope limits
 
@@ -1671,7 +1781,9 @@ against the current module code; some may be fixed in the modules later.
   The fee kinds exist in `NearFees`; the state-init actions, their fees and the no-key bootstrap
   transaction (K2) do not.
 - **N-gas-keys. Gas keys** (85+: `TransferToGasKey`, `WithdrawFromGasKey`, gas-key nonces;
-  `core/primitives-core/src/version.rs:615`). Absent.
+  `core/primitives-core/src/version.rs:615`). Absent, and with them DeleteAccount's
+  `GasKeyBalanceTooHigh` refusal and its burn of the gas keys' balance
+  (`runtime/runtime/src/actions.rs:370-379`, `:388-391`).
 - **N-deploy. DeployContract and code upgrades mid-flow.** Code is the TLA+ handler; it does
   not change during a run.
 - **N-compute. Compute costs versus gas.** Some actions charge more compute than gas (for

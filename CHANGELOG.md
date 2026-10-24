@@ -132,6 +132,20 @@ Each entry ends with its migration.
   hand-written `vars`, use `platformVars` or add `stor`. With `StoragePerByte`, a hand-written
   `Init` should also list the invariant `StorageCovered`, since only the `PlatformInit`
   helpers check the initial cover.
+- **New platform variable `deleted` in `NearAsync`** (the accounts deleted by DeleteAccount and
+  not created again since; SEMANTICS A7). `AcctExists` now excludes it, and a deleted account
+  fails calls (`CallTargetOK`, even with `CallsNeedCode = FALSE`), Stake, key actions
+  (`NearKeys.ExecKeyAct` now checks `AcctExists`) and signing (`CanSubmit`). It stays `{}`
+  unless a model runs a DeleteAccount, so models that do not are unchanged: every example run kept its verdict and its generated,
+  distinct and depth counts (all 109 runs compared at one worker). It is
+  in `platformVars`, and `PlatformInit`, `PlatformInitStaked`, `PlatformInitAccounts` and
+  `PlatformInitExtra` initialise it. Like `blk` and `stor`: a step that lists platform
+  variables one by one in `UNCHANGED` must add `deleted` (in the library:
+  `NearKeys.ExecKeyAct`, `ExecDelegate`), a hand-written `Init` must set it, and a
+  hand-written `vars` must include it. Migration: write `UNCHANGED platformVars` or add
+  `deleted` to the list; conjoin `PlatformInitAccounts` (`created = {} /\ burnt = 0 /\
+  deleted = {}`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
+  hand-written `vars`, use `platformVars` or add `deleted`.
 - **`RemD` and `NoOrphans` cover several inputs per receipt** (`InIds`): a joint callback
   consumes all its inputs, a yield every resume addressed to it, and a pending yield is never
   an orphan. Results for receipts without the new fields are unchanged. Migration: none,
@@ -363,6 +377,31 @@ Each entry ends with its migration.
 
 ### Added
 
+- **CreateAccount and DeleteAccount** (SEMANTICS A6, A7; docs/USAGE.md section 16). A new
+  receipt kind, ACCOUNT (`ACCT`, `IsAcctRcpt`), holds `[CreateAccount]? [Transfer]? [key
+  actions]* [DeleteAccount]?` in an optional field `ac`: constructors `CreateAcctRcpt`,
+  `DeleteAcctRcpt`, `WithDeleteTo` and `NearKeys.WithAcctKeys`; `ExecAcct` (and
+  `NearKeys.ExecAcctK`, with key actions) runs it with nearcore's checks in order (`AcctErr`:
+  existing account, implicit id, top-level id only by `TopCreator`, sub-account only by its
+  parent in `AcctParent` / `Parents`, actor, staking, large state with `MaxDeleteBytes` and
+  `CodeSize`), an atomic failure that refunds the creator, and the storage check after the
+  actions. A delete pays the balance out in a later refund receipt (burnt for an absent
+  beneficiary), clears `near`, `stor` and keys and adds the account to `deleted`; postponed
+  callbacks, data and yields survive it and run on the account if it is created again.
+  `DeletesAcct(r)` tells a model to reset its own state. In gas mode `AcctFee` puts the
+  receipt's whole send + exec fee in `gf`. `ExecTransfer` takes a deleted implicit account
+  out of `deleted` when it creates it again, and `NearKeys.ExecTransferK` / `ExecBuiltinK`
+  give a NEAR-implicit account a Transfer creates its full-access key (`ImplicitKeyId`).
+  Validated against the sim (`conformance/tests/lifecycle.rs`, 13 tests: creation rules,
+  atomic batches, payouts, the actor and staking checks, the 10,000-byte limit at its
+  boundary, receipts to a deleted account, re-creation, postponed callbacks, data and yields
+  surviving deletion, deploy storage, an instant delete via a delegate, fees). New
+  `platform-selftest` runs `selftest_lifecycle`, `selftest_lifecycle_gas` and
+  `selftest_lifecycle_storage` (17 scenarios), and a new example `account-lifecycle`
+  (`escrow_pays_deleted` must fail, `escrow_pays_cb` passes, `refund_to_deleted_burns` must
+  fail; with witnesses and mutants). SEMANTICS: N-create-account and N-delete-account are
+  gone; new N-acct-ids, N-delete-large and N-wipe; N-refund-stuck, N-storage, N-universal,
+  N-gas-keys and N-delegate-rekey updated; N-instant stays open.
 - **`tools/run.py --anti-vacuity`: witnesses and mutants.** Two new tables in `runs.toml`.
   A `[[witness]]` is a situation that must be reachable: the runner checks `Wit_<id>` alone
   and requires a violation; a pass fails as `vacuous: witness <id> never reached`

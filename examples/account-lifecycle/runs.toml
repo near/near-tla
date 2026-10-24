@@ -1,0 +1,136 @@
+# Account lifecycle: a payment to an account deleted meanwhile is refunded to its sender,
+# and a refund to a deleted account is burnt.  See Escrow.tla.
+#
+#   python3 tools/run.py examples/account-lifecycle
+
+spec = "Escrow"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["FundsClaimable", "PaysOnlyPayee", "NoBurn", "Sane"]
+tags = ["semantics:account-lifecycle"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"e"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+Contracts = "EscCode"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+WithCb = "TRUE"
+Leaver = '"p"'
+
+# E pays without a callback; P deletes itself before the Transfer lands: the Transfer is
+# refunded to E, whose claim is already 0.
+[[run]]
+name = "escrow_pays_deleted"
+expect = "violation"
+invariant = "FundsClaimable"
+[run.constants]
+WithCb = "FALSE"
+
+# The same with on_paid restoring a failed payment.
+[[run]]
+name = "escrow_pays_cb"
+expect = "pass"
+
+# A deletes itself while its deposit is in flight; the deposit fails and its refund to A is
+# burnt.  A platform demonstration: NoBurn is what a careless reader would expect.
+[[run]]
+name = "refund_to_deleted_burns"
+expect = "violation"
+invariant = "NoBurn"
+[run.constants]
+Leaver = '"a"'
+MayFail = '{"deposit"}'
+MaxFails = "1"
+
+# ---- anti-vacuity: python3 tools/run.py examples/account-lifecycle --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# FundsClaimable's antecedent: the system settles again after some step.
+[[witness]]
+id = "settles"
+expr = '~(Idle /\ sent # {})'
+runs = ["escrow_pays_cb"]
+
+# The situation the example is about: a payment in flight to a deleted payee.
+[[witness]]
+id = "pay_to_deleted"
+expr = '~(\E r \in rq : r.m = XFER /\ r.to = P /\ P \in deleted)'
+runs = ["escrow_pays_cb"]
+
+# on_paid's two arms.
+[[witness]]
+id = "on_paid_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ r.res.ok)'
+runs = ["escrow_pays_cb"]
+
+[[witness]]
+id = "on_paid_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ ~r.res.ok)'
+runs = ["escrow_pays_cb"]
+
+# withdraw's guard: A is refused; P withdraws a claim.
+[[witness]]
+id = "withdraw_by_payer"
+expr = '~(\E r \in Runnable : r.m = "withdraw" /\ r.fr = A /\ claim > 0)'
+runs = ["escrow_pays_cb"]
+
+[[witness]]
+id = "withdraw_by_payee"
+expr = '~(\E r \in Runnable : r.m = "withdraw" /\ r.fr = P /\ claim > 0)'
+runs = ["escrow_pays_cb"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Escrow.tla"
+find = 'IN IF WithCb THEN [O |-> Outcome({pay}, {cb}, RVal(0), claim, 2), c |-> 0]'
+replace = 'IN IF WithCb THEN [O |-> Outcome({pay}, {}, RVal(0), claim, 2), c |-> 0]'
+class = "dropped .then"
+killed_by = ["Sane"]   # NoOrphans: the Transfer's result has no callback waiting
+runs = ["escrow_pays_cb"]
+
+[[mutant]]
+id = "failed_not_restored"
+file = "Escrow.tla"
+find = 'c |-> IF IsFailed(r.res) THEN claim + r.a.n ELSE claim]'
+replace = 'c |-> claim]'
+class = "failure branch skips rollback"
+killed_by = ["FundsClaimable"]
+runs = ["escrow_pays_cb"]
+
+[[mutant]]
+id = "result_check_inverted"
+file = "Escrow.tla"
+find = 'c |-> IF IsFailed(r.res) THEN claim + r.a.n ELSE claim]'
+replace = 'c |-> IF ~IsFailed(r.res) THEN claim + r.a.n ELSE claim]'
+class = "inverted result check"
+killed_by = ["FundsClaimable"]
+runs = ["escrow_pays_cb"]
+
+[[mutant]]
+id = "no_payee_check"
+file = "Escrow.tla"
+find = 'IF r.fr # P \/ claim = 0 THEN'
+replace = 'IF claim = 0 THEN'
+class = "removed precondition"
+killed_by = ["PaysOnlyPayee"]
+runs = ["escrow_pays_cb"]
+
+[[mutant]]
+id = "refund_to_payee"
+file = "Escrow.tla"
+find = 'Rcpt(nid, r.tx, r.fr, E, XFER, Arg(claim), claim, E,'
+replace = 'Rcpt(nid, r.tx, r.fr, E, XFER, Arg(claim), claim, r.fr,'
+class = "wrong refund account"
+killed_by = ["NoBurn", "FundsClaimable"]
+runs = ["escrow_pays_cb"]

@@ -22,6 +22,13 @@
 (* unit covers 100 bytes (SCost); v starts with 900 bytes, c and d with    *)
 (* 700 (exempt: at most 770), ft with 1000, and one ft registration is 200 *)
 (* bytes (its storage minimum, 2 units).                                   *)
+(* Account lifecycle (the acct_, del_ and recreate scenarios): s.c, a      *)
+(* sub-account of c, top (top-level; only w, the TopCreator here, may      *)
+(* create it) and nimp (NEAR-implicit) do not exist; 0xa (eth-implicit,    *)
+(* with code) does.  A script entry Ac is an ACCOUNT transaction           *)
+(* (CreateAccount, Transfer, key actions, DeleteAccount); s.c and nimp     *)
+(* have modelled keys.  The lifecycle_storage run gives w 10,001 bytes and *)
+(* v 10,500, 600 of them code, at 2,000 bytes a unit.                      *)
 (***************************************************************************)
 EXTENDS Tokens, NearKeys
 
@@ -38,12 +45,15 @@ vars == <<platformVars, tk, keyVars, mine>>
 
 U == "u"  W == "w"  C == "c"  D == "d"  NC == "nc"  V == "v"  FT == "ft"
 GH == "ghost"  GH2 == "ghost2"  E1 == "0xe"  E2 == "0xf"  UA == "0u1"
-Accts    == {U, W, C, D, NC, V, FT, GH, GH2, E1, E2, UA}
-SExists  == Accts \ {GH, GH2, E1, E2, UA}
-SCode    == {C, D, V, FT, UA}    \* UA: listed, but a universal account created by a Transfer has no code
-SKinds   == [a \in Accts |-> CASE a \in {E1, E2} -> "eth_implicit"
+SB == "s.c"  TL == "top"  NI == "nimp"  EA == "0xa"
+Accts    == {U, W, C, D, NC, V, FT, GH, GH2, E1, E2, UA, SB, TL, NI, EA}
+SExists  == Accts \ {GH, GH2, E1, E2, UA, SB, TL, NI}
+SCode    == {C, D, V, FT, UA, EA}    \* UA: listed, but a universal account created by a Transfer has no code
+SKinds   == [a \in Accts |-> CASE a \in {E1, E2, EA} -> "eth_implicit"
                               [] a = UA -> "universal"
+                              [] a = NI -> "near_implicit"
                               [] OTHER -> "named"]
+SParents == Parents({<<SB, C>>})    \* s.c is c's sub-account; the others are top-level
 SFloor   == [a \in Accts |-> CASE a = V -> 8 [] a = C -> 2 [] OTHER -> 0]
 TxIds    == 1..10
 NoTable  == [x \in {} |-> 0]
@@ -57,17 +67,22 @@ ReserveShapes == [t \in {FT} |-> "reserve"]
 \* Per-byte storage (selftest_storage): bytes at the start, 1 unit per 100 bytes.
 SStor     == [a \in Accts |-> CASE a = V -> 900 [] a \in {C, D} -> 700 [] a = FT -> 1000 [] OTHER -> 0]
 SCost     == <<1, 100>>
+\* lifecycle_storage: w over the 10,000-byte delete limit; v under it once its code is subtracted.
+LStor     == [a \in Accts |-> CASE a = W -> 10001 [] a = V -> 10500 [] OTHER -> 0]
+LCost     == <<1, 2000>>
+LCode     == [a \in Accts |-> IF a = V THEN 600 ELSE 0]
 STokBytes == [t \in {FT} |-> [h \in STokHolders[t] |-> IF h = W THEN 180 ELSE 150]]   \* ids of different lengths
 Tok0 == [t \in {FT} |-> Ledger([h \in {U, W, C, D} |-> CASE h = U -> 5 [] h = C -> 3 [] OTHER -> 0],
                                {U, C, D})]
 
-\* Keys: c has k0 (full), k1 (c, {ping}), k2 (c, any method); d has k0.
-SKeyAccts == {C, D}
+\* Keys: c has k0 (full), k1 (c, {ping}), k2 (c, any method); d has k0; s.c and nimp none.
+SKeyAccts == {C, D, SB, NI}
 PermOf(k) == CASE k = "k0" -> FullPerm
                [] k = "k2" -> Perm(C, {}, FALSE)
                [] OTHER    -> Perm(C, {"ping"}, FALSE)
-Keys0 == [a \in {C, D} |-> IF a = C THEN [k \in {"k0", "k1", "k2"} |-> PermOf(k)]
-                                    ELSE ("k0" :> FullPerm)]
+Keys0 == [a \in SKeyAccts |-> CASE a = C -> [k \in {"k0", "k1", "k2"} |-> PermOf(k)]
+                                [] a = D -> ("k0" :> FullPerm)
+                                [] OTHER -> <<>>]
 
 \* Gas tables (Ggas).
 GC(st, wt, fee) == [st |-> st, wt |-> wt, fee |-> fee]
@@ -172,6 +187,9 @@ H(r) ==
     [] r.m = "spend" ->     \* Transfer a.amt to u
          [O |-> Outcome({Rcpt(nid, r.tx, U, r.to, XFER, G0, a.amt, r.to, 0)}, {}, RVal(0), a.amt, 1),
           s |-> {}]
+    [] r.m = "mkacct" ->    \* CreateAccount a.to with a.amt NEAR (a factory), then self.cb
+         [O |-> Outcome({CreateAcctRcpt(nid, r.tx, a.to, r.to, G0, a.amt, nid + 1)},
+                        {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
     [] r.m = "dostake" ->   \* Stake(a.amt) on v, then self.cb
          [O |-> Outcome({Rcpt(nid, r.tx, V, r.to, STAKE, [x1 |-> a.amt], 0, r.to, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), 0, 2), s |-> {}]
@@ -298,9 +316,10 @@ RunTok(r) == \E ch \in TokChoices(r) : TokStep(r, TokHandle(r, ch)) /\ UNCHANGED
 RunKey(r) == ExecKeyAct(r, Ar(r).key, PermOf(Ar(r).key)) /\ UNCHANGED <<tk, mine>>
 
 Run == \E r \in Runnable :
-         IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED <<tk, keyVars, mine>>
+         IF IsBuiltin(r) THEN ExecBuiltinK(r) /\ UNCHANGED <<tk, mine>>
          ELSE IF IsKeyRcpt(r) THEN RunKey(r)
          ELSE IF IsDeleg(r) THEN ExecDelegate(r) /\ UNCHANGED <<tk, mine>>
+         ELSE IF IsAcctRcpt(r) THEN ExecAcctK(r) /\ UNCHANGED <<tk, mine>>
          ELSE IF IsTokRcpt(r) THEN RunTok(r)
          ELSE IF r.m = "kbundle" THEN RunBundle(r)
          ELSE RunC(r)
@@ -321,6 +340,10 @@ Amt(n) == G("", "", "", n, 0, "", "")
 \* nonce n, expiry mbh; the inner call to.m with deposit dep and (gas mode) 10 Tgas.
 Dl(rl, rk, s, k, n, mbh, to, m, dep) ==
     T(s, rl, DELEG, [k |-> k, n |-> n, mbh |-> mbh, ito |-> to, im |-> m], dep, 10000, rk, <<>>)
+\* An ACCOUNT transaction from fr to to: [CreateAccount if mk, Transfer(dep) if dep > 0,
+\* the key actions ka, DeleteAccount(bnf) if bnf # ""].
+Ac(to, fr, mk, dep, bnf, ka) == T(to, fr, ACCT, [mk |-> mk, bnf |-> bnf, ka |-> ka], dep, 0, "", <<>>)
+AddK(k) == AddKeyAct(k, PermOf(k))
 
 Script(s) ==
   CASE s = "revert_children"  -> << Tx(C, U, "spawn", G("fail", "ok", "", 0, 0, "", ""), 2) >>
@@ -481,6 +504,40 @@ Script(s) ==
     [] s = "stor_tokens"      -> << Tx(FT, U, "storage_deposit", SdArgs(W), 3),
                                     Tx(FT, U, "storage_unregister", SuArgs(TRUE), 1),
                                     Tx(FT, U, "storage_deposit", SdArgs(U), 2) >>
+    \* Account lifecycle.  s.c's parent is c; w is the TopCreator.
+    [] s = "acct_create"      -> << Tx(C, U, "mkacct", G("", "", SB, 1, 0, "", ""), 0),   \* ok
+                                    Tx(C, U, "mkacct", G("", "", SB, 1, 0, "", ""), 0),   \* exists
+                                    Ac(SB, C, TRUE, 1, "", <<>>) >>                       \* exists
+    [] s = "acct_keys"        -> << Ac(SB, C, TRUE, 2, "", <<AddK("k0"), AddK("k0")>>),    \* key twice
+                                    Ac(SB, C, TRUE, 2, "", <<AddK("k0"), AddK("k1")>>) >>
+    [] s = "acct_not_parent"  -> << Ac(SB, U, TRUE, 1, "", <<>>), Ac(SB, W, TRUE, 1, "", <<>>) >>
+    [] s = "acct_implicit"    -> << Ac(NI, U, TRUE, 1, "", <<>>), Ac(E1, U, TRUE, 1, "", <<>>),
+                                    Ac(UA, U, TRUE, 1, "", <<>>) >>
+    [] s = "acct_top"         -> << Ac(TL, U, TRUE, 1, "", <<>>), Ac(TL, W, TRUE, 1, "", <<>>) >>
+    [] s = "acct_fee"         -> << >>
+    [] s = "del_beneficiary"  -> << Ac(C, U, FALSE, 0, U, <<>>),     \* u is not c: refused
+                                    Ac(W, W, FALSE, 0, U, <<>>) >>
+    [] s = "del_absent"       -> << Ac(W, W, FALSE, 0, GH, <<>>) >>
+    [] s = "del_self"         -> << Ac(W, W, FALSE, 0, W, <<>>) >>
+    [] s = "del_staking"      -> << Tx(V, V, "dostake", Amt(4), 0), Ac(V, V, FALSE, 0, U, <<>>) >>
+    [] s = "del_receipts"     -> << Ac(D, D, FALSE, 0, U, <<>>),
+                                    Tx(D, U, "foo", G0, 1),                              \* a call
+                                    Tx(C, U, "send", G("", "", D, 2, 0, "", ""), 0),     \* a Transfer
+                                    Tx(D, D, "keyact", G("add", "", D, 0, 0, "", "k3"), 0) >>  \* d signs
+    [] s = "recreate"         -> << Ac(SB, C, TRUE, 2, "", <<AddK("k0")>>),
+                                    Ac(SB, SB, FALSE, 0, C, <<>>),
+                                    Ac(SB, C, TRUE, 1, "", <<>>) >>
+    [] s = "implicit_recreate"-> << Tx(C, U, "send", G("", "", NI, 1, 0, "", ""), 0),
+                                    Ac(NI, NI, FALSE, 0, U, <<>>),
+                                    Tx(C, U, "send", G("", "", NI, 1, 0, "", ""), 0) >>
+    [] s = "stale_cb_recreate"-> << TxG(EA, U, "req", G0, 0, 10000),                     \* yield 2 on 0xa
+                                    Ac(EA, EA, FALSE, 0, U, <<>>),
+                                    Tx(C, U, "send", G("", "", EA, 1, 0, "", ""), 0),    \* 0xa again
+                                    Ans(EA, 2, 5) >>
+    [] s = "del_large"        -> << Ac(W, W, FALSE, 0, U, <<>>), Ac(V, V, FALSE, 0, U, <<>>) >>
+    [] s = "acct_bytes"       -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>) >>
+    [] s = "acct_bytes_del"   -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>),
+                                    Ac(SB, SB, FALSE, 0, C, <<>>) >>
 
 Near0(s) == [a \in Accts |-> CASE a \in {U, W, V, FT} ->
                                   (IF s \in {"floor_locked", "liquid_negative", "stor_locked"} /\ a = V
@@ -494,7 +551,9 @@ Total0(s) == LET n == Near0(s) IN
 MkTx(e, id, t) ==
     LET r0 == Rcpt(id, t, e.to, e.fr, e.m, e.a, e.dep, e.fr, 0)
         r1 == IF e.gs # <<>> THEN WithStatic(r0, e.gs) ELSE r0
-    IN IF GasMode # "gas" THEN r1
+    IN IF e.m = ACCT   \* an action-only receipt: no gas of its own
+       THEN WithAcctKeys(AcctRcpt(id, t, e.to, e.fr, G0, e.dep, 0, e.a.mk, e.a.bnf), e.a.ka)
+       ELSE IF GasMode # "gas" THEN r1
        ELSE IF Len(e.gs) > 1 THEN [r1 EXCEPT !.g = e.gs]   \* one gas per function-call action
        ELSE WithGas(r1, e.gas)
 CanSign(a, k, r) == (a \in KeyAccts) => KeyCanSign(a, k, r)
@@ -836,6 +895,72 @@ Expect(s) ==
          \* kept from the deposit; unregistering frees them.  storage_impl.rs:8-36, :51-78;
          \* core_impl.rs:51-57
          stor[FT] = 1180 /\ L.reg = {U, C, D, W} /\ near[FT] = 12 /\ near[U] = 8
+
+    \* Account lifecycle (docs/SEMANTICS.md A6, A7; sim: conformance/tests/lifecycle.rs).
+    \* A failed ACCOUNT receipt fails as a whole: its deposit goes back to its predecessor.
+    [] s = "acct_create" ->       \* a factory creates s.c (it starts at 0 and gets the deposit);
+         \* a second create fails AccountAlreadyExists: the deposit returns to the factory, the
+         \* callback sees Failed.  actions.rs:202-208, :822-828; lib.rs:1303, :1172-1176
+         created = {SB} /\ near[SB] = 1 /\ near[C] = 4 /\ near[U] = 10
+         /\ S1("empty", 0) \in seen /\ S2("fail", 0) \in seen
+    [] s = "acct_keys" ->         \* [CreateAccount, Transfer, AddKey..] is atomic: a duplicate key
+         \* fails it all.  lib.rs:946-1005, access_keys.rs:158
+         created = {SB} /\ DOMAIN keys[SB] = {"k0", "k1"} /\ near[SB] = 2 /\ near[C] = 3
+    [] s = "acct_not_parent" ->   \* only the direct parent creates a sub-account, not even the
+         \* TopCreator.  actions.rs:190-197
+         created = {} /\ near[U] = 10 /\ near[W] = 10
+    [] s = "acct_implicit" ->     \* implicit ids (NEAR, eth, universal) only by a Transfer
+         \* actions.rs:829-840
+         created = {} /\ near[U] = 10
+    [] s = "acct_top" ->          \* a top-level id only by the registrar_account_id (TopCreator)
+         \* actions.rs:175-186
+         created = {TL} /\ near[TL] = 1 /\ near[W] = 9 /\ near[U] = 10
+    [] s = "acct_fee" ->          \* creator-side fees (gas mode, "up"): [CreateAccount, Transfer,
+         \* AddKey(full)] costs what a NEAR-implicit Transfer costs; [DeleteAccount] 218 + 296.
+         \* config.rs:98-108, :143
+         LET r1 == WithAcctKeys(CreateAcctRcpt(0, 0, SB, C, G0, 1, 0), <<AddKeyAct("k0", FullPerm)>>)
+             r2 == DeleteAcctRcpt(0, 0, W, G0, U, 0) IN
+         GasMode = "gas" =>
+           /\ r1.gf = NearFeeTable!TransferFeeTotal(FALSE, "near_implicit")
+           /\ NearFeeTable!FeeRounding = "up" => r1.gf = 8354 /\ r2.gf = 514
+    [] s = "del_beneficiary" ->   \* only the account deletes itself; its balance goes to the
+         \* beneficiary in a later receipt.  actions.rs:776-783, :380-386
+         deleted = {W} /\ near[W] = 0 /\ near[U] = 20 /\ near[C] = 5 /\ burnt = 0
+    [] s = "del_absent" ->        \* the payout to a missing beneficiary is burnt; no account is
+         \* created.  lib.rs:1046-1054
+         deleted = {W} /\ burnt = 10 /\ created = {}
+    [] s = "del_self" ->          \* beneficiary = the account: deleted by the time the payout
+         \* runs, so it is burnt
+         deleted = {W} /\ burnt = 10 /\ near[W] = 0
+    [] s = "del_staking" ->       \* an account with locked balance cannot be deleted
+         \* actions.rs:784-790
+         deleted = {} /\ locked = 4 /\ near[V] = 6
+    [] s = "del_receipts" ->      \* a deleted account: a call fails (deposit back), a Transfer
+         \* fails (back to the sender, its callback sees Failed), it cannot sign; keys gone.
+         \* actions.rs:842-849, :862-879; verifier.rs:170-175; core/store/src/utils/mod.rs:504-575
+         deleted = {D} /\ DOMAIN keys[D] = {} /\ near[D] = 0 /\ near[U] = 10 /\ near[C] = 5
+         /\ acc = <<TRUE, TRUE, TRUE, FALSE>> /\ S(3, "fail", 0) \in seen /\ <<2, D, "foo">> \notin ran
+    [] s = "recreate" ->          \* deleted, then created again: a new account with no keys
+         \* actions.rs:202-208
+         created = {SB} /\ deleted = {} /\ DOMAIN keys[SB] = {} /\ near[SB] = 1 /\ near[C] = 4
+    [] s = "implicit_recreate" -> \* a Transfer creates a deleted NEAR-implicit account again,
+         \* with its full-access key.  actions.rs:221-240, :929-946
+         created = {NI} /\ deleted = {} /\ keys[NI] = (ImplicitKeyId :> FullPerm)
+         /\ near[NI] = 1 /\ near[U] = 11 /\ near[C] = 3
+    [] s = "stale_cb_recreate" -> \* D4: a yield outlives its account's deletion; the account
+         \* created again (0xa keeps its global contract) resumes it and the callback runs there.
+         \* core/store/src/utils/mod.rs:504-575; ext.rs:406-428
+         deleted = {} /\ EA \in created /\ near[EA] = 1 /\ post = {}
+         /\ S1("ycb", 5) \in seen /\ S(4, "ans", 1) \in seen
+    [] s = "del_large" ->         \* storage minus code over 10,000 bytes: DeleteAccountWithLargeState
+         \* actions.rs:342-369, account.rs:248
+         deleted = {V} /\ stor[W] = 10001 /\ stor[V] = 0 /\ near[U] = 20 /\ near[W] = 10
+    [] s = "acct_bytes" ->        \* a new account is 100 bytes, plus its full-access key (82)
+         \* actions.rs:202-208, access_keys.rs:17-29
+         created = {SB} /\ stor[SB] = 182 /\ near[SB] = 1 /\ near[C] = 4
+    [] s = "acct_bytes_del" ->    \* deleted: no bytes, no keys, the balance back to c
+         \* core/store/src/utils/mod.rs:504-575
+         deleted = {SB} /\ stor[SB] = 0 /\ near[C] = 5 /\ DOMAIN keys[SB] = {}
 
 Check == Done => Expect(scn)
 \* zero_gas_left0, zero_gas_heavy: whether the creator (tx 1's spawn0) committed.  Under "up"

@@ -32,6 +32,10 @@
 (*     ExecDelegate checks it on the user's account and emits the inner    *)
 (*     receipt (runtime/runtime/src/actions.rs:453-535).  Delegate nonces  *)
 (*     live in the key record (KeyNonce).                                  *)
+(*  8. Accounts: key actions in an ACCOUNT receipt (WithAcctKeys,          *)
+(*     ExecAcctK; a deleted account loses its keys) and the key of a       *)
+(*     NEAR-implicit account a Transfer creates (ExecTransferK,            *)
+(*     ExecBuiltinK).  docs/SEMANTICS.md A3, A6, A7.                       *)
 (*                                                                         *)
 (* A model that uses keys conjoins UNCHANGED keyVars to every step that    *)
 (* does not touch keys, like any contract variable.                        *)
@@ -151,7 +155,8 @@ DelKeyRcpt(id, tx, acct, a, cb)    == WithFee(Rcpt(id, tx, acct, acct, DELK, a, 
 KeyActBytes(r, k, p) == IF r.m = DELK THEN -KeyBytes(keys[r.to][k]) ELSE KeyBytes(p)
 ExecKeyAct(r, k, p) ==
     /\ r.m \in {ADDK, DELK}
-    /\ LET ok == /\ r.to = r.fr
+    /\ LET ok == /\ AcctExists(r.to)       \* AccountDoesNotExist (actions.rs:862-879)
+                 /\ r.to = r.fr
                  /\ r.to \in KeyAccts
                  /\ IF r.m = DELK THEN KeyPresent(r.to, k) ELSE ~KeyPresent(r.to, k)
                  /\ IF ~StoragePerByte THEN TRUE
@@ -165,7 +170,7 @@ ExecKeyAct(r, k, p) ==
                /\ rlog' = LogR(r, "ok")
                /\ stor' = IF StoragePerByte THEN [stor EXCEPT ![r.to] = @ + KeyActBytes(r, k, p)] ELSE stor
                /\ UNCHANGED <<locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created,
-                              burnt, blk, sigpaid>>
+                              burnt, blk, deleted, sigpaid>>
           ELSE FailP(r, FALSE) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
@@ -221,6 +226,68 @@ ExecWithKeys(r, acts, O) ==
 \* Exec already fails such calls (NearAsync CallTargetOK); this is the same
 \* rule as an explicit step for dispatchers.
 FailNoCode(r) == IsCall(r) /\ ~HasCode(r.to) /\ FailP(r, FALSE)
+
+----------------------------------------------------------------------------
+(* Accounts: key actions in an ACCOUNT receipt, deletion, implicit keys    *)
+(* (NearAsync, "Account lifecycle"; docs/SEMANTICS.md A6, A7).             *)
+
+\* Key actions in an ACCOUNT receipt, after its CreateAccount and Transfer
+\* and before its DeleteAccount: acts as for WithKeyActs (AddKeyAct /
+\* DelKeyAct).  On a new account they apply to an empty key map (e.g. its
+\* first full-access key).  The actor must be the account (the new account
+\* after a CreateAccount, else the predecessor).  Adds their fees to gf.
+AcctKeyFee(r, x) ==
+    IF GasMode # "gas" THEN 0
+    ELSE LET sir == (r.fr = r.to) IN
+         IF x.op = "del" THEN NearFeeTable!ActionFee("delete_key", sir, "named")
+         ELSE IF IsFull(x.p) THEN NearFeeTable!ActionFee("add_key_full", sir, "named")
+         ELSE NearFeeTable!ActionFee("add_key_fc", sir, "named") + NearFeeTable!AddKeyFcBytesFee(sir, MethodBytes(x.p))
+RECURSIVE AcctKeysFee(_, _)
+AcctKeysFee(r, acts) == IF acts = <<>> THEN 0 ELSE AcctKeyFee(r, Head(acts)) + AcctKeysFee(r, Tail(acts))
+WithAcctKeys(r, acts) ==
+    IF ~IsAcctRcpt(r) THEN Assert(FALSE, <<"WithAcctKeys needs an ACCOUNT receipt", r.id>>)
+    ELSE [r EXCEPT !.ac.ka = @ \o acts, !.gf = @ + AcctKeysFee(r, acts)]
+
+\* The key map the key actions start from, and their result.
+AcctKeysBase(r) == IF r.ac.mk \/ r.to \notin KeyAccts THEN <<>> ELSE keys[r.to]
+AcctKeysFold(r) == KeysFold(AcctKeysBase(r), r.ac.ka)
+AcctKeysBytes(r) ==
+    IF r.ac.ka = <<>> \/ ~AcctKeysFold(r).ok THEN 0
+    ELSE KeyMapBytes(AcctKeysFold(r).ks) - KeyMapBytes(AcctKeysBase(r))
+
+\* Run an ACCOUNT receipt, with its key actions (NearAsync ExecAcctWith).  On
+\* success the account's keys become the fold's result; a delete clears them
+\* (core/store/src/utils/mod.rs:504-575), as does a create (a new account
+\* has none).  On failure keys are unchanged.  Key actions need the
+\* account in KeyAccts.  The contract conjoins UNCHANGED of its own vars.
+ExecAcctK(r) ==
+    /\ IsAcctRcpt(r)
+    /\ Assert(r.ac.ka = <<>> \/ r.to \in KeyAccts,
+              <<"ACCOUNT receipt with key actions on an account outside KeyAccts", r.to>>)
+    /\ LET kb == AcctKeysBytes(r)  kok == AcctKeysFold(r).ok IN
+       /\ ExecAcctWith(r, kb, kok)
+       /\ keys' = IF AcctOK(r, kb, kok) /\ r.to \in KeyAccts
+                  THEN [keys EXCEPT ![r.to] = IF r.ac.bnf # "" THEN <<>>
+                                              ELSE IF r.ac.ka = <<>> /\ ~r.ac.mk THEN @
+                                              ELSE AcctKeysFold(r).ks]
+                  ELSE keys
+       /\ UNCHANGED sigpaid
+
+\* A Transfer that creates a NEAR-implicit account also gives it a
+\* full-access key, the one its id is derived from (actions.rs:221-240; sim
+\* lifecycle.rs receipts_to_deleted: also when it is created again).  Its id
+\* in keys is ImplicitKeyId.  ExecTransferK adds it for an account in
+\* KeyAccts; ExecBuiltinK is ExecBuiltin with it.
+ImplicitKeyId == "implicit"
+ExecTransferK(r) ==
+    /\ ExecTransfer(r)
+    /\ keys' = IF ~AcctExists(r.to) /\ KindOf(r.to) = "near_implicit" /\ r.to \in KeyAccts
+               THEN [keys EXCEPT ![r.to] = (ImplicitKeyId :> FullPerm)]
+               ELSE keys
+    /\ UNCHANGED sigpaid
+ExecBuiltinK(r) ==
+    \/ ExecTransferK(r)
+    \/ (ExecTransferFail(r) \/ ExecStake(r)) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
 (* Delegate actions (NEP-366, meta transactions).                          *)
@@ -319,7 +386,7 @@ ExecDelegate(r) ==
              /\ keys' = IF r.to \in KeyAccts THEN KeysWithNonce(r.to, sd.k, sd.n) ELSE keys
              /\ rlog' = LogR(r, "ok")
              /\ UNCHANGED <<near, locked, proposal, epoch, fails, paid, minted, oog, txsig, created,
-                            burnt, blk, stor, sigpaid>>
+                            burnt, blk, stor, deleted, sigpaid>>
           \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
              /\ FailP(r, FALSE)
              /\ UNCHANGED keyVars

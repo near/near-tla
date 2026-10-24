@@ -34,6 +34,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [13. The forced-fault switch and labels](#13-the-forced-fault-switch-and-labels)
 - [14. Joint callbacks, yield/resume and the block clock](#14-joint-callbacks-yieldresume-and-the-block-clock)
 - [15. Storage staking per byte](#15-storage-staking-per-byte)
+- [16. Creating and deleting accounts](#16-creating-and-deleting-accounts)
 - [Calibrating](#calibrating)
 - [Replaying a counterexample in the sim](#replaying-a-counterexample-in-the-sim)
 - [The runner: `runs.toml`](#the-runner-runstoml)
@@ -352,6 +353,9 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `StoragePerByte` | `FALSE` | the model tracks storage in bytes: `TRUE` replaces the fixed `StorageFloor` with `stor` priced per byte ([section 15](#15-storage-staking-per-byte)) |
 | `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
+| `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
+| `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
+| `CodeSize` | 0 bytes for every account | with `StoragePerByte` and DeleteAccount: the code bytes in each contract's `StorageInit`, which the 10,000-byte delete limit leaves out |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
@@ -391,7 +395,7 @@ Initialise every platform variable with one helper:
 |---|---|
 | `PlatformInit(near0, txIds)` | `near0`: `[Accounts -> Nat]`; `txIds`: the transaction ids (the domain of the `paid` ghost) |
 | `PlatformInitStaked(near0, locked0, txIds)` | the same, with `locked0` already staked on `StakingAcct` |
-| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `blk`, `stor` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage`) |
+| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `blk`, `stor` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage`) |
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
@@ -407,7 +411,8 @@ A step that touches no platform state writes `UNCHANGED platformVars`.
 Build `vars` (the tuple in `Spec == Init /\ [][Next]_vars`) from `platformVars` as above, not
 from a hand-written list of platform variables. A variable missing from `vars` is unconstrained
 by the stuttering steps of `[][Next]_vars`, and TLC only warns. When the library adds a
-platform variable (`blk` and `stor` in 0.2), a hand-written list goes stale silently.
+platform variable (`blk` and `stor` in 0.2, `deleted` later), a hand-written list goes stale
+silently.
 
 ## 4. Receipts
 
@@ -1052,6 +1057,7 @@ The library adds the rest itself:
   receiver and method names: give the receiver id's length with `IdBytes`, and placeholder
   method names their real byte count with `WithMethodBytes`.
 - Implicit-account creation (`CreatedBytes`: 182, 132 or 100 bytes).
+- CreateAccount (100 bytes plus its keys) and DeleteAccount (0), [section 16](#16-creating-and-deleting-accounts).
 - Token registrations, when you set `TokRegBytes` (`Nep145`, per token and holder):
   `storage_deposit`,
   `storage_unregister`, `near_deposit`, and `"autoRegister"` transfers, which add bytes with
@@ -1075,6 +1081,69 @@ balances below 2^31 / `den` and bytes below 2^31 / `num`. At `<<1, 100>>` that i
 million units (21,000 NEAR) and 2 GB. A transaction whose deposit would leave its signer
 uncovered cannot be submitted. A scripted model that must go on should test `CanSubmit(r, a)`
 before `Submit`, since an uncovered `Submit` is a disabled step.
+
+## 16. Creating and deleting accounts
+
+The rules are [A6](SEMANTICS.md#a6-createaccount) and [A7](SEMANTICS.md#a7-deleteaccount).
+Worked example: [`account-lifecycle`](../examples/account-lifecycle/). Account actions travel
+in an ACCOUNT receipt (`m = ACCT`), which runs no code:
+
+| constructor | actions |
+|---|---|
+| `CreateAcctRcpt(id, tx, new, fr, a, dep, cb)` | `[CreateAccount, Transfer(dep)]` from `fr` (no Transfer if `dep = 0`); refunds go to `fr` |
+| `DeleteAcctRcpt(id, tx, acct, a, b, cb)` | `[DeleteAccount(b)]` on `acct`, sent by `acct` itself |
+| `WithDeleteTo(r, b)` | appends `DeleteAccount(b)` to an ACCOUNT receipt |
+| `NearKeys.WithAcctKeys(r, acts)` | adds key actions (`AddKeyAct`, `DelKeyAct`) after the Transfer, e.g. the new account's first key |
+
+In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee
+table. A handler emits these like any child; a script submits them like any transaction
+(`Submit(DeleteAcctRcpt(nid, t, "p", args, "b", 0))`: `p` deletes itself, its balance goes to
+`b`).
+
+Route them in the dispatcher before your handlers:
+
+```tla
+Run == \E r \in Runnable :
+         IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED mine
+         ELSE IF IsAcctRcpt(r) THEN ExecAcct(r) /\ UNCHANGED mine
+         ELSE RunC(r)
+```
+
+With `NearKeys` use `ExecAcctK(r)` (it runs the key actions and clears a deleted account's
+keys) and `ExecBuiltinK(r)` (it gives a NEAR-implicit account created by a Transfer its key,
+`ImplicitKeyId`); conjoin `UNCHANGED` of your own variables, not of `keyVars`. `Exec` asserts
+if it is handed an ACCOUNT receipt.
+
+What the library does:
+
+- **Create.** The checks of A6 in nearcore's order: the account must not exist, its id must
+  not be implicit, a top-level id needs `TopCreator` as predecessor, a sub-account its parent
+  in `AcctParent`. State them: toy ids have no structure, and by default every account is
+  top-level and `TopCreator` is no model account, so every create fails. A failed create
+  refunds the deposit to the creator (a factory, not its user) and sends Failed to its
+  callback.
+- **Delete.** Only the account itself (actor check), nothing staked, and with `StoragePerByte`
+  at most 10,000 bytes besides its code (`CodeSize`). The balance goes out as a refund receipt
+  to the beneficiary, which runs later and is burnt if the beneficiary does not exist (or is
+  the deleted account). The account joins `deleted`: calls, key actions and Stake to it fail,
+  it cannot sign (`CanSubmit`), a Transfer to it is refunded unless its id is implicit (then
+  the Transfer creates it again).
+- **What survives.** Postponed callbacks, data and yields addressed to a deleted account stay
+  in flight. They fail while it is deleted and run against the new account once it is
+  created again. `NoOrphans` keeps holding: the callbacks still run.
+
+Reset your own state for a deleted account. The library wipes `near`, `stor` and `keys`, not
+your variables. Read `DeletesAcct(r)` after `ExecAcct`, like `Ok`:
+
+```tla
+RunAcct(r) == /\ ExecAcct(r)
+              /\ bal' = IF DeletesAcct(r) THEN [bal EXCEPT ![r.to] = 0] ELSE bal
+```
+
+An account that a model creates must be in `Accounts` (with balance 0 in the initial state)
+and outside `Exists`. Without `StoragePerByte` the large-state refusal never happens
+(N-delete-large); the instant-receipt rule (a lone DeleteAccount created by a receipt runs
+right after it) is not modelled (N-instant).
 
 ## Calibrating
 
@@ -1486,4 +1555,5 @@ All examples are toy contracts written for this repo.
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |
+  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt |
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |

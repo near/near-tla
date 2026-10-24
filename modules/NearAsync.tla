@@ -107,11 +107,14 @@
 (*  MayFail may fail, at most MaxFails times; counted in `fails`.  A real  *)
 (*  out-of-gas is recorded in `oog`.                                       *)
 (*                                                                         *)
+(* Accounts are created and deleted by ACCOUNT receipts (CreateAccount,    *)
+(* DeleteAccount; ExecAcct): see "Account lifecycle" below.                *)
+(*                                                                         *)
 (* Not modelled: congestion (a local receipt that does not fit the chunk's *)
 (* compute limit is delayed, lib.rs:2513-2521), instant receipts           *)
-(* (core/primitives/src/receipt.rs:468-485), DeleteAccount, gas price and  *)
-(* gas refunds in NEAR, DeployContract (code is static, see Contracts),    *)
-(* one receipt feeding several callbacks (cb is one id).                   *)
+(* (core/primitives/src/receipt.rs:468-485), gas price and gas refunds in  *)
+(* NEAR, DeployContract (code is static, see Contracts), one receipt       *)
+(* feeding several callbacks (cb is one id).                               *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
@@ -160,16 +163,17 @@ VARIABLES
     created,   \* accounts created at run time (implicit-account Transfer)
     burnt,     \* ghost: NEAR burnt by refunds to missing accounts
     blk,       \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
-    stor       \* [Accounts -> Int] storage usage in bytes; stays StorageInit unless StoragePerByte
+    stor,      \* [Accounts -> Int] storage usage in bytes; stays StorageInit unless StoragePerByte
+    deleted    \* accounts deleted by DeleteAccount and not created again since
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
-\* platform variable such as txsig, blk or stor shown as null, means
-\* PlatformInitExtra (or its parts PlatformInitSigner / PlatformInitAccounts
-\* / PlatformInitClock / PlatformInitStorage) is missing.
+\* platform variable such as txsig, blk, stor or deleted shown as null,
+\* means PlatformInitExtra (or its parts PlatformInitSigner /
+\* PlatformInitAccounts / PlatformInitClock / PlatformInitStorage) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created, burnt, blk, stor>>
+                  txsig, created, burnt, blk, stor, deleted>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
@@ -347,11 +351,13 @@ STAKE == "STAKE"    \* Stake action on StakingAcct; a.x1 = amount
 ADDK  == "ADDKEY"   \* AddKey action (executed by NearKeys)
 DELK  == "DELKEY"   \* DeleteKey action (executed by NearKeys)
 DELEG == "DELEGATE" \* Delegate action, NEP-366 (executed by NearKeys.ExecDelegate)
+ACCT  == "ACCOUNT"  \* CreateAccount / DeleteAccount, with Transfer and AddKey (ExecAcct, NearKeys.ExecAcctK)
 IsBuiltin(r) == r.m \in {XFER, REFND, STAKE}
 IsKeyRcpt(r) == r.m \in {ADDK, DELK}
 IsDeleg(r)   == r.m = DELEG
+IsAcctRcpt(r) == r.m = ACCT
 \* A function-call receipt (the rest).
-IsCall(r)    == ~IsBuiltin(r) /\ ~IsKeyRcpt(r) /\ ~IsDeleg(r)
+IsCall(r)    == ~IsBuiltin(r) /\ ~IsKeyRcpt(r) /\ ~IsDeleg(r) /\ ~IsAcctRcpt(r)
 
 ----------------------------------------------------------------------------
 (* Receipt records.  All receipts have the same fields.                    *)
@@ -500,8 +506,10 @@ Sum(S) == LET F[T \in SUBSET S] == IF T = {} THEN 0
 \* Ids are unique, so Sum over a set of receipts is well defined.
 InflightDeposits == Sum(rq) + Sum(post)
 
-\* Account existence: initial accounts and accounts created at run time.
-AcctExists(a) == a \in Exists \/ a \in created
+\* Account existence: initial accounts and accounts created at run time,
+\* unless deleted since (DeleteAccount; a later creation removes the id
+\* from deleted again).
+AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
 \* Can a function call on a run?  An account created by a Transfer has no
 \* code, except an eth-implicit one, which gets a protocol-defined global
 \* contract (actions.rs:221-290); a universal one is also uninitialised
@@ -509,7 +517,9 @@ AcctExists(a) == a \in Exists \/ a \in created
 HasCode(a) == /\ AcctExists(a)
               /\ a \in Contracts
               /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
-CallTargetOK(r) == ~CallsNeedCode \/ ~IsCall(r) \/ HasCode(r.to)
+\* A deleted receiver fails the call even with CallsNeedCode = FALSE
+\* (AccountDoesNotExist, actions.rs:874-879).
+CallTargetOK(r) == ~IsCall(r) \/ (r.to \notin deleted /\ (~CallsNeedCode \/ HasCode(r.to)))
 
 \* The transaction signer, inherited by every receipt of the transaction.
 SignerOf(t)  == txsig[t]               \* [a |-> account, k |-> key id]
@@ -834,6 +844,7 @@ PoolCheck(r, O) ==
 \* handler is a modelling error (an Assert).
 Verdict(r, O) ==
     IF IsDeleg(r) THEN Assert(FALSE, <<"DELEGATE receipt passed to Exec; run it with NearKeys' ExecDelegate", r.id>>)
+    ELSE IF IsAcctRcpt(r) THEN Assert(FALSE, <<"ACCOUNT receipt passed to Exec; run it with ExecAcct (NearKeys: ExecAcctK)", r.id>>)
     ELSE IF ~PoolCheck(r, O) THEN "fail"
     ELSE IF ~CallTargetOK(r) THEN "fail"
     ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "oog" ELSE "fail")
@@ -863,7 +874,7 @@ Commit(r, O) ==
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
     /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted>>
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
@@ -877,7 +888,7 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted>>
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -909,10 +920,13 @@ ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailP(r, TRUE)
 \* callback if any.  A Transfer to a missing implicit account creates it
 \* (actions.rs:221-290).  Eth-implicit creation attaches a protocol-defined
 \* global contract (HasCode stays TRUE); the other created kinds have no code,
-\* so calls to them fail.  NEAR-implicit creation adds a full-access key, which
-\* is not modelled (model the keys of such accounts yourself); with
-\* StoragePerByte its bytes are counted (CreatedBytes).  A credit never needs
-\* a storage check: it keeps a covered account covered (StorageCovered).
+\* so calls to them fail.  NEAR-implicit creation adds a full-access key:
+\* NearKeys.ExecTransferK adds it to keys (ImplicitKeyId); ExecTransfer
+\* alone leaves keys to the model.  With StoragePerByte its bytes are counted
+\* (CreatedBytes).  A credit never needs a storage check: it keeps a covered
+\* account covered (StorageCovered).  A deleted implicit account is created
+\* again the same way (actions.rs:842-849, :929-946; sim: conformance/
+\* tests/lifecycle.rs, receipts_to_deleted), so it leaves deleted.
 ExecTransfer(r) ==
     /\ r.m \in {XFER, REFND}
     /\ \/ AcctExists(r.to)
@@ -924,6 +938,7 @@ ExecTransfer(r) ==
     /\ paid' = [paid EXCEPT ![r.tx][r.to] = @ + r.dep]
     /\ rlog' = LogR(r, "ok")
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
+    /\ deleted' = IF AcctExists(r.to) THEN deleted ELSE deleted \ {r.to}
     /\ stor' = IF StoragePerByte /\ ~AcctExists(r.to) THEN [stor EXCEPT ![r.to] = CreatedBytes(r.to)] ELSE stor
     /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk>>
 
@@ -935,7 +950,7 @@ RefundBurn(r) ==
     /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
     /\ burnt' = burnt + r.dep
     /\ rlog'  = LogR(r, "fail")
-    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
@@ -945,8 +960,10 @@ ExecTransferFail(r) ==
     /\ \/ r.m = XFER /\ ~IsImplicit(r.to) /\ FailP(r, FALSE)
        \/ r.m = REFND /\ BurnLostRefunds /\ RefundBurn(r)
 
-\* Stake action (actions.rs:58-109): the actor must be the account itself
-\* (actions.rs:755-801, ActorNoPermission); then TriesToStake (liquid below
+\* Stake action (actions.rs:58-109): the account must exist
+\* (AccountDoesNotExist, actions.rs:874-879; a deleted StakingAcct), the
+\* actor must be the account itself (actions.rs:755-801, ActorNoPermission);
+\* then TriesToStake (liquid below
 \* the increment), TriesToUnstake, InsufficientStake.  Storage is checked
 \* after the receipt with liquid + locked, which staking does not change.
 StakeFails(amt) ==
@@ -960,7 +977,7 @@ ExecStake(r) ==
     /\ Assert(r.to = StakingAcct, <<"Stake receipt for an account other than StakingAcct", r.to>>)
     /\ LET amt == r.a.x1
            inc == IF amt > locked THEN amt - locked ELSE 0 IN
-       IF r.fr # r.to \/ StakeFails(amt)
+       IF ~AcctExists(r.to) \/ r.fr # r.to \/ StakeFails(amt)
        THEN FailP(r, FALSE)
        ELSE /\ rq'   = RemR(r)
             /\ post' = RemP(r)
@@ -969,7 +986,7 @@ ExecStake(r) ==
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
 ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
@@ -978,6 +995,182 @@ ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
 \* any contract code runs.  Exec does this already (Verdict); this step lets
 \* a dispatcher handle such receipts without calling a handler.
 ExecNoCode(r) == IsCall(r) /\ ~CallTargetOK(r) /\ FailP(r, FALSE)
+
+----------------------------------------------------------------------------
+(* Account lifecycle: CreateAccount and DeleteAccount (docs/SEMANTICS.md,  *)
+(* A6, A7).  An ACCOUNT receipt (m = ACCT) holds only account actions, in  *)
+(* this order: [CreateAccount]? [Transfer(dep)]? [key actions]*            *)
+(* [DeleteAccount(bnf)]?, recorded in the optional field ac = [mk |->      *)
+(* BOOLEAN (CreateAccount), bnf |-> beneficiary or "" (DeleteAccount),     *)
+(* ka |-> key actions (NearKeys.WithAcctKeys)].  The Transfer is present   *)
+(* iff dep > 0.  It runs no code, never runs out of gas, and is run by     *)
+(* ExecAcct (NearKeys.ExecAcctK with key actions); Exec asserts on it.  A  *)
+(* dispatcher routes IsAcctRcpt(r) there before any contract handler.      *)
+(* Sim: conformance/tests/lifecycle.rs.                                    *)
+
+\* Account-id structure.  Toy ids carry none, so the model states it.
+\* AcctParent[a]: a's direct parent ("near" for "alice.near"), or NoParent
+\* for a top-level id.  A sub-account can be created only by its direct
+\* parent (actions.rs:190-197; near-account-id 3.0.0 src/account_id_ref.rs
+\* :216-221).  A top-level id shorter than min_allowed_top_level_account_length
+\* can be created only by the registrar_account_id; that length is 65 from
+\* protocol 64 on and ids have at most 64 characters, so at 88 only that
+\* account (TopCreator) creates top-level ids (actions.rs:175-186;
+\* core/parameters/res/runtime_configs/64.yaml:2; near-account-id
+\* src/validation.rs:6-8).  Overridable: AcctParent <- MyParents,
+\* MyParents == Parents({<<"sub", "c">>}); TopCreator <- "x".
+NoParent == ""
+AcctParent == [a \in Accounts |-> NoParent]
+Parents(pairs) == [a \in Accounts |-> IF \E p \in pairs : p[1] = a
+                                      THEN (CHOOSE p \in pairs : p[1] = a)[2] ELSE NoParent]
+ParentOf(a) == IF a \in DOMAIN AcctParent THEN AcctParent[a] ELSE NoParent
+TopCreator == "top-creator"
+
+\* DeleteAccountWithLargeState: an account whose storage minus its contract
+\* code exceeds 10,000 bytes cannot be deleted (actions.rs:342-369;
+\* core/primitives-core/src/account.rs:248; from protocol 85 the global
+\* contract identifier is subtracted too, version.rs:612-628).  The check
+\* reads stor, so it applies only with StoragePerByte (N-delete-large).
+\* CodeSize[a]: the code bytes counted in a's StorageInit (overridable,
+\* default 0); an eth-implicit account created by a Transfer holds the
+\* 32-byte global contract hash; other created accounts have no code.
+MaxDeleteBytes == 10000
+CodeSize == [a \in Accounts |-> 0]
+CodeBytes(a) == IF a \in created /\ KindOf(a) = "eth_implicit" THEN 32
+                ELSE IF ~HasCode(a) THEN 0
+                ELSE IF a \in DOMAIN CodeSize THEN CodeSize[a] ELSE 0
+LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
+
+\* Fees (gas mode).  gf convention: an ACCOUNT receipt's gf is the whole
+\* receipt's send + exec fees, ReceiptFee plus each action's ActionFee
+\* (NearFees), charged to its creator at creation whatever the outcome.
+\* That is nearcore's: the exec fees are prepaid and a failed receipt burns
+\* them all; only the creation charge is withheld on failure, and gas money
+\* is not modelled (N-gas-money; sim lifecycle.rs account_action_fees,
+\* create_batch_atomic).  NearKeys.WithAcctKeys adds the key actions' fees.
+\* sir: the receipt is on its predecessor's own account.
+AcctFee(fr, to, mk, dep, bnf) ==
+    IF GasMode # "gas" THEN 0
+    ELSE LET sir == (fr = to) IN
+         NearFeeTable!ReceiptFee(sir)
+         + (IF mk THEN NearFeeTable!ActionFee("create_account", sir, KindOf(to)) ELSE 0)
+         + (IF dep > 0 THEN NearFeeTable!ActionFee("transfer", sir, KindOf(to)) ELSE 0)
+         + (IF bnf # "" THEN NearFeeTable!ActionFee("delete_account", sir, KindOf(to)) ELSE 0)
+
+\* Constructors.  CreateAcctRcpt: [CreateAccount, Transfer(dep)?] for the
+\* new account, from its creator fr (refunds go to fr).  DeleteAcctRcpt:
+\* [DeleteAccount(b)] on acct, sent by acct itself (its own transaction or a
+\* receipt it creates).  WithDeleteTo(r, b) appends DeleteAccount(b) to an
+\* ACCOUNT receipt (it must be last, action_validation.rs:139-142), e.g.
+\* WithDeleteTo(CreateAcctRcpt(..), b).
+AcctRcpt(id, tx, to, fr, a, dep, cb, mk, bnf) ==
+    WithFee([ac |-> [mk |-> mk, bnf |-> bnf, ka |-> <<>>]] @@ Rcpt(id, tx, to, fr, ACCT, a, dep, fr, cb),
+            AcctFee(fr, to, mk, dep, bnf))
+CreateAcctRcpt(id, tx, new, fr, a, dep, cb) == AcctRcpt(id, tx, new, fr, a, dep, cb, TRUE, "")
+DeleteAcctRcpt(id, tx, acct, a, b, cb)      == AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, b)
+WithDeleteTo(r, b) ==
+    IF ~IsAcctRcpt(r) \/ b = "" THEN Assert(FALSE, <<"WithDeleteTo needs an ACCOUNT receipt and a beneficiary", r.id>>)
+    ELSE [r EXCEPT !.ac.bnf = b,
+                   !.gf = @ + (IF GasMode = "gas"
+                               THEN NearFeeTable!ActionFee("delete_account", r.fr = r.to, KindOf(r.to)) ELSE 0)]
+
+\* The actor after the CreateAccount (the new account) or without one (the
+\* predecessor) (actions.rs:202; lib.rs:599-610).
+AcctActor(r) == IF r.ac.mk THEN r.to ELSE r.fr
+\* Does the receiver exist for the actions after CreateAccount?  A universal
+\* account created by a Transfer is uninitialised: only a Transfer accepts it
+\* (actions.rs:880-887).
+AcctThere(r) == r.ac.mk \/ AcctExists(r.to)
+AcctInit(r)  == r.ac.mk \/ ~(r.to \in created /\ KindOf(r.to) = "universal")
+
+\* The first failing action check, as nearcore's error name, or "".  Per
+\* action: existence, then the actor, then the action (lib.rs:599-610).
+\* kb: the bytes the key actions add; kok: they all apply (NearKeys).
+\*  CreateAccount: AccountAlreadyExists (actions.rs:822-828); an implicit id
+\*    (IsImplicit, which follows get_account_type at 88, universal included)
+\*    only by a Transfer (:829-840); a top-level id only by TopCreator
+\*    (:175-186); a sub-account only by its direct parent (:190-197).
+\*  Transfer: the receiver must exist (:842-849; an ACCOUNT receipt never
+\*    creates an implicit account, see ExecTransfer).
+\*  Key actions: exist, initialised, actor = the account (:862-886,
+\*    :755-801), each one applies (access_keys.rs:84, :158).
+\*  DeleteAccount: exists; actor = the account (:776-783, ActorNoPermission);
+\*    nothing locked (:784-790, DeleteAccountStaking); not large state.
+AcctErr(r, kb, kok) ==
+    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf
+        bytes == (IF r.ac.mk THEN AccountBytes ELSE stor[a]) + kb IN
+    \* (IF, not CASE: the first failing check wins.)
+    IF r.ac.mk /\ AcctExists(a) THEN "AccountAlreadyExists"
+    ELSE IF r.ac.mk /\ IsImplicit(a) THEN "OnlyImplicitAccountCreationAllowed"
+    ELSE IF r.ac.mk /\ ParentOf(a) = NoParent /\ r.fr # TopCreator THEN "CreateAccountOnlyByRegistrar"
+    ELSE IF r.ac.mk /\ ParentOf(a) # NoParent /\ ParentOf(a) # r.fr THEN "CreateAccountNotAllowed"
+    ELSE IF (r.dep > 0 \/ ka # <<>> \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
+    ELSE IF (ka # <<>> \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
+    ELSE IF (ka # <<>> \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
+    ELSE IF ka # <<>> /\ ~kok THEN "AddKeyAlreadyExists or DeleteKeyDoesNotExist"
+    ELSE IF b # "" /\ LockedOf(a) > 0 THEN "DeleteAccountStaking"
+    ELSE IF b # "" /\ LargeState(a, bytes) THEN "DeleteAccountWithLargeState"
+    ELSE ""
+
+\* The storage check after the actions (lib.rs:1008-1031), skipped when the
+\* receipt deleted the account (:1010).  bal: the liquid after the actions.
+AcctBal(r) == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep
+AcctStorOK(r, kb) ==
+    IF r.ac.bnf # "" THEN TRUE
+    ELSE IF StoragePerByte
+    THEN StorageCovers(AcctBal(r) + LockedOf(r.to), (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + kb)
+    ELSE AcctBal(r) + LockedOf(r.to) >= StorageFloor[r.to]
+AcctOK(r, kb, kok) == AcctErr(r, kb, kok) = "" /\ AcctStorOK(r, kb)
+
+\* Run an ACCOUNT receipt; kb, kok as for AcctErr.  On success:
+\*  create: the account starts with 0 balance, no code and 100 bytes
+\*    (actions.rs:202-208), then gets the deposit; it joins created and
+\*    leaves deleted;
+\*  delete: its liquid goes out as a refund receipt from "system" to the
+\*    beneficiary, a separate receipt that runs later (actions.rs:380-386),
+\*    if it is > 0: ExecTransfer credits a beneficiary that exists, and
+\*    RefundBurn burns it otherwise (a refund never creates an account,
+\*    lib.rs:1046-1054; the beneficiary may be the account itself).  The
+\*    account's balance, bytes and keys go (core/store/src/utils/mod.rs
+\*    :504-575); it joins deleted.  Its postponed receipts, data and
+\*    yields stay (D4): they fail while it is deleted and run on the new
+\*    account if it is created again.  The model wipes its own state
+\*    (DeletesAcct);
+\*  the callback gets empty bytes (lib.rs:1172-1176).
+\* On failure the receipt fails as a whole (lib.rs:946-1005): FailP refunds
+\* the deposit to r.rto (the creator) and the callback gets Failed.
+ExecAcctWith(r, kb, kok) ==
+    /\ IsAcctRcpt(r)
+    /\ LET a == r.to  mk == r.ac.mk  b == r.ac.bnf  bal == AcctBal(r)
+           pay == b # "" /\ bal > 0 IN
+       IF AcctOK(r, kb, kok)
+       THEN /\ Assert(~mk \/ near[a] = 0, <<"CreateAccount of an account whose near is not 0", a, near[a]>>)
+            /\ rq'   = RemR(r) \cup (IF pay THEN {Rcpt(nid, r.tx, b, "system", REFND, r.a, bal, b, 0)} ELSE {})
+            /\ post' = RemP(r)
+            /\ data' = RemD(r) \cup DataOf(r, TRUE, EMPTY)
+            /\ near' = [near EXCEPT ![a] = IF b # "" THEN 0 ELSE bal]
+            /\ nid'  = IF pay THEN nid + 1 ELSE nid
+            /\ rlog' = LogR(r, "ok")
+            /\ created' = IF mk THEN created \cup {a} ELSE created
+            /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
+            /\ stor' = IF ~StoragePerByte THEN stor
+                       ELSE [stor EXCEPT ![a] = IF b # "" THEN 0
+                                                ELSE (IF mk THEN AccountBytes ELSE @) + kb]
+            /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk>>
+       ELSE FailP(r, FALSE)
+\* Without key actions (NearKeys.ExecAcctK runs them).
+ExecAcct(r) ==
+    /\ IsAcctRcpt(r)
+    /\ Assert(r.ac.ka = <<>>, <<"ACCOUNT receipt with key actions: run it with NearKeys' ExecAcctK", r.id>>)
+    /\ ExecAcctWith(r, 0, TRUE)
+
+\* Did this step delete r.to?  A primed read, like Ok: conjoin it after
+\* ExecAcct / ExecAcctK, to reset the model's own state for the account
+\* (N-wipe), e.g. bal' = IF DeletesAcct(r) THEN 0 ELSE ...
+DeletesAcct(r) == r.to \in deleted' \ deleted
+
+----------------------------------------------------------------------------
+(* Epochs and blocks                                                       *)
 
 \* Epoch transition: rewards go to locked; a decreased proposal releases the
 \* difference to liquid.  Scaled: the release happens on the next tick
@@ -992,7 +1185,7 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted>>
 
 \* Block clock: one block passes (the model adds BlockTick /\ UNCHANGED of its
 \* own variables to Next).  Every receipt that runs at one value of blk sees
@@ -1005,7 +1198,7 @@ BlockTick ==
     /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
     /\ blk' = blk + 1
     /\ UNCHANGED <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog,
-                   rlog, txsig, created, burnt, stor>>
+                   rlog, txsig, created, burnt, stor, deleted>>
 BlockTs == TsOf(blk)
 
 ----------------------------------------------------------------------------
@@ -1015,9 +1208,12 @@ BlockTs == TsOf(blk)
 \* the deposit (NotEnoughBalance), and with StoragePerByte what is left must
 \* still cover its storage (InvalidTxError::LackBalanceForState,
 \* runtime/runtime/src/verifier.rs:375-386 in verify_and_charge_tx_ephemeral).
-\* Gas money is not modelled (docs/SEMANTICS.md, N-gas-money).  A scripted
-\* model branches on this rather than letting Submit disable its step.
+\* Gas money is not modelled (docs/SEMANTICS.md, N-gas-money).  A deleted
+\* signer cannot sign (InvalidTxError::SignerDoesNotExist, verifier.rs
+\* :170-175).  A scripted model branches on this rather than letting Submit
+\* disable its step.
 CanSubmit(r, a) ==
+    /\ a \notin deleted
     /\ near[a] >= r.dep
     /\ IF StoragePerByte THEN StorageCovers(near[a] - r.dep + LockedOf(a), stor[a]) ELSE TRUE
 
@@ -1030,7 +1226,7 @@ SubmitAs(r, a, k) ==
     /\ near'  = [near EXCEPT ![a] = @ - r.dep]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor>>
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
@@ -1075,7 +1271,7 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ nid = 1 /\ fails = 0 /\ minted = 0
     /\ paid = [t \in txIds |-> [a \in Accounts |-> 0]]
     /\ oog = {} /\ rlog = {}
-    /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ blk = 0
+    /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ deleted = {} /\ blk = 0
     /\ stor = StorageInit /\ StorageInitOK(near0, locked0)
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
@@ -1085,7 +1281,7 @@ PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 \* PlatformInitClock and PlatformInitStorage alone.  PlatformInitStorage
 \* does not check the initial cover: list StorageCovered as an invariant.
 PlatformInitSigner   == txsig = <<>>
-PlatformInitAccounts == created = {} /\ burnt = 0
+PlatformInitAccounts == created = {} /\ burnt = 0 /\ deleted = {}
 PlatformInitClock    == blk = 0
 PlatformInitStorage  == stor = StorageInit
 PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock
