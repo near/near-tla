@@ -35,8 +35,9 @@ Each rule has four fields:
     [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. Rules the conformance flows were
     written to cover carry the marker `<!-- conformance -->` in the source of this page, and
     each such entry says what the sim checked, if anything. The run on the current library
-    (74 flows, 97,162 prepaid points, 227,922 sim receipts) found no status, window-edge or
-    attached-gas mismatch ([results](../conformance/README.md#results-at-the-pins)). The
+    (74 flows, 97,162 prepaid points, 227,922 sim receipts; and the flow set `probes2`, 22 flows,
+    28,886 points, 90,296 receipts) found no status, window-edge or attached-gas mismatch
+    ([results](../conformance/README.md#results-at-the-pins)). The
     comparison sees each receipt's status and attached gas, by transaction, the yields still
     parked at the end, and the window edges, but not the order in which receipts run; the
     calibration checks the leftover split and the action-only fees. A rule is "sim" where a
@@ -178,8 +179,10 @@ Each rule has four fields:
   is refunded from `system` to the account `promise_set_refund_to` named, which gains exactly
   2 N while the predecessor ends exactly 2 N down, and without it to the predecessor, whose
   balance ends where it started; the call reads the target as `refund_to_account_id`, the
-  predecessor when unset). <!-- conformance --> The comparison leaves refund receipts out on
-  both sides, so no flow checks this rule.
+  predecessor when unset). <!-- conformance --> sim, flows (`probes2`: `refund_to_bob`,
+  `refund_to_none`): that set compares deposit refunds by receiver, and the model's refund of
+  the failed call's deposit goes to `refund_to` when set, else to the predecessor, as in
+  nearcore. The other flows leave refund receipts out on both sides.
 
 ---
 
@@ -352,7 +355,11 @@ Each rule has four fields:
   gets input i's, joined flat, as `(a & b) & c` and as `a & (b & c)`, and `(b & c) & a` gives
   b, c, a; the same with each input in turn held back to arrive last; a failed middle input
   gives `Failed` at index 1 only; index 3 fails the callback with `InvalidPromiseResultIndex`).
-  The restrictions on joint promises: sim (`joint_promise_restrictions`: returning one,
+  One result by index is also sim against the model, flows (`probes2`, `idx_*`): a callback
+  that fails unless result i has the size the flow names (`on_expect`) agrees at every point
+  for joins flat, `(a & b) & c`, `a & (b & c)` and `(b & c) & a`, and with a failed middle
+  input, at indexes 0 to 2 (the handler flattens the nesting; `AndThen` and `ResAt` do the
+  rest). The restrictions on joint promises: sim (`joint_promise_restrictions`: returning one,
   appending an action to one and setting its `refund_to` each fail the creating call with its
   own host error, and none of the inputs it created runs; `promise_and` with no `.then` adds
   no receipt beyond its inputs). `examples/platform-selftest` checks the order with the failing input first
@@ -460,7 +467,15 @@ Each rule has four fields:
   `Failed`); the callback's signer
   (`yield_callback_signer_is_the_yielding_signer`: alice yields, and the callback's signer is
   alice whether bob resumes it or it times out; its predecessor is the yielding account).
-  `examples/platform-selftest` checks a second resume (`resume_twice`), two
+  Against the model, flows (`probes2`): the `_with_id` duplicate check in the same call
+  (`yid_twice`) and a later one (`yid_dup_later`), a resume by id (`yid_dup_later`,
+  `yid_again`) or of no pending id (`yid_resume_none`), the id free in a later call once its
+  callback ran (`yid_reuse`, whose first yield is its setup) and from the callback itself
+  (`yid_again`), as handlers that keep the custom id in the yield's payload
+  (`PendingYieldRcpts`); a deposit (`yid_deposit`) and one over the balance, which fails the
+  creating call (`yid_deposit_over`); a returned yield whose caller's callback reads the yield
+  callback's result, the payload or an empty success (`yret_resume`, `yret_timeout`). The
+  signer is not compared. `examples/platform-selftest` checks a second resume (`resume_twice`), two
   resumes in the yielding call (`resume_same_call`), a timeout then a resume
   (`timeout_then_resume`), a resume in flight at the deadline (`resume_beats_timeout`), a
   resume by another account (`resume_other_acct`), a returned yield (`yield_returned`) and a
@@ -1556,7 +1571,10 @@ Each rule has four fields:
   epoch-side release and rewards: nearcore reading (the sim simplifies epochs: one
   validator, flat rewards). A callback on a Stake: sim (`callback_after_stake`: a contract
   stakes itself, then a callback reads result 0: `Successful` with 0 bytes after a Stake that
-  locked the amount, `Failed` after one that failed with `TriesToStake`). <!-- conformance --> No flow stakes.
+  locked the amount, `Failed` after one that failed with `TriesToStake`). <!-- conformance -->
+  Against the model, flows (`probes2`: `stake_ok`, `stake_too_much`, with `StakingAcct` the
+  staking contract): the Stake's status and a callback that fails unless it reads empty bytes,
+  or `Failed`, agree at every point.
 
 ### B2. Balance must cover storage (`LackBalanceForState`)
 

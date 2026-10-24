@@ -424,6 +424,23 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **Flow sets, and model-vs-sim flows for `probe2`** (`conformance/scripts/flowsets.py`,
+  `flows/probes2.toml` from `scripts/gen_probes2.py`, `tla/Probe2Conf.tla`,
+  `tla/CalibProbes2.tla`). `mkconf.py`, `tlc.sh` and `conform.py` take `--set NAME` (default
+  `probes`, so every existing command does what it did); each set has its own flows file,
+  sweeps, table, driver and build directory, and a sweep's `.meta.json` must name its own
+  set's flows file (`flows_file` is now checked). The set `probes2` runs 22 flows on
+  `z-probe.near`, all matching the model: `refund_to` (R5; this set compares deposit refunds,
+  labelled by receiver), one joint result by index over nested joins (C6), the `_with_id`
+  yield's duplicate check, resume by id and reuse, a yield's deposit and a returned yield
+  (C7), a callback after a Stake (B1, `"STAKE"` now paired with the sim's `[Stake]`).
+  `probe2` gains `on_expect`, a callback that fails unless a result has the given size or
+  exact bytes, and `stake_then`'s `expect`; its returned-yield test now asserts the exact
+  resumed bytes and tells a timeout's empty success from `Failed`, and the `refund_to` test
+  the predecessor's balance. No library change. The `probes` set is unchanged: identical
+  `MC_*` files, `flows/probes.toml` and generated tables, and the same totals (74 flows,
+  97,162 points, 227,922 receipts).
+
 - **A second generic probe, `probe2`** (`conformance/probes/probe2`, `res/probe2.wasm`), for
   the rule parts the other probes cannot reach, now sim-validated (`docs/SEMANTICS.md`):
   `refund_to` (R5), a joint promise returned, appended to or given a `refund_to` (C5, C6),

@@ -1,8 +1,9 @@
 name: conformance
 
-# The sim conformance suite (conformance/): every sim test, a full sweep of the probe flows,
-# the generated tables regenerated and diffed against the committed ones, then the model side
-# (TLC on every flow) and conform.py. Nightly and on demand only: near-contract-sim is private
+# The sim conformance suite (conformance/): every sim test, a full sweep of each flow set's flows
+# (probes, probes2: conformance/scripts/flowsets.py), the generated tables regenerated and diffed
+# against the committed ones, then the model side (TLC on every flow of each set) and conform.py.
+# Nightly and on demand only: near-contract-sim is private
 # and pulls in nearcore, so a cold build is slow. Nothing gates on this workflow.
 
 on:
@@ -106,12 +107,16 @@ jobs:
       - name: Full sweep of every probe flow (standard grid) and the calibration report
         run: cargo run --release --offline --locked --bin calibrate -- --flows flows/probes.toml
 
+      - name: Full sweep of every probe2 flow (standard grid) and the calibration report
+        run: cargo run --release --offline --locked --bin calibrate -- --flows flows/probes2.toml
+
       - name: Regenerate the gas and storage tables; they must match the committed ones
         run: |
           set -euo pipefail
           run() { cargo run -q --release --offline --locked --bin calibrate -- "$@"; }
           run --flows flows/probes.toml --from-data \
             --merge-accts ft_probe,wnear_probe --batch-actions --tla tla/CalibProbes.tla --prefix Probe
+          run --flows flows/probes2.toml --from-data --tla tla/CalibProbes2.tla --prefix Probe2
           run --flows flows/probes.toml --from-data \
             --merge-accts ft_probe,wnear_probe --batch-actions \
             --group ft_probe:StdFt:ft --group wnear_probe:StdWNear:wnear \
@@ -121,7 +126,7 @@ jobs:
             --tla ../modules/StorStd.tla --module StorStd --notes flows/storstd.notes
           run --flows flows/storage.toml --stor --group p:Kv:app \
             --tla ../examples/storage-stake/StorKv.tla --module StorKv --notes flows/storkv.notes
-          git diff --exit-code -- tla/CalibProbes.tla ../modules/CalibStd.tla \
+          git diff --exit-code -- tla/CalibProbes.tla tla/CalibProbes2.tla ../modules/CalibStd.tla \
             ../modules/StorStd.tla ../examples/storage-stake/StorKv.tla
 
       - name: Fetch tla2tools.jar
@@ -131,13 +136,19 @@ jobs:
             "https://github.com/tlaplus/tlaplus/releases/download/${TLA_TOOLS_VERSION}/tla2tools.jar"
           echo "${TLA_TOOLS_SHA256}  ../tools/tla2tools.jar" | sha256sum -c -
 
-      - name: Model side (TLC on every flow, 2 workers)
+      - name: Model side (TLC on every flow of each set, 2 workers)
         run: |
-          python3 scripts/mkconf.py
-          scripts/tlc.sh $(python3 -c 'import tomllib; print(" ".join(f["name"] for f in tomllib.load(open("flows/probes.toml","rb"))["flow"]))')
+          set -euo pipefail
+          for s in probes probes2; do
+            python3 scripts/mkconf.py --set "$s"
+            scripts/tlc.sh --set "$s"
+          done
 
-      - name: Compare model and sim (conform.py)
-        run: python3 scripts/conform.py
+      - name: Compare model and sim (conform.py, each set)
+        run: |
+          rc=0
+          for s in probes probes2; do python3 scripts/conform.py --set "$s" || rc=1; done
+          exit $rc
 
       - name: Upload TLC logs and the sweep's provenance
         if: failure() || cancelled()
@@ -145,6 +156,6 @@ jobs:
         with:
           name: conformance-logs
           path: |
-            conformance/tla/build/*.log
-            conformance/data/probes/*.meta.json
+            conformance/tla/build/**/*.log
+            conformance/data/*/*.meta.json
           if-no-files-found: ignore

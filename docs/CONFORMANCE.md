@@ -41,13 +41,19 @@ repo. Use plain `cargo`.
    `cargo test --release --test smoke` and `cargo test --release --test semantics`.
 3. **The full grid.** `cargo run --release --bin calibrate -- --flows flows/probes.toml` sweeps
    every probe flow over the standard grid, writes the sweeps to `data/` with their provenance
-   (`.meta.json`, bound to the sweep by its sha256), and prints the calibration report.
+   (`.meta.json`, bound to the sweep by its sha256), and prints the calibration report. The
+   second flow set, `probes2` (`probe2`'s rule parts), is swept the same way from
+   `flows/probes2.toml`.
 4. **The model side.**
    - `python3 scripts/mkconf.py` writes one TLC wrapper per flow (`tla/build/MC_<flow>.tla` and
      `.cfg`), on the library in `../modules/`;
-   - `scripts/tlc.sh <flows...>` runs TLC on them (2 workers);
+   - `scripts/tlc.sh` runs TLC on them (2 workers);
    - `python3 scripts/conform.py` compares model and sim per receipt and per edge, prints a
      summary table, and exits nonzero if any flow fails.
+
+   Each takes `--set probes2` for the second set (`scripts/flowsets.py`; default `probes`),
+   which has its own sweeps, table (`tla/CalibProbes2.tla`), driver (`tla/Probe2Conf.tla`) and
+   build directory, so the two sets never read each other's data.
 
    The exact invocations are in [Running](../conformance/README.md#running).
 5. **Calibration.** `calibrate` with `--tla` writes a TLA+ table; see
@@ -115,6 +121,20 @@ at this commit:
 | edge mismatches | 0 |
 | attached-gas differences above tolerance | 0 (tolerance 5 Ggas; largest 5 Ggas, from rounding up at two creation levels) |
 | split-check mismatches | 0 of 108,986 children (largest difference 0 gas) |
+
+The flow set `probes2`, `probe2`'s rule parts (R5 `refund_to`, C6 one result by index, C7
+`promise_yield_create_with_id`, a yield's deposit and a returned yield, B1 a callback after a
+Stake), on the same pins:
+
+| | |
+|---|---|
+| flows | 22, all match |
+| prepaid points per flow | 1313 (28,886 points in all) |
+| receipts compared | 90,296 sim receipts (deposit refunds included, by receiver) |
+| status mismatches | 0 |
+| edge mismatches | 0 |
+| attached-gas differences above tolerance | 0 (largest 4 Ggas) |
+| split-check mismatches | 0 of 48,732 children (largest difference 0 gas) |
 
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
 burns, `ft_transfer_call`'s gas behaviour) are in
@@ -187,7 +207,7 @@ A measured number is only meaningful with what it was measured on.
 ## CI
 
 CI on every push checks the TLA+ side only. It SANY-parses every module, every example spec and the
-conformance specs in `conformance/tla/` (`ProbeConf.tla`, `CalibProbes.tla`), and it runs every
+conformance specs in `conformance/tla/` (`ProbeConf.tla`, `Probe2Conf.tla` and their tables), and it runs every
 example's expectations. It also runs `conform.py`'s self-tests
 (`conformance/scripts/test_conform.py`), which use toy data. It neither runs TLC on the conformance flows nor builds the
 conformance crate, because near-contract-sim is a private git dependency that pulls in
@@ -200,10 +220,10 @@ The whole suite runs nightly and on demand (`workflow_dispatch`) in
 exists only for the fetch step; every later cargo step runs offline. It then:
 
 1. runs every sim test;
-2. sweeps every probe flow on the standard grid;
-3. regenerates `CalibProbes`, `CalibStd`, `StorStd` and `StorKv` and fails if any differs
-   from the committed file;
-4. runs TLC on every flow and `conform.py`.
+2. sweeps every flow of both flow sets on the standard grid;
+3. regenerates `CalibProbes`, `CalibProbes2`, `CalibStd`, `StorStd` and `StorKv` and fails if
+   any differs from the committed file;
+4. runs TLC on every flow and `conform.py`, for each set.
 
 Nothing gates on it, so a failure does not block `main`. The nightly run comes after the
 merge, so still re-run the suite locally before merging any change to the gas rules, the fee
