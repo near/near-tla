@@ -4,7 +4,7 @@ The conformance suite checks the model against nearcore. It runs generic probe c
 near-contract-sim, which executes receipts with nearcore's own `Runtime::apply`, sweeps each
 transaction over a grid of prepaid gas, and compares every receipt with what the model predicts
 at the same point. The same crate measures the calibrated gas tables the library ships
-(`modules/CalibStd.tla`) and the tables you build for your own contract, and, with `--stor`,
+(`modules/CalibStd.tla`, `modules/CalibStdMt.tla`) and the tables you build for your own contract, and, with `--stor`,
 the storage bytes each call adds (`modules/StorStd.tla`; [Storage
 bytes](../conformance/README.md#storage-bytes)).
 
@@ -43,7 +43,8 @@ repo. Use plain `cargo`.
    every probe flow over the standard grid, writes the sweeps to `data/` with their provenance
    (`.meta.json`, bound to the sweep by its sha256), and prints the calibration report. The
    second flow set, `probes2` (`probe2`'s rule parts), is swept the same way from
-   `flows/probes2.toml`.
+   `flows/probes2.toml`, and the third, `mt` (NEP-245 on near-sdk-contract-tools), from
+   `flows/mt.toml`.
 4. **The model side.**
    - `python3 scripts/mkconf.py` writes one TLC wrapper per flow (`tla/build/MC_<flow>.tla` and
      `.cfg`), on the library in `../modules/`;
@@ -51,9 +52,10 @@ repo. Use plain `cargo`.
    - `python3 scripts/conform.py` compares model and sim per receipt and per edge, prints a
      summary table, and exits nonzero if any flow fails.
 
-   Each takes `--set probes2` for the second set (`scripts/flowsets.py`; default `probes`),
-   which has its own sweeps, table (`tla/CalibProbes2.tla`), driver (`tla/Probe2Conf.tla`) and
-   build directory, so the two sets never read each other's data. In `probes2` the comparison
+   Each takes `--set probes2` or `--set mt` for the other sets (`scripts/flowsets.py`; default
+   `probes`). Each set has its own sweeps, table (`tla/CalibProbes2.tla`, `tla/CalibMt.tla`),
+   driver (`tla/Probe2Conf.tla`, `tla/MtConf.tla`) and build directory, so the sets never read
+   each other's data. In `probes2` the comparison
    also covers deposit refunds, by receiver, and each receipt's deposit amount, the sim's
    yoctoNEAR converted to the model's unit, 1 mNEAR (`mkconf.dep`).
 
@@ -138,6 +140,26 @@ Stake), on the same pins:
 | attached-gas differences above tolerance | 0 (largest 5 Ggas) |
 | split-check mismatches | 0 of 70,757 children (largest difference 0 gas) |
 
+The flow set `mt`, NEP-245 on the `mt` probe (near-sdk-contract-tools 4.0.0) and the `mtrecv`
+receiver: `mt_transfer` and `mt_batch_transfer` with 1 to 3 ids, `mt_transfer_call` and
+`mt_batch_transfer_call` with 1 to 3 ids and every receiver answer (keep, return, over-amount,
+short, long, malformed, empty, a panic, a 20 Tgas burn), each through `mt_resolve_transfer`.
+The model side is `Nep245` with `MtGasShape = "tools"` and the burns of `tla/CalibMt.tla`:
+
+| | |
+|---|---|
+| flows | 19, all match |
+| prepaid points per flow | 1313 (24,947 points in all) |
+| receipts compared | 55,487 sim receipts |
+| status mismatches | 0 |
+| edge mismatches | 0 (the calls' edges at 0.5 and 30.0 Tgas, the 30 Tgas floor, and 31.0 for the 20 Tgas burn; the transfers' at 0.9 to 1.8 Tgas, rising with the number of ids) |
+| attached-gas differences above tolerance | 0 (largest 4 Ggas) |
+| split-check mismatches | 0 of 30,540 children (largest difference 0 gas) |
+
+With the default `MtGasShape = "reserve"` instead, `mt_bcall2_keep` fails at every point
+(no 30 Tgas edge, out of gas instead of the floor's failure), so the comparison sees the
+shape.
+
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
 burns, `ft_transfer_call`'s gas behaviour) are in
 [Results at the pins](../conformance/README.md#results-at-the-pins). What the joint-promise and
@@ -209,7 +231,7 @@ A measured number is only meaningful with what it was measured on.
 ## CI
 
 CI on every push checks the TLA+ side only. It SANY-parses every module, every example spec and the
-conformance specs in `conformance/tla/` (`ProbeConf.tla`, `Probe2Conf.tla` and their tables), and it runs every
+conformance specs in `conformance/tla/` (`ProbeConf.tla`, `Probe2Conf.tla`, `MtConf.tla` and their tables), and it runs every
 example's expectations. It also runs `conform.py`'s self-tests
 (`conformance/scripts/test_conform.py`), which use toy data. It neither runs TLC on the conformance flows nor builds the
 conformance crate, because near-contract-sim is a private git dependency that pulls in
@@ -222,8 +244,8 @@ The whole suite runs nightly and on demand (`workflow_dispatch`) in
 exists only for the fetch step; every later cargo step runs offline. It then:
 
 1. runs every sim test;
-2. sweeps every flow of both flow sets on the standard grid;
-3. regenerates `CalibProbes`, `CalibProbes2`, `CalibStd`, `StorStd` and `StorKv` and fails if
+2. sweeps every flow of the three flow sets on the standard grid;
+3. regenerates `CalibProbes`, `CalibProbes2`, `CalibMt`, `CalibStd`, `CalibStdMt`, `StorStd` and `StorKv` and fails if
    any differs from the committed file;
 4. runs TLC on every flow and `conform.py`, for each set.
 

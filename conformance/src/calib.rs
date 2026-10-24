@@ -378,6 +378,9 @@ fn size_of(res: &Resolved, flow: &Flow, p: &Value) -> Result<u64, String> {
         let a: Value = serde_json::from_str(s(&p["args"])).map_err(|e| format!("{ck}: args not JSON: {e}"))?;
         let x = &a[field];
         x.as_u64().or_else(|| x.as_str().and_then(|t| t.parse().ok())).ok_or(format!("{ck}: no numeric arg {field}"))?
+    } else if let Some(field) = src.from.strip_prefix("arg_count:") {
+        let a: Value = serde_json::from_str(s(&p["args"])).map_err(|e| format!("{ck}: args not JSON: {e}"))?;
+        a[field].as_array().ok_or(format!("{ck}: no array arg {field}"))?.len() as u64
     } else if src.from == "result" {
         s(&p["result"]).trim_matches('"').parse().map_err(|_| format!("{ck}: result not numeric"))?
     } else if src.from == "result_size" {

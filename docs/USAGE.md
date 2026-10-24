@@ -717,6 +717,9 @@ prepaid − `MtCallReserve[t]`, weight 0) or `"tools"` (near-sdk-contract-tools 
 30 Tgas floor, `mt_on_transfer` static 0 and weight 10, the resolver 5 Tgas and weight 1).
 Override it like `TokFtGasShape`, e.g. `MtGasShape = '[t \in {"mt"} |-> "tools"]'` in
 `runs.toml`. The batch methods and the resolver burn with size = the number of ids.
+`CalibStdMt` has the measured burns and the resolver's split for that implementation
+([The standard tokens](#the-standard-tokens-calibstd)); `mt_batch_gas_std` in
+`examples/mt-batch` uses it.
 
 In gas mode:
 
@@ -1483,6 +1486,14 @@ run uses them. Caveats:
 - `ft_on_transfer`'s exec fee belongs to the **receiver's** `GasCall` entry, not the token's.
 - Your contract's own entries are still yours to measure.
 
+`CalibStdMt` does the same for a plain near-sdk-contract-tools 4.0.0 NEP-245 token
+(`StdMtGasBurn(mt)`, `StdMtGasCall(mt)`), measured by the conformance flow set `mt`. Use it
+with `MtGasShape[mt] = "tools"`. `mt_batch_transfer`, `mt_batch_transfer_call` and
+`mt_resolve_transfer` burn base + per id. The resolver has no path keys: its key holds the
+largest burn seen, so it overstates a resolve that refunds little (by up to 1.4 Tgas; it
+creates no receipts, so no attached gas depends on it). `mt_on_transfer`'s burn and exec fee
+are the receiver's entries, as for `ft_on_transfer`.
+
 ### Recalibrating for a real deployment
 
 Burns depend on the contract's code, its state and the protocol. Before you rely on a window
@@ -1813,7 +1824,7 @@ All examples are toy contracts written for this repo.
   | `nep141-refund-cap` | the NEP-141 resolver caps the refund at the amount |
   | `nep145-refund-to-predecessor` | `storage_deposit` refunds the excess to the predecessor |
   | `mt-smoke` | NEP-245 transfer and resolve |
-  | `mt-batch` | a NEP-245 batch transfer_call to an arbitrary receiver: per id, the resolver refunds min(unused, amount) capped by the receiver's balance; a resolver that ignores the answer, or one that does not cap it at the amount, gives the sender back the wrong amount |
+  | `mt-batch` | a NEP-245 batch transfer_call to an arbitrary receiver: per id, the resolver refunds min(unused, amount) capped by the receiver's balance; a resolver that ignores the answer, or one that does not cap it at the amount, gives the sender back the wrong amount; a gas-mode run on `CalibStdMt` with the 30 Tgas floor |
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |

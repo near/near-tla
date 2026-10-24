@@ -25,7 +25,9 @@ storage_deposit refund flows). Those shifts are on the safe side only.
 
 With --set NAME (scripts/flowsets.py; default probes), the set's flows
 file, table and driver instead: probes2 writes tla/build/probes2/ from
-flows/probes2.toml for Probe2Conf.tla and CalibProbes2.tla."""
+flows/probes2.toml for Probe2Conf.tla and CalibProbes2.tla; mt writes
+tla/build/mt/ from flows/mt.toml for MtConf.tla and CalibMt.tla, with
+Nep245's constants (the set's `extra`)."""
 import json, os, re, sys, tomllib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -306,6 +308,12 @@ def first(ctx, flow):
              "bargs": f"BatchArgs({nd}, {sd}, {q(sd_acct)}, {q(xf)}, {q(rc)}, {amt}, {q(msg)})",
              "gk": q(ctx.key(flow, here, "batch/" + ms))}
         args = pa(f)
+    elif m in ("mt_transfer", "mt_transfer_call"):
+        args = f'MtArgs({q(ctx.n(a["receiver_id"]))}, {q(a["token_id"])}, {int(a["amount"])}, {q(a.get("msg", "").replace(":", ""))})'
+    elif m in ("mt_batch_transfer", "mt_batch_transfer_call"):
+        ids = "<<" + ", ".join(q(t) for t in a["token_ids"]) + ">>"
+        amts = "<<" + ", ".join(str(int(x)) for x in a["amounts"]) + ">>"
+        args = f'MtBatchArgs({q(ctx.n(a["receiver_id"]))}, {ids}, {amts}, {q(a.get("msg", "").replace(":", ""))})'
     elif m in ("ft_transfer", "ft_transfer_call"):
         amt = 1 if here == "wnear_probe" else int(a["amount"])
         args = f'FtArgs({q(ctx.n(a["receiver_id"]))}, {amt}, {q(a.get("msg", "").replace(":", ""))})'
@@ -370,7 +378,7 @@ def cfg(fs):
     t = t.replace("INIT Init\n", f"INIT {fs.init}\n").replace("NEXT Next\n", f"NEXT {fs.next}\n")
     for k, v in fs.over.items():
         t = re.sub(rf"<- {k}$", f"<- {v}", t, flags=re.M)
-    over = "".join(f"  {k} <- {v}\n" for k, v in fs.over.items())
+    over = "".join(f"  {k} <- {v}\n" for k, v in list(fs.over.items()) + list(fs.extra.items()))
     return t.replace("INVARIANTS\n", over + "INVARIANTS\n")
 
 

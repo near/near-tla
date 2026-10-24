@@ -1,0 +1,14 @@
+Tables: StdMtGasBurn(mt) / StdMtGasCall(mt) for a plain
+near-sdk-contract-tools 4.0.0 NEP-245 multi token (#[derive(Nep245)]);
+the parameter is the token's model account (measured on the probe
+account mt-probe.near, flows/mt.toml).  Use them with
+MtGasShape[mt] = "tools" (modules/Nep245.tla): the _call methods need
+30 Tgas prepaid (MtMinCallGas), mt_on_transfer gets static 0 and weight
+10, mt_resolve_transfer static 5 Tgas and weight 1, whatever the number
+of ids.  Size = the number of ids: mt_batch_transfer,
+mt_batch_transfer_call and mt_resolve_transfer burn base + per * ids.
+mt_resolve_transfer has no path keys: its method key is the largest
+burn seen, refunding or not, so it overstates a resolve that refunds
+nothing (by up to the max residual below); it creates no receipts, so
+no attached gas depends on it.  mt_on_transfer's burn and exec fee
+belong to the receiver's own entries, not the token's.

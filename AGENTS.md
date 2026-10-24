@@ -21,6 +21,7 @@ modules/              the library, one flat directory (passed to TLC as -DTLA-Li
   Nep145.tla  Nep141.tla  WNear.tla  Tokens.tla   fungible tokens (EXTEND Tokens)
   Nep245.tla          external multi-token contract
   CalibStd.tla        measured gas tables for the standard FT and wNEAR (generated; do not edit)
+  CalibStdMt.tla      measured gas tables for a near-sdk-contract-tools NEP-245 token (generated; do not edit)
   StorStd.tla         measured storage bytes for the standard FT and wNEAR (generated; do not edit)
 examples/<name>/      toy contracts + runs.toml (must-pass and must-fail runs)
 examples/minimal/     the complete minimal model of docs/USAGE.md

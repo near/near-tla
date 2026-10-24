@@ -2071,6 +2071,18 @@ is available locally.
       id sharing that balance; the caller check.
   - These tests check the implementation against this rule, not the model's encoding;
     `examples/mt-batch` checks the encoding.
+  - <!-- conformance --> sim, flows (the set `mt`, 19 flows; `Nep245` with
+    `MtGasShape = "tools"` and the burns of `conformance/tla/CalibMt.tla`): every receipt's
+    status and attached gas, and every edge, match nearcore over the standard grid for
+    `mt_transfer`, `mt_batch_transfer` with 1-3 ids, `mt_transfer_call`, and
+    `mt_batch_transfer_call` with 1-3 ids and each receiver answer (keep, return, over,
+    short, long, malformed, empty, panic, a 20 Tgas burn). This covers the 30 Tgas floor
+    (the calls' edge is exactly 30.0 Tgas for 1-3 ids), the 10 : 1 split with the resolver's
+    5 Tgas static, and that the resolver runs, with the right status, after each answer.
+    The flows compare statuses and gas, not balances, so the per-id refund arithmetic rests
+    on the tests above.
+    The same sweeps give the library's table `modules/CalibStdMt.tla`
+    (`examples/mt-batch`, `mt_batch_gas_std`).
 
 ### T6. wNEAR
 

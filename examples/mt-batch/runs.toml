@@ -44,6 +44,7 @@ RxVecs = 'MtAnswers(2, 0..3)'
 RxResps = '{"mal", "empty", "panic"}'
 SpendId = '"t2"'
 MDev = "{}"
+GasMenu = "{0}"
 
 [[run]]
 name = "mt_batch_std"
@@ -80,6 +81,24 @@ invariants = ["NoGain"]
 tags = ["tokens:nep245", "tokens:deviation"]
 [run.constants]
 MDev = '{"resolveNoCap"}'
+
+# Gas mode on the measured near-sdk-contract-tools table (modules/CalibStdMt.tla) with
+# MtGasShape "tools": at 29.9 Tgas the call fails at the 30 Tgas floor and nothing moves;
+# at 30 Tgas it gets through, the receiver and the resolver run, and every property holds
+# (FloorHolds: the resolver runs iff U attached at least 30 Tgas). A smaller answer set
+# keeps it quick.
+[[run]]
+name = "mt_batch_gas_std"
+expect = "pass"
+invariants = ["Conserved", "NoGain", "Honored", "Sane", "FloorHolds"]
+tags = ["tokens:nep245", "gas:calibrated"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PStdGasCall"
+GasBurn = "PStdGasBurn"
+MtGasShape = "PMtShape"
+GasMenu = "{29900, 30000}"
+RxVecs = '{<<0, 0>>, <<1, 2>>, <<3, 0>>, <<0>>}'
 
 # ---- anti-vacuity: python3 tools/run.py examples/mt-batch --anti-vacuity ----
 # Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
@@ -129,6 +148,17 @@ runs = ["mt_batch_std"]
 id = "cap_binds_settled"
 expr = '~(Settled /\ \E j \in 1..2 : gRxAt[Tids[j]] < gUnused[j])'
 runs = ["mt_batch_std"]
+
+# Gas mode: the floor refuses 29.9 Tgas, and a call at 30 Tgas reaches the resolver.
+[[witness]]
+id = "gas_floor_refuses"
+expr = '~(Settled /\ NoResolve)'
+runs = ["mt_batch_gas_std"]
+
+[[witness]]
+id = "gas_call_resolves"
+expr = '~(Settled /\ ~NoResolve)'
+runs = ["mt_batch_gas_std"]
 
 [[mutant]]
 id = "resolver_dropped"
@@ -189,3 +219,13 @@ library = true
 find = 'IN [L |-> [L EXCEPT !.bal[a.rc][id] = @ - refund, !.bal[a.s][id] = @ + refund],'
 replace = 'IN [L |-> L,'
 class = "wrong refund account"
+
+# The 30 Tgas floor checked 100 Ggas low: a 29.9 Tgas call gets through.
+[[mutant]]
+id = "gas_floor_low"
+file = "Nep245.tla"
+library = true
+find = 'LastGas(r) < MtMinCallGas[r.to]'
+replace = 'LastGas(r) < MtMinCallGas[r.to] - 100'
+class = "off-by-one guard"
+runs = ["mt_batch_gas_std"]

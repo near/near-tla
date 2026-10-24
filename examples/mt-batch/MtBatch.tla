@@ -17,13 +17,23 @@
 (*                 U0 - amount + min(unused, RX's balance when the         *)
 (*                 resolver ran), unused as the standard reads RX's answer *)
 (*                 (gUnused); a ledger check per id, not one total         *)
+(*                 (all of it when the call failed at the gas floor)       *)
 (*   AllUnusedBack U got back every unused token (false when RX spent:     *)
 (*                 the balance cap binds; the must-fail run shows it)      *)
+(*   FloorHolds    gas mode, MtGasShape "tools": the call gets through     *)
+(*                 (the resolver runs) iff U attached at least             *)
+(*                 MtMinCallGas                                            *)
+(*                                                                         *)
+(* Gas mode (the run mt_batch_gas_std): U attaches any prepaid of GasMenu; *)
+(* the token's burns and resolver split are the measured CalibStdMt table  *)
+(* (near-sdk-contract-tools 4.0.0) with MtGasShape = "tools", RX's are     *)
+(* illustrative.                                                           *)
 (***************************************************************************)
 EXTENDS Nep245
-CONSTANTS U, MT, RX, K, Tids, Amts, U0, RxVecs, RxResps, SpendId, RxStart, MDev
-VARIABLES ntx, gUnused, gRxAt, spent
-vars == <<platformVars, mtk, ntx, gUnused, gRxAt, spent>>
+CONSTANTS U, MT, RX, K, Tids, Amts, U0, RxVecs, RxResps, SpendId, RxStart, MDev,
+          GasMenu   \* prepaid gas U may attach (gas mode)
+VARIABLES ntx, gUnused, gRxAt, spent, gPre
+vars == <<platformVars, mtk, ntx, gUnused, gRxAt, spent, gPre>>
 Accts == {U, MT, RX, K}
 N == Len(Tids)
 PFloor     == [a \in Accts |-> 0]
@@ -31,6 +41,17 @@ PMtHolders == [a \in {MT} |-> {U, RX, K}]
 PMtReserve == [a \in {MT} |-> 0]
 PMtDev     == [a \in {MT} |-> MDev]
 NoGasTable == [x \in {} |-> 0]
+
+\* Gas mode: the token side measured (CalibStdMt), RX's mt_on_transfer
+\* illustrative (its exec fee is the one measured on the receiver probe).
+Std == INSTANCE CalibStdMt
+PMtShape == [t \in {MT} |-> "tools"]
+PStdGasCall ==
+       ("mt_on_transfer" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889])
+    @@ Std!StdMtGasCall(MT)
+PStdGasBurn ==
+       ("mt_on_transfer" :> [base |-> 300, per |-> 0])
+    @@ Std!StdMtGasBurn(MT)
 Holds0 == [h \in {U, RX, K} |-> [i \in MtIds |-> CASE h = U  -> U0
                                                    [] h = RX -> RxStart[i]
                                                    [] OTHER  -> 0]]
@@ -46,40 +67,50 @@ Unused(res) ==
 RxStep(r, O) ==
     /\ Exec(r, O)
     /\ gUnused' = Unused(IF O.err # "" THEN [ok |-> FALSE, v |-> 0] ELSE [ok |-> TRUE, v |-> O.ret.v])
-    /\ UNCHANGED <<mtk, ntx, gRxAt, spent>>
+    /\ UNCHANGED <<mtk, ntx, gRxAt, spent, gPre>>
 RunRx(r) ==
     \/ \E v \in RxVecs : RxStep(r, MtRecvVecOutcome(v))
     \/ \E x \in RxResps : RxStep(r, MtRecvOutcome(r.a.amts, x))
 
-\* The token; the resolver's run records RX's balances just before it.
+\* The token; the resolver's run records RX's balances just before it
+\* (RxNone, no balance, until then).
+RxNone == [i \in MtIds |-> -1]
 RunMt(r) ==
     /\ MtStep(r, MtHandle(r))
     /\ gRxAt' = IF r.m = "mt_resolve_transfer" THEN mtk[MT].bal[RX] ELSE gRxAt
-    /\ UNCHANGED <<ntx, gUnused, spent>>
+    /\ UNCHANGED <<ntx, gUnused, spent, gPre>>
 
 Run == \E r \in Runnable :
-         IF r.m \in {XFER, REFND} THEN (ExecTransfer(r) \/ ExecTransferFail(r)) /\ UNCHANGED <<mtk, ntx, gUnused, gRxAt, spent>>
+         IF r.m \in {XFER, REFND} THEN (ExecTransfer(r) \/ ExecTransferFail(r)) /\ UNCHANGED <<mtk, ntx, gUnused, gRxAt, spent, gPre>>
          ELSE IF IsMtRcpt(r) THEN RunMt(r)
          ELSE RunRx(r)
 
 Start == /\ ntx = 0
-         /\ Submit(Rcpt(nid, 1, MT, U, "mt_batch_transfer_call", MtBatchArgs(RX, Tids, Amts, ""), TokYocto, U, 0))
+         /\ \E p \in (IF GasMode = "gas" THEN GasMenu ELSE {0}) :
+              LET c == Rcpt(nid, 1, MT, U, "mt_batch_transfer_call", MtBatchArgs(RX, Tids, Amts, ""), TokYocto, U, 0)
+              IN /\ Submit(IF GasMode = "gas" THEN WithGas(c, p) ELSE c)
+                 /\ gPre' = p
          /\ ntx' = 1 /\ UNCHANGED <<mtk, gUnused, gRxAt, spent>>
 \* RX spends 1 of SpendId to K (once), at any time.
 Spend == /\ ntx = 1 /\ ~spent /\ SpendId \in MtIds
-         /\ Submit(Rcpt(nid, 2, MT, RX, "mt_transfer", MtArgs(K, SpendId, 1, ""), TokYocto, RX, 0))
-         /\ spent' = TRUE /\ UNCHANGED <<mtk, ntx, gUnused, gRxAt>>
+         /\ LET c == Rcpt(nid, 2, MT, RX, "mt_transfer", MtArgs(K, SpendId, 1, ""), TokYocto, RX, 0)
+            IN Submit(IF GasMode = "gas" THEN WithGas(c, 300000) ELSE c)
+         /\ spent' = TRUE /\ UNCHANGED <<mtk, ntx, gUnused, gRxAt, gPre>>
 
 Init == /\ PlatformInit([a \in Accts |-> 0], {1, 2})
         /\ mtk = [a \in {MT} |-> [bal |-> Holds0]]
-        /\ ntx = 0 /\ gUnused = Amts /\ gRxAt = [i \in MtIds |-> 0] /\ spent = FALSE
+        /\ ntx = 0 /\ gUnused = Amts /\ gRxAt = RxNone /\ spent = FALSE /\ gPre = 0
 Next == Start \/ Spend \/ Run
 Spec == Init /\ [][Next]_vars
 
 Conserved == \A i \in MtIds : MtTotal(MT, i) = U0 + RxStart[i]
 NoGain == \A i \in MtIds : mtk[MT].bal[U][i] <= U0
 Settled == ntx = 1 /\ TxSettled(1)
-Honored == Settled => \A j \in 1..N : mtk[MT].bal[U][Tids[j]] = U0 - Amts[j] + TMin(gUnused[j], gRxAt[Tids[j]])
+\* The resolver never ran (gas mode: the call failed at the floor).
+NoResolve == gRxAt = RxNone
+Honored == Settled => \A j \in 1..N :
+    mtk[MT].bal[U][Tids[j]] = IF NoResolve THEN U0 ELSE U0 - Amts[j] + TMin(gUnused[j], gRxAt[Tids[j]])
+FloorHolds == Settled => (NoResolve <=> gPre < MtMinCallGas[MT])
 AllUnusedBack == Settled => \A j \in 1..N : mtk[MT].bal[U][Tids[j]] = U0 - Amts[j] + gUnused[j]
 \* Library sanity: NEAR conserved, and no orphans (a resolver never
 \* scheduled leaves mt_on_transfer's result unconsumed).

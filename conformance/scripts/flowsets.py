@@ -20,6 +20,8 @@ other's data, and a flow name may recur across sets.
   deposits conform.py also compares each receipt's deposit, in model units
            (mkconf.dep: 1 NEAR = 1000, under a milliNEAR 1); the model's
            report must carry it (Probe2Conf's Report2)
+  extra    cfg lines for constants only the driver's extra modules declare
+           (`Name <- Def`), e.g. Nep245's for the set mt
 """
 import os
 
@@ -34,6 +36,12 @@ SETS = {
                     prefix="Probe2", conf="Probe2Conf", staking="z", init="Init2", next="Next2",
                     over={"Accts": "Accts2", "ConfContracts": "ConfContracts2", "Report": "Report2"}, refunds=True,
                     deposits=True),
+    # NEP-245 (MtConf.tla): the world adds mt (the library's Nep245, near-sdk-contract-tools gas) and mr.
+    "mt": dict(flows="flows/mt.toml", data="data/mt", build="tla/build/mt", calib="CalibMt",
+               prefix="Mt", conf="MtConf", staking="p", init="Init3", next="Next3",
+               over={"Accts": "Accts3", "ConfContracts": "ConfContracts3"}, refunds=False, deposits=False,
+               extra={"MtAccts": "MtAccts3", "MtHolders": "MtHolders3", "MtIds": "MtIds3", "MtDev": "MtDev3",
+                      "MtCallReserve": "MtReserve3", "MtGasShape": "MtShape3"}),
 }
 DEFAULT = "probes"
 
@@ -60,6 +68,7 @@ class FlowSet:
         self.over = s["over"]
         self.refunds = s["refunds"]
         self.deposits = s["deposits"]
+        self.extra = s.get("extra", {})
 
 
 def take(args):

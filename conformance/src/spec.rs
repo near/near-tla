@@ -76,8 +76,10 @@ impl PathRule {
 }
 
 /// `key` is `"<receiver>.<method>"`; `from` is `"arg:<field>"` (a numeric
-/// JSON argument of the call), `"result"` (its numeric JSON result) or
-/// `"result_size"` (its result's length); the size is that over `div`.
+/// JSON argument of the call), `"arg_count:<field>"` (the number of entries
+/// of an array argument, e.g. a NEP-245 call's `token_ids`), `"result"`
+/// (its numeric JSON result) or `"result_size"` (its result's length); the
+/// size is that over `div`.
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct SizeSrc {

@@ -466,6 +466,17 @@ them. A model that lists platform variables one by one must add each.
   10, the resolver 5 Tgas and weight 1); the default stays `"reserve"`, so single-id models
   are unchanged. New sim tests `conformance/tests/mt.rs` on a NEP-245 probe built from
   near-sdk-contract-tools 4.0.0 (`conformance/probes/mt`, receiver `probes/mtrecv`).
+- **`CalibStdMt`, measured gas for a near-sdk-contract-tools 4.0.0 NEP-245 token**
+  (`StdMtGasBurn(mt)`, `StdMtGasCall(mt)`; SEMANTICS T5), for `MtGasShape[t] = "tools"`:
+  `mt_transfer`, `mt_transfer_call`, and `mt_batch_transfer`, `mt_batch_transfer_call` and
+  `mt_resolve_transfer` per id (size = the number of ids), the resolver's split. Measured by
+  the new conformance flow set `mt` (`conformance/flows/mt.toml`, 19 flows on the `mt` probe
+  and the `mtrecv` receiver), whose model side (`conformance/tla/MtConf.tla`, table
+  `CalibMt`) matches the sim on every flow: 24,947 points, 0 status or edge mismatches,
+  attached gas within 4 Ggas, the split check 0 of 30,540. `calibrate`'s `[[size]]` takes
+  `from = "arg_count:<field>"`, an array argument's length. `examples/mt-batch` has a
+  gas-mode run on the table (`mt_batch_gas_std`: the 30 Tgas floor, `FloorHolds`). The
+  existing sets, sweeps and tables are unchanged.
 - **Access-key allowances** (SEMANTICS K2, N-allowance; `examples/session-key`), opt-in:
   `WithAllowance(perm, n)` gives a function-call key an allowance. `SubmitSigned` refuses a
   transaction that costs more (`AllowanceOK`; an allowance equal to the cost is enough, as
