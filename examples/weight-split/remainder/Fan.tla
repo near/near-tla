@@ -98,5 +98,7 @@ Settled == (sent /\ Idle) =>
     /\ \A m \in DOMAIN got : got[m] # -1
     /\ okd = {Calls[i] : i \in 1..5}
     /\ oog = {<<1, "k6">>}
-Sane == NearConserved(0) /\ GasBounded(LAMBDA t : Prepaid)
+\* Library sanity: NEAR conserved, gas bounded by the prepaid gas, and no
+\* orphans (fan has no callback; listed so that Idle in Settled stays meaningful).
+Sane == NearConserved(0) /\ GasBounded(LAMBDA t : Prepaid) /\ NoOrphans
 =============================================================================

@@ -99,6 +99,8 @@ SplitExact == \A m \in DOMAIN got : got[m] # -1 => got[m] = Expected(Idx(m))
 NothingDistributed == \A m \in DOMAIN got : got[m] # -1 => got[m] = St
 CallbackDone == (sent /\ Idle) => done
 \* Library sanity: native NEAR conserved; no receipt holds more gas than
-\* the transaction prepaid.
-Sane == NearConserved(0) /\ GasBounded(LAMBDA t : Prepaid)
+\* the transaction prepaid; no orphans (a .then whose result is never wired
+\* to on_done, or a dropped on_done, leaves a receipt waiting forever, so
+\* Idle never holds and CallbackDone passes vacuously).
+Sane == NearConserved(0) /\ GasBounded(LAMBDA t : Prepaid) /\ NoOrphans
 =============================================================================

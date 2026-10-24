@@ -48,3 +48,82 @@ expect = "violation"
 invariant = "UserMadeWhole"
 [run.constants]
 Wrong = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/nep145-refund-to-predecessor --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# The Idle invariants' antecedent: the registration settles, with U registered or not.
+[[witness]]
+id = "settles_registered"
+expr = '~(Idle /\ sent /\ U \in tk[FT].reg)'
+runs = ["sd_refund_predecessor"]
+
+[[witness]]
+id = "settles_unregistered"
+expr = '~(Idle /\ sent /\ U \notin tk[FT].reg)'
+runs = ["sd_refund_predecessor"]
+
+# on_registered's two arms.
+[[witness]]
+id = "on_registered_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "on_registered" /\ r.res.ok)'
+runs = ["sd_refund_predecessor"]
+
+[[witness]]
+id = "on_registered_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_registered" /\ ~r.res.ok)'
+runs = ["sd_refund_predecessor"]
+
+# storage_deposit's minimum check: the deposit is never below the minimum here.
+[[witness]]
+id = "deposit_below_min"
+expr = '~(\E r \in Runnable : r.m = "storage_deposit" /\ r.dep < Min)'
+runs = ["sd_refund_predecessor"]
+expect = "unreachable"
+reason = "R always attaches Min + Extra; the guard is covered by examples/platform-selftest"
+
+[[mutant]]
+id = "dropped_then"
+file = "Signup.tla"
+find = 'IN Outcome({sd}, {cb}, RProm, d, 2)'
+replace = 'IN Outcome({sd}, {}, RProm, d, 2)'
+class = "dropped .then"
+
+[[mutant]]
+id = "failed_not_forwarded"
+file = "Signup.tla"
+find = 'back == IF ~r.res.ok THEN d '
+replace = 'back == IF ~r.res.ok THEN 0 '
+class = "failure branch skips rollback"
+
+[[mutant]]
+id = "failed_check_inverted"
+file = "Signup.tla"
+find = 'back == IF ~r.res.ok THEN d '
+replace = 'back == IF r.res.ok THEN d '
+class = "inverted result check"
+
+[[mutant]]
+id = "excess_off_by_one"
+file = "Signup.tla"
+find = 'ELSE d - Min '
+replace = 'ELSE d - Min - 1 '
+class = "off-by-one guard"
+
+# The library token refunds the excess to account_id (U) instead of the predecessor (R).
+[[mutant]]
+id = "excess_to_account"
+file = "Nep145.tla"
+library = true
+find = 'to  == IF "sdRefundToAccount" \in TokDev[r.to] THEN a ELSE r.fr'
+replace = 'to  == a'
+class = "wrong refund account"
+
+[[mutant]]
+id = "no_min_check"
+file = "Nep145.tla"
+library = true
+find = 'ELSE IF x < min'
+replace = 'ELSE IF FALSE'
+class = "removed precondition"
+equivalent = "R always attaches Min + Extra >= Min (witness deposit_below_min never reached)"

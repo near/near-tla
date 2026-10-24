@@ -4,7 +4,8 @@
 #
 # Books       once idle, every user's NEAR equals the payouts recorded for them.
 # PaidOnce    no user is paid twice.
-# Sane        NEAR conserved; with StoragePerByte, every balance covers its bytes.
+# Sane        NEAR conserved; with StoragePerByte, every balance covers its bytes; no orphans.
+# VaultCovered  V covers its bytes, checked without the library's storage test.
 #
 # The pair is vault_per_byte_unrecorded (must fail) / vault_per_byte_atomic_ok (must pass);
 # vault_floor_misses_it is the same wrong vault under the 0.1.0 fixed floor, a false pass.
@@ -13,7 +14,7 @@ spec = "Vault"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "PaidOnce", "Sane"]
+invariants = ["Books", "PaidOnce", "Sane", "VaultCovered"]
 tags = ["storage:per-byte"]
 
 [constants]
@@ -64,6 +65,15 @@ expect = "pass"
 [run.constants]
 Wrong = "FALSE"
 
+# With one unit more (V0 = 14) two records fit: two users are paid, and PaidOnce and the
+# "already paid" guard matter (at 13 the storage check alone stops every second payout).
+[[run]]
+name = "vault_per_byte_atomic_room"
+expect = "pass"
+[run.constants]
+Wrong = "FALSE"
+V0 = "14"
+
 # ... and the first withdraw does pay: the pass above is not vacuous.
 [[run]]
 name = "vault_per_byte_atomic_pays"
@@ -72,3 +82,77 @@ invariant = "NobodyPaid"
 invariants = ["NobodyPaid"]
 [run.constants]
 Wrong = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/storage-stake --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# vault_floor_misses_it is the documented false pass of the wrong vault and is left out.
+# Only the wrong vault has a callback (on_paid), and every run of it must fail or is the
+# false pass, so "dropped .then", "failure branch skips rollback" and "inverted result
+# check" have no passing run to apply to.
+
+# Books' antecedent: the vault settles after a withdraw.
+[[witness]]
+id = "settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["vault_per_byte_atomic_ok", "vault_per_byte_atomic_room"]
+
+# Per-byte storage refuses a withdraw: V cannot cover one more record after the payout.
+[[witness]]
+id = "withdraw_short_of_storage"
+expr = '~(\E r \in Runnable : r.m = "withdraw" /\ rec[r.a.u] = 0 /\ ~StorageCovers(near[V] - 1, stor[V] + RecBytes))'
+runs = ["vault_per_byte_atomic_ok"]
+
+# The "already paid" guard is exercised ...
+[[witness]]
+id = "withdraw_again"
+expr = '~(\E r \in Runnable : r.m = "withdraw" /\ rec[r.a.u] > 0)'
+runs = ["vault_per_byte_atomic_ok", "vault_per_byte_atomic_room"]
+
+# ... and with room for two records, by a second user who is paid.
+[[witness]]
+id = "two_paid"
+expr = '~(\A u \in Users : rec[u] = 1)'
+runs = ["vault_per_byte_atomic_room"]
+
+# The atomic vault never takes the lock.
+[[witness]]
+id = "lock_taken"
+expr = '~(\E u \in Users : lockd[u])'
+runs = ["vault_per_byte_atomic_ok", "vault_per_byte_atomic_room"]
+expect = "unreachable"
+reason = "the atomic vault records in the paying receipt and never locks; the lock belongs to the wrong vault"
+
+[[mutant]]
+id = "no_paid_check"
+file = "Vault.tla"
+find = 'CASE r.m = "withdraw" /\ (lockd[u] \/ rec[u] > 0) ->'
+replace = 'CASE r.m = "withdraw" /\ FALSE ->'
+class = "removed precondition"
+runs = ["vault_per_byte_atomic_ok", "vault_per_byte_atomic_room"]
+
+[[mutant]]
+id = "paid_check_off_by_one"
+file = "Vault.tla"
+find = 'CASE r.m = "withdraw" /\ (lockd[u] \/ rec[u] > 0) ->'
+replace = 'CASE r.m = "withdraw" /\ (lockd[u] \/ rec[u] > 1) ->'
+class = "off-by-one guard"
+runs = ["vault_per_byte_atomic_ok", "vault_per_byte_atomic_room"]
+
+# The payout goes back to V instead of the user.
+[[mutant]]
+id = "payout_to_vault"
+file = "Vault.tla"
+find = 'Pay(cb) == Rcpt(nid, r.tx, u, V, XFER, r.a, 1, V, cb)'
+replace = 'Pay(cb) == Rcpt(nid, r.tx, V, V, XFER, r.a, 1, V, cb)'
+class = "wrong refund account"
+runs = ["vault_per_byte_atomic_ok"]
+
+# The library forgets to check storage after a receipt.
+[[mutant]]
+id = "no_storage_check"
+file = "NearAsync.tla"
+library = true
+find = 'IF bytes <= ZeroBalanceBytes THEN TRUE'
+replace = 'IF TRUE THEN TRUE'
+class = "removed precondition"
+runs = ["vault_per_byte_atomic_ok"]

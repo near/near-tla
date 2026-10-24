@@ -55,3 +55,13 @@ invariant = "Safe"
 invariants = ["HorizonOK", "Safe", "YieldDeadlinesInBound"]
 [run.constants]
 MaxBlk = "2"
+
+# ---- anti-vacuity: python3 tools/run.py examples/yield-clock/final-observation --anti-vacuity ----
+# No mutants: every run here is a wrong model or a horizon check; the only pass is the
+# documented false pass final_obs_short_passes.  Its witness shows that pass is not
+# vacuous in the usual way: arm does run (at the last height); the clock bound, not a
+# dead branch, hides the bug.
+[[witness]]
+id = "armed_at_bound"
+expr = '~armed'
+runs = ["final_obs_short_passes"]

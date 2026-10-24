@@ -90,3 +90,100 @@ expect = "pass"
 [run.constants]
 Mbh = "1"
 MaxBlk = "2"
+
+# ---- anti-vacuity: python3 tools/run.py examples/meta-tx --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# meta_trusts_signer_direct_ok is a wrong L that passes without relays; it is left out.
+# No callback reads a promise result here ("dropped .then", "failure branch skips
+# rollback" on a result do not apply), and the passing runs attach no deposit, so a
+# refund to the wrong account moves nothing ("wrong refund account" is the must-fail
+# meta_deposit_refund_to_user's subject).
+
+# NoUserProfit's antecedent: the system settles after a transaction.
+[[witness]]
+id = "settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["meta_predecessor_ok", "meta_expiry_anytime", "meta_expiry_clock"]
+
+# A relayed claim reaches L (signer RL, predecessor the user), and is credited.
+[[witness]]
+id = "relayed_claim_runs"
+expr = '~(\E r \in Runnable : r.m = "claim" /\ Signer(r) = RL /\ ~r.a.bad)'
+runs = ["meta_predecessor_ok", "meta_expiry_anytime", "meta_expiry_clock"]
+
+# Credited at its bound: a user credited every good claim it authorised.
+[[witness]]
+id = "credited_at_bound"
+expr = '~(\E u \in Users : credit[u] = auth[u] /\ auth[u] > 0)'
+runs = ["meta_predecessor_ok", "meta_expiry_clock"]
+
+# A bad claim reaches L (and must fail there).
+[[witness]]
+id = "bad_claim_runs"
+expr = '~(\E r \in Runnable : r.m = "claim" /\ r.a.bad)'
+runs = ["meta_predecessor_ok"]
+
+# The nonce check stops a replay.
+[[witness]]
+id = "replay_refused"
+expr = '~(\E r \in Runnable : IsDeleg(r) /\ DelegErr(r) = "InvalidNonce")'
+runs = ["meta_predecessor_ok"]
+
+# On the clock: a delegate relayed after its expiry height, and one relayed before it.
+[[witness]]
+id = "relay_after_expiry"
+expr = '~(\E r \in Runnable : IsDeleg(r) /\ blk > r.a.mbh)'
+runs = ["meta_expiry_clock"]
+
+[[witness]]
+id = "relay_before_expiry"
+expr = '~(\E r \in Runnable : IsDeleg(r) /\ blk <= r.a.mbh /\ DelegErr(r) = "")'
+runs = ["meta_expiry_clock"]
+
+# L credits a claim even when its call failed.
+[[mutant]]
+id = "failed_claim_credited"
+file = "MetaTx.tla"
+find = "credit' = IF Ok(r, O) THEN [credit EXCEPT ![who] = @ + 1] ELSE credit"
+replace = "credit' = [credit EXCEPT ![who] = @ + 1]"
+class = "failure branch skips rollback"
+runs = ["meta_predecessor_ok"]
+
+# L panics on good claims and accepts bad ones.
+[[mutant]]
+id = "bad_check_inverted"
+file = "MetaTx.tla"
+find = 'IF r.a.bad THEN OErr('
+replace = 'IF ~r.a.bad THEN OErr('
+class = "inverted check"
+runs = ["meta_predecessor_ok"]
+
+# L no longer refuses a bad claim.
+[[mutant]]
+id = "no_bad_check"
+file = "MetaTx.tla"
+find = 'IF r.a.bad THEN OErr('
+replace = 'IF FALSE THEN OErr('
+class = "removed precondition"
+runs = ["meta_predecessor_ok"]
+
+# The library's nonce check lets an equal nonce through: a replay of the last delegate.
+[[mutant]]
+id = "nonce_check_off_by_one"
+file = "NearKeys.tla"
+library = true
+find = 'sd.n <= KeyNonce(s, sd.k)'
+replace = 'sd.n < KeyNonce(s, sd.k)'
+class = "off-by-one guard"
+runs = ["meta_predecessor_ok"]
+
+# The library never expires a delegate.
+[[mutant]]
+id = "never_expires"
+file = "NearKeys.tla"
+library = true
+find = 'DelegMayExpire(sd)  == sd.mbh # NoExpiry /\ (MaxBlk = 0 \/ blk > sd.mbh)'
+replace = 'DelegMayExpire(sd)  == FALSE'
+class = "removed precondition"
+runs = ["meta_expiry_anytime"]
+equivalent = "expiry only removes relays: without it the behaviours are those of meta_predecessor_ok (no expiry), which passes; the expiry rule itself is pinned by platform-selftest's deleg_expired"

@@ -50,9 +50,94 @@ invariants = ["SplitExact", "CallbackDone", "Sane"]
 [run.constants]
 Wts = "<<1, 1, 0>>"
 
+# Distinct weights, so a weight wired to the wrong child changes the split (with
+# <<1, 1, 2>> work_a and work_b are interchangeable).  W = 6: work_a 1000 + 683,
+# work_b 1000 + 1367, on_done 1000 + 2050.
+[[run]]
+name = "weight_split_123"
+expect = "pass"
+invariants = ["SplitExact", "CallbackDone", "Sane"]
+[run.constants]
+Wts = "<<1, 2, 3>>"
+
 [[run]]
 name = "weight_split_w0"
 expect = "pass"
 invariants = ["SplitExact", "NothingDistributed", "Sane"]
 [run.constants]
 Wts = "<<0, 0, 0>>"
+
+# ---- anti-vacuity: python3 tools/run.py examples/weight-split --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# CallbackDone's antecedent: the transaction settles.
+[[witness]]
+id = "split_settles"
+expr = '~(sent /\ Idle)'
+runs = ["weight_split_ok", "weight_split_ok_nearest", "weight_split_123", "weight_split_w0"]
+
+# SplitExact's and NothingDistributed's antecedent: every child ran.
+[[witness]]
+id = "all_children_ran"
+expr = '~(\A m \in DOMAIN got : got[m] # -1)'
+runs = ["weight_split_ok", "weight_split_ok_nearest", "weight_split_123", "weight_split_w0"]
+
+# CallbackDone's consequent can be false: on_done runs out of gas without weight.
+[[witness]]
+id = "on_done_out_of_gas"
+expr = '~(\E x \in oog : x[2] = "on_done")'
+runs = ["weight_split_w0"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Splitter.tla"
+find = 'IN Outcome({a, b}, {cb}, RVal(0), 0, 3)'
+replace = 'IN Outcome({a, b}, {}, RVal(0), 0, 3)'
+class = "dropped .then"
+runs = ["weight_split_ok"]
+
+# work_b's result is not wired to on_done (its cb is 0): on_done waits forever.
+[[mutant]]
+id = "result_not_wired"
+file = "Splitter.tla"
+find = '"work_b", [n |-> 0], 0, S, nid + 2)'
+replace = '"work_b", [n |-> 0], 0, S, 0)'
+class = "dropped .then"
+runs = ["weight_split_ok"]
+
+# work_a gets work_b's weight.  Masked by Wts[1] = Wts[2]; weight_split_123 sees it.
+[[mutant]]
+id = "wrong_weight"
+file = "Splitter.tla"
+find = '<<St>>, <<Wts[1]>>)'
+replace = '<<St>>, <<Wts[2]>>)'
+class = "wrong weight"
+runs = ["weight_split_ok", "weight_split_123"]
+
+[[mutant]]
+id = "callback_weight_zero"
+file = "Splitter.tla"
+find = '<<St>>, <<Wts[3]>>)'
+replace = '<<St>>, <<0>>)'
+class = "wrong weight"
+runs = ["weight_split_ok"]
+
+# The library's "up" split divides by W + 1.
+[[mutant]]
+id = "split_divisor_off_by_one"
+file = "NearAsync.tla"
+library = true
+find = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div W'
+replace = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div (W + 1)'
+class = "off-by-one guard"
+runs = ["weight_split_ok"]
+
+# The library's "nearest" split hands the remainder to the first weighted call.
+[[mutant]]
+id = "remainder_to_first"
+file = "NearAsync.tla"
+library = true
+find = 'LastE(E) == CHOOSE e \in E : \A f \in E : f[1] < e[1] \/ (f[1] = e[1] /\ f[2] <= e[2])'
+replace = 'LastE(E) == CHOOSE e \in E : \A f \in E : f[1] > e[1] \/ (f[1] = e[1] /\ f[2] >= e[2])'
+class = "wrong remainder receiver"
+runs = ["weight_split_ok_nearest"]

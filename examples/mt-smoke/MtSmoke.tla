@@ -32,4 +32,8 @@ Spec == Init /\ [][Next]_vars
 Conserved == MtTotal(MT, "t1") = 2
 \* U started with 1 and sent it: once settled it holds exactly the capped refund RX asked for
 Honored == (ntx = 1 /\ TxSettled(1)) => mtk[MT].bal[U]["t1"] = TMin(gR, 1)
+\* Library sanity: NEAR conserved, and no orphans (a resolver that is never
+\* scheduled leaves mt_on_transfer's result unconsumed, so the transaction never
+\* settles and Honored passes vacuously).
+Sane == NearConserved(0) /\ NoOrphans
 =============================================================================

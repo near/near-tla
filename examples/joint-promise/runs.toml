@@ -7,7 +7,7 @@ spec = "Pair"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "Sane"]
+invariants = ["Books", "NoOverdraft", "Sane"]
 tags = ["semantics:joint-results"]
 
 [constants]
@@ -57,3 +57,93 @@ invariant = "Books"
 [run.constants]
 Bug = '"res"'
 TakeOk = "{TRUE}"
+
+# ---- anti-vacuity: python3 tools/run.py examples/joint-promise --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Books' antecedent: the system settles again after a split.
+[[witness]]
+id = "split_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["joint_ok"]
+
+# The guard cr < 2: a split at exactly 2 credits, and one refused.
+[[witness]]
+id = "split_at_two"
+expr = '~(\E r \in Runnable : r.m = "split" /\ cr = 2)'
+runs = ["joint_ok"]
+
+[[witness]]
+id = "split_refused"
+expr = '~(\E r \in Runnable : r.m = "split" /\ cr < 2)'
+runs = ["joint_ok"]
+
+# on_both's arms: one witness per combination of the two results.
+[[witness]]
+id = "on_both_both_ok"
+expr = '~(\E r \in Runnable : r.m = "on_both" /\ ~IsFailed(ResAt(r, 1)) /\ ~IsFailed(ResAt(r, 2)))'
+runs = ["joint_ok"]
+
+[[witness]]
+id = "on_both_first_failed"
+expr = '~(\E r \in Runnable : r.m = "on_both" /\ IsFailed(ResAt(r, 1)) /\ ~IsFailed(ResAt(r, 2)))'
+runs = ["joint_ok"]
+
+[[witness]]
+id = "on_both_second_failed"
+expr = '~(\E r \in Runnable : r.m = "on_both" /\ ~IsFailed(ResAt(r, 1)) /\ IsFailed(ResAt(r, 2)))'
+runs = ["joint_ok"]
+
+[[witness]]
+id = "on_both_both_failed"
+expr = '~(\E r \in Runnable : r.m = "on_both" /\ IsFailed(ResAt(r, 1)) /\ IsFailed(ResAt(r, 2)))'
+runs = ["joint_ok"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Pair.tla"
+find = 'IN [O |-> Outcome({j.kids[1], j.kids[2]}, {j.cb}, RProm, 0, 5),'
+replace = 'IN [O |-> Outcome({j.kids[1], j.kids[2]}, {}, RProm, 0, 5),'
+class = "dropped .then"
+runs = ["joint_ok"]
+
+[[mutant]]
+id = "failed_legs_not_refunded"
+file = "Pair.tla"
+find = '[] OTHER         -> nf'
+replace = '[] OTHER         -> 0'
+class = "failure branch skips rollback"
+runs = ["joint_ok"]
+
+[[mutant]]
+id = "failed_check_inverted"
+file = "Pair.tla"
+find = 'LET nf   == Cardinality({i \in 1..NRes(r) : IsFailed(ResAt(r, i))})'
+replace = 'LET nf   == Cardinality({i \in 1..NRes(r) : ~IsFailed(ResAt(r, i))})'
+class = "inverted result check"
+runs = ["joint_ok"]
+
+[[mutant]]
+id = "no_credit_check"
+file = "Pair.tla"
+find = 'IF cr < 2 THEN'
+replace = 'IF FALSE THEN'
+class = "removed precondition"
+runs = ["joint_ok"]
+
+[[mutant]]
+id = "credit_check_off_by_one"
+file = "Pair.tla"
+find = 'IF cr < 2 THEN'
+replace = 'IF cr < 1 THEN'
+class = "off-by-one guard"
+runs = ["joint_ok"]
+
+# A joint callback that reads only one input position, as a single-input one would.
+[[mutant]]
+id = "reads_first_position_only"
+file = "Pair.tla"
+find = 'LET nf   == Cardinality({i \in 1..NRes(r) : IsFailed(ResAt(r, i))})'
+replace = 'LET nf   == Cardinality({i \in 1..1 : IsFailed(ResAt(r, i))})'
+class = "wrong result position"
+runs = ["joint_ok"]

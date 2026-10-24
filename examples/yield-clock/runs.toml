@@ -6,7 +6,7 @@ spec = "Deadline"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "NoNegEscrow", "Settled", "Sane"]
+invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "NoEarlyCancel", "CancelHonoured", "Sane"]
 tags = ["semantics:yield-timeout"]
 
 [constants]
@@ -35,7 +35,7 @@ YieldTicks = "2"
 [[run]]
 name = "yield_ok_timed"
 expect = "pass"
-invariants = ["Books", "NoNegEscrow", "Settled", "Sane", "NoEarlyTimeout", "YieldDeadlinesInBound"]
+invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "Sane", "NoEarlyTimeout", "YieldDeadlinesInBound"]
 [run.constants]
 MaxBlk = "6"
 TickAnytime = "FALSE"
@@ -149,11 +149,133 @@ Bug = '"trusts_timeout"'
 [[run]]
 name = "horizon_justified"
 expect = "pass"
-invariants = ["Books", "NoNegEscrow", "Settled", "Sane", "NoEarlyTimeout", "YieldDeadlinesInBound",
-              "HorizonOK"]
+invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "NoEarlyCancel", "CancelHonoured", "Sane",
+              "NoEarlyTimeout", "YieldDeadlinesInBound", "HorizonOK"]
 [run.constants]
 MaxTx = "2"
 Steps = '{"request", "answer", "cancel"}'
 CancelAt = "3"
 ReqUntil = "0"
 MaxBlk = "15"
+
+# ---- anti-vacuity: python3 tools/run.py examples/yield-clock --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# horizon_short_passes is a documented false pass of a wrong handler: no check uses it.
+
+# The antecedent of Books, Settled and Forgotten: the system settles after a request.
+[[witness]]
+id = "request_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["yield_ok_timed", "cancel_guarded", "horizon_justified"]
+
+# on_answer's arms: resumed, timed out, and a request already cancelled.
+[[witness]]
+id = "on_answer_resumed"
+expr = '~(\E r \in Runnable : r.m = "on_answer" /\ ~IsFailed(r.res))'
+runs = ["yield_ok_timed", "cancel_guarded", "horizon_justified"]
+
+[[witness]]
+id = "on_answer_timed_out"
+expr = '~(\E r \in Runnable : r.m = "on_answer" /\ IsFailed(r.res))'
+runs = ["yield_ok_timed", "cancel_guarded", "horizon_justified"]
+
+[[witness]]
+id = "on_answer_after_cancel"
+expr = '~(\E r \in Runnable : r.m = "on_answer" /\ r.a.y \notin DOMAIN reqs)'
+runs = ["cancel_guarded", "horizon_justified"]
+
+# The deadline's boundary: a timeout delivered exactly at at + YieldTicks.
+[[witness]]
+id = "timeout_at_deadline"
+expr = '~(\E r \in Runnable : r.m = "on_answer" /\ IsFailed(r.res) /\ r.a.y \in DOMAIN reqs /\ blk = reqs[r.a.y].at + YieldTicks)'
+runs = ["yield_ok_timed"]
+
+# cancel's arms: refused before the window, and committed exactly as it opens.
+[[witness]]
+id = "cancel_before_window"
+expr = '~(\E r \in Runnable : r.m = "cancel" /\ r.a.y \in DOMAIN reqs /\ blk < reqs[r.a.y].at + CancelAt)'
+runs = ["cancel_guarded", "horizon_justified"]
+
+[[witness]]
+id = "cancel_as_window_opens"
+expr = '~(\E r \in Runnable : r.m = "cancel" /\ r.a.y \in DOMAIN reqs /\ reqs[r.a.y].st = "open" /\ blk = reqs[r.a.y].at + CancelAt)'
+runs = ["cancel_guarded", "horizon_justified"]
+
+# A request at a height above 0, so that a wrongly recorded height can show.
+[[witness]]
+id = "request_after_genesis"
+expr = '~(\E y \in DOMAIN reqs : reqs[y].at > 0)'
+runs = ["yield_ok_timed", "cancel_guarded"]
+
+[[witness]]
+id = "request_after_genesis_horizon"
+expr = '~(\E y \in DOMAIN reqs : reqs[y].at > 0)'
+runs = ["horizon_justified"]
+expect = "unreachable"
+reason = "ReqUntil = 0: request fails above height 0 in this run"
+
+[[mutant]]
+id = "dropped_yield"
+file = "Deadline.tla"
+find = 'Outcome({}, {YieldRcpt(nid, r, "on_answer", Arg(nid), 0, r.cb)}, RProm, 0, 1)'
+replace = 'Outcome({}, {}, RProm, 0, 1)'
+class = "dropped .then"
+runs = ["yield_ok_timed"]
+
+[[mutant]]
+id = "timeout_not_refunded"
+file = "Deadline.tla"
+find = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1, !.reqs = Forget(y)]   \* timed out'
+replace = 'THEN [K EXCEPT !.reqs = Forget(y)]   \* timed out'
+class = "failure branch skips rollback"
+runs = ["yield_ok_timed"]
+
+[[mutant]]
+id = "timeout_check_inverted"
+file = "Deadline.tla"
+find = 'ELSE IF IsFailed(r.res)'
+replace = 'ELSE IF ~IsFailed(r.res)'
+class = "inverted result check"
+runs = ["yield_ok_timed"]
+
+[[mutant]]
+id = "no_cancel_window"
+file = "Deadline.tla"
+find = '\/ blk < reqs[y].at + CancelAt'
+replace = '\/ FALSE'
+class = "removed precondition"
+runs = ["cancel_guarded", "horizon_justified"]
+
+[[mutant]]
+id = "cancel_window_off_by_one"
+file = "Deadline.tla"
+find = '\/ blk < reqs[y].at + CancelAt'
+replace = '\/ blk <= reqs[y].at + CancelAt'
+class = "off-by-one guard"
+runs = ["cancel_guarded", "horizon_justified"]
+
+[[mutant]]
+id = "height_recorded_as_zero"
+file = "Deadline.tla"
+find = '!.reqs = (nid :> [at |-> blk, st |-> "open"]) @@ reqs'
+replace = '!.reqs = (nid :> [at |-> 0, st |-> "open"]) @@ reqs'
+class = "wrong recorded value"
+runs = ["cancel_guarded"]
+
+[[mutant]]
+id = "timeout_keeps_request"
+file = "Deadline.tla"
+find = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1, !.reqs = Forget(y)]   \* timed out'
+replace = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1]   \* timed out'
+class = "state leak"
+runs = ["yield_ok_timed"]
+
+# The library times a yield out one block early.
+[[mutant]]
+id = "library_timeout_one_early"
+file = "NearAsync.tla"
+library = true
+find = '/\ (blk >= p.ydl \/ blk >= MaxBlk)'
+replace = '/\ (blk + 1 >= p.ydl \/ blk >= MaxBlk)'
+class = "off-by-one guard"
+runs = ["yield_ok_timed"]

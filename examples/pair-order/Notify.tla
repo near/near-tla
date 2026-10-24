@@ -86,5 +86,8 @@ Spec == Init /\ [][Next]_vars
 
 (* ---- properties --------------------------------------------------------- *)
 NoDangling == (sentClose /\ Idle) => ~dOpen
+\* Once S has opened and nothing is in flight before the close, D is open: the open
+\* message was applied, not dropped (NoDangling alone holds if D never opens).
+OpenApplied == (sOpened /\ ~sentClose /\ Idle) => dOpen
 Sane == NearConserved(0) /\ NoOrphans
 =============================================================================

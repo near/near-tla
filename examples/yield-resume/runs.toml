@@ -7,7 +7,7 @@ spec = "Oracle"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "NoNegEscrow", "Settled", "Sane"]
+invariants = ["Books", "NoNegEscrow", "NoNegCredit", "Settled", "Forgotten", "Sane"]
 tags = ["semantics:yield-resume"]
 
 [constants]
@@ -32,6 +32,13 @@ Bug = '"none"'
 name = "yield_ok"
 expect = "pass"
 
+# Four transactions: one more than U's credits, so a fourth request meets the credit check.
+[[run]]
+name = "yield_ok_tx4"
+expect = "pass"
+[run.constants]
+MaxTx = "4"
+
 # The timeout's Failed is taken for an answer: U's escrowed credit is never refunded.
 [[run]]
 name = "yield_nofail"
@@ -48,3 +55,103 @@ expect = "violation"
 invariant = "NoNegEscrow"
 [run.constants]
 Bug = '"double"'
+
+# ---- anti-vacuity: python3 tools/run.py examples/yield-resume --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# The antecedent of Books, Settled and Forgotten: the system settles after a request.
+[[witness]]
+id = "request_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["yield_ok", "yield_ok_tx4"]
+
+# on_answer's two arms: resumed with the payload, and timed out (Failed).
+[[witness]]
+id = "on_answer_resumed"
+expr = '~(\E r \in Runnable : r.m = "on_answer" /\ ~IsFailed(r.res))'
+runs = ["yield_ok"]
+
+[[witness]]
+id = "on_answer_timed_out"
+expr = '~(\E r \in Runnable : r.m = "on_answer" /\ IsFailed(r.res))'
+runs = ["yield_ok"]
+
+# answer(): resume returns TRUE for an already answered request (the trap the
+# "answered" flag guards), and FALSE once the callback has run.
+[[witness]]
+id = "resume_true_after_answer"
+expr = '~(\E r \in Runnable : r.m = "answer" /\ CanResume(r, r.a.y) /\ r.a.y \in DOMAIN reqs /\ reqs[r.a.y] = "answered")'
+runs = ["yield_ok"]
+
+[[witness]]
+id = "resume_false"
+expr = '~(\E r \in Runnable : r.m = "answer" /\ ~CanResume(r, r.a.y))'
+runs = ["yield_ok"]
+
+# The guard cr < 1: a request at exactly 1 credit, and one refused (needs a fourth
+# transaction: yield_ok_tx4).
+[[witness]]
+id = "request_at_one_credit"
+expr = '~(\E r \in Runnable : r.m = "request" /\ cr = 1)'
+runs = ["yield_ok"]
+
+[[witness]]
+id = "request_refused"
+expr = '~(\E r \in Runnable : r.m = "request" /\ cr < 1)'
+runs = ["yield_ok_tx4"]
+
+[[mutant]]
+id = "dropped_yield"
+file = "Oracle.tla"
+find = 'Outcome({}, {YieldRcpt(nid, r, "on_answer", Arg(nid), 0, r.cb)}, RProm, 0, 1)'
+replace = 'Outcome({}, {}, RProm, 0, 1)'
+class = "dropped .then"
+runs = ["yield_ok"]
+
+[[mutant]]
+id = "timeout_not_refunded"
+file = "Oracle.tla"
+find = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1, !.reqs = Forget(y)]   \* timed out'
+replace = 'THEN [K EXCEPT !.reqs = Forget(y)]   \* timed out'
+class = "failure branch skips rollback"
+runs = ["yield_ok"]
+
+[[mutant]]
+id = "timeout_check_inverted"
+file = "Oracle.tla"
+find = 'IF IsFailed(r.res) /\ Bug # "nofail"'
+replace = 'IF ~IsFailed(r.res) /\ Bug # "nofail"'
+class = "inverted result check"
+runs = ["yield_ok"]
+
+[[mutant]]
+id = "no_credit_check"
+file = "Oracle.tla"
+find = 'IF cr < 1 THEN'
+replace = 'IF FALSE THEN'
+class = "removed precondition"
+runs = ["yield_ok", "yield_ok_tx4"]
+
+[[mutant]]
+id = "credit_check_off_by_one"
+file = "Oracle.tla"
+find = 'IF cr < 1 THEN'
+replace = 'IF cr < 0 THEN'
+class = "off-by-one guard"
+runs = ["yield_ok", "yield_ok_tx4"]
+
+[[mutant]]
+id = "no_answered_check"
+file = "Oracle.tla"
+find = '/\ (reqs[y] = "open" \/ Bug = "double")'
+replace = ''
+class = "removed precondition"
+runs = ["yield_ok"]
+
+[[mutant]]
+id = "timeout_keeps_request"
+file = "Oracle.tla"
+find = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1, !.reqs = Forget(y)]   \* timed out'
+replace = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1]   \* timed out'
+class = "state leak"
+runs = ["yield_ok"]

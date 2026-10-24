@@ -20,6 +20,10 @@
 (*   "after_answer"    cancel also refunds an answered request whose       *)
 (*                     callback is still in flight.                        *)
 (* NoEarlyTimeout (ghost): no on_answer saw Failed before its deadline.    *)
+(* NoEarlyCancel, CancelHonoured (ghost cw, against asked, each request's  *)
+(* true height): no cancel commits before its window opens, and none is    *)
+(* refused for an open request once it has.  Forgotten: once idle, no      *)
+(* request is left behind.                                                 *)
 (* With the clock bound MaxBlk below a deadline it can fail:               *)
 (* YieldDeadlinesInBound reports that case.                                *)
 (*                                                                         *)
@@ -36,8 +40,8 @@ EXTENDS NearAsync
 
 CONSTANTS MaxTx, Steps, CancelAt, Bug
 
-VARIABLES cr, esc, opPaid, reqs, ntx, early
-mine == <<cr, esc, opPaid, reqs, ntx, early>>
+VARIABLES cr, esc, opPaid, reqs, ntx, early, asked, cw
+mine == <<cr, esc, opPaid, reqs, ntx, early, asked, cw>>
 vars == <<platformVars, mine>>
 
 U == "u"  OP == "o"  Q == "q"
@@ -60,7 +64,7 @@ Send ==
                                  Submit(Rcpt(nid, ntx + 1, Q, U, "cancel", Arg(y), 0, U, 0))
            [] OTHER -> FALSE
     /\ ntx' = ntx + 1
-    /\ UNCHANGED <<cr, esc, opPaid, reqs, early>>
+    /\ UNCHANGED <<cr, esc, opPaid, reqs, early, asked, cw>>
 
 Forget(y) == [x \in DOMAIN reqs \ {y} |-> reqs[x]]
 
@@ -101,12 +105,24 @@ HQ(r) ==
 Early(r) == /\ r.m = "on_answer" /\ IsFailed(r.res) /\ r.a.y \in DOMAIN reqs
             /\ blk < reqs[r.a.y].at + YieldTicks
 
+\* Ghosts: asked, every committed request's true height (kept apart from reqs, so
+\* a handler that records a wrong height cannot hide it); cw, whether a cancel
+\* committed before its window (early) or was refused for an open request inside
+\* it (refused).
+Window(y) == y \in DOMAIN asked /\ blk >= asked[y] + CancelAt
+CW(r, ok) ==
+    [early   |-> cw.early \/ (r.m = "cancel" /\ ok /\ ~Window(r.a.y)),
+     refused |-> cw.refused \/ (r.m = "cancel" /\ ~ok /\ Window(r.a.y)
+                                /\ r.a.y \in DOMAIN reqs /\ reqs[r.a.y].st = "open")]
+
 RunQ(r) ==
     LET h == HQ(r) IN
     /\ Exec(r, h.O)
     /\ IF Ok(r, h.O) THEN cr' = h.cr /\ esc' = h.esc /\ opPaid' = h.op /\ reqs' = h.reqs
        ELSE UNCHANGED <<cr, esc, opPaid, reqs>>
     /\ early' = (early \/ Early(r))
+    /\ asked' = IF Ok(r, h.O) /\ r.m = "request" THEN (nid :> blk) @@ asked ELSE asked
+    /\ cw' = CW(r, Ok(r, h.O))
     /\ UNCHANGED ntx
 
 Run == \E r \in Runnable :
@@ -114,6 +130,7 @@ Run == \E r \in Runnable :
 
 Init == /\ PlatformInit([a \in Accts |-> 0], TxIds)
         /\ cr = Cred0 /\ esc = 0 /\ opPaid = 0 /\ reqs = <<>> /\ ntx = 0 /\ early = FALSE
+        /\ asked = <<>> /\ cw = [early |-> FALSE, refused |-> FALSE]
 
 Next == Send \/ Run \/ (BlockTick /\ UNCHANGED mine)
 Spec == Init /\ [][Next]_vars
@@ -122,6 +139,9 @@ Books          == Idle => cr + esc + opPaid = Cred0
 NoNegEscrow    == esc >= 0
 Settled        == Idle => esc = 0
 NoEarlyTimeout == ~early
+NoEarlyCancel  == ~cw.early
+CancelHonoured == ~cw.refused
+Forgotten      == Idle => DOMAIN reqs = {}
 HorizonOK      == ClockHorizonOK(2 * MaxTx, IF CancelAt > ReqUntil + 1 THEN CancelAt ELSE ReqUntil + 1)
 Sane           == NoOrphans /\ NearConserved(0)
 =============================================================================

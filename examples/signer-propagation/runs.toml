@@ -6,7 +6,7 @@ spec = "Payer"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["CallbackSigner", "Credited", "Sane"]
+invariants = ["CallbackSigner", "CallbackRan", "Credited", "Sane"]
 tags = ["semantics:signer-propagation"]
 
 [constants]
@@ -39,3 +39,68 @@ expect = "violation"
 invariant = "Credited"
 [run.constants]
 Wrong = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/signer-propagation --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# on_claim reads no result and no handler has a guard: the rollback, result check,
+# precondition and off-by-one classes have nothing to mutate here.
+
+# Credited's and CallbackRan's antecedent: the system settles after a pay.
+[[witness]]
+id = "pay_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["signer_credited"]
+
+# CallbackSigner's consequent is not trivially "": a callback recorded a signer.
+[[witness]]
+id = "callback_recorded"
+expr = '~(\E t \in TxIds : sawSigner[t] # "")'
+runs = ["signer_credited"]
+
+# Two different users signed: a credit to the wrong user can show.
+[[witness]]
+id = "two_signers"
+expr = '~(\E t1, t2 \in 1..ntx : signedBy[t1] # signedBy[t2])'
+runs = ["signer_credited"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Payer.tla"
+find = 'IN Exec(r, Outcome({cl}, {cb}, RProm, 0, 2))'
+replace = 'IN Exec(r, Outcome({cl}, {}, RProm, 0, 2))'
+class = "dropped .then"
+runs = ["signer_credited"]
+
+[[mutant]]
+id = "callback_records_nothing"
+file = "Payer.tla"
+find = "/\\ sawSigner' = [sawSigner EXCEPT ![r.tx] = Signer(r)]"
+replace = "/\\ sawSigner' = sawSigner"
+class = "effect never happens"
+runs = ["signer_credited"]
+
+[[mutant]]
+id = "callback_records_predecessor"
+file = "Payer.tla"
+find = "/\\ sawSigner' = [sawSigner EXCEPT ![r.tx] = Signer(r)]"
+replace = "/\\ sawSigner' = [sawSigner EXCEPT ![r.tx] = r.fr]"
+class = "signer read as predecessor"
+runs = ["signer_credited"]
+
+[[mutant]]
+id = "credits_predecessor"
+file = "Payer.tla"
+find = 'LET who == IF Wrong THEN r.fr ELSE Signer(r) IN'
+replace = 'LET who == r.fr IN'
+class = "wrong credit account"
+runs = ["signer_credited"]
+
+# The library: env::signer_account_id() returns the predecessor.
+[[mutant]]
+id = "library_signer_is_predecessor"
+file = "NearAsync.tla"
+library = true
+find = 'Signer(r)    == txsig[r.tx].a'
+replace = 'Signer(r)    == r.fr'
+class = "signer read as predecessor"
+runs = ["signer_credited"]

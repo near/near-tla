@@ -6,7 +6,7 @@ spec = "Rotator"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["NoStaleKeyAct", "Sane"]
+invariants = ["NoStaleKeyAct", "RevokeTakesEffect", "Sane"]
 tags = ["semantics:local-priority"]
 
 [constants]
@@ -38,3 +38,58 @@ expect = "violation"
 invariant = "NoStaleKeyAct"
 [run.constants]
 LocalOn = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/local-priority --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# G has no callback, reads no result and refunds nothing: the dropped .then, rollback,
+# result check, off-by-one and refund classes have nothing to mutate here.
+
+# RevokeTakesEffect's antecedent: the revoke settles.
+[[witness]]
+id = "revoke_settles"
+expr = '~(revokes /\ Idle)'
+runs = ["local_on"]
+
+# The race NoStaleKeyAct is about: act and the DeleteKey are pending together.
+[[witness]]
+id = "act_and_delete_pending"
+expr = '~((\E r \in rq : r.m = "act") /\ (\E r \in rq : IsKeyRcpt(r)))'
+runs = ["local_on"]
+
+# revoke deletes the signing key instead of k1.
+[[mutant]]
+id = "deletes_signing_key"
+file = "Rotator.tla"
+find = 'DelKeyRcpt(nid, r.tx, G, Arg("k1"), 0)'
+replace = 'DelKeyRcpt(nid, r.tx, G, Arg("k0"), 0)'
+class = "wrong argument"
+runs = ["local_on"]
+
+# revoke emits no DeleteKey.
+[[mutant]]
+id = "no_delete_emitted"
+file = "Rotator.tla"
+find = 'Exec(r, Outcome({DelKeyRcpt(nid, r.tx, G, Arg("k1"), 0)}, {}, RVal(0), 0, 1))'
+replace = 'Exec(r, Outcome({}, {}, RVal(0), 0, 0))'
+class = "effect never happens"
+runs = ["local_on"]
+
+# The library: a local receipt gets no priority.
+[[mutant]]
+id = "no_local_priority"
+file = "NearAsync.tla"
+library = true
+find = 'LocalPriorityOK(r) == ~r.loc => ~\E y \in rq : y.loc /\ y.to = r.to'
+replace = 'LocalPriorityOK(r) == TRUE'
+class = "platform rule dropped"
+runs = ["local_on"]
+
+# The library: a transaction is accepted without checking its access key.
+[[mutant]]
+id = "no_key_check_at_submission"
+file = "NearKeys.tla"
+library = true
+find = '/\ (a \in KeyAccts) => KeyCanSign(a, k, r)'
+replace = '/\ TRUE'
+class = "removed precondition"
+runs = ["local_on"]

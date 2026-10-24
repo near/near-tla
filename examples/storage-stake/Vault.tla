@@ -27,6 +27,7 @@
 (* PaidOnce  no user is paid twice.                                        *)
 (* NobodyPaid  (must fail) some payout commits: the correct vault's pass   *)
 (*           is not vacuous.                                               *)
+(* VaultCovered  V's balance covers its bytes (per byte only).            *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -86,5 +87,10 @@ Spec == Init /\ [][Next]_vars
 Books      == Idle => \A u \in Users : near[u] = rec[u]
 PaidOnce   == \A u \in Users : near[u] <= 1
 NobodyPaid == \A u \in Users : rec[u] = 0
-Sane       == NearConserved(V0) /\ StorageCovered
+\* V's balance covers its bytes at Cost, written out here: StorageCovered uses
+\* the library's own check, so it cannot see that check go missing.
+VaultCovered == StoragePerByte => near[V] * Cost[2] >= stor[V] * Cost[1]
+\* Library sanity: NEAR conserved; with StoragePerByte, every balance covers its
+\* bytes; no orphans (the wrong vault's on_paid waits on the Transfer's result).
+Sane       == NearConserved(V0) /\ StorageCovered /\ NoOrphans
 =============================================================================

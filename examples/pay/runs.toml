@@ -5,13 +5,14 @@
 #
 # Books   C's internal balance matches its FT balance once nothing is in flight.
 # Honored a settled pay was refunded what the receiver asked back, capped at amt (NEP-141).
-# Sane    native NEAR conserved, token supply = sum of balances, balance domains.
+# NoOverdraft  C never pays out more than ib holds.
+# Sane    native NEAR conserved, token supply = sum of balances, balance domains, no orphans.
 
 spec = "Pay"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "Honored", "Sane"]
+invariants = ["Books", "Honored", "NoOverdraft", "Sane"]
 
 # Shared constants; each run overrides a few. Values are TLA+ expression text.
 [constants]
@@ -155,3 +156,108 @@ GasBurn = "PStdGasBurn"
 GasMenu = "PayMenu"
 MaxTx = "1"
 Amts = "{1}"
+
+# ---- anti-vacuity: python3 tools/run.py examples/pay --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Books' antecedent: the system settles again after a pay.
+[[witness]]
+id = "pay_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["pay_std", "pay_unreg"]
+
+# Honored's antecedent: a pay settles with on_paid done.
+[[witness]]
+id = "pay_done"
+expr = '~(\E t \in 1..ntx : TxSettled(t) /\ gT[t].done)'
+runs = ["pay_std", "pay_unreg"]
+
+# The guard ib < amt: a pay at exactly the balance, and one refused.
+[[witness]]
+id = "pay_at_balance"
+expr = '~(\E r \in Runnable : r.m = "pay" /\ ib = r.a.amt)'
+runs = ["pay_std"]
+
+[[witness]]
+id = "pay_refused"
+expr = '~(\E r \in Runnable : r.m = "pay" /\ ib < r.a.amt)'
+runs = ["pay_std"]
+
+# on_paid's three arms: the resolver's number, Failed, and other bytes.
+[[witness]]
+id = "on_paid_sees_value"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ IsNum(r.res))'
+runs = ["pay_std"]
+
+[[witness]]
+id = "on_paid_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ ~r.res.ok)'
+runs = ["pay_unreg"]
+
+[[witness]]
+id = "on_paid_sees_failed_std"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ ~r.res.ok)'
+runs = ["pay_std"]
+expect = "unreachable"
+reason = "with RX registered and ib backing every pay, ft_transfer_call never panics; pay_unreg reaches this arm"
+
+[[witness]]
+id = "on_paid_sees_bytes"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ r.res.ok /\ ~IsNum(r.res))'
+runs = ["pay_std", "pay_unreg"]
+expect = "unreachable"
+reason = "the resolver always returns its used amount as a number; the arm is defensive"
+
+[[mutant]]
+id = "dropped_then"
+file = "Pay.tla"
+find = 'ELSE <<Outcome({ftc}, {cb}, RProm, TokYocto, 2), ib - amt>>'
+replace = 'ELSE <<Outcome({ftc}, {}, RProm, TokYocto, 2), ib - amt>>'
+class = "dropped .then"
+
+[[mutant]]
+id = "failed_not_credited"
+file = "Pay.tla"
+find = 'ELSE IF ~r.res.ok THEN 0 ELSE amt'
+replace = 'ELSE amt'
+class = "failure branch skips rollback"
+runs = ["pay_unreg"]
+
+[[mutant]]
+id = "failed_check_inverted"
+file = "Pay.tla"
+find = 'ELSE IF ~r.res.ok THEN 0 ELSE amt'
+replace = 'ELSE IF r.res.ok THEN 0 ELSE amt'
+class = "inverted result check"
+
+[[mutant]]
+id = "used_read_as_unused"
+file = "Pay.tla"
+find = 'IF IsNum(r.res) THEN TMin(r.res.v, amt)'
+replace = 'IF IsNum(r.res) THEN amt - TMin(r.res.v, amt)'
+class = "inverted result check"
+runs = ["pay_std"]
+
+[[mutant]]
+id = "no_balance_check"
+file = "Pay.tla"
+find = 'IN IF ib < amt THEN'
+replace = 'IN IF FALSE THEN'
+class = "removed precondition"
+
+[[mutant]]
+id = "balance_check_off_by_one"
+file = "Pay.tla"
+find = 'IN IF ib < amt THEN'
+replace = 'IN IF ib + 1 < amt THEN'
+class = "off-by-one guard"
+
+# The library resolver leaves the refund with the receiver instead of crediting C.
+[[mutant]]
+id = "refund_stays_with_receiver"
+file = "Nep141.tla"
+library = true
+find = '!.bal[rc] = @ - refund, !.bal[s] = @ + refund]'
+replace = '!.bal[rc] = @, !.bal[s] = @]'
+class = "wrong refund account"
+runs = ["pay_std"]

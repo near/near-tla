@@ -141,7 +141,14 @@ Spec == Init /\ [][Next]_vars
 Books == Idle => ib = tk[FT].bal[C]
 \* A settled pay was refunded what RX asked back (capped at amt; NEP-141).
 Honored == \A t \in 1..ntx : (TxSettled(t) /\ gT[t].done) => gT[t].refund = TMin(gT[t].req, gT[t].amt)
-Sane == NearConserved(0) /\ TokSupplyOK /\ TokTypeOK /\ GasBounded(LAMBDA t : gT[t].gas)
+\* C never pays out more than ib holds.  Books alone misses an overdraft that FT
+\* refuses: the failed ft_transfer_call comes back as Failed and on_paid credits it.
+NoOverdraft == ib >= 0
+\* Library sanity: NEAR conserved, token supply and balance domains, gas bounded by
+\* the prepaid gas, and no orphans (a dropped .then would leave the result of
+\* ft_transfer_call with nothing to consume it, so Idle never holds and Books
+\* passes vacuously).
+Sane == NearConserved(0) /\ TokSupplyOK /\ TokTypeOK /\ GasBounded(LAMBDA t : gT[t].gas) /\ NoOrphans
 \* print-only: every settled tx whose books broke, with its prepaid gas (TLC keeps going)
 WinBooks == (Idle /\ ib # tk[FT].bal[C]) => PrintT(<<"WIN", "Books", gT[ntx].gas, oog>>)
 =============================================================================

@@ -72,3 +72,40 @@ expect = "pass"
 [run.constants]
 Attach = "450"
 "NearFees!FeeRounding" = '"nearest"'
+
+# ---- anti-vacuity: python3 tools/run.py examples/fee-edge --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# edge_nearest_misses is a documented false pass and is left out. No callback reads a
+# result and no passing run refunds a deposit, so "dropped .then", "failure branch skips
+# rollback", "inverted result check" and "wrong refund account" do not apply.
+
+# Delivered's antecedent: the payment settles, and To is paid.
+[[witness]]
+id = "pay_settles"
+expr = '~(sent /\ Idle)'
+runs = ["edge_up_ok", "edge_nearest_ok"]
+
+[[witness]]
+id = "to_paid"
+expr = 'near[To] # Amt'
+runs = ["edge_up_ok", "edge_nearest_ok"]
+
+[[mutant]]
+id = "attach_one_short"
+file = "Edge.tla"
+find = '<<ForwardBurn + Attach>>'
+replace = '<<ForwardBurn + Attach - 1>>'
+class = "off-by-one guard"
+runs = ["edge_up_ok", "edge_nearest_ok"]
+
+# The library rounds fees to the nearest Ggas again.  That only makes budgets look
+# enough sooner, so no passing run can catch it; edge_up_catches (must fail) does.
+[[mutant]]
+id = "fees_rounded_nearest"
+file = "NearFees.tla"
+library = true
+find = 'FeeRounding == "up"'
+replace = 'FeeRounding == "nearest"'
+class = "fee rounding"
+runs = ["edge_up_ok"]
+equivalent = "a cheaper fee cannot fail a budget that the dearer one passes; the must-fail edge_up_catches turns into a pass under it"

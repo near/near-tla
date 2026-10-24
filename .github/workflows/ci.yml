@@ -83,3 +83,39 @@ jobs:
           name: tlc-logs
           path: examples/**/build/
           if-no-files-found: ignore
+
+  # Witnesses and mutants (runs.toml [[witness]] / [[mutant]]): every listed situation is
+  # reached and every listed mutant is killed. Separate from the tla job so its timings stay
+  # as they are; it repeats the plain runs, then checks.
+  anti-vacuity:
+    runs-on: warp-ubuntu-2404-x64-2x
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21.0.13"
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Fetch tla2tools.jar
+        run: |
+          mkdir -p tools
+          curl -sSfL -o tools/tla2tools.jar \
+            "https://github.com/tlaplus/tlaplus/releases/download/${TLA_TOOLS_VERSION}/tla2tools.jar"
+          echo "${TLA_TOOLS_SHA256}  tools/tla2tools.jar" | sha256sum -c -
+
+      - name: TLC runs, then every witness and mutant
+        run: python3 tools/run.py examples/ --anti-vacuity --workers 2
+
+      - name: Upload TLC logs of failed runs and checks
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tlc-logs-anti-vacuity
+          path: examples/**/build/
+          if-no-files-found: ignore

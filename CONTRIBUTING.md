@@ -30,6 +30,7 @@ python3 tools/run.py examples/pay pay_std   # one run within a directory
 python3 tools/run.py 'pay_*'            # runs by name under examples/ (globs work)
 python3 tools/run.py --print-trace pay_ignore   # show the counterexample of a violating run
 python3 tools/run.py --keep pay_std     # keep the generated wrapper, cfg and log in build/
+python3 tools/run.py examples/pay --anti-vacuity   # also its witnesses and mutants
 ```
 
 For each run the runner generates a wrapper `MC_<run>.tla` and a config `MC_<run>.cfg` in a
@@ -79,6 +80,20 @@ of these:
    level. If the change adds or removes an approximation, update "Not modelled" as well.
 5. **`CHANGELOG.md` updated.** A break of an operator name, arity or meaning goes under
    "Breaking" with a one-line migration.
+
+**A new example** ships witnesses and mutants in its `runs.toml`, beside its must-pass and
+must-fail runs (see [Witnesses and mutants](docs/USAGE.md#witnesses-and-mutants)):
+
+- `NoOrphans` in its `Sane`;
+- a `[[witness]]` for the antecedent of every `P => Q` invariant, for each arm of every
+  callback that reads a promise result, and at each numeric guard's threshold;
+- a `[[mutant]]` for each bug class the example claims to cover (dropped `.then`, failure
+  branch skips rollback, inverted result check, removed precondition, off-by-one guard, wrong
+  refund account), each killed, or marked `equivalent` with the reason;
+- `python3 tools/run.py examples/<name> --anti-vacuity` all as expected. CI runs it in its own
+  job.
+
+A change to an existing example keeps its witnesses reached and its mutants killed.
 
 **A fee-table change** follows `docs/VERSIONING.md`.
 

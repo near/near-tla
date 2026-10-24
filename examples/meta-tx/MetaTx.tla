@@ -21,7 +21,8 @@
 (* then credit a claim twice: the nonce check is what stops them.          *)
 (*                                                                         *)
 (* Credited:     no account is credited more claims than it authorised     *)
-(*               (signed a delegate for, or sent directly).                *)
+(*               (signed a delegate for, or sent directly) that are good:  *)
+(*               a bad claim must never be credited.                       *)
 (* NoUserProfit: once idle, no user holds more NEAR than it started with.  *)
 (* Sane:         NEAR is conserved.                                        *)
 (***************************************************************************)
@@ -50,7 +51,7 @@ Sign == \E u \in Users, bad \in BOOLEAN :
           /\ nn[u] < MaxSign
           /\ signed' = signed \cup {SignedDelegate(u, "k0", nn[u] + 1, Mbh, Claim(u, bad))}
           /\ nn' = [nn EXCEPT ![u] = @ + 1]
-          /\ auth' = [auth EXCEPT ![u] = @ + 1]
+          /\ auth' = [auth EXCEPT ![u] = @ + (IF bad THEN 0 ELSE 1)]
           /\ UNCHANGED <<platformVars, keyVars, credit, ntx>>
 
 Relay == /\ ntx < MaxTx
@@ -61,7 +62,7 @@ Relay == /\ ntx < MaxTx
 Direct == /\ ntx < MaxTx
           /\ \E u \in Users, bad \in BOOLEAN :
                /\ SubmitSigned([Claim(u, bad) EXCEPT !.id = nid, !.tx = ntx + 1], u, "k0")
-               /\ auth' = [auth EXCEPT ![u] = @ + 1]
+               /\ auth' = [auth EXCEPT ![u] = @ + (IF bad THEN 0 ELSE 1)]
           /\ ntx' = ntx + 1
           /\ UNCHANGED <<credit, signed, nn>>
 
@@ -92,5 +93,7 @@ Spec == Init /\ [][Next]_vars
 
 Credited     == \A a \in Accts : credit[a] <= auth[a]
 NoUserProfit == Idle => \A u \in Users : near[u] <= 10
-Sane         == NearConserved(10 * Cardinality(Users) + 10)
+\* Library sanity: NEAR conserved, no orphans (nothing waits on a result here;
+\* the conjunct keeps that true).
+Sane         == NearConserved(10 * Cardinality(Users) + 10) /\ NoOrphans
 =============================================================================

@@ -73,5 +73,8 @@ Spec == Init /\ [][Next]_vars
 
 UserMadeWhole == Idle => near[U] = InitU - (IF U \in tk[FT].reg THEN Min ELSE 0)
 RKeepsNothing == Idle => near[R] = InitR
-Sane == NearConserved(InitU + InitR) /\ TokSupplyOK /\ TokTypeOK
+\* Library sanity: NEAR conserved, token supply and balance domains, and no
+\* orphans (a dropped .then would leave storage_deposit's result with nothing to
+\* consume it, so Idle never holds and both Idle invariants pass vacuously).
+Sane == NearConserved(InitU + InitR) /\ TokSupplyOK /\ TokTypeOK /\ NoOrphans
 =============================================================================

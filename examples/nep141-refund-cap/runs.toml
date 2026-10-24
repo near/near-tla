@@ -6,7 +6,7 @@ spec = "RefundCap"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["RefundCapped", "OversizedRefunded", "Sane"]
+invariants = ["RefundCapped", "OversizedRefunded", "Sane", "SenderCredited", "ResolvedAsAsked"]
 tags = ["semantics:nep141-refund-cap"]
 
 [constants]
@@ -68,3 +68,110 @@ invariant = "OversizedRefunded"
 [run.constants]
 XResps = '{"keep", "keepbig"}'
 TokResolveMaxLen = '[t \in {"ft"} |-> -1]'
+
+# ---- anti-vacuity: python3 tools/run.py examples/nep141-refund-cap --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# SenderCredited's antecedent: the system settles again after a transfer.
+[[witness]]
+id = "transfers_settle"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["refund_cap_std", "refund_cap_oversized"]
+
+# A resolution with a refund that reaches U, and one that refunds nothing.
+[[witness]]
+id = "refund_paid"
+expr = '~(\E t \in TxIds : gT[t].done /\ gT[t].refund > 0)'
+runs = ["refund_cap_std", "refund_cap_oversized"]
+
+[[witness]]
+id = "nothing_refunded"
+expr = '~(\E t \in TxIds : gT[t].done /\ gT[t].refund = 0)'
+runs = ["refund_cap_std", "refund_cap_oversized"]
+
+# The resolver's arms: X's answer Failed, above the amount, unparsable, too long.
+[[witness]]
+id = "resolver_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "ft_resolve_transfer" /\ ~r.res.ok)'
+runs = ["refund_cap_std"]
+
+[[witness]]
+id = "resolver_sees_over_amount"
+expr = '~(\E r \in Runnable : r.m = "ft_resolve_transfer" /\ IsNum(r.res) /\ r.res.v > r.a.amt)'
+runs = ["refund_cap_std"]
+
+[[witness]]
+id = "resolver_sees_unparsable"
+expr = '~(\E r \in Runnable : r.m = "ft_resolve_transfer" /\ r.res.ok /\ ~IsNum(r.res))'
+runs = ["refund_cap_std"]
+
+# OversizedRefunded's antecedent: X answers "keepbig".
+[[witness]]
+id = "resolver_sees_oversized"
+expr = '~(\E t \in TxIds : gT[t].big /\ gT[t].done)'
+runs = ["refund_cap_oversized"]
+
+# The balance cap: X spent before the resolver ran, so the refund is below what it asked.
+[[witness]]
+id = "refund_capped_by_balance"
+expr = '~(\E t \in TxIds : gT[t].done /\ gT[t].refund < TMin(gT[t].req, gT[t].amt))'
+runs = ["refund_cap_std", "refund_cap_oversized"]
+
+# The resolver is never scheduled after ft_on_transfer.
+[[mutant]]
+id = "resolver_dropped"
+file = "Nep141.tla"
+library = true
+find = '!.ps = @ \cup {res}'
+replace = '!.ps = @'
+class = "dropped .then"
+runs = ["refund_cap_std"]
+
+# A Failed ft_on_transfer counts as all used: no refund.
+[[mutant]]
+id = "failed_counts_as_used"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE IF ~res.ok THEN 0 ELSE TMin(NumOrChecked(res, max, amt), amt)'
+class = "failure branch skips rollback"
+runs = ["refund_cap_std"]
+
+# An unparsable answer counts as all used instead of all unused.
+[[mutant]]
+id = "unparsable_counts_as_used"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE TMin(NumOrChecked(res, max, 0), amt)'
+class = "inverted result check"
+runs = ["refund_cap_std", "refund_cap_oversized"]
+
+# The refund is not capped at X's balance.
+[[mutant]]
+id = "no_balance_cap"
+file = "TokenCommon.tla"
+library = true
+find = 'IF u > 0 /\ rcvBal > 0 THEN TMin(rcvBal, u) ELSE 0'
+replace = 'IF u > 0 THEN u ELSE 0'
+class = "removed precondition"
+runs = ["refund_cap_std"]
+
+[[mutant]]
+id = "cap_off_by_one"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE TMin(NumOrChecked(res, max, amt), amt - 1)'
+class = "off-by-one guard"
+runs = ["refund_cap_std"]
+
+# The refund is burnt (U treated as unregistered) instead of credited to U.
+[[mutant]]
+id = "refund_burnt"
+file = "Nep141.tla"
+library = true
+find = 'sReg   == s \in L.reg'
+replace = 'sReg   == FALSE'
+class = "wrong refund account"
+runs = ["refund_cap_std"]

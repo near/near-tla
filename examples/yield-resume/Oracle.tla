@@ -22,6 +22,8 @@
 (* Books: once idle, U's credits + escrow + O's pay are conserved.         *)
 (* NoNegEscrow: the escrow never pays out more than it holds.              *)
 (* Settled: once idle, the escrow is empty.                                *)
+(* NoNegCredit: U's credits never go negative.  Forgotten: once idle, no   *)
+(* request is left behind.                                                 *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -94,5 +96,9 @@ Spec == Init /\ [][Next]_vars
 Books       == Idle => cr + esc + opPaid = Cred0
 NoNegEscrow == esc >= 0
 Settled     == Idle => esc = 0
+\* U's credits never go negative (a conserved sum such as Books cannot see that).
+NoNegCredit == cr >= 0
+\* Once idle, every request is forgotten: no callback left one behind.
+Forgotten   == Idle => DOMAIN reqs = {}
 Sane        == NoOrphans /\ NearConserved(0)
 =============================================================================

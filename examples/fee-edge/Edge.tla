@@ -59,5 +59,7 @@ Next == Start \/ Run
 Spec == Init /\ [][Next]_vars
 
 Delivered == (sent /\ Idle) => near[To] = Amt
-Sane == NearConserved(InitP) /\ GasBounded(LAMBDA t : 300000)
+\* Library sanity: NEAR conserved, gas bounded by the prepaid gas, no orphans
+\* (nothing here waits on a result; the conjunct keeps that true).
+Sane == NearConserved(InitP) /\ GasBounded(LAMBDA t : 300000) /\ NoOrphans
 =============================================================================

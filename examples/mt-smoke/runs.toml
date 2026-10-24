@@ -8,7 +8,7 @@ spec = "MtSmoke"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Conserved", "Honored"]
+invariants = ["Conserved", "Honored", "Sane"]
 
 [constants]
 Accounts = "Accts"
@@ -49,3 +49,86 @@ invariant = "Honored"
 tags = ["tokens:nep245", "tokens:deviation"]
 [run.constants]
 MDev = '{"resolveNoCap"}'
+
+# ---- anti-vacuity: python3 tools/run.py examples/mt-smoke --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Honored's antecedent: the transfer settles.
+[[witness]]
+id = "transfer_settles"
+expr = '~(ntx = 1 /\ TxSettled(1))'
+runs = ["mt_std"]
+
+# The resolver's arms: RX's answer Failed, above the amount, unparsable.
+[[witness]]
+id = "resolver_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ ~r.res.ok)'
+runs = ["mt_std"]
+
+[[witness]]
+id = "resolver_sees_over_amount"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ IsNum(r.res) /\ r.res.v > r.a.amt)'
+runs = ["mt_std"]
+
+[[witness]]
+id = "resolver_sees_unparsable"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ r.res.ok /\ ~IsNum(r.res))'
+runs = ["mt_std"]
+
+# The receiver-balance cap never binds: RX holds 2 once it received 1, and asks back at most 1.
+[[witness]]
+id = "receiver_short_at_resolve"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ mtk[MT].bal[RX]["t1"] < r.a.amt)'
+runs = ["mt_std"]
+expect = "unreachable"
+reason = "RX starts with 1 and never spends; examples/nep141-refund-cap covers the cap"
+
+[[mutant]]
+id = "resolver_dropped"
+file = "Nep245.tla"
+library = true
+find = '!.ps = @ \cup {res}'
+replace = '!.ps = @'
+class = "dropped .then"
+
+[[mutant]]
+id = "failed_counts_as_used"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE IF ~res.ok THEN 0 ELSE TMin(NumOrChecked(res, max, amt), amt)'
+class = "failure branch skips rollback"
+
+[[mutant]]
+id = "unparsable_counts_as_used"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE TMin(NumOrChecked(res, max, 0), amt)'
+class = "inverted result check"
+
+[[mutant]]
+id = "cap_off_by_one"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE TMin(NumOrChecked(res, max, amt), amt - 1)'
+class = "off-by-one guard"
+
+[[mutant]]
+id = "no_balance_cap"
+file = "TokenCommon.tla"
+library = true
+find = 'IF u > 0 /\ rcvBal > 0 THEN TMin(rcvBal, u) ELSE 0'
+replace = 'IF u > 0 THEN u ELSE 0'
+class = "removed precondition"
+equivalent = "the cap never binds here (witness receiver_short_at_resolve never reached)"
+
+# The refund stays with the receiver instead of going back to the sender.
+[[mutant]]
+id = "refund_stays_with_receiver"
+file = "Nep245.tla"
+library = true
+find = 'L1 == [L EXCEPT !.bal[a.rc][a.tid] = @ - refund, !.bal[a.s][a.tid] = @ + refund]'
+replace = 'L1 == L'
+class = "wrong refund account"

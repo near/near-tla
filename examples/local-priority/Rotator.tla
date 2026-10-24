@@ -13,6 +13,7 @@
 (*    receipt is), so it runs in a later chunk.                            *)
 (*  - G.act(), signed with k1, may be submitted while k1 still exists.     *)
 (* NoStaleKeyAct: act never executes after its signing key was deleted.    *)
+(* RevokeTakesEffect: once the revoke settles, k1 is gone and k0 is kept.  *)
 (*                                                                         *)
 (* The pair is about the platform assumption, not the contract:            *)
 (*  - local_on  (LocalOn = TRUE, the receipt step conjoins                 *)
@@ -73,6 +74,9 @@ Next == Revoke \/ Act \/ Run
 Spec == Init /\ [][Next]_vars
 
 NoStaleKeyAct == ~stale
-\* Library sanity: native NEAR conserved.
-Sane == NearConserved(0)
+\* Once the revoke has settled, k1 is gone and the signing key k0 is kept
+\* (NoStaleKeyAct alone passes when the revoke deletes nothing).
+RevokeTakesEffect == (revokes /\ Idle) => ~KeyPresent(G, "k1") /\ KeyPresent(G, "k0")
+\* Library sanity: native NEAR conserved, and no orphans.
+Sane == NearConserved(0) /\ NoOrphans
 =============================================================================

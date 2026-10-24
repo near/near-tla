@@ -4,6 +4,7 @@
 #   python3 tools/run.py examples/pair-order
 #
 # NoDangling  once both messages are sent and nothing is in flight, D is closed.
+# OpenApplied once opened and settled before the close, D is open.
 # Sane        NEAR conserved, no orphans.
 #
 # The violation is not a false counterexample: nearcore can deliver d_close before d_open
@@ -13,7 +14,7 @@ spec = "Notify"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["NoDangling", "Sane"]
+invariants = ["NoDangling", "OpenApplied", "Sane"]
 tags = ["semantics:pair-order"]
 
 [constants]
@@ -48,3 +49,72 @@ expect = "violation"
 invariant = "NoDangling"
 [run.constants]
 Seqno = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/pair-order --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# NoDangling's antecedent: both messages sent, and settled.
+[[witness]]
+id = "close_settles"
+expr = '~(sentClose /\ Idle)'
+runs = ["pair_seqno_ok"]
+
+# OpenApplied's antecedent: opened and settled before the close.
+[[witness]]
+id = "open_settles"
+expr = '~(sOpened /\ ~sentClose /\ Idle)'
+runs = ["pair_seqno_ok"]
+
+# The reorder: d_close runs while d_open is still in flight.
+[[witness]]
+id = "close_overtakes_open"
+expr = '~(\E r \in Runnable : r.m = "d_close" /\ dHi = 0)'
+runs = ["pair_seqno_ok"]
+
+# Fresh's rejecting arm: the older d_open arrives after d_close.
+[[witness]]
+id = "stale_open_ignored"
+expr = '~(\E r \in Runnable : r.m = "d_open" /\ dHi = 2)'
+runs = ["pair_seqno_ok"]
+
+# The boundary of Fresh (r.a.s = dHi): D never sees one sequence number twice. The
+# evidence for the equivalent mutant fresh_check_off_by_one.
+[[witness]]
+id = "same_seq_twice"
+expr = '~(\E r \in Runnable : r.to = D /\ r.a.s = dHi)'
+runs = ["pair_seqno_ok"]
+expect = "unreachable"
+reason = "each message carries its own sequence number and D runs each receipt once"
+
+[[mutant]]
+id = "fresh_check_inverted"
+file = "Notify.tla"
+find = 'Fresh(r) == ~Seqno \/ r.a.s > dHi'
+replace = 'Fresh(r) == ~Seqno \/ r.a.s < dHi'
+class = "inverted result check"
+runs = ["pair_seqno_ok"]
+
+[[mutant]]
+id = "no_fresh_check"
+file = "Notify.tla"
+find = 'Fresh(r) == ~Seqno \/ r.a.s > dHi'
+replace = 'Fresh(r) == TRUE'
+class = "removed precondition"
+runs = ["pair_seqno_ok"]
+
+[[mutant]]
+id = "fresh_check_off_by_one"
+file = "Notify.tla"
+find = 'Fresh(r) == ~Seqno \/ r.a.s > dHi'
+replace = 'Fresh(r) == ~Seqno \/ r.a.s >= dHi'
+class = "off-by-one guard"
+runs = ["pair_seqno_ok"]
+equivalent = "r.a.s = dHi never holds when D reads it (witness same_seq_twice), so >= and > agree"
+
+[[mutant]]
+id = "high_mark_not_kept"
+file = "Notify.tla"
+find = "/\\ dHi' = IF r.a.s > dHi THEN r.a.s ELSE dHi"
+replace = "/\\ dHi' = dHi"
+class = "lost update"
+runs = ["pair_seqno_ok"]

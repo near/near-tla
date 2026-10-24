@@ -62,3 +62,65 @@ name = "eth_fee_creates"
 expect = "pass"
 [run.constants]
 Exists = '{"u", "p", "r", "bob"}'
+
+# ---- anti-vacuity: python3 tools/run.py examples/eth-implicit-fee --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# No callback reads a result here, and no deposit is refunded in a passing run, so the
+# classes "dropped .then", "failure branch skips rollback", "inverted result check" and
+# "wrong refund account" do not apply.
+
+# Delivered's antecedent: the payment settles.
+[[witness]]
+id = "pay_settles"
+expr = '~(sent /\ Idle)'
+runs = ["eth_fee_ok", "eth_fee_named_rcv", "eth_fee_ok_nearest", "eth_fee_creates"]
+
+# Created's antecedent: settled with To created by the Transfer ...
+[[witness]]
+id = "settles_with_to_created"
+expr = '~(sent /\ Idle /\ To \notin Exists)'
+runs = ["eth_fee_creates"]
+
+# ... which the other runs cannot reach: To exists from the start.
+[[witness]]
+id = "settles_with_to_created_existing"
+expr = '~(sent /\ Idle /\ To \notin Exists)'
+runs = ["eth_fee_ok", "eth_fee_named_rcv", "eth_fee_ok_nearest"]
+expect = "unreachable"
+reason = "To is in Exists in these runs; eth_fee_creates covers Created"
+
+# The budget sits exactly at the need: forward never runs out of gas in a correct run.
+[[witness]]
+id = "forward_out_of_gas"
+expr = 'oog = {}'
+runs = ["eth_fee_ok", "eth_fee_ok_nearest", "eth_fee_creates"]
+expect = "unreachable"
+reason = "P budgets the exact fee; eth_fee_named_budget is the must-fail twin where forward runs out"
+
+[[mutant]]
+id = "budget_one_short"
+file = "Forwarder.tla"
+find = 'Budget == ForwardBurn + ('
+replace = 'Budget == ForwardBurn - 1 + ('
+class = "off-by-one guard"
+runs = ["eth_fee_ok", "eth_fee_ok_nearest", "eth_fee_creates"]
+
+# The library prices every Transfer as one to a named account.
+[[mutant]]
+id = "fee_ignores_kind"
+file = "NearAsync.tla"
+library = true
+find = 'XferFee(fr, to)  == NearFeeTable!TransferFeeTotal(fr = to, KindOf(to))'
+replace = 'XferFee(fr, to)  == NearFeeTable!TransferFeeTotal(fr = to, "named")'
+class = "wrong fee"
+runs = ["eth_fee_ok"]
+
+# The library's Transfer to a missing implicit account forgets to record the creation.
+[[mutant]]
+id = "creation_not_recorded"
+file = "NearAsync.tla"
+library = true
+find = "created' = IF AcctExists(r.to) THEN created ELSE created \\cup {r.to}"
+replace = "created' = created"
+class = "dropped effect"
+runs = ["eth_fee_creates"]

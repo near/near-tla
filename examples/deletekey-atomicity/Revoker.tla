@@ -72,6 +72,6 @@ Spec == Init /\ [][Next]_vars
 Counted == Idle => revoked = Cardinality({"k0", "k1"} \ DOMAIN keys[A])
 \* k0 signs every transaction and is never deleted.
 OwnerKeyKept == "k0" \in DOMAIN keys[A]
-\* Library sanity: native NEAR conserved.
-Sane == NearConserved(0)
+\* Library sanity: native NEAR conserved, and no orphans.
+Sane == NearConserved(0) /\ NoOrphans
 =============================================================================

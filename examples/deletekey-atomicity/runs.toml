@@ -39,3 +39,61 @@ expect = "violation"
 invariant = "Counted"
 [run.constants]
 Wrong = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/deletekey-atomicity --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# A has no callback, reads no result and refunds nothing: the dropped .then, result
+# check, off-by-one and refund classes have nothing to mutate here.
+
+# Counted's antecedent: the system settles after a revoke.
+[[witness]]
+id = "revoke_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["delkey_bundled"]
+
+# The case atomicity is for: an on_revoked receipt whose DeleteKey finds k1 gone.
+[[witness]]
+id = "second_revoke_finds_key_gone"
+expr = '~(\E r \in Runnable : r.m = "on_revoked" /\ ~KeyPresent(A, "k1"))'
+runs = ["delkey_bundled"]
+
+# on_revoked no longer carries the DeleteKey: the count is bumped, nothing deleted.
+[[mutant]]
+id = "delete_not_bundled"
+file = "Revoker.tla"
+find = 'Acts(r) == IF Wrong THEN <<>> ELSE <<DelKeyAct(r.a.k)>>'
+replace = 'Acts(r) == <<>>'
+class = "effect never happens"
+runs = ["delkey_bundled"]
+
+# The count is bumped even when the bundled receipt failed.
+[[mutant]]
+id = "count_kept_on_failure"
+file = "Revoker.tla"
+find = "/\\ revoked' = IF OkWithKeys(r, Acts(r), O) THEN revoked + 1 ELSE revoked"
+replace = "/\\ revoked' = revoked + 1"
+class = "failure branch skips rollback"
+runs = ["delkey_bundled"]
+
+# revoke deletes the owner's signing key.
+[[mutant]]
+id = "revokes_signing_key"
+file = "Revoker.tla"
+find = '"revoke", Arg("k1")'
+replace = '"revoke", Arg("k0")'
+class = "wrong argument"
+runs = ["delkey_bundled"]
+
+# The library: deleting an absent key succeeds.
+[[mutant]]
+id = "delete_absent_key_succeeds"
+file = "NearKeys.tla"
+library = true
+find = '''
+              THEN KeysFold([y \in DOMAIN ks \ {x.k} |-> ks[y]], Tail(acts))
+              ELSE [ok |-> FALSE, ks |-> ks]'''
+replace = '''
+              THEN KeysFold([y \in DOMAIN ks \ {x.k} |-> ks[y]], Tail(acts))
+              ELSE KeysFold(ks, Tail(acts))'''
+class = "removed precondition"
+runs = ["delkey_bundled"]

@@ -81,5 +81,8 @@ Books == Idle => /\ held = esc
                  /\ near[V] = stashed - held
                  /\ near[U] = InitU - stashed
 EscrowBacked == near[E] = esc
-Sane == NearConserved(InitU)
+\* Library sanity: native NEAR conserved, and no orphans (a dropped .then would
+\* leave hold's result with nothing to consume it, so Idle never holds again and
+\* Books passes vacuously).
+Sane == NearConserved(InitU) /\ NoOrphans
 =============================================================================

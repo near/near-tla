@@ -41,3 +41,56 @@ expect = "violation"
 invariant = "Books"
 [run.constants]
 Wrong = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/revert-scope --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Books' antecedent: the system settles again after a stash.
+[[witness]]
+id = "stash_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["revert_scope_ok"]
+
+# on_hold's two arms.
+[[witness]]
+id = "on_hold_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "on_hold" /\ r.res.ok)'
+runs = ["revert_scope_ok"]
+
+[[witness]]
+id = "on_hold_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_hold" /\ ~r.res.ok)'
+runs = ["revert_scope_ok"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Vault.tla"
+find = 'IN <<Outcome({h}, {cb}, RProm, d, 2), held + r.dep, stashed + r.dep>>'
+replace = 'IN <<Outcome({h}, {}, RProm, d, 2), held + r.dep, stashed + r.dep>>'
+class = "dropped .then"
+runs = ["revert_scope_ok"]
+
+[[mutant]]
+id = "failed_not_undone"
+file = "Vault.tla"
+find = 'ELSE <<Outcome({}, {}, RVal(0), 0, 0), held - d, stashed>>'
+replace = 'ELSE <<Outcome({}, {}, RVal(0), 0, 0), held, stashed>>'
+class = "failure branch skips rollback"
+runs = ["revert_scope_ok"]
+
+[[mutant]]
+id = "result_check_inverted"
+file = "Vault.tla"
+find = 'IF r.res.ok \/ Wrong THEN'
+replace = 'IF ~r.res.ok \/ Wrong THEN'
+class = "inverted result check"
+runs = ["revert_scope_ok"]
+
+# hold's deposit refund goes to U instead of V, its predecessor.
+[[mutant]]
+id = "refund_to_user"
+file = "Vault.tla"
+find = 'h  == Rcpt(nid, r.tx, E, V, "hold", Arg(d), d, V, nid + 1)'
+replace = 'h  == Rcpt(nid, r.tx, E, V, "hold", Arg(d), d, U, nid + 1)'
+class = "wrong refund account"
+runs = ["revert_scope_ok"]

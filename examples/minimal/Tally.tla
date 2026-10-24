@@ -87,6 +87,8 @@ Spec == Init /\ [][Next]_vars
 
 (* ---- properties --------------------------------------------------------- *)
 Counted == Idle => n = works
+\* At the 1000 Tgas maximum every work commits: the split gives work enough gas.
+WorkFits == (Idle /\ \A t \in 1..ntx : gas[t] = 1000000) => works = ntx
 \* Library sanity: NEAR conserved from the initial total (only U starts with
 \* NEAR), no receipt holds more than its transaction's prepaid gas, no orphans.
 Sane == NearConserved(InitU) /\ GasBounded(LAMBDA t : gas[t]) /\ NoOrphans

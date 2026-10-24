@@ -17,6 +17,7 @@
 (*                                                                         *)
 (* Credited: once idle, each user's credit = the claims it signed.         *)
 (* CallbackSigner: every callback saw the signer of its transaction.       *)
+(* CallbackRan: once idle, every transaction's callback has run.           *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -71,6 +72,10 @@ Spec == Init /\ [][Next]_vars
 Credited == Idle => \A a \in Accts :
                       credit[a] = Cardinality({t \in 1..ntx : signedBy[t] = a})
 CallbackSigner == \A t \in TxIds : sawSigner[t] \in {"", signedBy[t]}
-\* Library sanity: native NEAR conserved.
-Sane == NearConserved(0)
+\* Once idle, every transaction's callback ran and recorded its signer
+\* (CallbackSigner alone accepts a callback that never ran).
+CallbackRan == Idle => \A t \in 1..ntx : sawSigner[t] # ""
+\* Library sanity: native NEAR conserved, and no orphans (a dropped .then would
+\* leave claim's result with nothing to consume it, so Idle never holds again).
+Sane == NearConserved(0) /\ NoOrphans
 =============================================================================

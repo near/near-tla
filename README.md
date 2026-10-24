@@ -65,6 +65,8 @@ python3 tools/run.py examples/
 
 Each example has must-pass runs and must-fail runs. The runner exits nonzero if any verdict
 differs from its expectation. `python3 tools/run.py --help` documents the `runs.toml` format.
+With `--anti-vacuity` it also checks that each example's witnesses are reached and its mutants
+are caught, so a pass cannot be vacuous ([Witnesses and mutants](docs/USAGE.md#witnesses-and-mutants)).
 
 To model your first contract, follow [`docs/USAGE.md`](docs/USAGE.md). It starts from
 [`examples/minimal`](examples/minimal/), a complete model you can copy; your model can live

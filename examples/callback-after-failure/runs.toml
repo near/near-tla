@@ -6,7 +6,7 @@ spec = "Relay"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["AddStays", "Books", "Sane"]
+invariants = ["AddStays", "Books", "NoOverdraft", "Sane"]
 tags = ["semantics:callback-after-failure"]
 
 [constants]
@@ -50,3 +50,75 @@ invariant = "Books"
 CResps = '{"add"}'
 MayFail = '{"on_added"}'
 MaxFails = "1"
+
+# ---- anti-vacuity: python3 tools/run.py examples/callback-after-failure --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Books' antecedent: the system settles again after a send.
+[[witness]]
+id = "send_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["cb_sees_failed"]
+
+# on_added's two arms.
+[[witness]]
+id = "on_added_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "on_added" /\ r.res.ok)'
+runs = ["cb_sees_failed"]
+
+[[witness]]
+id = "on_added_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_added" /\ ~r.res.ok)'
+runs = ["cb_sees_failed"]
+
+# The guard bal < n: a send at exactly the balance, and one refused.
+[[witness]]
+id = "send_at_balance"
+expr = '~(\E r \in Runnable : r.m = "send" /\ bal = r.a.n)'
+runs = ["cb_sees_failed"]
+
+[[witness]]
+id = "send_refused"
+expr = '~(\E r \in Runnable : r.m = "send" /\ bal < r.a.n)'
+runs = ["cb_sees_failed"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Relay.tla"
+find = 'IN <<Outcome({add}, {cb}, RProm, 0, 2), bal - n, pending + n>>'
+replace = 'IN <<Outcome({add}, {}, RProm, 0, 2), bal - n, pending + n>>'
+class = "dropped .then"
+runs = ["cb_sees_failed"]
+
+[[mutant]]
+id = "failed_not_credited"
+file = "Relay.tla"
+find = 'ELSE <<Outcome({}, {}, RVal(0), 0, 0), bal + n, pending - n>>'
+replace = 'ELSE <<Outcome({}, {}, RVal(0), 0, 0), bal, pending - n>>'
+class = "failure branch skips rollback"
+runs = ["cb_sees_failed"]
+
+[[mutant]]
+id = "result_check_inverted"
+file = "Relay.tla"
+find = 'IF r.res.ok \/ Wrong THEN'
+replace = 'IF ~r.res.ok \/ Wrong THEN'
+class = "inverted result check"
+runs = ["cb_sees_failed"]
+
+[[mutant]]
+id = "no_balance_check"
+file = "Relay.tla"
+find = 'THEN IF bal < n THEN'
+replace = 'THEN IF FALSE THEN'
+class = "removed precondition"
+runs = ["cb_sees_failed"]
+
+[[mutant]]
+id = "balance_check_off_by_one"
+file = "Relay.tla"
+find = 'THEN IF bal < n THEN'
+replace = 'THEN IF bal + 1 < n THEN'
+class = "off-by-one guard"
+runs = ["cb_sees_failed"]
+

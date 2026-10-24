@@ -125,6 +125,14 @@ class ParseTest(unittest.TestCase):
         self.assertEqual((r.verdict, r.name), ("violation", "Small"))
         self.assertEqual(r.label(), "violation Small")
 
+    def test_constant_level_invariant(self):
+        """An invariant that reads no variable is checked once, before the search."""
+        text = ("Starting... (2026-01-01 00:00:00)\n"
+                "Error: The invariant of FeesOk is equal to FALSE\n"
+                "Finished in 00s at (2026-01-01 00:00:00)\n")
+        r = tlcparse.parse(text, 151)
+        self.assertEqual((r.verdict, r.name), ("violation", "FeesOk"))
+
     def test_action_property_and_temporal(self):
         r = tlcparse.parse("Error: Action property Mono is violated.\n", 13)
         self.assertEqual((r.verdict, r.name), ("violation", "Mono"))

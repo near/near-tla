@@ -38,6 +38,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [Replaying a counterexample in the sim](#replaying-a-counterexample-in-the-sim)
 - [The runner: `runs.toml`](#the-runner-runstoml)
 - [Every invariant must be able to fail](#every-invariant-must-be-able-to-fail)
+- [Witnesses and mutants](#witnesses-and-mutants)
 - [Print-only window invariants](#print-only-window-invariants)
 - [Worked material](#worked-material)
 
@@ -64,7 +65,9 @@ noise. The rest of this guide is the mechanics.
    gas and faults, reproduces in near-contract-sim against the compiled contract.
 5. **Make every invariant able to fail.** For each invariant, add a deliberately wrong
    variant that TLC must report, and confirm from the trace that it fails for the reason you
-   intended. An invariant that has never failed may be vacuous.
+   intended. An invariant that has never failed may be vacuous. Then show that each
+   invariant's situation is reached and that small bugs are caught
+   ([Witnesses and mutants](#witnesses-and-mutants)).
 6. **If you conjoin `LocalPriorityOK`, also run without it.** Local-receipt priority is
    opt-in, and off unless your model conjoins it ([section 11](#11-local-receipt-priority)).
    It holds only while the receiving chunk has room. A violation that appears only without it
@@ -183,6 +186,7 @@ Next == \/ Ping
 Spec == Init /\ [][Next]_vars
 
 Counted == Idle => n = works
+WorkFits == (Idle /\ \A t \in 1..ntx : gas[t] = 1000000) => works = ntx
 Sane == NearConserved(InitU) /\ GasBounded(LAMBDA t : gas[t]) /\ NoOrphans
 WinCounted == (Idle /\ n # works) => PrintT(<<"WIN", "Counted", gas[ntx], oog>>)
 =============================================================================
@@ -192,7 +196,8 @@ Its `runs.toml` sets every constant once and has five runs:
 
 - `tally_ok`: fault mode, `work` may fail once; must pass.
 - `tally_trusting`: the same with `Trusting = TRUE`; must fail `Counted`.
-- `tally_gas_ok`: gas mode over the menu; must pass.
+- `tally_gas_ok`: gas mode over the menu; must pass, with `WorkFits` too: at the 1000 Tgas
+  maximum every `work` commits.
 - `tally_gas_trusting`: gas mode with the trusting `done`; must fail `Counted`, because
   `work` runs out of gas below 9.1 Tgas.
 - `tally_gas_win`: the same as a print-only window, which must be exactly 8.6-9.0 Tgas.
@@ -245,13 +250,32 @@ MaxFails = '1'
 Trusting = 'TRUE'
 
 # ... tally_gas_ok, tally_gas_trusting, tally_gas_win: see examples/minimal/runs.toml
+
+# Counted's antecedent is reached: the system settles again after a ping.
+[[witness]]
+id = "ping_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["tally_ok", "tally_gas_ok"]
+
+# A dropped .then must be caught (here by NoOrphans, in Sane).
+[[mutant]]
+id = "dropped_then"
+file = "Tally.tla"
+find = 'IN Outcome({w}, {cb}, RProm, 0, 2)'
+replace = 'IN Outcome({w}, {}, RProm, 0, 2)'
+class = "dropped .then"
+runs = ["tally_ok"]
 ```
+
+The file also lists witnesses for both arms of `done` and mutants for the other bug classes
+([Witnesses and mutants](#witnesses-and-mutants)).
 
 Run it:
 
 ```sh
 python3 tools/run.py examples/minimal                                  # every run
 python3 tools/run.py examples/minimal tally_gas_trusting --print-trace # one run, with its trace
+python3 tools/run.py examples/minimal --anti-vacuity                   # and its witnesses and mutants
 ```
 
 The sections below explain each piece.
@@ -1210,6 +1234,8 @@ definitions are set the same way.
   `properties`, `deadlock`, `tags`, `[constants]`.
 - These keys belong to one run only and cannot be given at the top level: `name`, `expect`,
   `invariant`, `expect_output`, `expect_window`, `window_step` and `allow_no_invariants`.
+- `[[witness]]` and `[[mutant]]` tables sit beside the `[[run]]` tables and name the runs
+  they apply to ([Witnesses and mutants](#witnesses-and-mutants)).
 - `expect_output` (a regex on TLC's output) pins a detail, such as the gas value in the
   violating state.
 - `deadlock = true` makes a stuck receipt an error. Add a terminal stutter step once the model
@@ -1248,8 +1274,123 @@ condition that is never reached, or checking a ghost that never changes. For eve
    Then a later change that makes the invariant vacuous turns a must-fail run into a pass,
    and the runner reports it.
 
-A `pass` run must check at least one invariant or property; `allow_no_invariants = "why"` is
-the explicit exception.
+A `pass` run must check at least one invariant: properties alone do not count, since a run
+with an empty INVARIANTS section can pass without looking at a single state.
+`allow_no_invariants = "why"` is the explicit exception.
+
+## Witnesses and mutants
+
+A pass says that no reachable state breaks an invariant. It does not say the invariant looked
+at anything. Two shapes pass vacuously in asynchronous models:
+
+- **The antecedent is never reached.** `Idle => P` holds trivially when the system never
+  becomes idle again. A dropped `.then` does exactly that: the call's result is a data receipt
+  that nothing consumes, so `Idle` never holds and every `Idle => ...` invariant passes, with
+  thousands of states explored.
+- **The bug is invisible to the invariants.** A removed precondition whose damage the
+  platform repairs (an overdraft that the token refuses, followed by a refund) leaves a
+  conservation sum intact.
+
+The runner checks both with two tables in `runs.toml`, run by `--anti-vacuity` after the plain
+runs (CI runs it in its own job; without the flag the tables are only validated):
+
+```sh
+python3 tools/run.py examples/pay --anti-vacuity
+```
+
+**A witness** names a situation that must be reachable. The runner defines
+`Wit_<id> == <expr>` in the run's wrapper and checks it alone; TLC must report it violated.
+Write the witness as the negation of the situation:
+
+```toml
+[[witness]]
+id = "on_paid_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ ~r.res.ok)'
+runs = ["pay_unreg"]          # globs; default: every pass run without expect_window
+```
+
+A pass is reported as `vacuous: witness <id> never reached` and fails. A situation that is
+out of reach by design is documented with `expect = "unreachable"` and a `reason`; then the
+runner requires the pass, and fails if the situation is ever reached.
+
+**A mutant** is a deliberate bug that some run must catch. The runner copies the `.tla` files
+of the spec's directory (or, with `library = true`, of the library directory holding `file`)
+into the job's temporary directory, replaces `find` with `replace` in the copy and runs TLC
+with the copy in the original's place. Your files are never touched. The number of
+occurrences of `find` must equal `count` (default 1); the runner checks every mutant before
+it starts any TLC process.
+
+```toml
+[[mutant]]
+id = "failed_not_credited"
+file = "Pay.tla"
+find = 'ELSE IF ~r.res.ok THEN 0 ELSE amt'
+replace = 'ELSE amt'
+count = 1
+class = "failure branch skips rollback"
+runs = ["pay_unreg"]          # expect = "pass" runs only
+# equivalent = "why"          # an accepted survivor must say why
+```
+
+Each listed run is checked with its own invariants. The results:
+
+| result | meaning | verdict |
+|---|---|---|
+| `killed <inv>` | some run violated an invariant | ok |
+| `killed (assert)`, `killed (deadlock)` | some run stopped on an `Assert`, or (with `deadlock = true`) a deadlock | ok, reported apart |
+| `survived` | every run passed | fails, unless `equivalent` is given |
+| `equivalent` | survived, as `equivalent` says | ok |
+| `timeout` | a job ran past its run's `budget_s` | fails; never counted as survived |
+| `error` | a parse or evaluation error | fails |
+
+A mutant marked `equivalent` that is killed fails too, so the claim stays true. Each witness
+and mutant job has its run's `budget_s` and is stopped there. A check of a run that did not
+match its own expectation is skipped and reported.
+
+### Conventions
+
+- **Every `Sane` includes `NoOrphans`.** It is the platform's check that every data receipt
+  has a waiting callback and every callback has its data on the way; it turns a dropped or
+  mis-wired `.then` into a violation instead of a vacuous pass.
+- **For every `P => Q` invariant**, a witness that `P` is reached (`~(P)`; with `Idle`, write
+  `~(Idle /\ ntx > 0)`, since the initial state is idle), and a witness that `Q` can be
+  false when that is informative.
+- **For every callback that reads a promise result**, one witness per arm: the success value,
+  `Failed`, and for token answers the unparsable bytes. Forcing a fault on the callee is not the
+  same as delivering `Failed` to the callback; forcing a fault on the callback skips its body.
+- **For every guard with a numeric threshold**, a boundary witness: the guarded value sits
+  exactly at the threshold, and one where the guard refuses.
+- **At least one mutant per bug class the example claims to cover**, beside its must-fail
+  twins: dropped `.then`, failure branch skips rollback, inverted result check, removed
+  precondition, off-by-one guard, wrong refund account. Name the class in `class`.
+- **An equivalent mutant carries evidence**: a never-reached witness for the patched branch or
+  value, or a stated argument. Equal state counts corroborate; they do not prove.
+- **Do not rely on `-coverage` for branch coverage.** TLC 2.19 leaves out untaken `IF`/`CASE`
+  arms inside operator bodies instead of reporting them as 0. Use branch witnesses.
+
+### Invariant shapes that turn out weak
+
+- **Conservation sums hide overdrafts and drift.** Pair `a + b + c = total` with `>= 0` per
+  term, and, for every internal mirror of another contract's ledger, a "books match" check at
+  quiescence.
+- **Invariants over a handler-written ghost cannot see a wrong effect.** If the handler records
+  "refund = x", a refund of x sent to the wrong account still satisfies the ghost. State money
+  properties over what the platform records (balances, ledgers), or over a reference computed
+  from the counterparty's recorded answer.
+- **"Nothing bad" needs "something good".** Prohibitions alone survive a revoke that does not
+  revoke or a delivery that never happens. Add one effect invariant per operation: once settled
+  after X, X's effect holds.
+- **A mutex checked one way catches half the bugs.** "Idle implies the flag is clear" sees a
+  lost unlock, but not a lock taken late or a second operation admitted while one is in
+  flight. Add the converse (a pending callback implies the flag is set).
+- **Bounds and symmetric data hide bugs.** Equal weights hide a weight swap; one transaction
+  per actor hides every mutex bug; a balance that always covers the cap hides the cap. A
+  witness per guard shows this in a second; a run with asymmetric constants fixes it.
+- **A must-fail run should differ from its passing twin in the contract**, not in the
+  environment; a control built by removing the attacker is clean by construction.
+- **Keep the full invariant set in every run.** A run that checks one invariant, or only
+  library sanity, is weak evidence for the contract. When a known violation forces an
+  exception, encode it narrowly rather than dropping the invariant.
 
 ## Print-only window invariants
 

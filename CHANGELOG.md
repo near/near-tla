@@ -354,8 +354,36 @@ Each entry ends with its migration.
   rule, which lets only local receipts (signer = receiver) skip it. Switching
   removes those interleavings; the library rule is the more faithful one, but
   re-check verdicts that depended on them.
+- **`tools/run.py`: an `expect = "pass"` run needs at least one invariant.** Properties alone
+  no longer count: a run with an empty INVARIANTS section can pass without looking at a state.
+  No run in the repo was affected. Migration: add an invariant, or set
+  `allow_no_invariants = "<why>"` on the run.
 
 ### Added
+
+- **`tools/run.py --anti-vacuity`: witnesses and mutants.** Two new tables in `runs.toml`.
+  A `[[witness]]` is a situation that must be reachable: the runner checks `Wit_<id>` alone
+  and requires a violation; a pass fails as `vacuous: witness <id> never reached`
+  (`expect = "unreachable"` with a `reason` documents an exception). A `[[mutant]]` patches a
+  copy of the spec or library directory (`find`, `replace`, `count`, checked before any TLC
+  process starts) and must be killed by a listed run; Assert and deadlock kills are reported
+  apart, a survivor fails unless marked `equivalent = "<why>"`, and a timeout is its own
+  result. Each job has its run's budget. Off by default; CI runs it in a separate job. The
+  tables are validated on every run. Conventions: docs/USAGE.md, Witnesses and mutants. The
+  method comes from a mutation audit of the examples, in which a dropped `.then` left a result
+  with nothing to consume it, so `Idle` never held and `Idle => P` passed vacuously.
+- **Examples: witnesses and mutants in every example except `platform-selftest`**, and the
+  invariants that kill the mutants: `NoOrphans` in every `Sane`; per-term `>= 0` beside
+  conservation sums (`NoOverdraft`, `NoNegCredit`); effect invariants (`CallbackRan`,
+  `RevokeTakesEffect`, `OpenApplied`, `WorkFits`, `Forgotten`); checks against the
+  counterparty's recorded answer instead of a handler ghost (`ResolvedAsAsked`,
+  `SenderCredited` in `nep141-refund-cap`); the cancel-window ghost of `yield-clock`
+  (`NoEarlyCancel`, `CancelHonoured`); `VaultCovered` in `storage-stake`; `meta-tx`'s
+  `Credited` counts good claims only. Runs with asymmetric constants where symmetric ones hid
+  a mutant: `weight_split_123` (weights `<<1, 2, 3>>`), `yield_ok_tx4` (four transactions),
+  `vault_per_byte_atomic_room` (room for two payouts). `mt-smoke` gains a `Sane`.
+- **`tools/tlcparse.py`**: a violated invariant that reads no variable ("The invariant of X is
+  equal to FALSE", evaluated before the search) is a violation of X, not an error.
 
 - **Per-byte storage staking** (SEMANTICS B2), opt-in with `StoragePerByte <- TRUE`. The
   library keeps each account's storage usage in bytes (`stor`, from `StorageInit`) and, after

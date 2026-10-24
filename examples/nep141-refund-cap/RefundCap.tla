@@ -45,8 +45,14 @@ PTokDev     == [a \in {FT} |-> Dev]
 PTokReserve == [a \in {FT} |-> 0]
 NoGasTable  == [x \in {} |-> 0]
 \* big: X answered "keepbig"; full: the resolver then refunded min(amt, X's
-\* balance).  Both stay constant unless XResps has "keepbig".
-G0 == [amt |-> 0, refund |-> 0, done |-> FALSE, big |-> FALSE, full |-> TRUE]
+\* balance).  Both stay constant unless XResps has "keepbig".  req: the unused
+\* amount X's answer asks back under NEP-141 (a number as is; Failed,
+\* unparsable or over 42 bytes: everything); asked: the resolver then refunded
+\* min(req, amt, X's balance), worked out here from X's answer.
+G0 == [amt |-> 0, refund |-> 0, done |-> FALSE, big |-> FALSE, full |-> TRUE, req |-> 0, asked |-> TRUE]
+\* What X's answer asks back, per NEP-141 and the 42-byte bound.
+Req(amt, resp) == CASE resp = "keep" -> 0 [] resp = "return" -> amt [] resp = "over" -> amt + 1
+                    [] OTHER -> amt
 
 \* U sends amt to X with ft_transfer_call.
 Send == /\ ntx < MaxTx
@@ -69,13 +75,15 @@ RunTok(r) ==
         /\ gT' = IF Ok(r, O) /\ r.m = "ft_resolve_transfer"
                  THEN [gT EXCEPT ![r.tx].refund = O.ev.refund, ![r.tx].done = TRUE,
                                  ![r.tx].full = ~gT[r.tx].big \/
-                                     O.ev.refund = TMin(gT[r.tx].amt, tk[FT].bal[X])]
+                                     O.ev.refund = TMin(gT[r.tx].amt, tk[FT].bal[X]),
+                                 ![r.tx].asked = O.ev.refund =
+                                     TMin(TMin(gT[r.tx].req, gT[r.tx].amt), tk[FT].bal[X])]
                  ELSE gT
         /\ UNCHANGED ntx
 
 RunX(r) == \E resp \in XResps :
              /\ Exec(r, RecvOutcome(r.a.amt, resp))
-             /\ gT' = IF resp = "keepbig" THEN [gT EXCEPT ![r.tx].big = TRUE] ELSE gT
+             /\ gT' = [gT EXCEPT ![r.tx].big = (resp = "keepbig"), ![r.tx].req = Req(r.a.amt, resp)]
              /\ UNCHANGED <<tk, ntx>>
 
 Run == \E r \in Runnable :
@@ -96,6 +104,17 @@ Spec == Init /\ [][Next]_vars
 RefundCapped == \A t \in TxIds : gT[t].refund <= gT[t].amt
 \* An oversized answer counts as all unused: the refund is min(amt, X's balance).
 OversizedRefunded == \A t \in TxIds : gT[t].full
-\* Supply = sum of balances; balances are never negative (the balance cap).
-Sane == TokSupplyOK /\ TokTypeOK /\ NearConserved(0)
+\* Every resolution refunded what X's answer asked back, capped at the amount and at
+\* X's balance (the resolver's arithmetic, against X's recorded answer).
+ResolvedAsAsked == \A t \in TxIds : gT[t].asked
+\* Once idle, U holds InitU less what each resolved transfer left with X: the
+\* refund the resolver reports reached U's balance (and was not burnt).
+Kept(t) == IF gT[t].done THEN gT[t].amt - gT[t].refund ELSE 0
+SenderCredited ==
+    Idle => LET K[i \in 0..MaxTx] == IF i = 0 THEN 0 ELSE K[i - 1] + Kept(i)
+            IN tk[FT].bal[U] = InitU - K[MaxTx]
+\* Supply = sum of balances; balances are never negative (the balance cap);
+\* no orphans (a resolver that is never scheduled leaves ft_on_transfer's
+\* result with nothing to consume it, and Idle never holds again).
+Sane == TokSupplyOK /\ TokTypeOK /\ NearConserved(0) /\ NoOrphans
 =============================================================================

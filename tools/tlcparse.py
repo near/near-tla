@@ -6,8 +6,10 @@
     "pass"        exit code 0 and a line starting "Model checking completed. No error
                   has been found"
     "violation"   "Invariant X is violated", "Action property X is violated",
-                  or "Temporal properties were violated" (TLC does not name the
-                  property; `name` is then "<temporal>")
+                  "The invariant of X is equal to FALSE" (an invariant that reads
+                  no variable, checked before the search), or "Temporal
+                  properties were violated" (TLC does not name the property;
+                  `name` is then "<temporal>")
     "assert"      "The first argument of Assert evaluated to FALSE"
     "assumption"  "Assumption line ... is false"
     "deadlock"    "Deadlock reached" (only when TLC runs without -deadlock)
@@ -124,7 +126,9 @@ def parse(text: str, exit_code: int | None) -> Result:
     if found(r"^Error: The first argument of Assert evaluated to FALSE"):
         r.verdict = "assert"
         return r
-    m = found(r"^Error: Invariant (\S+) is violated") or found(r"^Error: Action property (\S+) is violated")
+    m = (found(r"^Error: Invariant (\S+) is violated") or found(r"^Error: Action property (\S+) is violated")
+         # an invariant that reads no variable is evaluated once, before the search
+         or found(r"^Error: The invariant of (\S+) is equal to FALSE"))
     if m:
         r.verdict, r.name = "violation", m.group(1).rstrip(".")
         return r

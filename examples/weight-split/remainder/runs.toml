@@ -52,3 +52,48 @@ invariant = "NoFalseOk"
 invariants = ["NoFalseOk", "Sane"]
 [run.constants]
 "NearFees!FeeRounding" = '"nearest"'
+
+# ---- anti-vacuity: python3 tools/run.py examples/weight-split/remainder --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# fan has no callback, no result read and no guard: the dropped .then, rollback, result
+# check, precondition, off-by-one-guard and refund classes have nothing to mutate here;
+# the mutants are in the library's split.
+
+# Settled's antecedent: the transaction settles.
+[[witness]]
+id = "fan_settles"
+expr = '~(sent /\ Idle)'
+runs = ["remainder_up_ok"]
+
+# SharesLeNearcore's and UpSplit's antecedent for the last call: k6 ran.
+[[witness]]
+id = "k6_ran"
+expr = '~(got["k6"] # -1)'
+runs = ["remainder_up_ok"]
+
+# NoFalseOk's antecedent.
+[[witness]]
+id = "k6_succeeds"
+expr = '~("k6" \in okd)'
+runs = ["remainder_up_ok"]
+expect = "unreachable"
+reason = 'under "up" k6 gets 1166 Ggas and burns 1170, so it always runs out of gas; remainder_nearest_false_ok reaches it'
+
+# "up" hands out the remainder after all (the "nearest" rule).
+[[mutant]]
+id = "up_hands_out_remainder"
+file = "NearAsync.tla"
+library = true
+find = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div W'
+replace = 'IF FALSE THEN (U * e[3]) \div W'
+class = "wrong remainder receiver"
+runs = ["remainder_up_ok"]
+
+[[mutant]]
+id = "split_divisor_off_by_one"
+file = "NearAsync.tla"
+library = true
+find = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div W'
+replace = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div (W + 1)'
+class = "off-by-one guard"
+runs = ["remainder_up_ok"]

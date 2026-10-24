@@ -4,6 +4,7 @@
 #   python3 tools/run.py examples/minimal
 #
 # Counted  C's count of works matches D's once nothing is in flight.
+# WorkFits (gas mode) at the 1000 Tgas maximum every work commits.
 # Sane     NEAR conserved, gas bounded by each transaction's prepaid gas, no orphans.
 
 spec = "Tally"
@@ -62,6 +63,7 @@ Trusting = 'TRUE'
 [[run]]
 name = "tally_gas_ok"
 expect = "pass"
+invariants = ["Counted", "WorkFits", "Sane"]
 tags = ["gas:out-of-gas"]
 [run.constants]
 GasMode = '"gas"'
@@ -98,3 +100,65 @@ GasBurn = 'TGasBurn'
 GasMenu = 'Menu'
 MaxTx = '1'
 Trusting = 'TRUE'
+
+# ---- anti-vacuity: python3 tools/run.py examples/minimal --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Counted's antecedent: the system settles again after a ping.
+[[witness]]
+id = "ping_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["tally_ok", "tally_gas_ok"]
+
+# WorkFits' antecedent: a ping at the 1000 Tgas maximum settles.
+[[witness]]
+id = "settles_at_max_gas"
+expr = '~(Idle /\ ntx > 0 /\ \A t \in 1..ntx : gas[t] = 1000000)'
+runs = ["tally_gas_ok"]
+
+# done's two arms: the work succeeded, the work failed (forced fault, or out of gas).
+[[witness]]
+id = "done_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "done" /\ ~IsFailed(r.res))'
+runs = ["tally_ok", "tally_gas_ok"]
+
+[[witness]]
+id = "done_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "done" /\ IsFailed(r.res))'
+runs = ["tally_ok", "tally_gas_ok"]
+
+[[mutant]]
+id = "dropped_then"
+file = "Tally.tla"
+find = 'IN Outcome({w}, {cb}, RProm, 0, 2)'
+replace = 'IN Outcome({w}, {}, RProm, 0, 2)'
+class = "dropped .then"
+runs = ["tally_ok"]
+
+[[mutant]]
+id = "failed_work_counted"
+file = "Tally.tla"
+find = 'THEN n + 1 ELSE n'
+replace = 'THEN n + 1 ELSE n + 1'
+class = "failure branch skips rollback"
+runs = ["tally_ok", "tally_gas_ok"]
+
+[[mutant]]
+id = "failed_check_inverted"
+file = "Tally.tla"
+find = 'IF Trusting \/ ~IsFailed(r.res)'
+replace = 'IF Trusting \/ IsFailed(r.res)'
+class = "inverted result check"
+runs = ["tally_ok", "tally_gas_ok"]
+
+# The weights swapped: done gets the leftover, work only its 5 Tgas static and always runs
+# out of gas. Counted still holds (done sees Failed); WorkFits catches it.
+[[mutant]]
+id = "weights_swapped"
+file = "Tally.tla"
+find = '''("work" :> GC(<<5000>>, <<1>>, 300))     \* 5 Tgas static + all the leftover
+         @@ ("done" :> GC(<<2000>>, <<0>>, 300))'''
+replace = '''("work" :> GC(<<5000>>, <<0>>, 300))     \* 5 Tgas static + all the leftover
+         @@ ("done" :> GC(<<2000>>, <<1>>, 300))'''
+class = "wrong weight"
+runs = ["tally_gas_ok"]

@@ -89,5 +89,8 @@ Next == Send \/ Run
 Spec == Init /\ [][Next]_vars
 
 Books == Idle => cr + esc + tot[A] + tot[B] = Cred0
+\* U's credits never go negative.  Books alone misses a split that overdraws them:
+\* the overdraft is a term of the conserved sum.
+NoOverdraft == cr >= 0
 Sane  == NoOrphans /\ NearConserved(0)
 =============================================================================
