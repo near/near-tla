@@ -795,6 +795,56 @@ Each rule has four fields:
   out-of-gas `[Transfer, call]` receipt refunds the deposit, and its signer is out exactly the
   gas burnt); the comparison leaves refunds out. <!-- conformance -->
 
+### G6. Storage gas and trie depth
+
+- **Rule:** `storage_write` and `storage_remove` pay `wasm_touching_trie_node` (2.28 Ggas at
+  88; `wasm_read_cached_trie_node`, for a node the accounting cache already holds, costs the same)
+  for every trie node on the key's path, plus one for the old value when the key exists.
+  The path is looked up in the trie the chunk started from, so its length depends on what
+  else is stored, which other users can change: any key sharing a prefix with the
+  contract's key deepens it. A key the same receipt already wrote or removed is found in
+  the pending changes and costs no nodes. `storage_read` and `storage_has_key` look the key
+  up through flat storage and pay no per-node gas, whatever the depth; a read's value costs
+  only the per-byte read fees. The trie key of contract data is `9 ++ account_id ++ ',' ++
+  key`, so `L = 2 + |account_id| + |key|` bytes; with one branch per nibble and a leaf, a
+  path has at most `2L + 1` nodes, and a write at most `2L + 2` with the old value. Other
+  accounts' keys share at most the account-id part; keys deeper than that come from the
+  contract's own storage (for example, keys users choose, or that embed their account ids).
+- **nearcore:** `runtime/runtime/src/ext.rs:163-178` (`storage_set`: the lookup with
+  `KeyLookupMode::MemOrTrie`, the old value's deref, the nodes charged by
+  `commit_counts_since`), `:248-264` (`storage_remove`, the same), `:200-203`, `:285-288`
+  (`storage_get` and `storage_has_key`: `MemOrFlatOrTrie` under `StorageGetMode::FlatStorage`);
+  `:704-773` (the accounting tracker: a node not yet in its cache is a
+  `trie_node_touched`, a cached one a `cached_trie_node_access`);
+  `core/store/src/trie/mod.rs:1533` (only a `MemOrTrie` lookup, or a trie built to charge
+  every access, counts nodes), `:1353-1380` (the memtrie lookup reports every node on the path);
+  `core/store/src/trie/update.rs:126-128` (the pending changes first);
+  `runtime/near-vm-runner/src/logic/host.rs:5129` (a read's value with a `FreeGasCounter`);
+  `core/primitives/src/trie_key.rs:506-511` (the key layout);
+  `core/parameters/res/runtime_configs/82.yaml:5-11` (the node prices, unchanged through 88:
+  `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:171-172`);
+  `core/parameters/res/runtime_configs/parameters.snap:268` (`flat_storage_reads: true`).
+- **Model:** opt-in. `OWriteKey(O, n)` declares a write or remove of an `n`-byte key in an
+  outcome (field `trn`, its bound in nodes: `2 (2 + TrieAcctLen + n) + 2`). With
+  `TrieGasWorst <- TRUE`, in gas mode, `Exec` runs a receipt with declared writes both with
+  its calibrated burn and with the burn plus `TrieExtra(O)`, the bound × 2.28 Ggas rounded up
+  to whole Ggas (`TrieGas` in `Need`); `Ok` tells the two apart through `ofail`, where every
+  failure of such a receipt is recorded (unmarked ones with `k = ""`). A failure of the
+  worst-case branch only has the cause `"out of gas (worst-case trie depth)"`. `TrieAcctLen`
+  (default 64, the longest id) is the receiver's account id length. Off (the default),
+  `OWriteKey` changes nothing. Only the two extremes are explored: an out-of-gas grows with
+  the extra, and a child's share only shrinks, so the extremes bound the outcomes in between.
+  The bound counts the nodes the calibrated burn already paid for again (an upper bound, as
+  `Need` is), adds nothing on a panic path (`OPanicKey`), and is an `Assert` with per-action
+  accounting (`pa`). Example: `examples/trie-gas` (an owed callback with a fixed budget runs
+  out on its refund path; `OwedOK` reports it).
+- **Validated:** sim (`conformance/tests/gas.rs`, `trie_depth_storage_gas`: with a sibling key
+  at each of an 8-byte key's 16 nibbles, each written in its own transaction, the key's write
+  burns 16 × 2.28 Ggas more than in a trie with one other key, an overwrite and a remove 15 ×
+  more, a read and `has_key` exactly the same; `trie_nodes_not_charged_twice_in_a_receipt`:
+  the second write of a key in one receipt pays no nodes). The `2L + 2` bound itself: nearcore
+  reading.
+
 ---
 
 ## Accounts
@@ -2434,7 +2484,8 @@ against the current module code; some may be fixed in the modules later.
   has slack fails in nearcore but not in the model, and the leftover split can differ.
 - **N-burn. Trie and storage gas variation.** Burns are constants per (method, path), affine in
   one size variable at most, measured in one sim world. Real burns move with trie shape, key
-  count, argument length and network (trie-node pricing). A real out-of-gas at a prepaid amount
+  count, argument length and network (trie-node pricing). The writes' trie-node part can be
+  bounded with `OWriteKey` and `TrieGasWorst` (G6). A real out-of-gas at a prepaid amount
   the model calls safe is possible near any calibrated edge. Treat windows as approximate. They
   are tied to the calibration's provenance (`docs/VERSIONING.md`).
 - **N-keyfee. AddKey per-byte fee from the model's method names.** `NearKeys.KeyFee` charges

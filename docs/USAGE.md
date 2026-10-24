@@ -31,6 +31,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [10. Signer and keys](#10-signer-and-keys)
 - [11. Local-receipt priority](#11-local-receipt-priority)
 - [12. Fault mode and gas mode](#12-fault-mode-and-gas-mode)
+  - [Worst-case storage gas (trie depth)](#worst-case-storage-gas-trie-depth)
 - [13. The forced-fault switch and labels](#13-the-forced-fault-switch-and-labels)
   - [Owed callbacks and detached work](#owed-callbacks-and-detached-work)
 - [14. Joint callbacks, yield/resume and the block clock](#14-joint-callbacks-yieldresume-and-the-block-clock)
@@ -371,6 +372,8 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); another key type (a key with an allowance, `WithAllowance`, already counts its 16 bytes) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
+| `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at its worst-case trie-node gas ([section 12](#worst-case-storage-gas-trie-depth)) |
+| `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
@@ -1047,6 +1050,44 @@ Their burn keys are:
 
 - a multi-call batch: `"<acct>.batch/<shape>#<method>"`, one per call;
 - a single-call batch: `"<acct>.batch/<shape>"`.
+
+### Worst-case storage gas (trie depth)
+
+A calibrated burn holds the trie-node gas of the sim world it was measured in. At 88 a
+`storage_write` or `storage_remove` pays 2.28 Ggas per trie node on its key's path, and the
+path gets longer when other keys share a prefix with the key, which users of the contract
+can often arrange. Reads and `has_key` pay no per-node gas
+([G6](SEMANTICS.md#g6-storage-gas-and-trie-depth)). To check that a fixed gas budget survives
+a deep trie, declare each write or remove of an `n`-byte key in the outcome, and turn the mode
+on:
+
+```tla
+O == OWriteKey(OWriteKey(OKey(Out0, "on_take/refund"), 40), 40)   \* two writes of 40-byte keys
+```
+
+```toml
+[run.constants]
+TrieGasWorst = "TRUE"
+TrieAcctLen = "20"        # the receiver's real account id length; default 64
+```
+
+With the mode on, in gas mode, `Exec` runs every receipt with a declaration twice: with its
+calibrated burn, and with the burn plus each write's bound, `(2 (2 + TrieAcctLen + n) + 2) ×
+2.28` Ggas (`TrieExtra`). A failure in the second branch only reads `"out of gas (worst-case
+trie depth)"` in `ofail`. With the mode off, `OWriteKey` changes nothing, so a model can
+declare its writes and run both ways.
+
+- Guard on `Ok(r, O)` after `Exec(r, O)` as usual. With the mode on, `Ok` reads `ofail`, where
+  every failure of a receipt with declared writes is recorded (with `k = ""` when unmarked).
+- The bound is an upper bound: it also counts the nodes the calibrated burn already paid for.
+  A write of a key the same receipt already wrote costs nothing more; declare it once.
+- Not on a panic path (`OPanicKey`), and an `Assert` with `pa`.
+- It doubles the receipts with declared writes, and their children's shares differ in the two
+  branches, so expect more states.
+
+`examples/trie-gas` has an owed callback whose 4.5 Tgas budget fits its calibrated refund path
+(4 Tgas) but not the worst case of its two writes (+976 Ggas); its `cb_need` sweep finds the
+least budget, 4976 Ggas.
 
 ## 13. The forced-fault switch and labels
 
@@ -1950,4 +1991,5 @@ All examples are toy contracts written for this repo.
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |
   | `session-key` | a function-call key's allowance: sized as plays × cost, forgetting the gas refunds, it lets more plays through; a model that states no refund hides that |
   | `tx-nonce` | transaction nonces: a replay is refused; a wallet that signs payments in parallel loses one when a later one lands first; without nonces a replay pays twice |
+  | `trie-gas` | worst-case storage gas: an owed callback whose fixed budget fits its calibrated burn but not the trie-node gas of its writes in a deep trie (`TrieGasWorst`) |
   | `limits` | protocol limits at the last value nearcore accepts and the first it refuses: actions per receipt, promises per call, joint inputs, returned bytes, AddKey method names, logs |

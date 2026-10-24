@@ -103,6 +103,9 @@
 (*      (OPanicKey) plus the children created before it exceeds the        *)
 (*      attached gas (gas_counter.rs:136-141, :155-174, :205-213).         *)
 (*    * action-only receipts never run out of gas.                         *)
+(*    * opt-in (TrieGasWorst): a storage write or remove the outcome       *)
+(*      declares (OWriteKey) may also cost its worst-case trie-node gas;   *)
+(*      Exec takes both (docs/SEMANTICS.md, G6).                           *)
 (*  The forced switch is kept in both modes: a receipt whose method is in  *)
 (*  MayFail may fail, at most MaxFails times; counted in `fails`.  A real  *)
 (*  out-of-gas is recorded in `oog`.                                       *)
@@ -175,7 +178,7 @@ VARIABLES
     gcode,     \* published global contracts: a partial function identifier -> code tag (A10)
     guse,      \* accounts on a global contract: a partial function account -> identifier
     gnonce,    \* per identifier, the nonce of the last distribution applied (absent: 0)
-    ofail      \* ghost: failed receipts the model marked owed or detached (OwedOK, DetachedVoided)
+    ofail      \* ghost: failed receipts the model marked owed or detached (OwedOK, DetachedVoided); with TrieGasWorst also unmarked ones (k = "")
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
@@ -840,6 +843,32 @@ OLogs(O, b, n) == [lgn |-> LogCount(O) + n, lgb |-> LogBytes(O) + n * b] @@ O
 \* Join outcome field (R6): OJoins(O, n) states that the call made n
 \* promise_and calls, nested ones included (PromisesOver).
 OJoins(O, n) == [nj |-> n] @@ O
+\* Worst-case trie gas (docs/SEMANTICS.md, G6), opt-in: TrieGasWorst <-
+\* TRUE.  At 88 storage_write and storage_remove charge touching_trie_node
+\* (2.28 Ggas) per trie node on the key's path, plus one for the old value,
+\* and nodes depend on the trie's shape at the start of the chunk, which
+\* other writers can deepen; storage_read and storage_has_key charge none
+\* (flat storage).  OWriteKey(O, n) declares one storage_write or
+\* storage_remove of an n-byte key.  The trie key is 9 ++ account id ++
+\* ',' ++ key, L = 2 + TrieAcctLen + n bytes, at most 2L + 1 nodes on its
+\* path (one per nibble and the leaf), so a write costs at most 2L + 2
+\* nodes more than none.  With the switch on, in gas mode, Exec runs a
+\* receipt with declared writes both at its calibrated burn (extra 0) and
+\* at the burn plus every declared write's bound (TrieExtra, rounded up
+\* to whole Ggas).  Off (the default), OWriteKey changes nothing.
+\* TrieAcctLen: the receiver's account id length in bytes; the default is
+\* the longest id (64).  Nothing is added on a panic path (OPanicKey) and
+\* a receipt with per-action accounting (pa) and declared writes is an
+\* Assert.
+TrieGasWorst == FALSE
+TrieAcctLen  == 64
+TrieNodeMgas == 2280            \* wasm_touching_trie_node, Mgas (88)
+TrieNodes(O) == IF "trn" \in DOMAIN O THEN O.trn ELSE 0
+OWriteKey(O, n) == [trn |-> TrieNodes(O) + 2 * (2 + TrieAcctLen + n) + 2] @@ O
+TrieExtra(O) == (TrieNodes(O) * TrieNodeMgas + 999) \div 1000
+\* The extra gas Exec chose for this outcome (0 unless TrieSplit).
+TrieGas(O)   == IF "trg" \in DOMAIN O THEN O.trg ELSE 0
+TrieSplit(O) == GasMode = "gas" /\ TrieGasWorst /\ TrieNodes(O) > 0
 \* Measured bytes (docs/SEMANTICS.md, B2): StorBytes is a table the
 \* calibrator writes (conformance/, `calibrate --stor`), keyed like GasBurn
 \* ("acct.method/path"): [key -> [base |-> Int, per |-> Int]], the receiver's
@@ -1248,7 +1277,7 @@ Burn(r, O) ==
 
 KidsCost(S) == RcptSum(LAMBDA c : c.gf + SumSeq(c.gs), S)
 
-Need(r, O) == Burn(r, O) + KidsCost(Kids(O))
+Need(r, O) == Burn(r, O) + KidsCost(Kids(O)) + TrieGas(O)
 
 \* Per-action accounting.  Each function-call action runs with its own gas and
 \* its own promise manager (function_call.rs:61); its children share only
@@ -1543,7 +1572,9 @@ FailWhy(r, O) ==
     ELSE IF ~CallTargetOK(r) THEN "AccountDoesNotExist, AccountNotInitialized or CodeDoesNotExist"
     ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "out of gas before its panic" ELSE "panic: " \o O.err)
     ELSE IF HostLimitErr(r, O) # "" THEN HostLimitErr(r, O)
-    ELSE IF ~GasOK(r, O) THEN "out of gas"
+    ELSE IF ~GasOK(r, O) THEN
+        (IF TrieGas(O) > 0 /\ GasOK(r, [O EXCEPT !.trg = 0]) THEN "out of gas (worst-case trie depth)"
+         ELSE "out of gas")
     ELSE IF ZeroGasKid(r, O) THEN "FunctionCallZeroAttachedGas"
     ELSE IF NewRcptLimitErr(O) THEN "NewReceiptValidationError: TotalNumberOfActionsExceeded"
     ELSE IF ~Affordable(r, O) THEN "LackBalanceForState or BalanceExceeded"
@@ -1631,7 +1662,9 @@ MarkOf(r) ==
 \* why: the cause, for ofail (FailWhy); need: the gas it needed when it ran
 \* out (OogNeed), else 0.  A marked receipt (MarkOf) is recorded in ofail
 \* as [tx, id, to, m, k (its mark), why, g (its attached gas), need, a].
-FailWhyL(r, lbl, why, need) ==
+\* FailWhyLK with keep: record r in ofail even when unmarked (k = ""), so
+\* that Ok can tell a failure from a commit by r's id (TrieSplit).
+FailWhyLK(r, lbl, why, need, keep) ==
     /\ rq'   = RemR(r) \cup (IF DepTotal(r) > 0
                              THEN {Rcpt(nid, r.tx, r.rto, "system", REFND, r.a, DepTotal(r), r.rto, 0)}
                              ELSE {})
@@ -1642,10 +1675,11 @@ FailWhyL(r, lbl, why, need) ==
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
     /\ ofail' = LET k == MarkOf(r) IN
-                IF k = "" THEN ofail
+                IF k = "" /\ ~keep THEN ofail
                 ELSE ofail \cup {[tx |-> r.tx, id |-> r.id, to |-> r.to, m |-> r.m, k |-> k, why |-> why,
                                   g |-> GasOf(r), need |-> need, a |-> r.a]}
     /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+FailWhyL(r, lbl, why, need) == FailWhyLK(r, lbl, why, need, FALSE)
 FailL(r, lbl) == FailWhyL(r, lbl, lbl, 0)
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
@@ -1660,15 +1694,26 @@ FailOOG(r)    == FailL(r, "oog")
 \* rq' / post', it is an error (not an assignment) if it comes first.
 Committed(r, O) == \/ \E c \in O.ready : InstantTag(Alloc(r, O, c)) \in rq'
                    \/ \E c \in O.post : InstantTagP(Alloc(r, O, c)) \in post'
+\* Under TrieSplit, Exec takes the outcome at both trie gases (G6), so the
+\* verdict alone does not say which successor this step is, and a receipt
+\* with no children leaves no trace in rq' / post': every failure branch
+\* then records r in ofail (keep), and Ok reads that.
 Ok(r, O) ==
-    LET v == Verdict(r, O) IN
-    IF v = "either" THEN Committed(r, O) ELSE v = "ok"
-Exec(r, O) ==
+    IF TrieSplit(O) THEN ~\E x \in ofail' : x.id = r.id
+    ELSE LET v == Verdict(r, O) IN
+         IF v = "either" THEN Committed(r, O) ELSE v = "ok"
+ExecKeep(r, O, keep) ==
     LET v == Verdict(r, O) IN
     IF v = "ok" THEN Commit(r, O)
-    ELSE IF v = "oog" THEN FailWhyL(r, "oog", FailWhy(r, O), OogNeed(r, O))
-    ELSE IF v = "either" THEN Commit(r, O) \/ FailWhyL(r, "fail", FailWhy(r, O), 0)
-    ELSE FailWhyL(r, "fail", FailWhy(r, O), 0)
+    ELSE IF v = "oog" THEN FailWhyLK(r, "oog", FailWhy(r, O), OogNeed(r, O), keep)
+    ELSE IF v = "either" THEN Commit(r, O) \/ FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
+    ELSE FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
+Exec(r, O) ==
+    IF TrieSplit(O)
+    THEN IF "pa" \in DOMAIN O /\ Len(O.pa) > 1
+         THEN Assert(FALSE, <<"OWriteKey with per-action accounting (pa) is not supported", r.m>>)
+         ELSE \E x \in {0, TrieExtra(O)} : ExecKeep(r, [trg |-> x] @@ O, TRUE)
+    ELSE ExecKeep(r, O, FALSE)
 
 \* The forced-fault switch as one step (the contract conjoins UNCHANGED of its vars).
 ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailWhyL(r, "forced", "forced fault (MayFail)", 0)

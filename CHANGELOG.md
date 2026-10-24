@@ -505,6 +505,14 @@ them. A model that lists platform variables one by one must add each.
   `from = "arg_count:<field>"`, an array argument's length. `examples/mt-batch` has a
   gas-mode run on the table (`mt_batch_gas_std`: the 30 Tgas floor, `FloorHolds`). The
   existing sets, sweeps and tables are unchanged.
+- **Worst-case storage gas, opt-in** (SEMANTICS G6; `examples/trie-gas`): at 88
+  `storage_write` and `storage_remove` pay 2.28 Ggas per trie node on the key's path, which
+  other users can lengthen; reads and `has_key` pay none (flat storage). `OWriteKey(O, n)`
+  declares a write or remove of an `n`-byte key; with `TrieGasWorst <- TRUE`, in gas mode,
+  `Exec` runs such a receipt both at its calibrated burn and at the burn plus each write's
+  bound, `(2 (2 + TrieAcctLen + n) + 2)` nodes (`TrieAcctLen`, default 64). A failure of the
+  worst-case branch only has the cause `"out of gas (worst-case trie depth)"`. Off by
+  default; `OWriteKey` then changes nothing. Sim: `conformance/tests/gas.rs`.
 - **Least-gas and size sweeps in `tools/run.py`** (`[[sweep]]` in `runs.toml`, `--sweep`;
   ad hoc `--least-gas KNOB=FORM --gas-range LO:HI [--success ..]`): `kind = "least_gas"`
   bisects a gas knob for the least value at which `success` holds (bracketed by a window

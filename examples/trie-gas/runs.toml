@@ -1,0 +1,134 @@
+# Worst-case trie gas (docs/SEMANTICS.md, G6): an owed callback with a fixed gas budget whose
+# storage writes may cost more than calibrated when the trie under the contract's keys is
+# deep.  The switch TrieGasWorst <- TRUE makes each write the outcome declares (OWriteKey)
+# cost either its calibrated burn or that plus its worst-case trie-node gas.  See
+# TrieLedger.tla.
+#
+#   python3 tools/run.py examples/trie-gas
+#
+# OwedOK  no owed callback failed (NearAsync; the trace's last state shows ofail).
+# Books   once idle, nothing is held and U's balance plus T's takings is the start.
+# Sane    NEAR conserved, no orphans.
+
+spec = "TrieLedger"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["OwedOK", "Books", "Sane"]
+tags = ["semantics:trie-gas"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "LGasCall"
+GasBurn = "LGasBurn"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+U = '"u"'
+V = '"v"'
+T = '"t"'
+MaxTx = "2"
+Amts = "{1, 2}"
+InitBal = "2"
+TResps = '{"ok", "panic"}'
+GasMenu = "{300000}"
+CbBudget = "4500"
+KeyLen = "40"
+
+# Calibrated gas only (the default): on_take's refund path burns 4 Tgas of its 4.5.
+[[run]]
+name = "trie_calibrated"
+expect = "pass"
+
+# Worst-case trie gas: the refund path's two writes may cost 976 Ggas more, past the budget.
+[[run]]
+name = "trie_worst"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "out of gas \(worst-case trie depth\)"'
+[run.constants]
+TrieGasWorst = "TRUE"
+
+# The same with a 5 Tgas budget: enough for the worst case (4976 Ggas).
+[[run]]
+name = "trie_worst_budget_ok"
+expect = "pass"
+[run.constants]
+TrieGasWorst = "TRUE"
+CbBudget = "5000"
+
+# The bound grows with the account id's length: for an 8-byte id (TrieAcctLen 8) the refund
+# path's worst case is 4000 + 466 Ggas, which fits in 4.5 Tgas.
+[[run]]
+name = "trie_worst_short_id"
+expect = "pass"
+[run.constants]
+TrieGasWorst = "TRUE"
+TrieAcctLen = "8"
+
+# ---- anti-vacuity: python3 tools/run.py examples/trie-gas --anti-vacuity ----
+
+# Books' antecedent, and both of on_take's arms committing, also in the worst-case runs
+# (Exec takes the calibrated gas too).
+[[witness]]
+id = "send_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["trie_calibrated", "trie_worst_budget_ok"]
+
+[[witness]]
+id = "refund_commits"
+expr = '~(Idle /\ ntx > 0 /\ got = 0 /\ bal = InitBal)'
+runs = ["trie_calibrated", "trie_worst", "trie_worst_budget_ok"]
+
+[[witness]]
+id = "sent_commits"
+expr = '~(Idle /\ got > 0)'
+runs = ["trie_calibrated", "trie_worst", "trie_worst_budget_ok"]
+
+# The worst-case branch is taken: a refund on_take that was charged its trie bound.
+[[witness]]
+id = "worst_case_charged"
+expr = '~(\E x \in ofail : x.m = "on_take" /\ x.need = 4976)'
+runs = ["trie_worst"]
+
+# One Ggas short of the worst case: OwedOK catches it.
+[[mutant]]
+id = "budget_one_short"
+file = "TrieLedger.tla"
+find = '("on_take" :> GC(<<CbBudget>>, <<0>>, 300))'
+replace = '("on_take" :> GC(<<CbBudget - 25>>, <<0>>, 300))'
+class = "off-by-one guard"
+runs = ["trie_worst_budget_ok"]
+killed_by = ["OwedOK"]
+
+# The refund arm skipped: Books catches it.
+[[mutant]]
+id = "refund_skipped"
+file = "TrieLedger.tla"
+find = 'b |-> IF took THEN bal ELSE bal + n'
+replace = 'b |-> bal'
+class = "failure branch skips rollback"
+runs = ["trie_calibrated"]
+killed_by = ["Books"]
+
+# ---- sweeps: python3 tools/run.py examples/trie-gas --sweep ----
+
+# Least gas: the smallest budget for on_take at which it cannot fail under worst-case trie
+# gas: 4000 (the refund burn) + 976 (two writes' bound) = 4976 Ggas.
+[[sweep]]
+id = "cb_need"
+kind = "least_gas"
+run = "trie_worst"
+knob = "CbBudget"
+lo = 4000
+hi = 10000
+success = ["OwedOK"]
+expect_need = 4976
