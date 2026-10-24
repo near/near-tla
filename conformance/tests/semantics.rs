@@ -982,42 +982,46 @@ fn yield_deposit() {
 
 /// C7, a returned yield: the caller's waiting receivers move onto the
 /// yield callback (runtime/runtime/src/lib.rs:1151-1168), so p's callback
-/// on z.yield_id reads the yield callback's result, after it ran: the 7
-/// bytes of the resume's payload (z.on_yield returns its payload; the
-/// call's own result would be empty), or, on a timeout, nothing.
+/// on z.yield_id reads the yield callback's result, after it ran: the
+/// resume's payload (z.on_yield returns it; the call's own result would be
+/// empty), or, on a timeout, an empty value that is a success, not
+/// `Failed` (z.on_yield runs and returns nothing). The callback is
+/// z.on_expect, which panics unless result 0 is exactly the given bytes or
+/// size (-1 for `Failed`); the wrong bytes and sizes are controls.
 #[test]
 fn returned_yield_forwards_its_result() {
     let base = z_world();
-    for resume in [Some(7u32), None] {
-        let mut sim = base.clone();
-        let kid = json!([{ "receiver": Z, "method": "yield_id", "args": json!({ "cb_ggas": 5000, "ret": true }).to_string(), "static_ggas": 30000, "weight": 1 }]);
-        let cb = json!({ "method": "on_read", "static_ggas": 10000, "weight": 1 });
-        let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kid, "cb": cb })).transact();
-        o.assert_success();
-        let waiting = o.receipt("on_read").is_none();
-        assert!(waiting, "p's callback waits for the yield");
-        match resume {
-            Some(n) => {
-                z_resume(&mut sim, BOB, None, n).transact().assert_success();
+    let payload = "x".repeat(7);
+    let resumed = [(json!({ "i": 0, "bytes": payload }), None), (json!({ "i": 0, "bytes": "xxxxxxy" }), Some("result 0 is other bytes")), (json!({ "i": 0, "len": 0 }), Some("result 0 is 7 bytes"))];
+    let timed_out = [(json!({ "i": 0, "bytes": "" }), None), (json!({ "i": 0, "len": -1 }), Some("result 0 is 0 bytes")), (json!({ "i": 0, "bytes": payload }), Some("result 0 is other bytes"))];
+    for (resume, expects) in [(Some(7u32), resumed), (None, timed_out)] {
+        for (expect, fails) in expects {
+            let mut sim = base.clone();
+            let kid = json!([{ "receiver": Z, "method": "yield_id", "args": json!({ "cb_ggas": 5000, "ret": true }).to_string(), "static_ggas": 30000, "weight": 1 }]);
+            let cb = json!({ "receiver": Z, "method": "on_expect", "args": expect.to_string(), "static_ggas": 10000, "weight": 1 });
+            let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kid, "cb": cb })).transact();
+            o.assert_success();
+            assert!(o.receipt("on_expect").is_none(), "p's callback waits for the yield");
+            match resume {
+                Some(n) => {
+                    z_resume(&mut sim, BOB, None, n).transact().assert_success();
+                }
+                None => {
+                    let y = sim.yields().pop().unwrap();
+                    sim.expire(&y);
+                }
             }
-            None => {
-                let y = sim.yields().pop().unwrap();
-                sim.expire(&y);
+            let out = sim.outcome(o.hash);
+            let (yc, ex, yi) = (out.expect_receipt("on_yield"), out.expect_receipt("on_expect"), out.expect_receipt("yield_id"));
+            println!("resume {resume:?}, expect {expect}: yield_id returned {:?}; on_yield at #{} logged {:?}; on_expect at #{}: {:?}", yi.status, yc.block_height, yc.logs, ex.block_height, ex.status);
+            assert!(yi.is_success() && yi.value().is_none(), "it returned a promise, not a value");
+            assert!(yc.is_success());
+            match fails {
+                None => assert_eq!(ex.value(), Some(&resume.unwrap_or(0).to_string().into_bytes()[..])),
+                Some(msg) => assert_eq!(ex.failure(), Some(Failure::Panic(msg.into()))),
             }
+            assert!(ex.block_height > yc.block_height);
         }
-        let out = sim.outcome(o.hash);
-        let (yc, rd, yi) = (out.expect_receipt("on_yield"), out.expect_receipt("on_read"), out.expect_receipt("yield_id"));
-        println!(
-            "resume {resume:?}: yield_id returned {:?}; on_yield at #{} logged {:?}; p.on_read at #{} read {} bytes",
-            yi.status,
-            yc.block_height,
-            yc.logs,
-            rd.block_height,
-            rd.value().map(|v| String::from_utf8_lossy(v).into_owned()).unwrap_or_default()
-        );
-        assert!(yi.is_success() && yi.value().is_none(), "it returned a promise, not a value");
-        assert_eq!(serde_json::from_slice::<u64>(rd.value().unwrap()).unwrap(), resume.unwrap_or(0) as u64);
-        assert!(rd.block_height > yc.block_height);
     }
 }
 

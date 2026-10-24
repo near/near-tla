@@ -176,8 +176,9 @@ Each rule has four fields:
   deleted account fails and is burnt). `refund_to`: sim (`conformance/tests/receipts.rs`,
   `refund_to_receives_the_deposit_refund`: a contract's call with a 2 N deposit that panics
   is refunded from `system` to the account `promise_set_refund_to` named, which gains exactly
-  2 N, and without it to the predecessor; the call reads the target as
-  `refund_to_account_id`, the predecessor when unset). <!-- conformance --> The comparison leaves refund receipts out on
+  2 N while the predecessor ends exactly 2 N down, and without it to the predecessor, whose
+  balance ends where it started; the call reads the target as `refund_to_account_id`, the
+  predecessor when unset). <!-- conformance --> The comparison leaves refund receipts out on
   both sides, so no flow checks this rule.
 
 ---
@@ -455,7 +456,8 @@ Each rule has four fields:
   (`yield_deposit`: 2 N leaves the yielding account at creation, the callback receives it,
   and the account's balance is back once the callback has run); a returned yield
   (`returned_yield_forwards_its_result`: the caller's callback runs after the yield callback
-  and reads its result, the 7-byte payload, or, on a timeout, nothing); the callback's signer
+  and reads its result, exactly the resumed bytes, or, on a timeout, an empty success, not
+  `Failed`); the callback's signer
   (`yield_callback_signer_is_the_yielding_signer`: alice yields, and the callback's signer is
   alice whether bob resumes it or it times out; its predecessor is the yielding account).
   `examples/platform-selftest` checks a second resume (`resume_twice`), two

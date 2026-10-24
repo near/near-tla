@@ -334,16 +334,20 @@ fn refund_to_receives_the_deposit_refund() {
     let paid = json!({ "receiver": Z, "method": "paid", "args": json!({ "fail": true }).to_string(), "static_ggas": 10000, "weight": 1, "deposit": two.to_string() });
     for (rto, want) in [(None, Z), (Some(BOB), BOB)] {
         let mut sim = base.clone();
-        let b0 = sim.balance(BOB);
+        let (b0, z0) = (sim.balance(BOB), sim.balance(Z));
         let o = sim.call(ALICE, Z, "refund_call").args_json(json!({ "c": paid, "refund_to": rto })).transact();
         let r = o.expect_receipt("paid");
         let refunds = deposit_refunds(&o);
         let gained = yocto(sim.balance(BOB)) - yocto(b0);
-        println!("refund_to {rto:?}: paid logged {:?}, {}; deposit refunds {refunds:?}; bob gained {gained}", r.logs, rerr(r));
+        let z_moved = yocto(sim.balance(Z)) - yocto(z0);
+        println!("refund_to {rto:?}: paid logged {:?}, {}; deposit refunds {refunds:?}; bob gained {gained}, z moved {z_moved}", r.logs, rerr(r));
         assert_eq!(r.logs, [format!("paid {two} refund_to {want} predecessor {Z}")]);
         assert_eq!(r.failure(), Some(Failure::Panic("paid fail".into())));
         assert_eq!(refunds, [(want.to_string(), "system".to_string(), near(2))]);
+        // the deposit leaves z (the predecessor) and comes back to z or bob:
+        // exact, as protocol 88 gives contracts no gas reward
         assert_eq!(gained, if want == BOB { two as i128 } else { 0 });
+        assert_eq!(z_moved, if want == BOB { -(two as i128) } else { 0 });
     }
 }
 

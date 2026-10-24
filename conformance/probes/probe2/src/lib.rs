@@ -13,7 +13,8 @@
 //!   a callback; or, with `misuse`, the joint promise returned, given an
 //!   action, or given a `refund_to`;
 //! - `on_at`: a callback that reads result `i` only, and returns its size
-//!   (-1 for `Failed`);
+//!   (-1 for `Failed`); `on_expect` panics unless result `i` has the given
+//!   size or exact bytes, so its status shows what it read;
 //! - `clock`: logs the block height and timestamp; with `kid`, calls itself
 //!   once more;
 //! - `interleave`: two promises created A then B, and one weighted call
@@ -247,6 +248,33 @@ impl Probe2 {
             log!("result {} of {}: {} bytes", i, n, len);
         }
         len
+    }
+
+    /// A callback that checks result `i`, the only one it reads: with
+    /// `len`, its size (-1 for `Failed`); with `bytes`, that it is
+    /// `Successful` with exactly these bytes. Panics "result <i> is
+    /// failed", "... is <n> bytes" or "... is other bytes" otherwise, so
+    /// its status shows the result; returns the size.
+    pub fn on_expect(&self, i: u64, len: Option<i64>, bytes: Option<String>) -> i64 {
+        let got = match unsafe { sys::promise_result(i, REG) } {
+            1 => env::register_len(REG).unwrap_or(0) as i64,
+            2 => -1,
+            _ => env::panic_str("not ready"),
+        };
+        let is = |what: String| -> ! { env::panic_str(&format!("result {i} is {what}")) };
+        let what = || if got < 0 { "failed".to_string() } else { format!("{got} bytes") };
+        if len.is_some_and(|n| n != got) {
+            is(what());
+        }
+        if let Some(b) = bytes {
+            if got < 0 {
+                is(what());
+            }
+            if env::read_register(REG).unwrap_or_default() != b.as_bytes() {
+                is("other bytes".to_string());
+            }
+        }
+        got
     }
 
     /// Logs "clock <tag> <block height> <block timestamp>"; with `kid`,
