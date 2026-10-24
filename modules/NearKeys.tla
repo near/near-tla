@@ -14,7 +14,10 @@
 (*     are only allowed on the predecessor's own account                   *)
 (*     (runtime/runtime/src/actions.rs:755-801, ActorNoPermission);        *)
 (*     deleting an absent key (access_keys.rs:84) or adding a present key  *)
-(*     (access_keys.rs:158) fails the receipt.                             *)
+(*     (access_keys.rs:158) fails the receipt.  With StoragePerByte a key  *)
+(*     adds KeyBytes to the account's storage (access_keys.rs:17-29,       *)
+(*     :240-252) and DeleteKey frees them (:136-147); an AddKey the        *)
+(*     balance cannot cover fails with LackBalanceForState.                *)
 (*  4. Multi-action receipts such as [DeleteKey(k), FunctionCall]: the     *)
 (*     actions of one receipt run in order and are atomic                  *)
 (*     (runtime/runtime/src/lib.rs:946-1005: the first failing action      *)
@@ -58,6 +61,43 @@ KeyAllows(a, k, to, m) ==
 KeysWithout(a, k) == [keys EXCEPT ![a] = [x \in DOMAIN keys[a] \ {k} |-> keys[a][x]]]
 KeysWith(a, k, p)  == [keys EXCEPT ![a] = (k :> p) @@ keys[a]]
 
+\* The bytes a function-call AddKey is charged per byte for: the sum over its
+\* method names of (length + 1) (runtime/near-vm-runner/src/logic/utils.rs:4-6,
+\* paid at host.rs:4078-4091); the receiver id and allowance are not charged
+\* per byte.  An empty list (any method) is 0 bytes.  The model's names count
+\* as written; WithMethodBytes(p, n) states the real byte count n instead,
+\* for a model whose names are placeholders or abbreviated.
+RECURSIVE NameBytes(_)
+NameBytes(M) == IF M = {} THEN 0
+                ELSE LET m == CHOOSE x \in M : TRUE IN Len(m) + 1 + NameBytes(M \ {m})
+WithMethodBytes(p, n) == ("mb" :> n) @@ p
+MethodBytes(p) == IF "mb" \in DOMAIN p THEN p.mb ELSE NameBytes(p.ms)
+
+\* Storage bytes of a key with permission p (with StoragePerByte):
+\* trie id + borsh(AccessKey) + 40 (access_key_storage_usage,
+\* runtime/runtime/src/access_keys.rs:17-29).  An ed25519 trie id is 33
+\* bytes (core/crypto/src/signature.rs:332-338); AccessKey is nonce (8) and
+\* the permission: tag (1), and for a function-call key the borsh of
+\* FunctionCallPermission (core/primitives-core/src/account.rs:959-978):
+\* allowance Option<u128> (1 for None, 17 for Some), receiver_id (4 + its
+\* length) and method_names (4 + the sum of 4 + each length; empty for "any
+\* method").  The receiver id is a model id standing for a real one, so its
+\* length comes from IdBytes (overridable; default 10).  Method names count
+\* as the AddKey fee counts them (MethodBytes: each name's length + 1, or the
+\* WithMethodBytes figure), plus 3 more per name for the borsh length prefix.
+\* Overridable: KeyBytes <- MyKeyBytes for an allowance (+16) or another key
+\* type.
+IdBytes(s) == 10
+KeyBytes(p) ==
+    IF IsFull(p) THEN FullKeyBytes
+    ELSE LET mb == IF p.all THEN 0 ELSE MethodBytes(p) + 3 * Cardinality(p.ms)
+         IN 33 + 8 + 1 + 1 + 4 + IdBytes(p.rcv) + 4 + mb + RecordExtraBytes
+\* The bytes of a key map (key id -> permission).
+KeyMapBytes(ks) ==
+    LET F[S \in SUBSET DOMAIN ks] == IF S = {} THEN 0
+                                    ELSE LET k == CHOOSE x \in S : TRUE IN KeyBytes(ks[k]) + F[S \ {k}]
+    IN F[DOMAIN ks]
+
 \* Init helper: keys0 : [KeyAccts -> (key id -> permission)].
 KeysInit(keys0) == keys = keys0 /\ sigpaid = [a \in Accounts |-> 0]
 
@@ -89,17 +129,6 @@ SubmitSigned(r, a, k) ==
 ----------------------------------------------------------------------------
 (* AddKey / DeleteKey receipts                                             *)
 
-\* The bytes a function-call AddKey is charged per byte for: the sum over its
-\* method names of (length + 1) (runtime/near-vm-runner/src/logic/utils.rs:4-6,
-\* paid at host.rs:4078-4091); the receiver id and allowance are not charged
-\* per byte.  An empty list (any method) is 0 bytes.  The model's names count
-\* as written; WithMethodBytes(p, n) states the real byte count n instead,
-\* for a model whose names are placeholders or abbreviated.
-RECURSIVE NameBytes(_)
-NameBytes(M) == IF M = {} THEN 0
-                ELSE LET m == CHOOSE x \in M : TRUE IN Len(m) + 1 + NameBytes(M \ {m})
-WithMethodBytes(p, n) == ("mb" :> n) @@ p
-MethodBytes(p) == IF "mb" \in DOMAIN p THEN p.mb ELSE NameBytes(p.ms)
 
 \* Constructors for key-action receipts on the creator's own account acct,
 \* with the receipt's send + exec fee as the creator-side fee (gas mode),
@@ -114,12 +143,18 @@ AddKeyRcpt(id, tx, acct, a, p, cb) == WithFee(Rcpt(id, tx, acct, acct, ADDK, a, 
 DelKeyRcpt(id, tx, acct, a, cb)    == WithFee(Rcpt(id, tx, acct, acct, DELK, a, 0, acct, cb), KeyFee(DELK, FullPerm))
 
 \* Execute an AddKey / DeleteKey receipt.  k: key id, p: permission (AddKey only);
-\* the model decodes them from its own r.a.
+\* the model decodes them from its own r.a.  With StoragePerByte, AddKey adds
+\* KeyBytes(p) and fails if liquid + locked does not cover the result
+\* (the receipt's storage check, runtime/runtime/src/lib.rs:1008-1031);
+\* DeleteKey frees the deleted key's bytes.
+KeyActBytes(r, k, p) == IF r.m = DELK THEN -KeyBytes(keys[r.to][k]) ELSE KeyBytes(p)
 ExecKeyAct(r, k, p) ==
     /\ r.m \in {ADDK, DELK}
     /\ LET ok == /\ r.to = r.fr
                  /\ r.to \in KeyAccts
                  /\ IF r.m = DELK THEN KeyPresent(r.to, k) ELSE ~KeyPresent(r.to, k)
+                 /\ IF ~StoragePerByte THEN TRUE
+                    ELSE StorageCovers(near[r.to] + r.dep + LockedOf(r.to), stor[r.to] + KeyActBytes(r, k, p))
        IN IF ok
           THEN /\ rq'   = RemR(r)
                /\ post' = RemP(r)
@@ -127,6 +162,7 @@ ExecKeyAct(r, k, p) ==
                /\ near' = [near EXCEPT ![r.to] = @ + r.dep]
                /\ keys' = IF r.m = DELK THEN KeysWithout(r.to, k) ELSE KeysWith(r.to, k, p)
                /\ rlog' = LogR(r, "ok")
+               /\ stor' = IF StoragePerByte THEN [stor EXCEPT ![r.to] = @ + KeyActBytes(r, k, p)] ELSE stor
                /\ UNCHANGED <<locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created,
                               burnt, blk, sigpaid>>
           ELSE FailP(r, FALSE) /\ UNCHANGED keyVars
@@ -157,9 +193,19 @@ KeyActsOK(r, acts) ==
 KeysAfter(r, acts) ==
     IF acts = <<>> THEN keys ELSE [keys EXCEPT ![r.to] = KeysFold(keys[r.to], acts).ks]
 
+\* The bytes the key actions add to r.to (StoragePerByte).
+KeyActsBytes(r, acts) ==
+    IF acts = <<>> THEN 0
+    ELSE KeyMapBytes(KeysFold(keys[r.to], acts).ks) - KeyMapBytes(keys[r.to])
+
 \* The handler's outcome O for the function call, failed as a whole if a key
-\* action fails (the call then does not run).
-WithKeyActs(r, acts, O) == IF KeyActsOK(r, acts) THEN O ELSE OErr(O, "key action failed")
+\* action fails (the call then does not run).  With StoragePerByte the key
+\* actions' bytes join the call's (OStor): nearcore checks storage once, at
+\* the end of the receipt (lib.rs:1008-1031).
+WithKeyActs(r, acts, O) ==
+    IF ~KeyActsOK(r, acts) THEN OErr(O, "key action failed")
+    ELSE IF StoragePerByte /\ acts # <<>> THEN OStor(O, StorDelta(O) + KeyActsBytes(r, acts))
+    ELSE O
 OkWithKeys(r, acts, O)  == Ok(r, WithKeyActs(r, acts, O))
 
 \* Platform + keys part of running such a receipt.  The contract conjoins
@@ -272,7 +318,7 @@ ExecDelegate(r) ==
              /\ keys' = IF r.to \in KeyAccts THEN KeysWithNonce(r.to, sd.k, sd.n) ELSE keys
              /\ rlog' = LogR(r, "ok")
              /\ UNCHANGED <<near, locked, proposal, epoch, fails, paid, minted, oog, txsig, created,
-                            burnt, blk, sigpaid>>
+                            burnt, blk, stor, sigpaid>>
           \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
              /\ FailP(r, FALSE)
              /\ UNCHANGED keyVars

@@ -33,6 +33,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [12. Fault mode and gas mode](#12-fault-mode-and-gas-mode)
 - [13. The forced-fault switch and labels](#13-the-forced-fault-switch-and-labels)
 - [14. Joint callbacks, yield/resume and the block clock](#14-joint-callbacks-yieldresume-and-the-block-clock)
+- [15. Storage staking per byte](#15-storage-staking-per-byte)
 - [Calibrating](#calibrating)
 - [Replaying a counterexample in the sim](#replaying-a-counterexample-in-the-sim)
 - [The runner: `runs.toml`](#the-runner-runstoml)
@@ -291,7 +292,7 @@ text (see [The runner](#the-runner-runstoml)).
 |---|---|
 | `Accounts` | every account that holds native NEAR in the model |
 | `Exists` | the accounts that exist initially (the rest can be created by an implicit-account Transfer, or never exist) |
-| `StorageFloor` | `[Accounts -> Nat]`: what liquid + locked must cover after a function call (`LackBalanceForState`); 0 for an account under the zero-balance storage limit |
+| `StorageFloor` | `[Accounts -> Nat]`: what liquid + locked must cover after a function call (`LackBalanceForState`); 0 for an account under the zero-balance storage limit. Not checked with `StoragePerByte` ([section 15](#15-storage-staking-per-byte)) |
 | `StakingAcct`, `MinStake`, `MaxEpoch`, `MaxReward` | the one staking account, its minimum stake, and the bounds on epoch ticks and rewards (`MaxEpoch = 0`: no epoch ticks) |
 | `GasMode` | `"fault"` or `"gas"` ([section 12](#12-fault-mode-and-gas-mode)) |
 | `GasCall`, `GasBurn` | the gas tables (gas mode); an empty function `[x \in {} \|-> 0]` in fault mode |
@@ -325,6 +326,11 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `MaxBlk` | `0` (no clock) | the model uses the block clock: the bound on `blk` ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)) |
 | `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
+| `StoragePerByte` | `FALSE` | the model tracks storage in bytes: `TRUE` replaces the fixed `StorageFloor` with `stor` priced per byte ([section 15](#15-storage-staking-per-byte)) |
+| `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
+| `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
+| `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
+| `TokRegBytes` | 0 per token | with `StoragePerByte`: the bytes one registration adds to the token (125 for near-contract-standards with a 64-character id; keep `TokStorageMin` equal to it priced at `StorageByteCost`) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
@@ -361,7 +367,7 @@ Initialise every platform variable with one helper:
 |---|---|
 | `PlatformInit(near0, txIds)` | `near0`: `[Accounts -> Nat]`; `txIds`: the transaction ids (the domain of the `paid` ghost) |
 | `PlatformInitStaked(near0, locked0, txIds)` | the same, with `locked0` already staked on `StakingAcct` |
-| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `blk` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock`) |
+| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `blk`, `stor` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage`) |
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
@@ -377,7 +383,7 @@ A step that touches no platform state writes `UNCHANGED platformVars`.
 Build `vars` (the tuple in `Spec == Init /\ [][Next]_vars`) from `platformVars` as above, not
 from a hand-written list of platform variables. A variable missing from `vars` is unconstrained
 by the stuttering steps of `[][Next]_vars`, and TLC only warns. When the library adds a
-platform variable (`blk` in 0.2), a hand-written list goes stale silently.
+platform variable (`blk` and `stor` in 0.2), a hand-written list goes stale silently.
 
 ## 4. Receipts
 
@@ -992,6 +998,59 @@ independent.
 TLC errors on comparing values of different types inside one set (a number with a string, a
 tuple with a number). If your ghosts store results or receipts, keep each field one type.
 
+## 15. Storage staking per byte
+
+The rule is [B2](SEMANTICS.md#b2-balance-must-cover-storage-lackbalanceforstate). Worked
+example: [`storage-stake`](../examples/storage-stake/). By default the library checks a fixed
+`StorageFloor` after each function call. That misses a contract whose storage grows: each new
+record raises what the balance must cover. Set `StoragePerByte <- TRUE` and the library keeps
+every account's storage usage in bytes (`stor`). After each receipt the receiver's liquid +
+locked must then cover `stor[a]` at `StorageByteCost`, unless `stor[a]` is at most 770 bytes. If
+it does not, the receipt fails with `LackBalanceForState` and reverts. `StorageFloor` is then
+not checked: both encode the same rule.
+
+Your handlers declare the bytes they write with `OStor(O, d)`. `d` is the number of bytes
+added, negative when freed. Count them with nearcore's rule (`RecordBytes(k, v)` = key + value
++ 40 for a new key; an overwrite adds the length difference; a removal frees key + value + 40):
+
+```tla
+\* deposit(): a new entry under "d" + borsh(AccountId) (4 + 64 bytes) holding a u128 (16)
+IF u 
+otin DOMAIN book
+THEN OStor(Outcome({}, {}, RVal(0), 0, 0), RecordBytes(1 + 4 + 64, 16))
+ELSE Outcome({}, {}, RVal(0), 0, 0)                     \* an overwrite of the same length: 0
+```
+
+The library adds the rest itself:
+
+- AddKey (`KeyBytes(p)`: 82 for a full-access key) and DeleteKey, in `ExecKeyAct` and, for
+  `WithKeyActs`, folded into the call's bytes. Function-call key bytes depend on the real
+  receiver and method names: give the receiver id's length with `IdBytes`, and placeholder
+  method names their real byte count with `WithMethodBytes`.
+- Implicit-account creation (`CreatedBytes`: 182, 132 or 100 bytes).
+- Token registrations, when you set `TokRegBytes` (`Nep145`): `storage_deposit`,
+  `storage_unregister`, `near_deposit`, and `"autoRegister"` transfers, which add bytes with
+  no deposit.
+
+Give every account its real usage at the start in `StorageInit`: 100 bytes for the account
+record, its keys, the contract code (the wasm size) and its data. For a deployed contract,
+`view_account` shows `storage_usage`. An entry you leave at 0 makes that account exempt.
+`PlatformInit` stops with an `Assert` if an initial balance does not cover its bytes. With a
+hand-written `Init` (`PlatformInitStorage`), list `StorageCovered` as an invariant.
+
+```toml
+[constants]
+StoragePerByte = 'TRUE'
+StorageInit = 'Bytes0'          # Bytes0 == [a \in Accts |-> IF a = "v" THEN 120000 ELSE 182]
+StorageByteCost = 'Cost'        # Cost == <<1, 100>>: 1 unit = 1 milliNEAR
+```
+
+Units: TLC integers are 32-bit, and the check multiplies (`bal * den >= bytes * num`), so keep
+balances below 2^31 / `den` and bytes below 2^31 / `num`. At `<<1, 100>>` that is about 21
+million units (21,000 NEAR) and 2 GB. A transaction whose deposit would leave its signer
+uncovered cannot be submitted. A scripted model that must go on should test `CanSubmit(r, a)`
+before `Submit`, since an uncovered `Submit` is a disabled step.
+
 ## Calibrating
 
 A gas-mode verdict is only as good as its `GasBurn` and `GasCall` tables. Illustrative numbers
@@ -1279,3 +1338,4 @@ All examples are toy contracts written for this repo.
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |
+  | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |

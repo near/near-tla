@@ -9,10 +9,18 @@
 //! the same sender-receiver pair ("No per-pair order"); and delegate
 //! actions (NEP-366, "Delegate actions"): the signer and predecessor the
 //! inner call sees, replay, expiry, the deposit refund paths, and the
-//! function-call-key checks on either side.
+//! function-call-key checks on either side; and per-byte storage staking
+//! ("Balance must cover storage", B2): the bytes a write, a key and an
+//! implicit account add, `LackBalanceForState` on growth (the boundary
+//! inclusive, the deposit counted, the whole receipt reverted, a callback
+//! failing after a payout), the 770-byte zero-balance allowance, and the
+//! signer's check at conversion.
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
-use near_contract_sim::{AccessKey, AccessKeyPermission, CryptoHash, FunctionCallPermission, ReceiptOutcome, TxOutcome};
+use near_contract_sim::{
+    AccessKey, AccessKeyPermission, ActionErrorKind, CryptoHash, FunctionCallPermission, InvalidTxError, ReceiptOutcome,
+    TxOutcome,
+};
 use near_tla_conformance::probe_wasm;
 use serde_json::{Value, json};
 
@@ -556,4 +564,207 @@ fn delegate_function_call_key_scope() {
     println!("relayer's function-call key: {}", status(&o));
     assert!(status(&o).contains("RequiresFullAccess"), "{}", status(&o));
     assert!(o.receipts.is_empty(), "an invalid transaction: no receipt");
+}
+
+/// Storage usage in bytes, as `view_account` shows it.
+fn usage(sim: &Sim, id: &str) -> u64 {
+    sim.account(id).unwrap().storage_usage
+}
+
+fn put<'a>(sim: &'a mut Sim, signer: &str, k: &str, v: &str) -> Tx<'a> {
+    sim.call(signer, P, "put").args_json(json!({ "key": k, "value": v }))
+}
+
+/// p's first mutating call also writes the contract state (near-sdk's
+/// `STATE` record), so the byte tests start after one.
+fn storage_world() -> Sim {
+    let mut sim = deleg_world();
+    put(&mut sim, ALICE, "warm", "").transact().assert_success();
+    sim
+}
+
+/// A new key adds key + value + 40 bytes; an overwrite adds the length
+/// difference (runtime/near-vm-runner/src/logic/host.rs:5041-5070; the 40
+/// is storage_num_extra_bytes_record,
+/// core/parameters/res/runtime_configs/parameters.yaml:37). The model's
+/// RecordBytes(k, v).
+#[test]
+fn storage_write_bytes() {
+    let mut sim = deleg_world();
+    let u0 = usage(&sim, P);
+    put(&mut sim, ALICE, "warm", "").transact().assert_success();
+    let u1 = usage(&sim, P);
+    println!("first put(\"warm\", \"\"): +{} bytes (STATE record and the key)", u1 - u0);
+    put(&mut sim, ALICE, "k1", "abc").transact().assert_success();
+    let u2 = usage(&sim, P);
+    println!("put(\"k1\", \"abc\") on a new key: +{}", u2 - u1);
+    assert_eq!(u2 - u1, 2 + 3 + 40);
+    put(&mut sim, ALICE, "k1", "abcdef").transact().assert_success();
+    let u3 = usage(&sim, P);
+    println!("put(\"k1\", \"abcdef\") overwriting: +{}", u3 - u2);
+    assert_eq!(u3 - u2, 3);
+    put(&mut sim, ALICE, "k1", "a").transact().assert_success();
+    assert_eq!(u3 - usage(&sim, P), 5, "a shorter value frees the difference");
+}
+
+/// After a receipt, liquid + locked must cover storage_usage x 1e19 yocto
+/// (runtime/runtime/src/lib.rs:1008-1031; check_storage_stake,
+/// runtime/runtime/src/verifier.rs:48-84). One yocto short: the receipt
+/// fails with LackBalanceForState and its write is reverted. Exactly
+/// enough passes (`>=`, :74). A deposit the receipt brings counts: it is
+/// in the balance the check sees (here a `[Transfer(1 yocto), put]`
+/// batch, since `put` takes no deposit).
+#[test]
+fn storage_lack_balance_fails_and_reverts() {
+    let mut sim = storage_world();
+    let u = usage(&sim, P);
+    let need = sim.storage_cost(u + 2 + 3 + 40);
+    sim.set_balance(P, need.checked_sub(Balance::from_yoctonear(1)).unwrap());
+    let o = put(&mut sim, ALICE, "k1", "abc").transact();
+    println!("one yocto short: {:?}", o.failure());
+    assert!(matches!(o.failure(), Some(Failure::Action(ActionErrorKind::LackBalanceForState { .. }))), "{o}");
+    assert_eq!(get(&sim, "k1"), None, "the write is reverted");
+    assert_eq!(usage(&sim, P), u);
+    // The deposit counts: one yocto attached covers the shortfall.
+    sim.set_balance(P, need.checked_sub(Balance::from_yoctonear(1)).unwrap());
+    let args = serde_json::to_vec(&json!({ "key": "k1", "value": "abc" })).unwrap();
+    let o = sim.tx(ALICE, P).transfer(Balance::from_yoctonear(1)).call("put").args(args).transact();
+    println!("one yocto short, one attached: {:?}", o.failure());
+    assert!(o.failure().is_none(), "{o}");
+    assert_eq!(get(&sim, "k1").as_deref(), Some("abc"));
+    // Exactly enough.
+    let u = usage(&sim, P);
+    sim.set_balance(P, sim.storage_cost(u + 2 + 3 + 40));
+    let o = put(&mut sim, ALICE, "k2", "abc").transact();
+    println!("exactly enough: {:?}", o.failure());
+    assert!(o.failure().is_none(), "{o}");
+}
+
+/// The sim twin of examples/storage-stake `vault_per_byte_unrecorded`:
+/// p.chain([p.send(bob, x)]).then(p.put(rec, 2000 bytes)). The payout
+/// leaves p covering its bytes; the callback's record does not fit, so it
+/// fails with LackBalanceForState while the Transfer stands.
+#[test]
+fn storage_callback_fails_after_payout() {
+    let mut sim = storage_world();
+    let x = Balance::from_near(1).checked_div(10).unwrap();
+    let value = "x".repeat(2000);
+    let rec = 3 + 2000 + 40;
+    let u = usage(&sim, P);
+    // After the payout: the cover of today's bytes plus half the record's.
+    let after = sim.storage_cost(u).checked_add(sim.storage_cost(rec).checked_div(2).unwrap()).unwrap();
+    sim.set_balance(P, after.checked_add(x).unwrap());
+    let bob = sim.balance(BOB);
+    let send = json!({ "method": "send", "args": json!({ "to": BOB, "yocto": x.as_yoctonear().to_string() }).to_string(),
+                       "static_ggas": 20000, "weight": 1 });
+    let cb = json!({ "method": "put", "args": json!({ "key": "rec", "value": value }).to_string(),
+                     "static_ggas": 20000, "weight": 1 });
+    let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": [send], "cb": cb })).transact();
+    let (s, c) = (o.receipt("send").unwrap(), o.receipt("put").unwrap());
+    println!("payout: {:?}; record: {:?}", s.failure(), c.failure());
+    assert!(s.failure().is_none());
+    assert!(matches!(c.failure(), Some(Failure::Action(ActionErrorKind::LackBalanceForState { .. }))));
+    assert_eq!(yocto(sim.balance(BOB)) - yocto(bob), yocto(x), "bob was paid");
+    assert_eq!(get(&sim, "rec"), None, "and not recorded");
+    assert_eq!(usage(&sim, P), u);
+}
+
+/// NEP-448: an account using at most 770 bytes passes the check whatever
+/// its balance (verifier.rs:25, :77-79, :88-90). A new account is
+/// 100 + its full-access key (82: 33-byte ed25519 trie id, borsh AccessKey
+/// 9, + 40; runtime/runtime/src/access_keys.rs:17-29) = 182 bytes. With a
+/// balance below the cover of 700 bytes, keys up to 756 bytes are added;
+/// the next (838) fails with LackBalanceForState and is not added.
+#[test]
+fn storage_zero_balance_allowance() {
+    let mut sim = deleg_world();
+    let z = "zed.near";
+    let bal = sim.storage_cost(700);
+    sim.create_account(z, bal);
+    assert_eq!(usage(&sim, z), 100 + 82);
+    for i in 0..7 {
+        let k = key(&format!("zk{i}"));
+        sim.tx(z, z).add_key(k, AccessKey::full_access()).transact().assert_success();
+    }
+    let u = usage(&sim, z);
+    let b = sim.balance(z);
+    println!("{u} bytes with {} yocto: the cover would be {}", b.as_yoctonear(), sim.storage_cost(u).as_yoctonear());
+    assert_eq!(u, 182 + 7 * 82);
+    assert!(b < sim.storage_cost(u), "below the cover, passing only by the allowance");
+    let k = key("zk7");
+    let o = sim.tx(z, z).add_key(k.clone(), AccessKey::full_access()).transact();
+    println!("one more key ({} bytes): {:?}", u + 82, o.failure());
+    assert!(matches!(o.failure(), Some(Failure::Action(ActionErrorKind::LackBalanceForState { .. }))), "{o}");
+    assert!(sim.access_key(z, &k).is_none());
+    assert_eq!(usage(&sim, z), u);
+}
+
+/// Key bytes (NearKeys KeyBytes): trie id 33 + borsh(AccessKey) + 40
+/// (access_keys.rs:17-29; core/primitives-core/src/account.rs:959-978).
+/// Full access: 33 + 9 + 40 = 82. Function call: 33 + 8 (nonce) + 1 (tag)
+/// + allowance (1 for None, 17 for Some) + 4 + len(receiver) + 4 +
+/// sum(4 + len(method)) + 40. DeleteKey frees the same (:136-147).
+#[test]
+fn storage_key_bytes() {
+    let mut sim = deleg_world();
+    let delta = |sim: &mut Sim, seed: &str, ak: AccessKey| {
+        let u = usage(sim, ALICE);
+        sim.tx(ALICE, ALICE).add_key(key(seed), ak).transact().assert_success();
+        let d = usage(sim, ALICE) - u;
+        sim.tx(ALICE, ALICE).delete_key(key(seed)).transact().assert_success();
+        assert_eq!(usage(sim, ALICE), u, "DeleteKey frees what AddKey added");
+        d
+    };
+    let fc = |allowance: Option<Balance>, ms: &[&str]| AccessKey {
+        nonce: 0,
+        permission: AccessKeyPermission::FunctionCall(FunctionCallPermission {
+            allowance,
+            receiver_id: P.to_string(),
+            method_names: ms.iter().map(|m| m.to_string()).collect(),
+        }),
+    };
+    let full = delta(&mut sim, "kb-full", AccessKey::full_access());
+    let one = delta(&mut sim, "kb-fc1", fc(None, &["mark"]));
+    let two = delta(&mut sim, "kb-fc2", fc(Some(Balance::from_near(1)), &["mark", "get"]));
+    let any = delta(&mut sim, "kb-any", fc(None, &[]));
+    println!("full {full}, fc(None, [mark]) {one}, fc(Some, [mark, get]) {two}, fc(None, []) {any}");
+    let rcv = P.len() as u64;
+    assert_eq!(full, 82);
+    assert_eq!(one, 33 + 8 + 1 + 1 + 4 + rcv + 4 + (4 + 4) + 40);
+    assert_eq!(two, 33 + 8 + 1 + 17 + 4 + rcv + 4 + (4 + 4) + (4 + 3) + 40);
+    assert_eq!(any, 33 + 8 + 1 + 1 + 4 + rcv + 4 + 40);
+}
+
+/// A transaction whose cost leaves its signer below the storage cover is
+/// refused at conversion: InvalidTxError::LackBalanceForState
+/// (runtime/runtime/src/verifier.rs:375-386, in
+/// verify_and_charge_tx_ephemeral). The model's CanSubmit (without gas
+/// money).
+#[test]
+fn storage_signer_checked_at_conversion() {
+    let mut sim = storage_world();
+    let spare = Balance::from_near(1).checked_div(100).unwrap();
+    sim.set_balance(P, sim.storage_cost(usage(&sim, P)).checked_add(spare).unwrap());
+    let o = sim.tx(P, BOB).transfer(spare.checked_mul(2).unwrap()).transact();
+    println!("deposit above the spare balance: {:?}", o.failure());
+    assert!(matches!(o.failure(), Some(Failure::InvalidTx(InvalidTxError::LackBalanceForState { .. }))), "{o}");
+    let o = sim.tx(P, BOB).transfer(spare.checked_div(2).unwrap()).transact();
+    println!("deposit within it: {:?}", o.failure());
+    assert!(o.failure().is_none(), "{o}");
+}
+
+/// An account created by a Transfer: NEAR-implicit 100 + its full-access
+/// key 82 = 182, eth-implicit 100 + the 32-byte global-contract hash = 132
+/// (runtime/runtime/src/actions.rs:234-269). The model's CreatedBytes.
+#[test]
+fn storage_implicit_account_bytes() {
+    let mut sim = deleg_world();
+    let near_imp = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    let eth_imp = "0x3333333333333333333333333333333333333333";
+    for id in [near_imp, eth_imp] {
+        sim.tx(ALICE, id).transfer(Balance::from_near(1)).transact().assert_success();
+    }
+    println!("near-implicit {}, eth-implicit {}", usage(&sim, near_imp), usage(&sim, eth_imp));
+    assert_eq!(usage(&sim, near_imp), 182);
+    assert_eq!(usage(&sim, eth_imp), 132);
 }

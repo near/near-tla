@@ -14,7 +14,7 @@ near-contract-sim.
 
 ```
 modules/              the library, one flat directory (passed to TLC as -DTLA-Library)
-  NearAsync.tla       platform: receipts, callbacks, data, refunds, Transfer/Stake, accounts, gas, local receipts
+  NearAsync.tla       platform: receipts, callbacks, data, refunds, Transfer/Stake, accounts, storage, gas, local receipts
   NearKeys.tla        access keys, signed submission, AddKey/DeleteKey, multi-action atomicity
   NearFees.tla        action fees in Ggas per protocol version (pure definitions)
   TokenCommon.tla     token argument records, deviations, resolver arithmetic

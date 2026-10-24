@@ -18,6 +18,10 @@
 (* Delegate actions (the deleg_ scenarios): a script entry Dl is a        *)
 (* relayer's transaction carrying a user's signed delegate; u relays with  *)
 (* its key "ku" (u's keys are not modelled), c and d are the users.        *)
+(* Per-byte storage (the stor_ scenarios, run with StoragePerByte): one    *)
+(* unit covers 100 bytes (SCost); v starts with 900 bytes, c and d with    *)
+(* 700 (exempt: at most 770), ft with 1000, and one ft registration is 200 *)
+(* bytes (its storage minimum, 2 units).                                   *)
 (***************************************************************************)
 EXTENDS Tokens, NearKeys
 
@@ -50,6 +54,10 @@ STokMin     == [t \in {FT} |-> 2]
 STokDev     == [t \in {FT} |-> {}]
 STokReserve == [t \in {FT} |-> 10000]
 ReserveShapes == [t \in {FT} |-> "reserve"]
+\* Per-byte storage (selftest_storage): bytes at the start, 1 unit per 100 bytes.
+SStor     == [a \in Accts |-> CASE a = V -> 900 [] a \in {C, D} -> 700 [] a = FT -> 1000 [] OTHER -> 0]
+SCost     == <<1, 100>>
+STokBytes == [t \in {FT} |-> 200]
 Tok0 == [t \in {FT} |-> Ledger([h \in {U, W, C, D} |-> CASE h = U -> 5 [] h = C -> 3 [] OTHER -> 0],
                                {U, C, D})]
 
@@ -148,12 +156,19 @@ H(r) ==
          [O |-> (CASE a.w = "fail" -> OErr(Out0, "work panics")
                    [] a.w = "zero" -> Out0
                    [] a.w = "sz"   -> Outcome({}, {}, RValSz(1, 3), 0, 0)
+                   [] a.w = "grow" -> OStor(Outcome({}, {}, RVal(1), 0, 0), 100)   \* writes 100 bytes
                    [] OTHER        -> Outcome({}, {}, RVal(1), 0, 0)),
           s |-> {Sn(r, "work", GasOf(r))}]
     [] r.m \in {"cb", "probe"} -> [O |-> Out0, s |-> SeenRes(r)]
     [] r.m = "send" ->      \* Transfer a.amt to a.to, then self.cb
          [O |-> Outcome({Rcpt(nid, r.tx, a.to, r.to, XFER, G0, a.amt, r.to, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
+    [] r.m = "put" ->       \* writes a.amt bytes (a.amt < 0: frees them)
+         [O |-> OStor(Out0, a.amt), s |-> {Sn(r, "put", a.amt)}]
+    [] r.m = "putpay" ->    \* writes a.amt bytes and Transfers a.cd to u, then self.cb
+         [O |-> OStor(Outcome({Rcpt(nid, r.tx, U, r.to, XFER, G0, a.cd, r.to, nid + 1)},
+                              {CbOf(r, nid + 1)}, RVal(0), a.cd, 2), a.amt),
+          s |-> {Sn(r, "putpay", a.amt)}]
     [] r.m = "spend" ->     \* Transfer a.amt to u
          [O |-> Outcome({Rcpt(nid, r.tx, U, r.to, XFER, G0, a.amt, r.to, 0)}, {}, RVal(0), a.amt, 1),
           s |-> {}]
@@ -442,12 +457,37 @@ Script(s) ==
     [] s = "deleg_checks"     -> << Tx(C, C, "keyact", G("del", "", C, 0, 0, "", "k2"), 0),
                                     Dl(U, "ku", C, "k2", 1, NoExpiry, C, "pong", 0),  \* key deleted
                                     Dl(U, "ku", GH, "k0", 1, NoExpiry, C, "who", 1) >> \* no such sender
+    \* Per-byte storage (StoragePerByte).  Bytes: v 900, c and d 700, ft 1000; 100 bytes a unit.
+    [] s = "stor_grow"        -> << Tx(V, U, "put", Amt(100), 0),     \* 1000 bytes, 10 units: ok
+                                    Tx(V, U, "put", Amt(1), 0),       \* 1001: fails
+                                    Tx(V, U, "put", Amt(1), 1) >>     \* with 1 more unit: ok
+    [] s = "stor_revert"      -> << Tx(V, U, "putpay", G("", "", "", 300, 2, "", ""), 1),
+                                    Tx(C, U, "spawn", G("", "grow", "", 0, 0, "", ""), 0) >>
+    [] s = "stor_shrink"      -> << Tx(V, V, "spend", Amt(2), 0),     \* 8 units left for 900 bytes
+                                    Tx(V, U, "put", Amt(-100), 0),
+                                    Tx(V, V, "spend", Amt(2), 0) >>   \* 8 units for 800 bytes: ok
+    [] s = "stor_zero_balance"-> << Tx(D, U, "put", Amt(70), 0),      \* d has 0 units: 770 bytes ok
+                                    Tx(D, U, "put", Amt(1), 0) >>     \* 771: fails
+    [] s = "stor_locked"      -> << Tx(V, V, "spend", Amt(1), 0),     \* liquid 4, locked 5, 900 bytes
+                                    Tx(V, U, "put", Amt(-100), 0),
+                                    Tx(V, V, "spend", Amt(1), 0) >>   \* 3 + 5 cover 800 bytes
+    [] s = "stor_keys"        -> << Tx(C, C, "keyact", G("add", "", C, 0, 0, "", "k3"), 0),
+                                    Tx(C, C, "keyact", G("del", "", C, 0, 0, "", "k2"), 0),
+                                    Tx(C, C, "keyact", G("add", "", C, 0, 0, "", "k3"), 0),
+                                    Tx(C, C, "kbundle", G("", "", "", 0, 0, "", "k5"), 0) >>
+    [] s = "stor_implicit"    -> << Tx(C, U, "send", G("", "", E1, 2, 0, "", ""), 0) >>
+    [] s = "stor_signer"      -> << Tx(C, V, "probe", G0, 2),         \* leaves v 8 units for 900 bytes
+                                    Tx(C, V, "probe", G0, 1) >>
+    [] s = "stor_tokens"      -> << Tx(FT, U, "storage_deposit", SdArgs(W), 3),
+                                    Tx(FT, U, "storage_unregister", SuArgs(TRUE), 1),
+                                    Tx(FT, U, "storage_deposit", SdArgs(U), 2) >>
 
 Near0(s) == [a \in Accts |-> CASE a \in {U, W, V, FT} ->
-                                  (IF s \in {"floor_locked", "liquid_negative"} /\ a = V THEN 4 ELSE 10)
+                                  (IF s \in {"floor_locked", "liquid_negative", "stor_locked"} /\ a = V
+                                   THEN 4 ELSE 10)
                                [] a = C -> 5
                                [] OTHER -> 0]
-Locked0(s) == CASE s = "floor_locked" -> 5 [] s = "liquid_negative" -> 20 [] OTHER -> 0
+Locked0(s) == CASE s \in {"floor_locked", "stor_locked"} -> 5 [] s = "liquid_negative" -> 20 [] OTHER -> 0
 Total0(s) == LET n == Near0(s) IN
              n[U] + n[W] + n[V] + n[FT] + n[C] + Locked0(s)
 
@@ -478,9 +518,12 @@ Send ==
        IF e.m = "tick" THEN EpochTick /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF e.m = "btick" THEN BlockTick /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF e.m = DELEG
-            THEN IF CanSign(e.fr, e.key, DelegRcpt(nid, ntx + 1, e.fr, SD(e)))
+            THEN LET d == DelegRcpt(nid, ntx + 1, e.fr, SD(e)) IN
+                 IF CanSign(e.fr, e.key, d) /\ CanSubmit(d, e.fr)
                  THEN SubmitDelegate(nid, ntx + 1, e.fr, e.key, SD(e)) /\ acc' = Append(acc, TRUE)
                  ELSE acc' = Append(acc, FALSE) /\ UNCHANGED <<platformVars, keyVars>>
+       \* A transaction nearcore refuses (CanSubmit, CanSign) is recorded as FALSE.
+       ELSE IF ~CanSubmit(r, e.fr) THEN acc' = Append(acc, FALSE) /\ UNCHANGED <<platformVars, keyVars>>
        ELSE IF e.key = "" THEN Submit(r) /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF CanSign(e.fr, e.key, r) THEN SubmitSigned(r, e.fr, e.key) /\ acc' = Append(acc, TRUE)
        ELSE acc' = Append(acc, FALSE) /\ UNCHANGED <<platformVars, keyVars>>
@@ -756,13 +799,50 @@ Expect(s) ==
          \* sender.  actions.rs:587-602, :861-886
          TxsSeen = {1} /\ ~\E x \in ran : x[3] = "pong" /\ DOMAIN keys[C] = {"k0", "k1"} /\ near[U] = 10
 
+    \* Per-byte storage.  Liquid + locked must cover the bytes after the receipt, at most 770
+    \* bytes always pass; LackBalanceForState fails and reverts the whole receipt.
+    \* lib.rs:1008-1031, verifier.rs:48-90
+    [] s = "stor_grow" ->         \* growth within the balance commits, the boundary inclusive;
+         \* one byte more fails; an attached deposit counts.  host.rs:5062-5070
+         stor[V] = 1001 /\ near[V] = 11 /\ near[U] = 9
+         /\ seen = {S1("put", 100), S(3, "put", 1)}
+    [] s = "stor_revert" ->       \* growth beyond the balance fails the receipt: no bytes, no
+         \* Transfer, no callback, the deposit refunded; a callback on it sees Failed.
+         \* lib.rs:1008-1031, :1078-1088, :1172-1176
+         stor[V] = 900 /\ near[V] = 10 /\ near[U] = 10 /\ stor[D] = 700
+         /\ seen = {S2("fail", 0), S2("sz", 0)} /\ <<2, D, "work">> \notin ran
+    [] s = "stor_shrink" ->       \* a spend below the cover fails; freeing bytes lowers it.
+         \* host.rs:5198-5208
+         stor[V] = 800 /\ near[V] = 8 /\ near[U] = 12
+    [] s = "stor_zero_balance" -> \* NEP-448: at most 770 bytes need no balance.
+         \* verifier.rs:25, :77-79, :88-90
+         stor[D] = 770 /\ seen = {S1("put", 70)}
+    [] s = "stor_locked" ->       \* locked counts: 3 liquid + 5 locked cover 800 bytes.
+         \* verifier.rs:64-74
+         stor[V] = 800 /\ near[V] = 3 /\ locked = 5 /\ near[U] = 11
+    [] s = "stor_keys" ->         \* a function-call key (c, {ping}) is 109 bytes with a 10-byte
+         \* receiver id, (c, any) 101: AddKey over the cover fails, DeleteKey frees, a bundled
+         \* [AddKey, call] is checked once, at the end.  access_keys.rs:17-29, :136-147, :240-252
+         DOMAIN keys[C] = {"k0", "k1", "k3"} /\ stor[C] = 708
+         /\ S1("fail", 0) \in seen /\ S2("empty", 0) \in seen /\ S(3, "empty", 0) \in seen
+         /\ ~\E x \in ran : x[3] = "kbundle"
+    [] s = "stor_implicit" ->     \* an eth-implicit account created by a Transfer: 100 + 32 bytes
+         \* actions.rs:255-269
+         created = {E1} /\ stor[E1] = 132
+    [] s = "stor_signer" ->       \* a transaction whose deposit would leave the signer uncovered
+         \* is refused.  verifier.rs:375-386
+         acc = <<FALSE, TRUE>> /\ near[V] = 9 /\ near[C] = 6
+    [] s = "stor_tokens" ->       \* a registration adds TokRegBytes, kept from the deposit;
+         \* unregistering frees them.  storage_impl.rs:8-36, :51-78; core_impl.rs:51-57
+         stor[FT] = 1200 /\ L.reg = {U, C, D, W} /\ near[FT] = 12 /\ near[U] = 8
+
 Check == Done => Expect(scn)
 \* zero_gas_left0, zero_gas_heavy: whether the creator (tx 1's spawn0) committed.  Under "up"
 \* each is violated (both outcomes are reachable); runs.toml expects that.
 CreatorNeverCommits  == Done => <<1, C, "spawn0">> \notin ran
 CreatorAlwaysCommits == Done => <<1, C, "spawn0">> \in ran
 NoNegDeposit == \A x \in rq \cup post : x.dep >= 0
-Sane  == /\ NearConserved(Total0(scn)) /\ NoOrphans /\ NoNegDeposit
+Sane  == /\ NearConserved(Total0(scn)) /\ NoOrphans /\ NoNegDeposit /\ StorageCovered
          /\ TokSupplyOK /\ TokTypeOK
          /\ GasBounded(LAMBDA t : IF t <= Len(Script(scn)) THEN Script(scn)[t].gas ELSE 0)
 =============================================================================

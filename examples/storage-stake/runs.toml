@@ -1,0 +1,74 @@
+# Per-byte storage staking against the fixed floor. See Vault.tla.
+#
+#   python3 tools/run.py examples/storage-stake
+#
+# Books       once idle, every user's NEAR equals the payouts recorded for them.
+# PaidOnce    no user is paid twice.
+# Sane        NEAR conserved; with StoragePerByte, every balance covers its bytes.
+#
+# The pair is vault_per_byte_unrecorded (must fail) / vault_per_byte_atomic_ok (must pass);
+# vault_floor_misses_it is the same wrong vault under the 0.1.0 fixed floor, a false pass.
+
+spec = "Vault"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Books", "PaidOnce", "Sane"]
+tags = ["storage:per-byte"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "1"
+StorageFloor = "VFloor"
+StorageInit = "VStor"
+StorageByteCost = "Cost"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+Users = '{"u1", "u2"}'
+V = '"v"'
+MaxTx = "3"
+RecBytes = "100"
+V0 = "13"
+Wrong = "TRUE"
+StoragePerByte = "TRUE"
+
+# The fixed floor (10 units, V's initial 1000 bytes) never sees the records' bytes: the
+# second user's on_paid commits and Books holds.  A false pass.
+[[run]]
+name = "vault_floor_misses_it"
+expect = "pass"
+[run.constants]
+StoragePerByte = "FALSE"
+
+# Per byte: after the second payout V has 11 units; its record would make 1200 bytes, which
+# need 12.  on_paid fails with LackBalanceForState: the user is paid but not recorded.
+[[run]]
+name = "vault_per_byte_unrecorded"
+expect = "violation"
+invariant = "Books"
+
+# The record is written in the paying receipt: the second withdraw fails as a whole (no
+# payout, no record) and Books holds.
+[[run]]
+name = "vault_per_byte_atomic_ok"
+expect = "pass"
+[run.constants]
+Wrong = "FALSE"
+
+# ... and the first withdraw does pay: the pass above is not vacuous.
+[[run]]
+name = "vault_per_byte_atomic_pays"
+expect = "violation"
+invariant = "NobodyPaid"
+invariants = ["NobodyPaid"]
+[run.constants]
+Wrong = "FALSE"

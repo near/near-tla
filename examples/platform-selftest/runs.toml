@@ -298,3 +298,18 @@ GasCall = "SGasCall"
 GasBurn = "SGasBurn"
 MaxBlk = "2"
 Scns = '{"deleg_ok", "deleg_replay", "deleg_expired", "deleg_inner_fail"}'
+
+# Per-byte storage (StoragePerByte): growth within the balance, beyond it (the receipt fails
+# and reverts, a callback sees Failed), shrinking, the 770-byte zero-balance allowance,
+# locked balance, key bytes, implicit-account bytes, the signer check at submission, and
+# token registrations.
+[[run]]
+name = "selftest_storage"
+expect = "pass"
+[run.constants]
+StoragePerByte = "TRUE"
+StorageInit = "SStor"
+StorageByteCost = "SCost"
+TokRegBytes = "STokBytes"
+Scns = '''{"stor_grow", "stor_revert", "stor_shrink", "stor_zero_balance", "stor_locked",
+          "stor_keys", "stor_implicit", "stor_signer", "stor_tokens"}'''

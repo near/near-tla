@@ -84,8 +84,8 @@ outside this repo, and the runner still finds the library.
 
 | module | what it provides |
 |---|---|
-| `NearAsync` | the platform: receipts, callbacks and promise results, joint callbacks (`promise_and`), yield/resume with its timeout, a block clock, revert scope, deposit refunds, Transfer and Stake, account kinds and implicit creation, calls to code-less accounts, signer propagation, local receipts, and gas as a bounded quantity (fault mode or gas mode) |
-| `NearKeys` | access keys: full-access and function-call permissions, signed submission, AddKey/DeleteKey receipts, key actions bundled atomically with a call |
+| `NearAsync` | the platform: receipts, callbacks and promise results, joint callbacks (`promise_and`), yield/resume with its timeout, a block clock, revert scope, deposit refunds, Transfer and Stake, account kinds and implicit creation, calls to code-less accounts, signer propagation, local receipts, storage staking (a fixed floor, or per byte), and gas as a bounded quantity (fault mode or gas mode) |
+| `NearKeys` | access keys: full-access and function-call permissions, signed submission, AddKey/DeleteKey receipts and their storage bytes, key actions bundled atomically with a call, delegate actions |
 | `NearFees` | NEAR's action and receipt fees in Ggas, per protocol version 84-88 (pure definitions) |
 | `TokenCommon` | the shared token argument record, selectable non-standard behaviours, resolver arithmetic, an arbitrary receiver |
 | `Nep145` | NEP-145 storage management and the token ledger |
@@ -119,7 +119,9 @@ to move to a new protocol version.
 
 ## Roadmap
 
-### Done (v0.2, unreleased)
+### Done (unreleased)
+
+Everything planned for v0.2 is in; it is waiting for a release tag.
 
 - `promise_and`: callbacks that join several promise results (SEMANTICS C6).
 - Yield/resume (NEP-519), with an abstract block clock for the timeout (C7, S3).
@@ -131,10 +133,9 @@ to move to a new protocol version.
   allows is reachable, though: a counterexample's schedule still needs replaying.
 - Delegate actions (NEP-366 meta transactions), where the signer is the relayer and the
   predecessor the user (SEMANTICS K4, `examples/meta-tx`).
-
-### Planned (v0.2)
-
-- Per-byte storage staking instead of a fixed floor.
+- Per-byte storage staking, opt-in next to the fixed floor (`StoragePerByte`, SEMANTICS B2,
+  `examples/storage-stake`): the bytes of writes, keys, created accounts and token
+  registrations, checked after every receipt with the 770-byte zero-balance exemption.
 
 ### Later
 
@@ -142,7 +143,11 @@ to move to a new protocol version.
   near-contract-sim is a private git dependency. A job that runs it needs sim access through a
   deploy key or an app token.
 - **Promote rules to "sim" validation** as the conformance probes cover them (the rules marked
-  in `docs/SEMANTICS.md`).
+  in `docs/SEMANTICS.md`). Per-byte storage is checked by sim tests only; a probe flow for it
+  needs a re-sweep of every flow.
+- **Storage bytes from the calibrator:** a per-(method, path) table of the bytes each call
+  writes, measured in the sim beside the gas burns, so that models need not count `OStor`
+  bytes by hand.
 - **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:** the
   function-call AddKey per-byte fee; access-key allowances and transaction validity (nonces);
   DeleteAccount, CreateAccount restrictions, deterministic-account state init, global

@@ -28,6 +28,12 @@
 (*   yocto is not modelled); returns true.                                 *)
 (*   Both booleans are NONEMPTY bytes; ev.unreg / ev.unregBurnt say what   *)
 (*   happened.  The NEP-141 resolver's burn path needs this method.        *)
+(* Storage bytes (with StoragePerByte): a registration is the only change  *)
+(* in a standard FT's storage (balances are fixed-width u128 values), so   *)
+(* every token receipt declares TokRegBytes[t] bytes per account it        *)
+(* registers and frees as many per account it unregisters (TokOut's sb):   *)
+(* storage_deposit, storage_unregister, near_deposit, and transfers under  *)
+(* the "autoRegister" deviation, which adds bytes with no deposit.         *)
 (***************************************************************************)
 EXTENDS TokenCommon
 
@@ -43,6 +49,16 @@ CONSTANTS
                      \* Unused in the default "standard" shape.
 
 VARIABLE tk
+
+\* Storage bytes of one registration, per token (used with StoragePerByte;
+\* overridable).  near-contract-standards stores an account's balance under
+\* prefix + borsh(AccountId) as a u128: 1 + 4 + len(id) + 16 + 40 bytes for a
+\* one-byte prefix (fungible_token/core_impl.rs:41-57, measured at init with
+\* a 64-character id), so 125 for the longest id, and storage_balance_bounds
+\* min = 125 bytes x 1e19 = 1.25e21 yocto (storage_impl.rs:107-111).  Keep
+\* TokStorageMin[t] = TokRegBytes[t] priced at StorageByteCost.  Default 0:
+\* no bytes.
+TokRegBytes == [t \in TokenAccts |-> 0]
 
 \* Initial ledger helper: balances b (a function on TokHolders[a]), registered set.
 Ledger(b, reg) ==
@@ -97,11 +113,18 @@ YoctoAct(acc, dep) ==
     IF TokYocto > 0 /\ dep # TokYocto
     THEN AE(acc, "Requires attached deposit of exactly 1 yoctoNEAR") ELSE acc
 
+\* Storage bytes a token receipt adds: TokRegBytes per account registered
+\* (negative when it unregisters).
+TokBytes(r, acc) ==
+    IF StoragePerByte /\ TokRegBytes[r.to] # 0
+    THEN TokRegBytes[r.to] * (Cardinality(acc.L.reg) - Cardinality(tk[r.to].reg))
+    ELSE 0
+
 \* Outcome record of a token receipt (gas burn key "acct.method[/path]", size 0).
 TokOut(r, acc) ==
     [ready |-> acc.rd, post |-> acc.ps, ret |-> acc.ret, out |-> acc.out,
      ids |-> acc.n - nid, err |-> acc.err, gk |-> CallKey(r.to, acc.key), sz |-> 0,
-     pa |-> IF TokBatchPerAction THEN acc.pa ELSE <<>>,
+     pa |-> IF TokBatchPerAction THEN acc.pa ELSE <<>>, sb |-> TokBytes(r, acc),
      tk |-> [tk EXCEPT ![r.to] = acc.L], ev |-> [acc.ev EXCEPT !.m = r.m]]
 
 ----------------------------------------------------------------------------

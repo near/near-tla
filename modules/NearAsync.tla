@@ -53,7 +53,8 @@
 (*  - Native NEAR: liquid per account, plus locked / proposal for one      *)
 (*    staking account.  Stake failures follow actions.rs:58-109; only the  *)
 (*    account itself may stake (actions.rs:755-801).  The storage check    *)
-(*    after a receipt uses liquid + locked (verifier.rs:48-79).            *)
+(*    after a receipt uses liquid + locked (verifier.rs:48-84): against a  *)
+(*    fixed StorageFloor, or per byte (StoragePerByte, stor).              *)
 (*                                                                         *)
 (* Gas.  The constant GasMode selects:                                     *)
 (*  "fault"  gas is abstract: only the forced-fault switch (MayFail /      *)
@@ -158,16 +159,17 @@ VARIABLES
     txsig,     \* [tx -> [a |-> signer account, k |-> signer key id]], set by Submit
     created,   \* accounts created at run time (implicit-account Transfer)
     burnt,     \* ghost: NEAR burnt by refunds to missing accounts
-    blk        \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
+    blk,       \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
+    stor       \* [Accounts -> Int] storage usage in bytes; stays StorageInit unless StoragePerByte
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
-\* platform variable such as txsig or blk shown as null, means
+\* platform variable such as txsig, blk or stor shown as null, means
 \* PlatformInitExtra (or its parts PlatformInitSigner / PlatformInitAccounts
-\* / PlatformInitClock) is missing.
+\* / PlatformInitClock / PlatformInitStorage) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created, burnt, blk>>
+                  txsig, created, burnt, blk, stor>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
@@ -248,6 +250,53 @@ MaxBlk      == 0
 YieldTicks  == 0
 TickAnytime == TRUE
 TsOf(h)     == h
+
+\* Storage staking (docs/SEMANTICS.md, B2).  After a receipt's actions
+\* succeed, nearcore requires the receiver's liquid + locked to cover
+\* storage_usage x storage_amount_per_byte, and otherwise fails the whole
+\* receipt with LackBalanceForState (runtime/runtime/src/lib.rs:1008-1031;
+\* check_storage_stake, runtime/runtime/src/verifier.rs:48-84).  Two
+\* encodings of that one check:
+\*  StoragePerByte = FALSE (the default, the 0.1.0 rule): liquid + locked
+\*    must cover the fixed StorageFloor[a] after a function call.  stor
+\*    stays StorageInit and outcome byte deltas (OStor) are ignored.
+\*  StoragePerByte = TRUE: stor[a] is a's storage usage in bytes, which the
+\*    library keeps (OStor deltas, AddKey / DeleteKey, implicit-account
+\*    creation).  Liquid + locked must cover stor[a] bytes at
+\*    StorageByteCost unless stor[a] <= ZeroBalanceBytes (NEP-448 zero-
+\*    balance accounts, verifier.rs:25, :77-79, :88-90).  StorageFloor is
+\*    not checked: it encodes the same rule.  A transaction whose deposit
+\*    would leave its signer uncovered cannot be submitted (CanSubmit).
+\* StorageInit: bytes per account at the start (domain Accounts).  With
+\*   StoragePerByte give each account its real usage: the account record,
+\*   keys, code and data.  Every entry at or below 770 bytes is exempt.
+\* StorageByteCost = <<num, den>>: one byte costs num/den model NEAR units.
+\*   nearcore: 1e19 yocto per byte at 88
+\*   (core/parameters/res/runtime_configs/parameters.yaml:35), so <<1, 100000>>
+\*   when 1 unit = 1 NEAR and <<1, 100>> when 1 unit = 1 milliNEAR.  The
+\*   comparison is exact (bal * den >= bytes * num): keep both products
+\*   below 2^31.
+StoragePerByte   == FALSE
+StorageInit      == [a \in Accounts |-> 0]
+StorageByteCost  == <<1, 100000>>
+ZeroBalanceBytes == 770
+\* Byte counts (core/parameters/res/runtime_configs/parameters.yaml:36-37).
+AccountBytes     == 100   \* storage_num_bytes_account: an account record
+RecordExtraBytes == 40    \* storage_num_extra_bytes_record: per trie record
+\* storage_write of a new key adds key + value + 40 bytes; an overwrite adds
+\* len(new) - len(old); storage_remove frees key + value + 40
+\* (runtime/near-vm-runner/src/logic/host.rs:5041-5070, :5198-5208).
+RecordBytes(k, v) == k + v + RecordExtraBytes
+\* A full-access ed25519 key: its 33-byte trie id, the borsh AccessKey
+\* (nonce 8 + permission tag 1) and 40 (runtime/runtime/src/access_keys.rs:17-29;
+\* core/crypto/src/signature.rs:332-338).
+FullKeyBytes == 33 + 9 + RecordExtraBytes
+\* An account created by a Transfer (actions.rs:221-288): NEAR-implicit 100
+\* + its full-access key (182); eth-implicit 100 + the 32-byte global
+\* contract hash (132); deterministic and universal 100.  All are exempt.
+CreatedBytes(a) == CASE KindOf(a) = "near_implicit" -> AccountBytes + FullKeyBytes
+                     [] KindOf(a) = "eth_implicit"  -> AccountBytes + 32
+                     [] OTHER                       -> AccountBytes
 
 ----------------------------------------------------------------------------
 (* Promise results.  A callback sees r.res = [ok, v, sz, len]:             *)
@@ -528,6 +577,8 @@ PendingYields(a) == {p.id : p \in {q \in post : IsYield(q) /\ q.to = a}}
 (*           panic is always "fail".                                       *)
 (*   pi    : with pa, the index of the action that panics (default the     *)
 (*           last one; OPanicAt).                                          *)
+(*   sb    : storage bytes the receipt adds to r.to (negative: frees);     *)
+(*           OStor.  Used only with StoragePerByte.                        *)
 RVal(v)       == [k |-> "val", v |-> v, sz |-> 0, len |-> 0]
 RValSz(v, n)  == [k |-> "val", v |-> v, sz |-> n, len |-> 0]
 \* A value of b bytes (b >= 1): also sets sz, rounded up (1 KB = 1000 bytes).
@@ -565,14 +616,32 @@ ResumeData(r, O) ==
 
 \* Balances after the receipt.  The receiver cannot spend more than it has
 \* (BalanceExceeded inside the call), and liquid + locked must cover its
-\* storage (lib.rs:1008-1023, check_storage_stake at verifier.rs:48-79;
-\* LackBalanceForState).  StorageFloor[a] is the required amount; give 0 for
-\* an account under the zero-balance storage threshold, which is exempt
-\* (verifier.rs:75-77).
+\* storage (lib.rs:1008-1031, check_storage_stake at verifier.rs:48-84;
+\* LackBalanceForState).  Without StoragePerByte, StorageFloor[a] is the
+\* required amount (give 0 for an account under the zero-balance threshold,
+\* which is exempt, verifier.rs:77-79).  With it, the receiver's bytes after
+\* the receipt, stor[r.to] + the outcome's sb, priced at StorageByteCost.
 LockedOf(a) == IF a = StakingAcct THEN locked ELSE 0
+\* Storage outcome field: the receipt adds d bytes to its receiver (d < 0
+\* frees bytes).  Without StoragePerByte it is ignored.
+OStor(O, d)  == [sb |-> d] @@ O
+StorDelta(O) == IF "sb" \in DOMAIN O THEN O.sb ELSE 0
+\* Does bal (liquid + locked) cover bytes?  check_storage_stake: amount +
+\* locked >= bytes x storage_amount_per_byte, or at most 770 bytes
+\* (verifier.rs:54-79, :88-90).  Exact integer arithmetic.  (IF, not \/:
+\* TLC would branch on each true disjunct inside an action.)
+StorageCovers(bal, bytes) ==
+    IF bytes <= ZeroBalanceBytes THEN TRUE
+    ELSE bal * StorageByteCost[2] >= bytes * StorageByteCost[1]
+\* r.to's bytes once r commits with outcome O.
+StorAfter(r, O) ==
+    LET b == stor[r.to] + StorDelta(O) IN
+    IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
 Affordable(r, O) ==
     /\ near[r.to] + r.dep - O.out >= 0
-    /\ near[r.to] + r.dep - O.out + LockedOf(r.to) >= StorageFloor[r.to]
+    /\ IF StoragePerByte
+       THEN StorageCovers(near[r.to] + r.dep - O.out + LockedOf(r.to), StorAfter(r, O))
+       ELSE near[r.to] + r.dep - O.out + LockedOf(r.to) >= StorageFloor[r.to]
 
 ----------------------------------------------------------------------------
 (* Need, verdict and the unused-gas split                                  *)
@@ -793,6 +862,7 @@ Commit(r, O) ==
     /\ near' = [near EXCEPT ![r.to] = @ + r.dep - O.out]
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
+    /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
     /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk>>
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
@@ -807,7 +877,7 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor>>
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -840,7 +910,9 @@ ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailP(r, TRUE)
 \* (actions.rs:221-290).  Eth-implicit creation attaches a protocol-defined
 \* global contract (HasCode stays TRUE); the other created kinds have no code,
 \* so calls to them fail.  NEAR-implicit creation adds a full-access key, which
-\* is not modelled (model the keys of such accounts yourself).
+\* is not modelled (model the keys of such accounts yourself); with
+\* StoragePerByte its bytes are counted (CreatedBytes).  A credit never needs
+\* a storage check: it keeps a covered account covered (StorageCovered).
 ExecTransfer(r) ==
     /\ r.m \in {XFER, REFND}
     /\ \/ AcctExists(r.to)
@@ -852,6 +924,7 @@ ExecTransfer(r) ==
     /\ paid' = [paid EXCEPT ![r.tx][r.to] = @ + r.dep]
     /\ rlog' = LogR(r, "ok")
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
+    /\ stor' = IF StoragePerByte /\ ~AcctExists(r.to) THEN [stor EXCEPT ![r.to] = CreatedBytes(r.to)] ELSE stor
     /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk>>
 
 \* A refund to a missing account fails and its amount is burnt
@@ -862,7 +935,7 @@ RefundBurn(r) ==
     /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
     /\ burnt' = burnt + r.dep
     /\ rlog'  = LogR(r, "fail")
-    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
@@ -896,7 +969,7 @@ ExecStake(r) ==
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
 ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
@@ -919,7 +992,7 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor>>
 
 \* Block clock: one block passes (the model adds BlockTick /\ UNCHANGED of its
 \* own variables to Next).  Every receipt that runs at one value of blk sees
@@ -932,22 +1005,32 @@ BlockTick ==
     /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
     /\ blk' = blk + 1
     /\ UNCHANGED <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog,
-                   rlog, txsig, created, burnt>>
+                   rlog, txsig, created, burnt, stor>>
 BlockTs == TsOf(blk)
 
 ----------------------------------------------------------------------------
 (* Transactions                                                            *)
 
+\* Can account a sign the transaction whose first receipt is r?  It must pay
+\* the deposit (NotEnoughBalance), and with StoragePerByte what is left must
+\* still cover its storage (InvalidTxError::LackBalanceForState,
+\* runtime/runtime/src/verifier.rs:375-386 in verify_and_charge_tx_ephemeral).
+\* Gas money is not modelled (docs/SEMANTICS.md, N-gas-money).  A scripted
+\* model branches on this rather than letting Submit disable its step.
+CanSubmit(r, a) ==
+    /\ near[a] >= r.dep
+    /\ IF StoragePerByte THEN StorageCovers(near[a] - r.dep + LockedOf(a), stor[a]) ELSE TRUE
+
 \* Submit a transaction signed by account a with key id k: its first receipt
 \* (prepaid gas in r.g, see WithGas).  The signer pays the deposit now.  The
 \* receipt is local iff signer = receiver (lib.rs:2316-2324).
 SubmitAs(r, a, k) ==
-    /\ near[a] >= r.dep
+    /\ CanSubmit(r, a)
     /\ rq'    = rq \cup {[r EXCEPT !.loc = (a = r.to)]}
     /\ near'  = [near EXCEPT ![a] = @ - r.dep]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk>>
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
@@ -975,6 +1058,15 @@ Idle == rq = {} /\ post = {} /\ data = {}
 ----------------------------------------------------------------------------
 (* Init helpers                                                            *)
 
+\* With StoragePerByte, every account's initial liquid + locked must cover
+\* its StorageInit bytes: nearcore never leaves an account uncovered, and the
+\* library checks storage only where it can be lost (a model error otherwise).
+StorageInitOK(near0, locked0) ==
+    IF ~StoragePerByte THEN TRUE
+    ELSE \A a \in Accounts :
+           IF StorageCovers(near0[a] + (IF a = StakingAcct THEN locked0 ELSE 0), StorageInit[a]) THEN TRUE
+           ELSE Assert(FALSE, <<"StorageInit[a] exceeds what a's initial balance covers", a, StorageInit[a]>>)
+
 \* Every platform variable.  near0: [Accounts -> Nat]; txIds: the domain of paid.
 PlatformInitStaked(near0, locked0, txIds) ==
     /\ rq = {} /\ post = {} /\ data = {}
@@ -984,16 +1076,20 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ paid = [t \in txIds |-> [a \in Accounts |-> 0]]
     /\ oog = {} /\ rlog = {}
     /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ blk = 0
+    /\ stor = StorageInit /\ StorageInitOK(near0, locked0)
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
 \* Only the variables added in 0.1.0 and 0.2, for models that initialise the
 \* others themselves.  The parts compose: a model with its own txsig
-\* initialiser (e.g. a pre-sized function) conjoins PlatformInitAccounts and
-\* PlatformInitClock alone.
+\* initialiser (e.g. a pre-sized function) conjoins PlatformInitAccounts,
+\* PlatformInitClock and PlatformInitStorage alone.  PlatformInitStorage
+\* does not check the initial cover: list StorageCovered as an invariant.
 PlatformInitSigner   == txsig = <<>>
 PlatformInitAccounts == created = {} /\ burnt = 0
 PlatformInitClock    == blk = 0
+PlatformInitStorage  == stor = StorageInit
 PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock
+                        /\ PlatformInitStorage
 
 ----------------------------------------------------------------------------
 (* Platform sanity                                                         *)
@@ -1014,6 +1110,13 @@ NoOrphans ==
     /\ \A p \in post : \/ IsYield(p)
                       \/ \A i \in InIds(p) : (\E d \in data : d.to = i) \/ (\E x \in rq \cup post : x.cb = i)
     /\ \A d \in data : \E p \in post : d.to \in InIds(p)
+
+\* With StoragePerByte, every account's liquid + locked covers its bytes.
+\* The library keeps this from the initial state on (it checks storage after
+\* every receipt that can lose it, and at submission); list it to check a
+\* hand-written Init, or steps of the model's own that move NEAR.
+StorageCovered ==
+    IF StoragePerByte THEN \A a \in Accounts : StorageCovers(near[a] + LockedOf(a), stor[a]) ELSE TRUE
 
 \* No pending yield's deadline lies past the clock bound.  When this fails,
 \* some yield could time out before its deadline (at blk = MaxBlk, see

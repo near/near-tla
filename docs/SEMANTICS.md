@@ -62,6 +62,9 @@ Each rule has four fields:
     `NearFeeTable!DataBytesFee(sir, 1000 * r.res.sz)`. This overstates the bytes by up to 999, so it
     overstates the fee by up to about 65 Ggas per waiting receiver (cross-shard rate) or 34 Ggas
     (same account).
+- **Storage** (with `StoragePerByte`, B2) is in **bytes**: `stor`, `StorageInit`, `OStor`,
+  `KeyBytes`, `TokRegBytes`. `StorageByteCost = <<num, den>>` prices a byte at `num/den` of the
+  model's NEAR unit; nearcore's 1e19 yocto per byte is `<<1, 100000>>` when 1 unit = 1 NEAR.
 
 ---
 
@@ -655,7 +658,8 @@ Each rule has four fields:
   action). A created account has no code (`HasCode`) unless it is eth-implicit, so calls to a
   created NEAR-implicit, deterministic or universal account fail; the NEAR-implicit key, the
   rest of the universal uninitialised state (N-universal) and the charge (N-gas-money) are not
-  modelled.
+  modelled. With `StoragePerByte` the created account's bytes are counted (`CreatedBytes`, B2),
+  the NEAR-implicit key's included.
 - **Validated:** a lone Transfer to an absent NEAR-implicit or eth-implicit id succeeds and
   its creator pays the creation fees: sim (`send_nimp_new`, `send_eth_new`, `send_eth_new_cb`).
   The only-action condition, what is created (key, eth-wallet code), deterministic and
@@ -753,7 +757,8 @@ Each rule has four fields:
 - **nearcore:** `runtime/runtime/src/actions.rs:755-801` (`check_actor_permissions`), `:202`
   (CreateAccount sets the actor); `runtime/runtime/src/access_keys.rs:157-164` (AddKey exists),
   `:83-89` (DeleteKey absent).
-- **Model:** `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct`, `KeyPresent`.
+- **Model:** `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct`, `KeyPresent`. A key's
+  storage bytes (`KeyBytes`, with `StoragePerByte`) are in B2.
 - **Validated:** nearcore reading. <!-- conformance --> `flows/actions.toml` only prices
   AddKey and DeleteKey (G4), and no probe flow has a key action.
   `conformance/tests/semantics.rs` observes a failing DeleteKey of an absent key in the sim,
@@ -1084,18 +1089,75 @@ Each rule has four fields:
 ### B2. Balance must cover storage (`LackBalanceForState`)
 
 - **Rule:** After a receipt's actions succeed, the receiver's **liquid + locked** balance must
-  cover its storage (`storage_usage × storage_amount_per_byte`, 1e19 yocto per byte at 88). If
-  not, the receipt fails with `LackBalanceForState` and everything reverts. **Exemption:** a
-  zero-balance account, one using at most 770 bytes of storage (NEP-448), always passes.
-  Transactions are checked the same way at conversion.
-- **nearcore:** `runtime/runtime/src/lib.rs:1008-1030`; `runtime/runtime/src/verifier.rs:48-83`
-  (`check_storage_stake`: `amount + locked` at `:64-73`, the zero-balance exemption at `:77-79`),
-  `:25` (`ZERO_BALANCE_ACCOUNT_STORAGE_LIMIT = 770`), `:88-90`, `:375-387`;
-  `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:7`.
-- **Model:** the `StorageFloor` constant: what liquid + locked must cover after a function
-  call (`Affordable`; locked counts for `StakingAcct`, `LockedOf`). Storage usage is not tracked
-  byte by byte; give a zero-balance (exempt) account floor 0 (see N-storage).
-- **Validated:** nearcore reading.
+  cover its storage: `storage_usage × storage_amount_per_byte`, 1e19 yocto per byte at 88, so
+  100 KB costs 1 NEAR. The balance is the one after the receipt: the deposit it brought is in,
+  the deposits it attached to new receipts are out. The check runs once, after all of the
+  receipt's actions, for every action receipt on an existing account (not only function
+  calls). If the balance falls short, the **whole receipt** fails with `LackBalanceForState`:
+  its writes, key changes and new receipts are reverted (R4), and its deposit is refunded (R5).
+  **Exemption:** a zero-balance account, one using at most 770 bytes (NEP-448), always passes.
+  A transaction is checked the same way at conversion: one whose cost leaves its signer
+  uncovered is invalid (`InvalidTxError::LackBalanceForState`), and nothing runs.
+
+  Storage usage counts:
+  - the account record, 100 bytes (`storage_num_bytes_account`);
+  - each trie record as its key + value + 40 bytes (`storage_num_extra_bytes_record`): a write
+    of a new key adds key + value + 40, an overwrite adds the length difference, a removal
+    frees key + value + 40;
+  - each access key as its trie id (33 bytes for ed25519) + its borsh `AccessKey` + 40. A
+    full-access key is 82 bytes. A function-call key is 33 + 8 (nonce) + 1 (tag) + 1 (no
+    allowance) or 17 (an allowance) + 4 + the receiver's length + 4 + the sum over its method
+    names of 4 + the name's length, + 40. DeleteKey frees what AddKey added;
+  - contract code, its length in bytes;
+  - an account created by a Transfer (A3): NEAR-implicit 182 bytes (100 + its key), eth-implicit
+    132 (100 + the 32-byte global contract hash), deterministic and universal 100. All are
+    under 770.
+- **nearcore:** `runtime/runtime/src/lib.rs:1008-1031` (in `apply_action_receipt`);
+  `runtime/runtime/src/verifier.rs:48-84` (`check_storage_stake`: `amount + locked` at
+  `:64-74`, the exemption at `:77-79`), `:25` (`ZERO_BALANCE_ACCOUNT_STORAGE_LIMIT = 770`),
+  `:88-90`, `:375-386` (the signer, in `verify_and_charge_tx_ephemeral`);
+  `runtime/near-vm-runner/src/logic/host.rs:5041-5070` (`storage_write`), `:5198-5208`
+  (`storage_remove`); `runtime/runtime/src/function_call.rs:221-222` (the call's usage written
+  to the account); `runtime/runtime/src/access_keys.rs:17-29` (`access_key_storage_usage`),
+  `:136-147` (DeleteKey), `:240-252` (AddKey); `core/crypto/src/signature.rs:332-338`
+  (`trie_id_len`); `core/primitives-core/src/account.rs:801-809`, `:959-978` (`AccessKey`,
+  `FunctionCallPermission`); `runtime/runtime/src/actions.rs:203-208` (CreateAccount),
+  `:221-287` (implicit creation), `:303-304` (DeployContract);
+  `core/parameters/res/runtime_configs/parameters.yaml:35-37`;
+  `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:7`, `:96-97`.
+- **Model:** two encodings of the one check, chosen by the overridable `StoragePerByte`:
+  - `FALSE` (the default, the 0.1.0 rule): the `StorageFloor` constant, what liquid + locked
+    must cover after a function call (`Affordable`; locked counts for `StakingAcct`,
+    `LockedOf`). Give a zero-balance (exempt) account floor 0. Bytes are not tracked
+    (N-storage).
+  - `TRUE`: the platform variable `stor` holds each account's bytes, from `StorageInit`.
+    Handlers declare what they write with `OStor(O, d)` (the outcome field `sb`; helper
+    `RecordBytes(k, v)`); `Affordable` checks `StorageCovers` (an exact integer comparison at
+    `StorageByteCost`, and the 770-byte exemption `ZeroBalanceBytes`) and `Commit` updates
+    `stor`. `NearKeys` counts `KeyBytes(p)` in `ExecKeyAct` (an AddKey the balance cannot cover
+    fails) and folds the key bytes into the call's in `WithKeyActs`, so a bundled receipt is
+    checked once, at its end. `ExecTransfer` gives a created account `CreatedBytes`.
+    `CanSubmit` refuses a transaction that would leave its signer uncovered. `Nep145`'s
+    `TokRegBytes` adds a token's bytes per registration. `StorageFloor` is not checked.
+    `PlatformInit` asserts that every initial balance covers its bytes, and the library checks
+    every step that can lower liquid + locked or raise bytes: function calls, AddKey,
+    submission. Transfers, refunds, Stake, Delegate and DeleteKey receipts never do, so
+    nearcore's check on them cannot fail while every account is covered (the invariant
+    `StorageCovered`).
+- **Validated:** nearcore reading, and the sim (no model comparison).
+  `conformance/tests/semantics.rs` observes: the bytes of a new key and of an overwrite
+  (`storage_write_bytes`); a write one yocto short failing with `LackBalanceForState` and
+  reverted, the same write passing with exactly enough or with one yocto brought by the receipt
+  (`storage_lack_balance_fails_and_reverts`); a callback failing for storage after the payout
+  it records was made, the sim twin of `examples/storage-stake`
+  (`storage_callback_fails_after_payout`); the 770-byte allowance with a balance below the
+  cover, on an account growing by full-access keys (`storage_zero_balance_allowance`); the
+  byte counts of full-access and function-call keys, with and without an allowance
+  (`storage_key_bytes`); the signer refused at conversion
+  (`storage_signer_checked_at_conversion`); and 182 / 132 bytes for created NEAR-implicit and
+  eth-implicit accounts (`storage_implicit_account_bytes`). The locked part of the balance is
+  nearcore reading. <!-- conformance --> No probe flow checks storage: every flow's sweep is
+  bound to the flows file's sha256, so adding one means sweeping and recalibrating all of them.
 
 ---
 
@@ -1212,7 +1274,14 @@ locally.
 - **Model:** `Nep145`: `SdAct` (burn key `"<t>.storage_deposit/registered"` or `"/new"`,
   falling back to `"<t>.storage_deposit"`), `SuAct` (`SuArgs(force)`; both booleans are `NONEMPTY` bytes,
   `ev.unreg` / `ev.unregBurnt` say what happened), `SbAct` (`Some` is the number `total` = min,
-  `null` is `NONEMPTY`). Deviation `sdRefundToAccount` refunds to `account_id` instead.
+  `null` is `NONEMPTY`). Deviation `sdRefundToAccount` refunds to `account_id` instead. With
+  `StoragePerByte`, every token receipt declares `TokRegBytes[t]` bytes per account it
+  registers and frees as many per account it unregisters (`TokBytes`; balances are fixed-width,
+  so a registration is the only change). near-contract-standards stores 1 + 4 + len(id) + 16 +
+  40 bytes per account and prices `min` at a 64-character id, 125 bytes (1.25e21 yocto,
+  `fungible_token/core_impl.rs:41-57`, `storage_impl.rs:107-111`); keep `TokStorageMin` equal to
+  `TokRegBytes` at `StorageByteCost`. `Nep245` has no storage management: its bytes are the
+  model's.
 - **Validated:** source read.
 
 ### T5. NEP-245 multi token
@@ -1253,6 +1322,9 @@ locally.
   - `autoRegister`.
 
   An unregistered receiver is a scenario (the initial registration set), not a deviation.
+  With `StoragePerByte` and `TokRegBytes`, `autoRegister` adds a registration's bytes with no
+  deposit, so a token whose spare balance runs out fails transfers with `LackBalanceForState`
+  (B2).
 - **Model:** `TokenCommon.Deviations`, `TokDev`, `MtDev`.
 - **Validated:** model-only (they are deliberate departures from the standard).
 
@@ -1491,10 +1563,23 @@ against the current module code; some may be fixed in the modules later.
   428.26; now 432).
 - **N-burn-fail. Burn of a failing receipt.** Only the verdict is modelled, not how much a
   failing receipt burnt. Gas-griefing amounts are not computed.
-- **N-storage. Storage staking details.** `storage_usage` is not tracked per byte, so a write
-  that exceeds the balance's storage cover (`LackBalanceForState`, B2) appears only through the
-  floor you configure (liquid + locked must cover it; a zero-balance account takes floor 0). A
-  contract that runs out of storage stake mid-flow may fail in nearcore and not in the model.
+- **N-storage. Storage staking details.** With the default `StoragePerByte = FALSE`, storage
+  usage is not tracked per byte: a write that exceeds the balance's storage cover
+  (`LackBalanceForState`, B2) appears only through the floor you configure, so a contract whose
+  storage grows may fail in nearcore and not in the model (`examples/storage-stake`,
+  `vault_floor_misses_it`). With `StoragePerByte` the rule is exact, but:
+  - the byte counts are the model's: a handler that understates its `OStor` bytes, or a
+    `StorageInit` below the real usage (code included), hides failures;
+  - function-call key bytes take the receiver id's length from `IdBytes` (default 10), count
+    method names as written (or as `WithMethodBytes` states) and assume no allowance (16 bytes
+    more with one): override `IdBytes` or `KeyBytes`;
+  - the signer's check at submission (`CanSubmit`) counts the deposit but not the gas money
+    (N-gas-money), so a transaction nearcore refuses because gas plus deposit leave its signer
+    uncovered is accepted. Receivers pay no gas, and from 87 earn no share of it
+    (`burnt_gas_reward` 0, `core/parameters/res/runtime_configs/87.yaml:1-7`), so their check is
+    not affected;
+  - the bytes of DeployContract, DeleteAccount, global contracts and gas-key nonces are absent
+    with those features (Scope limits).
 - **N-gas-money. Gas price and gas money.** Gas is a quantity, not NEAR. Purchase, the price
   floor (`min_gas_purchase_price`), price changes between blocks, the account-creation charge
   (A3) and burning are absent (`runtime/runtime/src/config.rs:481` `calculate_tx_cost`;

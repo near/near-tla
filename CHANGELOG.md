@@ -111,6 +111,24 @@ Each entry ends with its migration.
   stops with "current state is not a legal state", `blk = null`, on the initial state); in a
   hand-written `vars`, replace the platform variables with `platformVars`
   (`vars == <<platformVars, mine>>`) or add `blk`.
+- **New platform variable `stor` in `NearAsync`** (each account's storage usage in bytes, for
+  per-byte storage staking; SEMANTICS B2). It stays `StorageInit` (0 bytes for every account by
+  default) unless a model sets `StoragePerByte <- TRUE`, so models that do not are unchanged:
+  every example run kept its verdict and its generated, distinct and depth counts (all 97
+  runs compared at one worker, the pass runs also at two). It is in `platformVars`, and
+  `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialise it. Like `blk`: a
+  step that lists platform variables one by one in `UNCHANGED` must add `stor` (in the
+  library: `NearKeys.ExecDelegate`; `ExecKeyAct` now sets it), a hand-written `Init` must set
+  it, and a hand-written `vars` must include it. Two more changes come with it, inert without
+  `StoragePerByte`: outcome records may carry a field `sb` (bytes written, `OStor`), which
+  `TokOut` now always has, so a model whose own outcome field is called `sb` must rename it;
+  and `SubmitAs` is guarded by the new `CanSubmit(r, a)`, the same `near[a] >= r.dep` test as
+  before plus, with `StoragePerByte`, the signer's storage cover. Migration: write
+  `UNCHANGED platformVars` or add `stor` to the list; conjoin `PlatformInitStorage`
+  (`stor = StorageInit`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
+  hand-written `vars`, use `platformVars` or add `stor`. With `StoragePerByte`, a hand-written
+  `Init` should also list the invariant `StorageCovered`, since only the `PlatformInit`
+  helpers check the initial cover.
 - **`RemD` and `NoOrphans` cover several inputs per receipt** (`InIds`): a joint callback
   consumes all its inputs, a yield every resume addressed to it, and a pending yield is never
   an orphan. Results for receipts without the new fields are unchanged. Migration: none,
@@ -314,9 +332,15 @@ Each entry ends with its migration.
   `JointMark`, `FailedRes`, `TimedOut`, `NRes`, `ResAt`, `AndThen`, `YieldRcpt`,
   `CanResume`, `PendingYields`, `PendingYieldRcpts`, `PendingYieldsAt`, `OResume`, `Rsm`,
   `ResumeData`, `BlockTick`, `BlockTs`, `PlatformInitClock`, `YieldDeadlinesInBound`,
-  `ClockHorizonOK`, `DELEG`, `IsDeleg`; in `NearKeys`, for v0.2: `NoExpiry`, `KeyNonce`,
+  `ClockHorizonOK`, `DELEG`, `IsDeleg`, and for per-byte storage `stor` (a variable),
+  `StoragePerByte`, `StorageInit`, `StorageByteCost`, `ZeroBalanceBytes`, `AccountBytes`,
+  `RecordExtraBytes`, `RecordBytes`, `FullKeyBytes`, `CreatedBytes`, `OStor`, `StorDelta`,
+  `StorageCovers`, `StorAfter`, `CanSubmit`, `StorageInitOK`, `PlatformInitStorage`,
+  `StorageCovered`; in `NearKeys`, for v0.2: `NoExpiry`, `KeyNonce`,
   `KeysWithNonce`, `SignedDelegate`, `DelegRcpt`, `SubmitDelegate`, `DelegMayExpire`,
-  `DelegMustExpire`, `DelegInner`, `DelegErr`, `ExecDelegate`; and in the token modules:
+  `DelegMustExpire`, `DelegInner`, `DelegErr`, `ExecDelegate`, `IdBytes`, `KeyBytes`,
+  `KeyMapBytes`, `KeyActBytes`, `KeyActsBytes`; and in the token modules: `TokRegBytes`,
+  `TokBytes`,
   `OnTransferStatic`, `ReserveShort`,
   `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
   `FtMaxResultLen`, `ResolveUnusedLim`, `ResolveRefundLim`, `TokResolveMaxLen`,
@@ -331,6 +355,36 @@ Each entry ends with its migration.
   re-check verdicts that depended on them.
 
 ### Added
+
+- **Per-byte storage staking** (SEMANTICS B2), opt-in with `StoragePerByte <- TRUE`. The
+  library keeps each account's storage usage in bytes (`stor`, from `StorageInit`) and, after
+  every receipt that can lose its cover, checks that liquid + locked covers it at
+  `StorageByteCost` (1e19 yocto per byte at 88), with the 770-byte zero-balance exemption
+  (NEP-448). A shortfall fails the whole receipt with `LackBalanceForState`. Handlers declare
+  their bytes with `OStor(O, d)` (`RecordBytes(k, v)` = key + value + 40); key actions
+  (`NearKeys.KeyBytes`: 82 bytes for a full-access key, the borsh formula for a function-call
+  key with `IdBytes` for the receiver and the AddKey fee's method-name bytes), bundled key actions (`WithKeyActs`), implicit-account creation
+  (`CreatedBytes`: 182, 132 or 100) and token registrations (`Nep145.TokRegBytes`, 125 bytes for
+  near-contract-standards) are counted by the library. A transaction that would leave its
+  signer uncovered cannot be submitted (`CanSubmit`). The fixed `StorageFloor` stays the
+  default and is not checked with `StoragePerByte`: both encode the same rule. The invariant
+  `StorageCovered` holds from a covered initial state, which `PlatformInit` asserts.
+- **`examples/storage-stake`**: a vault that pays a user and records the payout in a callback.
+  Under the fixed floor it passes (`vault_floor_misses_it`, a false pass); per byte, the second
+  record no longer fits after the payout, so the callback fails and a user is paid but not
+  recorded (`vault_per_byte_unrecorded`, must fail). Recording in the paying receipt passes
+  (`vault_per_byte_atomic_ok`), and pays someone (`vault_per_byte_atomic_pays`, must fail on
+  `NobodyPaid`).
+- **`platform-selftest`: run `selftest_storage`**, nine per-byte scenarios: growth within the
+  balance (the boundary inclusive, a deposit counted), growth beyond it (the receipt reverted, a
+  callback seeing Failed), shrinking, the 770-byte allowance, locked balance, key bytes,
+  implicit-account bytes, the signer check and token registrations. Each one fails without
+  `StoragePerByte`. `Sane` gains `StorageCovered`.
+- **Conformance: seven storage tests** in `conformance/tests/semantics.rs`: the bytes of a
+  write and an overwrite, `LackBalanceForState` one yocto short (reverted) and passing with
+  exactly enough, a callback failing for storage after its payout, the 770-byte allowance,
+  full-access and function-call key bytes, the signer refused at conversion, and the bytes of
+  created implicit accounts.
 
 - **`NearFees.FeeRounding`** (`"up"`, the default, or `"nearest"`), `FeeRoundingModes`,
   `FeeRoundM` / `FeeRoundU`, the source tables `BaseRowM` (mGgas, rounded up) and `ByteRowG`
