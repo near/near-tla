@@ -426,6 +426,10 @@ Each entry ends with its migration.
   DeleteAccount), init's attached deposit in `accall_init`, and three library mutants in
   `platform-selftest`. Sim: `promise_call_then_delete`, `batch_call_sees_own_deposit`. A
   factory's `init` finds code once its batch deploys it (the DeployContract entry below).
+- **SEMANTICS N-upgrade** (contract upgrades mid-flow: a handler runs the new code only if it
+  branches on `CodeOf(r.to)`), and the `NearAsync` / `NearKeys` header comments now list
+  DeployContract, instant receipts and DeleteAccount as modelled and point to SEMANTICS "Not
+  modelled".
 - **`BalSeen(r)`: the balance a handler sees** (`env::account_balance`, SEMANTICS A8):
   `near[r.to]` after the receipt's earlier actions (0 for an account the receipt creates,
   plus a factory batch's Transfer) plus the call's attached deposit

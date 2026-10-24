@@ -1950,7 +1950,15 @@ against the current module code; some may be fixed in the modules later.
   (N-fckey-one-action).
 - **N-global. Global contracts** (NEP-591; `runtime/runtime/src/global_contracts.rs:25`, `:65`).
   Code shared by hash or by account and updated in place is absent. An eth-implicit account's
-  code is a global contract (A3), but only its existence matters to the model.
+  code is a global contract (A3); the model gives it the tag `EthWalletCode` (A9).
+- **N-upgrade. Contract upgrades mid-flow.** A DeployContract changes the account's code tag
+  (A9), and nearcore runs every later receipt on the account, a callback in flight included,
+  with the code deployed when that receipt executes (the account's contract is read as the
+  action runs, `runtime/runtime/src/lib.rs:684-700`). The model's handler, though, is the
+  model's TLA+: it runs the new code only if it branches on `CodeOf(r.to)`, and nothing
+  makes a model do that. A model of an upgradable contract must dispatch on `CodeOf(r.to)`
+  and migrate its own state for the account; otherwise callbacks after an upgrade run the old
+  logic in the model.
 - **N-deterministic. Deterministic and universal account ids, state init** (NEP-616;
   `runtime/runtime/src/deterministic_account_id.rs`, `runtime/runtime/src/universal_account_id.rs`).
   The fee kinds exist in `NearFees`; the state-init actions, their fees and the no-key bootstrap

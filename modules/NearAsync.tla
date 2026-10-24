@@ -107,14 +107,16 @@
 (*  MayFail may fail, at most MaxFails times; counted in `fails`.  A real  *)
 (*  out-of-gas is recorded in `oog`.                                       *)
 (*                                                                         *)
-(* Accounts are created and deleted by ACCOUNT receipts (CreateAccount,    *)
-(* DeleteAccount; ExecAcct): see "Account lifecycle" below.  A lone       *)
+(* Account actions (CreateAccount, DeleteAccount, DeployContract) run in   *)
+(* ACCOUNT receipts (ExecAcct) or with a call (HasAc, Exec): see          *)
+(* "Account lifecycle" below (docs/SEMANTICS.md A6-A9).  A lone            *)
 (* DeleteAccount created by a receipt is instant (InstantFirst, S5).       *)
 (*                                                                         *)
-(* Not modelled: congestion (a local receipt that does not fit the chunk's *)
+(* What is not modelled is listed in docs/SEMANTICS.md, "Not modelled":    *)
+(* among others congestion (a local receipt that does not fit the chunk's  *)
 (* compute limit is delayed, lib.rs:2513-2521), gas price and gas refunds  *)
-(* in NEAR, DeployContract (code is static, see Contracts), one receipt    *)
-(* feeding several callbacks (cb is one id).                               *)
+(* in NEAR, global contracts, gas keys, and one receipt feeding several    *)
+(* callbacks (cb is one id).                                               *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
@@ -751,17 +753,18 @@ StorAfter(r, O) ==
     LET b == stor[r.to] + StorDelta(O) IN
     IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
 ----------------------------------------------------------------------------
-(* Account lifecycle: CreateAccount and DeleteAccount (docs/SEMANTICS.md,  *)
-(* A6, A7, A8).  An ACCOUNT receipt (m = ACCT) holds only account actions, *)
-(* in this order: [CreateAccount]? [Transfer(dep)]? [key actions]*         *)
-(* [DeleteAccount(bnf)]?, recorded in the optional field ac = [mk |->      *)
-(* BOOLEAN (CreateAccount), bnf |-> beneficiary or "" (DeleteAccount), ka  *)
-(* |-> key actions (NearKeys.WithAcctKeys)].  The Transfer is present iff  *)
-(* dep > 0.  It runs no code, never runs out of gas, and is run by         *)
-(* ExecAcct (NearKeys.ExecAcctK with key actions); Exec asserts on it.  A  *)
-(* dispatcher routes IsAcctRcpt(r) there before any contract handler.  A   *)
-(* call receipt may carry the same field (HasAc, A8, below): Exec runs     *)
-(* it.  Sim: conformance/tests/lifecycle.rs.                               *)
+(* Account lifecycle: CreateAccount, DeleteAccount, DeployContract         *)
+(* (docs/SEMANTICS.md A6-A9).  An ACCOUNT receipt (m = ACCT) holds only    *)
+(* account actions, in this order: [CreateAccount]? [Transfer(dep)]? [key  *)
+(* actions]* [DeployContract]? [DeleteAccount(bnf)]?, recorded in the      *)
+(* optional field ac = [mk |-> BOOLEAN (CreateAccount), bnf |->            *)
+(* beneficiary or "" (DeleteAccount), ka |-> key actions                   *)
+(* (NearKeys.WithAcctKeys)], and dpl |-> code tag (WithDeploy, optional).  *)
+(* The Transfer is present iff dep > 0.  It runs no code, never runs out   *)
+(* of gas, and is run by ExecAcct (NearKeys.ExecAcctK with key actions);   *)
+(* Exec asserts on it.  A dispatcher routes IsAcctRcpt(r) there before any *)
+(* contract handler.  A call receipt may carry the same field (HasAc, A8,  *)
+(* below): Exec runs it.  Sim: conformance/tests/lifecycle.rs.             *)
 
 \* Account-id structure.  Toy ids carry none, so the model states it.
 \* AcctParent[a]: a's direct parent ("near" for "alice.near"), or NoParent
