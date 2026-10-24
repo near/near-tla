@@ -1,14 +1,18 @@
 # Storage flows: the bytes a call adds to its receiver's storage_usage, for
-# `calibrate --stor` (README.md, "Storage bytes"). Each flow runs once, at
-# 300 Tgas: bytes do not depend on gas. Not swept, and apart from
-# probes.toml, whose sweeps are bound to that file's sha256.
+# `calibrate --stor` (README.md, "Storage bytes"). Each flow runs at every
+# point of the standard grid, and a key's bytes must be the same at every
+# point where it succeeds; every key with a size source is measured at
+# three sizes. Apart from probes.toml, whose sweeps are bound to that
+# file's sha256; nothing is written to data/.
 #
 # alice.near signs; p-probe.near runs the generic probe (`put`: a
 # key-value write); ft-probe.near is a plain near-contract-standards FT;
-# wnear-probe.near the wNEAR-like token. dave.near (9 bytes) and
-# holder-with-a-longer-name.near (30) are holders of two id lengths, and
-# the 64-byte NEAR-implicit id below is registered by storage_deposit
-# only. Model names: p, ft_probe, wnear_probe. Deposits in yocto.
+# wnear-probe.near the wNEAR-like token. dave.near (9 bytes),
+# holder-with-a-longer-name.near (30) and
+# holder-number-three-with-the-longest-name.near (46) are holders of
+# three id lengths that also sign; the 64-byte NEAR-implicit id below is
+# registered by storage_deposit only. Model names: p, ft_probe,
+# wnear_probe. Deposits in yocto.
 
 [world]
 names = { "alice.near" = "alice", "dave.near" = "dave", "p-probe.near" = "p", "ft-probe.near" = "ft_probe", "wnear-probe.near" = "wnear_probe" }
@@ -23,6 +27,10 @@ near = 1000
 
 [[account]]
 id = "holder-with-a-longer-name.near"
+near = 1000
+
+[[account]]
+id = "holder-number-three-with-the-longest-name.near"
 near = 1000
 
 [[contract]]
@@ -77,160 +85,270 @@ from = "predecessor_len"
 key = "wnear-probe.near.storage_unregister"
 from = "predecessor_len"
 
+
 # ---- the probe's put: a new key adds key + value + 40 ----
 
 [[flow]]
 name = "put_new_0"
 about = "put of a new key, empty value"
-grid = "300:300:1"
+grid = "standard"
 path = "new"
 tx = { signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "k1", "value": ""}' }
 
 [[flow]]
 name = "put_new_100"
 about = "put of a new key, 100-byte value"
-grid = "300:300:1"
+grid = "standard"
 path = "new"
 tx = { signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "k1", "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' }
 
 [[flow]]
 name = "put_new_key20"
 about = "put of a new 20-byte key, 22-byte value"
-grid = "300:300:1"
+grid = "standard"
 path = "new"
 tx = { signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "paid:holder-number-1", "value": "1000000000000000000000"}' }
 
-# An overwrite of the same length adds nothing.
+# An overwrite with a value of the same length adds nothing.
+
 [[flow]]
-name = "put_same"
+name = "put_same_5"
 about = "put over an existing key, same length"
-grid = "300:300:1"
+grid = "standard"
 path = "same"
 setup = [{ signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "k1", "value": "abc"}' }]
 tx = { signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "k1", "value": "xyz"}' }
+
+[[flow]]
+name = "put_same_52"
+about = "put over an existing key, same length"
+grid = "standard"
+path = "same"
+setup = [{ signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "k2", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' }]
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "k2", "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' }
+
+[[flow]]
+name = "put_same_120"
+about = "put over an existing key, same length"
+grid = "standard"
+path = "same"
+setup = [{ signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "paid:holder-number-1", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' }]
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "put", args = '{"key": "paid:holder-number-1", "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' }
 
 # ---- standard tokens: a registration is prefix + borsh(AccountId) + u128 + 40 ----
 
 [[flow]]
 name = "ft_storage_new_9"
-about = "storage_deposit registers dave.near"
-grid = "300:300:1"
+about = "storage_deposit registers a 9-byte id"
+grid = "standard"
 path = "new"
 path_for = ["ft-probe.near.storage_deposit"]
 tx = { signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }
 
 [[flow]]
+name = "ft_storage_new_30"
+about = "storage_deposit registers a 30-byte id"
+grid = "standard"
+path = "new"
+path_for = ["ft-probe.near.storage_deposit"]
+tx = { signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }
+
+[[flow]]
 name = "ft_storage_new_64"
 about = "storage_deposit registers a 64-byte id"
-grid = "300:300:1"
+grid = "standard"
 path = "new"
 path_for = ["ft-probe.near.storage_deposit"]
 tx = { signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}', deposit = "1250000000000000000000" }
 
 [[flow]]
-name = "ft_storage_registered"
-about = "storage_deposit for a registered account refunds and writes nothing"
-grid = "300:300:1"
+name = "ft_storage_registered_9"
+about = "storage_deposit for a registered 9-byte id refunds and writes nothing"
+grid = "standard"
 path = "registered"
 path_for = ["ft-probe.near.storage_deposit"]
 setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
 tx = { signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }
 
 [[flow]]
-name = "ft_transfer"
-about = "ft_transfer between registered holders: balances overwritten in place"
-grid = "300:300:1"
-setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
-tx = { signer = "alice.near", receiver = "ft-probe.near", method = "ft_transfer", args = '{"receiver_id": "dave.near", "amount": "10"}', deposit = "1" }
+name = "ft_storage_registered_30"
+about = "storage_deposit for a registered 30-byte id refunds and writes nothing"
+grid = "standard"
+path = "registered"
+path_for = ["ft-probe.near.storage_deposit"]
+setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }
+
+[[flow]]
+name = "ft_storage_registered_64"
+about = "storage_deposit for a registered 64-byte id refunds and writes nothing"
+grid = "standard"
+path = "registered"
+path_for = ["ft-probe.near.storage_deposit"]
+setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}', deposit = "1250000000000000000000" }]
+tx = { signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}', deposit = "1250000000000000000000" }
 
 [[flow]]
 name = "ft_unregister_9"
-about = "storage_unregister by dave.near (no balance) frees its registration"
-grid = "300:300:1"
+about = "storage_unregister by a 9-byte id (no balance) frees its registration"
+grid = "standard"
 setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
 tx = { signer = "dave.near", receiver = "ft-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
 
 [[flow]]
 name = "ft_unregister_30"
-about = "storage_unregister by a 30-byte id"
-grid = "300:300:1"
+about = "storage_unregister by a 30-byte id (no balance) frees its registration"
+grid = "standard"
 setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }]
 tx = { signer = "holder-with-a-longer-name.near", receiver = "ft-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
 
 [[flow]]
+name = "ft_unregister_46"
+about = "storage_unregister by a 46-byte id (no balance) frees its registration"
+grid = "standard"
+setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "holder-number-three-with-the-longest-name.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "holder-number-three-with-the-longest-name.near", receiver = "ft-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
+
+[[flow]]
+name = "ft_transfer"
+about = "ft_transfer between registered holders: balances overwritten in place"
+grid = "standard"
+setup = [{ signer = "alice.near", receiver = "ft-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "alice.near", receiver = "ft-probe.near", method = "ft_transfer", args = '{"receiver_id": "dave.near", "amount": "10"}', deposit = "1" }
+
+[[flow]]
 name = "wnear_storage_new_9"
-about = "storage_deposit registers dave.near"
-grid = "300:300:1"
+about = "storage_deposit registers a 9-byte id"
+grid = "standard"
 path = "new"
 path_for = ["wnear-probe.near.storage_deposit"]
 tx = { signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }
 
 [[flow]]
+name = "wnear_storage_new_30"
+about = "storage_deposit registers a 30-byte id"
+grid = "standard"
+path = "new"
+path_for = ["wnear-probe.near.storage_deposit"]
+tx = { signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }
+
+[[flow]]
 name = "wnear_storage_new_64"
 about = "storage_deposit registers a 64-byte id"
-grid = "300:300:1"
+grid = "standard"
 path = "new"
 path_for = ["wnear-probe.near.storage_deposit"]
 tx = { signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}', deposit = "1250000000000000000000" }
 
 [[flow]]
-name = "wnear_storage_registered"
-about = "storage_deposit for a registered account"
-grid = "300:300:1"
+name = "wnear_storage_registered_9"
+about = "storage_deposit for a registered 9-byte id refunds and writes nothing"
+grid = "standard"
 path = "registered"
 path_for = ["wnear-probe.near.storage_deposit"]
 setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
 tx = { signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }
 
 [[flow]]
+name = "wnear_storage_registered_30"
+about = "storage_deposit for a registered 30-byte id refunds and writes nothing"
+grid = "standard"
+path = "registered"
+path_for = ["wnear-probe.near.storage_deposit"]
+setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }
+
+[[flow]]
+name = "wnear_storage_registered_64"
+about = "storage_deposit for a registered 64-byte id refunds and writes nothing"
+grid = "standard"
+path = "registered"
+path_for = ["wnear-probe.near.storage_deposit"]
+setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}', deposit = "1250000000000000000000" }]
+tx = { signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}', deposit = "1250000000000000000000" }
+
+[[flow]]
+name = "wnear_unregister_9"
+about = "storage_unregister by a 9-byte id (no balance) frees its registration"
+grid = "standard"
+setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "dave.near", receiver = "wnear-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
+
+[[flow]]
+name = "wnear_unregister_30"
+about = "storage_unregister by a 30-byte id (no balance) frees its registration"
+grid = "standard"
+setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "holder-with-a-longer-name.near", receiver = "wnear-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
+
+[[flow]]
+name = "wnear_unregister_46"
+about = "storage_unregister by a 46-byte id (no balance) frees its registration"
+grid = "standard"
+setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "holder-number-three-with-the-longest-name.near"}', deposit = "1250000000000000000000" }]
+tx = { signer = "holder-number-three-with-the-longest-name.near", receiver = "wnear-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
+
+[[flow]]
 name = "wnear_deposit_new_9"
-about = "near_deposit registers its caller dave.near"
-grid = "300:300:1"
+about = "near_deposit registers its caller, a 9-byte id"
+grid = "standard"
 path = "new"
 path_for = ["wnear-probe.near.near_deposit"]
 tx = { signer = "dave.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }
 
 [[flow]]
 name = "wnear_deposit_new_30"
-about = "near_deposit registers a caller with a 30-byte id"
-grid = "300:300:1"
+about = "near_deposit registers its caller, a 30-byte id"
+grid = "standard"
 path = "new"
 path_for = ["wnear-probe.near.near_deposit"]
 tx = { signer = "holder-with-a-longer-name.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }
 
 [[flow]]
-name = "wnear_deposit_registered"
-about = "near_deposit by a registered caller"
-grid = "300:300:1"
+name = "wnear_deposit_new_46"
+about = "near_deposit registers its caller, a 46-byte id"
+grid = "standard"
+path = "new"
+path_for = ["wnear-probe.near.near_deposit"]
+tx = { signer = "holder-number-three-with-the-longest-name.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }
+
+[[flow]]
+name = "wnear_deposit_registered_9"
+about = "near_deposit by a registered 9-byte caller"
+grid = "standard"
 path = "registered"
 path_for = ["wnear-probe.near.near_deposit"]
 setup = [{ signer = "dave.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }]
 tx = { signer = "dave.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }
 
 [[flow]]
+name = "wnear_deposit_registered_30"
+about = "near_deposit by a registered 30-byte caller"
+grid = "standard"
+path = "registered"
+path_for = ["wnear-probe.near.near_deposit"]
+setup = [{ signer = "holder-with-a-longer-name.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }]
+tx = { signer = "holder-with-a-longer-name.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }
+
+[[flow]]
+name = "wnear_deposit_registered_46"
+about = "near_deposit by a registered 46-byte caller"
+grid = "standard"
+path = "registered"
+path_for = ["wnear-probe.near.near_deposit"]
+setup = [{ signer = "holder-number-three-with-the-longest-name.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }]
+tx = { signer = "holder-number-three-with-the-longest-name.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }
+
+[[flow]]
 name = "wnear_withdraw"
 about = "near_withdraw: a balance overwritten, a Transfer back"
-grid = "300:300:1"
+grid = "standard"
 setup = [{ signer = "dave.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }]
 tx = { signer = "dave.near", receiver = "wnear-probe.near", method = "near_withdraw", args = '{"amount": "1000"}', deposit = "1" }
 
 [[flow]]
 name = "wnear_transfer"
 about = "ft_transfer between registered holders"
-grid = "300:300:1"
+grid = "standard"
 setup = [{ signer = "dave.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }, { signer = "alice.near", receiver = "wnear-probe.near", method = "near_deposit", deposit = "1000000000000000000000000" }]
 tx = { signer = "dave.near", receiver = "wnear-probe.near", method = "ft_transfer", args = '{"receiver_id": "alice.near", "amount": "10"}', deposit = "1" }
-
-[[flow]]
-name = "wnear_unregister_9"
-about = "storage_unregister by dave.near (no balance) frees its registration"
-grid = "300:300:1"
-setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }]
-tx = { signer = "dave.near", receiver = "wnear-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }
-
-[[flow]]
-name = "wnear_unregister_30"
-about = "storage_unregister by a 30-byte id"
-grid = "300:300:1"
-setup = [{ signer = "alice.near", receiver = "wnear-probe.near", method = "storage_deposit", args = '{"account_id": "holder-with-a-longer-name.near"}', deposit = "1250000000000000000000" }]
-tx = { signer = "holder-with-a-longer-name.near", receiver = "wnear-probe.near", method = "storage_unregister", args = '{}', deposit = "1" }

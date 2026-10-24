@@ -114,21 +114,19 @@ fn window_edges() {
     assert_eq!(edge_points(&res, &base, "wnear_batch_DSC", 430, 440), [43.0, 43.6]);
 }
 
-/// Every flow of flows/storage.toml once at 300 Tgas: the receipts'
-/// storage changes add up to view_account's, every key lies on a
-/// whole-byte line, and the lines are the ones the generated tables hold.
+/// Every flow of flows/storage.toml at every point of its grid: the
+/// receipts' storage changes add up to view_account's, a key's bytes are
+/// the same at every gas point, every sized key lies on a whole-byte line
+/// at 3 or more sizes, and the lines are the ones the generated tables hold.
 #[test]
 fn storage_bytes_table() {
     let res = Resolved::new(&crate_dir().join("flows/storage.toml"), None);
     let base = res.world();
     let mut st = calib::Stor::default();
     for flow in &res.spec.flows {
-        let top = *spec::parse_grid(&flow.grid).iter().max().unwrap();
-        let w = res.flow_world(&base, flow);
-        let mut sim = w.clone();
-        let os = spec::run_flow(&mut sim, flow, near_contract_sim::prelude::Gas::from_gas(top));
-        calib::collect_stor(&res, flow, &os, &w, &sim, &mut st);
+        calib::measure_stor_flow(&res, &base, flow, &spec::parse_grid(&flow.grid), &mut st);
     }
+    calib::finish_stor(&mut st);
     let (rows, errors, _) = calib::stor_rows(&st, &["ft_probe".into(), "wnear_probe".into()]);
     assert!(st.errors.is_empty() && errors.is_empty(), "{:?} {errors:?}", st.errors);
     let got: Vec<String> = rows.iter().map(|r| format!("{}.{} {} {}", r.acct, r.key, r.base, r.per)).collect();
@@ -148,10 +146,16 @@ fn storage_bytes_table() {
     ] {
         assert!(got.iter().any(|g| g == want), "{want} not in the table");
     }
-    // the committed tables say the same
+    // the committed tables hold every row, with the same line
     let std = std::fs::read_to_string(crate_dir().join("../modules/StorStd.tla")).unwrap();
-    assert!(std.contains("ft \\o \".storage_deposit/new\" :> [base |-> 61, per |-> 1]"));
-    assert!(std.contains("wnear \\o \".storage_unregister\" :> [base |-> -61, per |-> -1]"));
     let kv = std::fs::read_to_string(crate_dir().join("../examples/storage-stake/StorKv.tla")).unwrap();
-    assert!(kv.contains("app \\o \".put/new\" :> [base |-> 40, per |-> 1]"));
+    for r in &rows {
+        let (text, param) = match r.acct.as_str() {
+            "ft_probe" => (&std, "ft"),
+            "wnear_probe" => (&std, "wnear"),
+            _ => (&kv, "app"),
+        };
+        let line = format!("{param} \\o \".{}\" :> [base |-> {}, per |-> {}]", r.key, r.base, r.per);
+        assert!(text.contains(&line), "{line} not in the committed table");
+    }
 }

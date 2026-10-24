@@ -1612,12 +1612,14 @@ Each rule has four fields:
   of the balance (`conformance/tests/accounts.rs`, `storage_counts_locked_balance`: past 770
   bytes, a liquid balance below the cover passes with 5 N locked and fails without). The calibrator's storage table is nearcore's
   `storage_usage` before and after each successful receipt of `conformance/flows/storage.toml`
-  (each flow run once, at 300 Tgas): every key lies exactly on its line, and the receipts'
-  changes add up to each account's change over the flow (`tests/smoke.rs`
+  (each flow run at all 1313 points of the standard gas grid, its bytes the same at every
+  point): every sized key lies exactly on its line over at least 3 sizes, every unsized key is
+  one constant, no receipt changes another account's storage or fails with a change, and the
+  receipts' changes add up to each account's change over the flow (`tests/smoke.rs`
   `storage_bytes_table` checks the lines `StorStd` and `examples/storage-stake`'s `StorKv`
   hold). <!-- conformance --> No probe flow compares the model's storage with the sim's: every
   sweep is bound to the sha256 of `flows/probes.toml`, so adding one means sweeping and
-  recalibrating all of them; `flows/storage.toml` is a separate file and is not swept.
+  recalibrating all of them; `flows/storage.toml` is a separate file, with no sweep in `data/`.
 
 ---
 

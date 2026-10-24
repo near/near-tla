@@ -836,35 +836,49 @@ fn emit_table(o: &mut String, t: &Table) {
 // Storage bytes (`calibrate --stor`)
 
 /// One storage measurement: the bytes a successful receipt added to its
-/// receiver's `storage_usage` (negative: freed), at storage size `size`.
+/// receiver's `storage_usage` (negative: freed), at storage size `size`
+/// (`sized`: the key has a `[[stor_size]]`; otherwise `size` is 0 and the
+/// key is a constant).
 #[derive(Debug, Clone)]
 pub struct StorObs {
     pub flow: String,
     pub path: String,
     pub size: u64,
+    pub sized: bool,
     pub bytes: i64,
 }
 
 #[derive(Default, Debug)]
 pub struct Stor {
-    /// (model account, method key, shape) -> measurements.
+    /// (model account, method key, shape) -> measurements, one per flow,
+    /// path and size (filled by `finish_stor`).
     pub obs: BTreeMap<(String, String, String), Vec<StorObs>>,
+    /// (model account, method key, shape, path, flow, size, sized) ->
+    /// bytes -> the gas points (Tgas) where a successful receipt of that
+    /// key added them. More than one byte count is an error.
+    pub by_gas: BTreeMap<(String, String, String, String, String, u64, bool), BTreeMap<i64, BTreeSet<u64>>>,
     /// Action-only receipts, `receiver[actions]` -> bytes seen (reported,
     /// not emitted: the library counts those itself).
     pub action_only: BTreeMap<String, BTreeSet<i64>>,
-    /// Keys whose receipt never succeeded where measured.
+    /// Keys whose receipt never succeeded at any gas point.
     pub never_ok: BTreeSet<String>,
-    /// Receipts measured.
+    /// Successful call receipts measured, over every gas point.
     pub receipts: usize,
+    /// Flow runs (flows times gas points).
+    pub runs: usize,
+    /// Every receipt checked (conversions, refunds and action-only ones
+    /// included), over every gas point.
+    pub checked: usize,
     /// Problems that block a table.
     pub errors: Vec<String>,
 }
 
 /// The storage size of call receipt `p` (JSON, as `dump` writes it) whose
-/// full first argument is `args` (see `spec::StorSizeSrc`; default 0).
-pub fn stor_size_of(res: &Resolved, p: &Value, args: &[u8]) -> Result<u64, String> {
+/// full first argument is `args` (see `spec::StorSizeSrc`): `None` if the
+/// key has no size source.
+pub fn stor_size_of(res: &Resolved, p: &Value, args: &[u8]) -> Result<Option<u64>, String> {
     let ck = call_key(p);
-    let Some(src) = res.spec.stor_sizes.iter().find(|z| z.key == ck) else { return Ok(0) };
+    let Some(src) = res.spec.stor_sizes.iter().find(|z| z.key == ck) else { return Ok(None) };
     let parsed = || -> Result<Value, String> { serde_json::from_slice(args).map_err(|e| format!("{ck}: args not JSON: {e}")) };
     let raw = if let Some(fields) = src.from.strip_prefix("arg_len:") {
         let a = parsed()?;
@@ -882,7 +896,7 @@ pub fn stor_size_of(res: &Resolved, p: &Value, args: &[u8]) -> Result<u64, Strin
     } else {
         return Err(format!("{ck}: unknown storage size source {}", src.from));
     };
-    Ok(raw / src.div.max(1))
+    Ok(Some(raw / src.div.max(1)))
 }
 
 /// Every account's `storage_usage` in `sim` (0 if absent), for `ids`.
@@ -890,19 +904,33 @@ fn usages(sim: &Sim, ids: &BTreeSet<String>) -> BTreeMap<String, i64> {
     ids.iter().map(|a| (a.clone(), sim.account(a.as_str()).map_or(0, |v| v.storage_usage as i64))).collect()
 }
 
-/// Storage measurements of one run of `flow` (its outcomes `os`), from
-/// nearcore's `storage_usage` before and after each receipt (the sim's
-/// `ReceiptOutcome::storage`). Checks that the receipts' changes add up to
-/// each account's change over the run (`before` and `after` are the world
-/// either side of it): a change no receipt accounts for fails the table.
-pub fn collect_stor(res: &Resolved, flow: &Flow, os: &[near_contract_sim::TxOutcome], before: &Sim, after: &Sim, st: &mut Stor) {
+/// Storage measurements of one run of `flow` at prepaid `gas` (its
+/// outcomes `os`), from nearcore's `storage_usage` before and after each
+/// receipt (the sim's `ReceiptOutcome::storage`). Checks, on every receipt
+/// of the run (the transactions' conversions, refunds and action-only
+/// receipts included) before any is set aside: that it changed no account
+/// but its receiver, and that a failed one changed nothing; and that the
+/// receipts' changes add up to each account's change over the run (`before`
+/// and `after` are the world either side of it). Then records each
+/// successful call receipt's bytes under its key and gas point.
+pub fn collect_stor(res: &Resolved, flow: &Flow, gas: u64, os: &[near_contract_sim::TxOutcome], before: &Sim, after: &Sim, st: &mut Stor) {
     use near_contract_sim::ReceiptOutcome;
+    let tgas = gas as f64 / 1e12;
+    st.runs += 1;
     let all: Vec<&ReceiptOutcome> = os.iter().flat_map(|o| o.transaction.iter().chain(&o.receipts)).collect();
     // Per account: the receipts' changes, summed.
     let mut sum: BTreeMap<String, i64> = BTreeMap::new();
     for r in &all {
+        st.checked += 1;
+        let rx = r.executor_id.as_str();
         for c in &r.storage {
             *sum.entry(c.account.to_string()).or_default() += c.bytes;
+            if c.account.as_str() != rx {
+                push_once(&mut st.errors, format!("{} at {tgas:.1} Tgas: a receipt to {rx} changed {}'s storage by {} bytes", flow.name, c.account, c.bytes));
+            }
+        }
+        if r.failure().is_some() && r.storage.iter().any(|c| c.bytes != 0) {
+            push_once(&mut st.errors, format!("{} at {tgas:.1} Tgas: a failed receipt to {rx} ({}) changed storage", flow.name, r.method_names.join("+")));
         }
     }
     let mut ids: BTreeSet<String> = sum.keys().cloned().collect();
@@ -913,9 +941,10 @@ pub fn collect_stor(res: &Resolved, flow: &Flow, os: &[near_contract_sim::TxOutc
     for a in &ids {
         let (seen, want) = (sum.get(a).copied().unwrap_or(0), u1[a] - u0[a]);
         if seen != want {
-            push_once(&mut st.errors, format!("{}: {a}: receipts changed its storage by {seen} bytes, view_account by {want}", flow.name));
+            push_once(&mut st.errors, format!("{} at {tgas:.1} Tgas: {a}: receipts changed its storage by {seen} bytes, view_account by {want}", flow.name));
         }
     }
+    // Only now: what is fitted (successful call receipts, refunds aside).
     let by_id: HashMap<String, &ReceiptOutcome> = all.iter().map(|r| (r.id.to_string(), *r)).collect();
     let v = crate::dump_all(os);
     let rs: Vec<&Value> = v["receipts"].as_array().unwrap().iter().filter(|r| !r["conversion"].as_bool().unwrap()).collect();
@@ -926,30 +955,56 @@ pub fn collect_stor(res: &Resolved, flow: &Flow, os: &[near_contract_sim::TxOutc
         let r = by_id[s(&p["id"])];
         let rx = r.executor_id.as_str();
         let bytes: i64 = r.storage.iter().filter(|c| c.account.as_str() == rx).map(|c| c.bytes).sum();
-        for c in r.storage.iter().filter(|c| c.account.as_str() != rx) {
-            push_once(&mut st.errors, format!("{}: a receipt to {rx} changed {}'s storage by {} bytes", flow.name, c.account, c.bytes));
-        }
         if methods(p).is_empty() {
             st.action_only.entry(format!("{rx}[{}]", actions(p).join(","))).or_default().insert(bytes);
             continue;
         }
         let (acct, mkey, path) = key_parts(res, flow, p);
         if s(&p["status"]) != "ok" {
-            if bytes != 0 {
-                push_once(&mut st.errors, format!("{}: {acct}.{mkey} failed but changed its storage by {bytes} bytes", flow.name));
-            }
             st.never_ok.insert(format!("{acct}.{mkey} ({})", flow.name));
             continue;
         }
-        let size = match stor_size_of(res, p, r.args.first().map_or(&[][..], |a| a.as_slice())) {
-            Ok(z) => z,
+        let (size, sized) = match stor_size_of(res, p, r.args.first().map_or(&[][..], |a| a.as_slice())) {
+            Ok(z) => (z.unwrap_or(0), z.is_some()),
             Err(e) => {
                 push_once(&mut st.errors, format!("{}: {e}", flow.name));
-                0
+                (0, true)
             }
         };
         st.receipts += 1;
-        st.obs.entry((acct, mkey, shape(&rs, p))).or_default().push(StorObs { flow: flow.name.clone(), path, size, bytes });
+        st.by_gas.entry((acct, mkey, shape(&rs, p), path, flow.name.clone(), size, sized)).or_default().entry(bytes).or_default().insert(gas);
+    }
+}
+
+/// Runs `flow` at every gas of `grid` on a fresh copy of its world and
+/// collects each run (`collect_stor`). Returns the number of successful
+/// call receipts measured.
+pub fn measure_stor_flow(res: &Resolved, base: &Sim, flow: &Flow, grid: &[u64], st: &mut Stor) -> usize {
+    let w = res.flow_world(base, flow);
+    let n0 = st.receipts;
+    for &g in grid {
+        let mut sim = w.clone();
+        let os = crate::spec::run_flow(&mut sim, flow, near_contract_sim::prelude::Gas::from_gas(g));
+        collect_stor(res, flow, g, &os, &w, &sim, st);
+    }
+    st.receipts - n0
+}
+
+/// After every flow and gas point: a key's successful receipts must add the
+/// same bytes at every gas point (else an error naming them); then one
+/// measurement per flow, path and size goes to `obs`.
+pub fn finish_stor(st: &mut Stor) {
+    for ((a, m, sh, path, flow, size, sized), by) in &st.by_gas {
+        if by.len() > 1 {
+            let seen: Vec<String> = by
+                .iter()
+                .map(|(b, gs)| format!("{b} bytes at {} point(s), {:.1}-{:.1} Tgas", gs.len(), *gs.first().unwrap() as f64 / 1e12, *gs.last().unwrap() as f64 / 1e12))
+                .collect();
+            st.errors.push(format!("{flow}: {a}.{m}{}: bytes depend on gas: {}", if path.is_empty() { String::new() } else { format!(" (path {path})") }, seen.join("; ")));
+            continue;
+        }
+        let bytes = *by.keys().next().unwrap();
+        st.obs.entry((a.clone(), m.clone(), sh.clone())).or_default().push(StorObs { flow: flow.clone(), path: path.clone(), size: *size, sized: *sized, bytes });
     }
     let ok: BTreeSet<String> = st.obs.keys().map(|(a, m, _)| format!("{a}.{m} ")).collect();
     st.never_ok.retain(|k| !ok.iter().any(|o| k.starts_with(o.as_str())));
@@ -966,30 +1021,60 @@ pub struct StorRow {
     pub n: usize,
     /// Smallest and largest size measured.
     pub sizes: (u64, u64),
+    /// Distinct sizes measured (0 for a constant key).
+    pub distinct: usize,
     pub flows: Vec<String>,
 }
 
-/// The line through every measurement, in whole bytes: `(base, per)`.
+/// Distinct sizes a key with a size source needs: two always fit a line,
+/// so a third is what tests it.
+pub const MIN_SIZES: usize = 3;
+
+/// The exact line of a key's measurements, in whole bytes: `(base, per)`.
 /// Bytes are counted exactly (key + value + 40 per record, and so on), so
-/// a key whose measurements are not on one line with a whole slope is an
-/// error (a size source that misses something, or two paths under one key).
+/// anything else is an error:
+/// - a key without a size source is a constant: every measurement the same
+///   bytes (per 0);
+/// - a key with one needs `MIN_SIZES` distinct sizes, a whole slope, and
+///   every measurement on the line (a size source that misses something,
+///   or two paths under one key, fail here).
+///
+/// The arithmetic is checked i128, and `base` and `per` must fit TLC's
+/// 32-bit integers, which the table is emitted for.
 pub fn fit_exact(obs: &[StorObs]) -> Result<(i64, i64), String> {
-    let lo = obs.iter().min_by_key(|o| o.size).ok_or("no measurement")?;
-    let hi = obs.iter().max_by_key(|o| o.size).unwrap();
-    let per = if hi.size == lo.size {
-        0
-    } else {
-        let (num, den) = (hi.bytes - lo.bytes, (hi.size - lo.size) as i64);
-        if num % den != 0 {
-            return Err(format!("{} bytes over {den} size units: not a whole slope", num));
-        }
-        num / den
-    };
-    let base = lo.bytes - per * lo.size as i64;
-    if let Some(o) = obs.iter().find(|o| base + per * o.size as i64 != o.bytes) {
-        return Err(format!("{} bytes at size {} ({}) is off the line {base} + {per} * size", o.bytes, o.size, o.flow));
+    let first = obs.first().ok_or("no measurement")?;
+    if obs.iter().any(|o| o.sized != first.sized) {
+        return Err("measurements with and without a size source".into());
     }
-    Ok((base, per))
+    if !first.sized {
+        if let Some(o) = obs.iter().find(|o| o.bytes != first.bytes) {
+            return Err(format!("no size source, but {} bytes ({}) and {} bytes ({})", first.bytes, first.flow, o.bytes, o.flow));
+        }
+        return Ok((first.bytes, 0));
+    }
+    let sizes: BTreeSet<u64> = obs.iter().map(|o| o.size).collect();
+    if sizes.len() < MIN_SIZES {
+        return Err(format!("{} distinct size(s) measured ({}); a line needs {MIN_SIZES} to be tested", sizes.len(), sizes.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    let lo = obs.iter().min_by_key(|o| o.size).unwrap();
+    let hi = obs.iter().max_by_key(|o| o.size).unwrap();
+    let (num, den) = (hi.bytes as i128 - lo.bytes as i128, hi.size as i128 - lo.size as i128);
+    if num % den != 0 {
+        return Err(format!("{num} bytes over {den} size units: not a whole slope"));
+    }
+    let per = num / den;
+    let base = (per.checked_mul(lo.size as i128)).and_then(|x| (lo.bytes as i128).checked_sub(x)).ok_or("overflow")?;
+    for o in obs {
+        let on = per.checked_mul(o.size as i128).and_then(|x| x.checked_add(base));
+        if on != Some(o.bytes as i128) {
+            return Err(format!("{} bytes at size {} ({}) is off the line {base} + {per} * size", o.bytes, o.size, o.flow));
+        }
+    }
+    let tlc = i32::MIN as i128..=i32::MAX as i128;
+    if !tlc.contains(&base) || !tlc.contains(&per) {
+        return Err(format!("base {base} or per {per} outside TLC's 32-bit integers"));
+    }
+    Ok((base as i64, per as i64))
 }
 
 fn stor_row(acct: &str, key: String, obs: &[StorObs], errors: &mut Vec<String>) -> Option<StorRow> {
@@ -1003,6 +1088,7 @@ fn stor_row(acct: &str, key: String, obs: &[StorObs], errors: &mut Vec<String>) 
                 per,
                 n: obs.len(),
                 sizes: (obs.iter().map(|o| o.size).min().unwrap(), obs.iter().map(|o| o.size).max().unwrap()),
+                distinct: if obs[0].sized { obs.iter().map(|o| o.size).collect::<BTreeSet<_>>().len() } else { 0 },
                 flows: flows.into_iter().collect(),
             })
         }
@@ -1036,7 +1122,10 @@ pub fn stor_rows(st: &Stor, merge: &[String]) -> (Vec<StorRow>, Vec<String>, Vec
         for (path, os) in by_path.iter().filter(|(p, _)| !p.is_empty()) {
             rows.extend(stor_row(a, format!("{m}/{path}"), os, &mut errors));
         }
-        if fit_exact(obs).is_ok() {
+        if by_path.len() == 1 && by_path.contains_key("") {
+            // no paths: the method key is the only one (its fit's error, if any)
+            rows.extend(stor_row(a, m.clone(), obs, &mut errors));
+        } else if fit_exact(obs).is_ok() {
             rows.extend(stor_row(a, m.clone(), obs, &mut errors));
         } else if by_path.contains_key("") {
             errors.push(format!("{a}.{m}: receipts without a path are not on the line of its other paths; give them a path"));
@@ -1096,9 +1185,12 @@ pub fn emit_stor_tla(
         "--stor): do not edit by hand.  bytes = base + per * size: what a",
         "successful receipt adds to its receiver's storage_usage (negative:",
         "frees), read before and after the receipt in near-contract-sim, which",
-        "runs nearcore's Runtime::apply.  Each flow ran once, at the top of its",
-        "grid (bytes do not depend on gas), and every measurement lies on its",
-        "key's line exactly.  Read with OStorKey (modules/NearAsync.tla).",
+        "runs nearcore's Runtime::apply.  Each flow ran at every point of its",
+        "gas grid, and a key's successful receipts added the same bytes at",
+        "every point.  A key with a size source was measured at 3 or more",
+        "distinct sizes, every one exactly on its line; a key without one is a",
+        "constant (per 0), the same bytes everywhere.  Read with OStorKey",
+        "(modules/NearAsync.tla).",
         "",
     ] {
         hline(&mut o, t);
@@ -1131,7 +1223,7 @@ pub fn emit_stor_tla(
         }
         for (i, r) in t.rows.iter().enumerate() {
             let sep = if i + 1 < t.rows.len() { " @@" } else { "" };
-            let sizes = if r.sizes.0 == r.sizes.1 { format!("size {}", r.sizes.0) } else { format!("sizes {}-{}", r.sizes.0, r.sizes.1) };
+            let sizes = if r.distinct == 0 { "constant".to_owned() } else { format!("{} sizes {}-{}", r.distinct, r.sizes.0, r.sizes.1) };
             let _ = writeln!(
                 o,
                 "    {} :> [base |-> {}, per |-> {}]{sep}  \\* {} pt{}; {sizes}; {}",
@@ -1185,21 +1277,71 @@ mod tests {
     }
 
     fn sobs(points: &[(u64, i64)]) -> Vec<StorObs> {
-        points.iter().map(|&(size, bytes)| StorObs { flow: "f".into(), path: String::new(), size, bytes }).collect()
+        points.iter().map(|&(size, bytes)| StorObs { flow: "f".into(), path: String::new(), size, sized: true, bytes }).collect()
     }
 
-    /// Storage bytes fit a whole-byte line exactly, or the key is an error.
+    /// Storage bytes fit a whole-byte line exactly, at 3 or more sizes, or
+    /// the key is an error.
     #[test]
     fn fit_exact_lines() {
-        assert_eq!(fit_exact(&sobs(&[(9, 70), (64, 125)])), Ok((61, 1)));
-        assert_eq!(fit_exact(&sobs(&[(9, -70), (30, -91)])), Ok((-61, -1)));
+        assert_eq!(fit_exact(&sobs(&[(9, 70), (30, 91), (64, 125)])), Ok((61, 1)));
+        assert_eq!(fit_exact(&sobs(&[(9, -70), (30, -91), (46, -107)])), Ok((-61, -1)));
         assert_eq!(fit_exact(&sobs(&[(2, 42), (102, 142), (42, 82)])), Ok((40, 1)));
-        assert_eq!(fit_exact(&sobs(&[(5, 0), (5, 0)])), Ok((0, 0)));
+        assert_eq!(fit_exact(&sobs(&[(5, 0), (52, 0), (120, 0)])), Ok((0, 0)));
+        // two sizes always fit a line: not a test of one
+        assert!(fit_exact(&sobs(&[(9, 70), (64, 125)])).is_err());
+        assert!(fit_exact(&sobs(&[(9, 70), (9, 70), (64, 125)])).is_err());
         // one size, two byte counts: two paths under one key
-        assert!(fit_exact(&sobs(&[(9, 70), (9, 0)])).is_err());
+        assert!(fit_exact(&sobs(&[(9, 70), (9, 0), (30, 91)])).is_err());
         // a point off the line through the extremes
         assert!(fit_exact(&sobs(&[(0, 40), (10, 50), (20, 60), (5, 46)])).is_err());
         // not a whole slope
-        assert!(fit_exact(&sobs(&[(0, 0), (2, 3)])).is_err());
+        assert!(fit_exact(&sobs(&[(0, 0), (1, 1), (2, 3)])).is_err());
+    }
+
+    /// A key without a size source is a constant: the same bytes at every
+    /// measurement, whatever their number.
+    #[test]
+    fn fit_exact_constants() {
+        let c = |bs: &[i64]| -> Vec<StorObs> { bs.iter().map(|&bytes| StorObs { flow: "f".into(), path: String::new(), size: 0, sized: false, bytes }).collect() };
+        assert_eq!(fit_exact(&c(&[0])), Ok((0, 0)));
+        assert_eq!(fit_exact(&c(&[-69, -69])), Ok((-69, 0)));
+        assert!(fit_exact(&c(&[0, 61])).is_err());
+        // mixed: one with a size source, one without
+        let mut m = c(&[0]);
+        m.extend(sobs(&[(1, 0), (2, 0), (3, 0)]));
+        assert!(fit_exact(&m).is_err());
+    }
+
+    /// Sizes far apart: a u64 difference cast to i64 wraps (u64::MAX - 0
+    /// becomes -1, so -1 byte over it read as a slope of 1 and a false
+    /// fit); checked i128 arithmetic rejects it. Coefficients outside
+    /// TLC's 32-bit integers are rejected too.
+    #[test]
+    fn fit_exact_wide_sizes() {
+        // with the i64 cast, sizes u64::MAX and u64::MAX - 1 read as -1 and -2,
+        // and these three points were taken as the line 0 + 1 * size
+        assert!(fit_exact(&sobs(&[(0, 0), (u64::MAX - 1, -2), (u64::MAX, -1)])).is_err());
+        assert!(fit_exact(&sobs(&[(0, 0), (u64::MAX / 2, -1), (u64::MAX, -1)])).is_err());
+        // whole but too steep for TLC
+        assert!(fit_exact(&sobs(&[(0, 0), (1, 1 << 40), (2, 1 << 41)])).is_err());
+        // base out of range, slope fine
+        assert!(fit_exact(&sobs(&[(0, 1 << 40), (1, (1 << 40) + 1), (2, (1 << 40) + 2)])).is_err());
+        // the largest in range is accepted
+        let m = i32::MAX as i64;
+        assert_eq!(fit_exact(&sobs(&[(0, m), (1, m), (2, m)])), Ok((m, 0)));
+    }
+
+    /// Bytes that differ between gas points fail the key, loudly.
+    #[test]
+    fn finish_stor_rejects_gas_dependent_bytes() {
+        let mut st = Stor::default();
+        let k = ("p".to_owned(), "put".to_owned(), String::new(), "new".to_owned(), "f".to_owned(), 5, true);
+        st.by_gas.entry(k.clone()).or_default().entry(45).or_default().extend([1_000_000_000_000, 300_000_000_000_000]);
+        st.by_gas.entry(k).or_default().entry(0).or_default().insert(2_000_000_000_000);
+        finish_stor(&mut st);
+        assert!(st.obs.is_empty());
+        assert_eq!(st.errors.len(), 1);
+        assert!(st.errors[0].contains("bytes depend on gas"), "{}", st.errors[0]);
     }
 }

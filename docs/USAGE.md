@@ -1098,10 +1098,12 @@ before `Submit`, since an uncovered `Submit` is a disabled step.
 
 ### Bytes from the calibrator
 
-Instead of counting, measure. `calibrate --stor` runs each flow of a flow spec once, reads
-nearcore's `storage_usage` of every successful call's receiver before and after it, and writes
-a `StorBytes` table keyed like `GasBurn` (`"acct.method[/path]"`): bytes = `base + per * size`,
-the size coming from the spec's `[[stor_size]]` (for example the key + value length of a write).
+Instead of counting, measure. `calibrate --stor` runs each flow of a flow spec at every point
+of its gas grid, reads nearcore's `storage_usage` of every successful call's receiver before and
+after it, checks that the bytes do not change with gas, and writes a `StorBytes` table keyed
+like `GasBurn` (`"acct.method[/path]"`): bytes = `base + per * size`, the size coming from the
+spec's `[[stor_size]]` (for example the key + value length of a write; give a sized key flows
+at 3 or more sizes, and a key without one must measure the same everywhere).
 Give the table to the library and read it with `OStorKey(O, key, size)`, which adds that key's
 bytes to the outcome's:
 
@@ -1327,7 +1329,7 @@ The tool writes the table only if every check passed:
 - every child has a declared static;
 - every action-only fee is priced.
 
-With `--stor` the same spec gives storage bytes instead: each flow runs once, and the tool
+With `--stor` the same spec gives storage bytes instead: each flow runs over its gas grid, and the tool
 writes a `StorBytes` table for `OStorKey` ([section 15](#bytes-from-the-calibrator)). Declare
 what the bytes grow with in `[[stor_size]]`, and give each path that writes differently (a new
 key, an overwrite) a flow of its own with its `path`.

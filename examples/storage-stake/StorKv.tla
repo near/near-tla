@@ -4,9 +4,12 @@
 (* --stor): do not edit by hand.  bytes = base + per * size: what a        *)
 (* successful receipt adds to its receiver's storage_usage (negative:      *)
 (* frees), read before and after the receipt in near-contract-sim, which   *)
-(* runs nearcore's Runtime::apply.  Each flow ran once, at the top of its  *)
-(* grid (bytes do not depend on gas), and every measurement lies on its    *)
-(* key's line exactly.  Read with OStorKey (modules/NearAsync.tla).        *)
+(* runs nearcore's Runtime::apply.  Each flow ran at every point of its    *)
+(* gas grid, and a key's successful receipts added the same bytes at       *)
+(* every point.  A key with a size source was measured at 3 or more        *)
+(* distinct sizes, every one exactly on its line; a key without one is a   *)
+(* constant (per 0), the same bytes everywhere.  Read with OStorKey        *)
+(* (modules/NearAsync.tla).                                                *)
 (*                                                                         *)
 (* Provenance:                                                             *)
 (*   sim rev          29e909033bb59eab792dee136e9d02870488bc3e             *)
@@ -28,8 +31,10 @@
 (*     --tla ../examples/storage-stake/StorKv.tla --module StorKv --notes  *)
 (*     flows/storkv.notes                                                  *)
 (* flows: storage.toml sha256                                              *)
-(*     17853ec204f5cf785a6e51b9dec4d28a071dc4b0c2a5a4f189597d034b305997    *)
-(* 20 flows, each run once at the top of its grid; 20 call receipts        *)
+(*     0a4650a49f9e61a00b5cb10e0c883c1d8608e485a3234d352dc745a655f6a33a    *)
+(* 33 flows, 43329 runs: 164074 receipts checked, 43226 successful call    *)
+(*     receipts measured                                                   *)
+(* grid: standard (1313 points), 33 flows                                  *)
 (* size of p-probe.near.put: arg_len:key+value                             *)
 (*                                                                         *)
 (* Table: KvStorBytes(app) for a contract whose put(key, value) writes     *)
@@ -45,6 +50,6 @@
 EXTENDS Integers, Sequences, TLC
 
 KvStorBytes(app) ==
-    app \o ".put/new" :> [base |-> 40, per |-> 1] @@  \* 3 pts; sizes 2-102; put_new_0 put_new_100 put_new_key20
-    app \o ".put/same" :> [base |-> 0, per |-> 0]  \* 1 pt; size 5; put_same
+    app \o ".put/new" :> [base |-> 40, per |-> 1] @@  \* 3 pts; 3 sizes 2-102; put_new_0 put_new_100 put_new_key20
+    app \o ".put/same" :> [base |-> 0, per |-> 0]  \* 3 pts; 3 sizes 5-120; put_same_120 put_same_5 put_same_52
 =============================================================================

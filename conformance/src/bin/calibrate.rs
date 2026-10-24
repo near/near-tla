@@ -11,10 +11,11 @@
 //!              [--allow-partial]] [--batch-actions] [--stor]
 //!
 //! `--stor` measures storage bytes instead of burns: it runs each flow
-//! once, at the top of its grid, reads every successful call receipt's
-//! change of its receiver's `storage_usage`, fits `base + per * size`
-//! exactly (sizes from `[[stor_size]]`) and writes `<prefix>StorBytes`
-//! tables. No sweep, no `data/`.
+//! at every point of its grid, reads every successful call receipt's
+//! change of its receiver's `storage_usage` (which must not depend on the
+//! gas), fits `base + per * size` exactly (sizes from `[[stor_size]]`, at
+//! least 3 distinct per sized key) and writes `<prefix>StorBytes` tables.
+//! Nothing is written to `data/`.
 //!
 //! A table is written only if every check passed: every function-call
 //! child's attached gas reproduced (single-call parents directly,
@@ -469,30 +470,30 @@ struct StorOpts {
     flows_sha: String,
 }
 
-/// `--stor`: each flow once at the top of its grid; the storage table.
+/// `--stor`: each flow at every point of its grid; the storage table.
 /// Returns the exit status.
 fn run_stor(res: &Resolved, base: &near_contract_sim::Sim, prov: &Provenance, wasms: &[(String, String, String, String)], o: &StorOpts) -> i32 {
     let mut st = calib::Stor::default();
     let mut flows = 0;
+    let mut grids: BTreeMap<String, usize> = BTreeMap::new();
     for flow in &res.spec.flows {
         if !o.only.is_empty() && !o.only.contains(&flow.name) {
             continue;
         }
         let gname = o.grid.clone().unwrap_or_else(|| flow.grid.clone());
-        let top = *spec::parse_grid(&gname).iter().max().expect("empty grid");
-        let w = res.flow_world(base, flow);
-        let mut sim = w.clone();
-        let os = spec::run_flow(&mut sim, flow, near_contract_sim::prelude::Gas::from_gas(top));
-        let n0 = st.receipts;
-        calib::collect_stor(res, flow, &os, &w, &sim, &mut st);
-        println!("{}: {} call receipts measured at {:.1} Tgas", flow.name, st.receipts - n0, top as f64 / 1e12);
+        let g = spec::parse_grid(&gname);
+        let n = calib::measure_stor_flow(res, base, flow, &g, &mut st);
+        println!("{}: {n} successful call receipts over {} gas points", flow.name, g.len());
+        *grids.entry(format!("{gname} ({} points)", g.len())).or_default() += 1;
         flows += 1;
     }
+    calib::finish_stor(&mut st);
     let (rows, errors, notes) = calib::stor_rows(&st, &o.merge);
-    println!("\n| key | base bytes | per (bytes/size) | points | sizes | flows |");
-    println!("|---|---:|---:|---:|---|---|");
+    println!("\n{} runs, {} receipts checked, {} successful call receipts measured", st.runs, st.checked, st.receipts);
+    println!("\n| key | base bytes | per (bytes/size) | measurements | distinct sizes | sizes | flows |");
+    println!("|---|---:|---:|---:|---:|---|---|");
     for r in &rows {
-        println!("| {}.{} | {} | {} | {} | {}-{} | {} |", r.acct, r.key, r.base, r.per, r.n, r.sizes.0, r.sizes.1, r.flows.join(" "));
+        println!("| {}.{} | {} | {} | {} | {} | {}-{} | {} |", r.acct, r.key, r.base, r.per, r.n, r.distinct, r.sizes.0, r.sizes.1, r.flows.join(" "));
     }
     if !st.action_only.is_empty() {
         println!("\naction-only receipts (the library counts these; not emitted), bytes:");
@@ -542,8 +543,11 @@ fn run_stor(res: &Resolved, base: &near_contract_sim::Sim, prov: &Provenance, wa
     }
     let mut data_lines = vec![
         format!("flows: {} sha256 {}", o.flows_name, o.flows_sha),
-        format!("{flows} flows, each run once at the top of its grid; {} call receipts", st.receipts),
+        format!("{flows} flows, {} runs: {} receipts checked, {} successful call receipts measured", st.runs, st.checked, st.receipts),
     ];
+    for (g, n) in &grids {
+        data_lines.push(format!("grid: {g}, {n} flow{}", if *n == 1 { "" } else { "s" }));
+    }
     // the sizes of the emitted accounts' keys
     let shown: BTreeSet<&str> = if o.groups.is_empty() { rows.iter().map(|r| r.acct.as_str()).collect() } else { o.groups.iter().filter_map(|g| g.split(':').next()).collect() };
     for z in res.spec.stor_sizes.iter().filter(|z| z.key.rsplit_once('.').is_some_and(|(rx, _)| shown.contains(res.name(rx)))) {

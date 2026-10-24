@@ -4,9 +4,12 @@
 (* --stor): do not edit by hand.  bytes = base + per * size: what a        *)
 (* successful receipt adds to its receiver's storage_usage (negative:      *)
 (* frees), read before and after the receipt in near-contract-sim, which   *)
-(* runs nearcore's Runtime::apply.  Each flow ran once, at the top of its  *)
-(* grid (bytes do not depend on gas), and every measurement lies on its    *)
-(* key's line exactly.  Read with OStorKey (modules/NearAsync.tla).        *)
+(* runs nearcore's Runtime::apply.  Each flow ran at every point of its    *)
+(* gas grid, and a key's successful receipts added the same bytes at       *)
+(* every point.  A key with a size source was measured at 3 or more        *)
+(* distinct sizes, every one exactly on its line; a key without one is a   *)
+(* constant (per 0), the same bytes everywhere.  Read with OStorKey        *)
+(* (modules/NearAsync.tla).                                                *)
 (*                                                                         *)
 (* Provenance:                                                             *)
 (*   sim rev          29e909033bb59eab792dee136e9d02870488bc3e             *)
@@ -29,8 +32,10 @@
 (*     wnear_probe:StdWNear:wnear --tla ../modules/StorStd.tla --module    *)
 (*     StorStd --notes flows/storstd.notes                                 *)
 (* flows: storage.toml sha256                                              *)
-(*     17853ec204f5cf785a6e51b9dec4d28a071dc4b0c2a5a4f189597d034b305997    *)
-(* 20 flows, each run once at the top of its grid; 20 call receipts        *)
+(*     0a4650a49f9e61a00b5cb10e0c883c1d8608e485a3234d352dc745a655f6a33a    *)
+(* 33 flows, 43329 runs: 164074 receipts checked, 43226 successful call    *)
+(*     receipts measured                                                   *)
+(* grid: standard (1313 points), 33 flows                                  *)
 (* size of ft-probe.near.storage_deposit: arg_len:account_id               *)
 (* size of wnear-probe.near.storage_deposit: arg_len:account_id            *)
 (* size of wnear-probe.near.near_deposit: predecessor_len                  *)
@@ -55,17 +60,17 @@
 EXTENDS Integers, Sequences, TLC
 
 StdFtStorBytes(ft) ==
-    ft \o ".ft_transfer" :> [base |-> 0, per |-> 0] @@  \* 1 pt; size 0; ft_transfer
-    ft \o ".storage_deposit/new" :> [base |-> 61, per |-> 1] @@  \* 2 pts; sizes 9-64; ft_storage_new_64 ft_storage_new_9
-    ft \o ".storage_deposit/registered" :> [base |-> 0, per |-> 0] @@  \* 1 pt; size 9; ft_storage_registered
-    ft \o ".storage_unregister" :> [base |-> -61, per |-> -1]  \* 2 pts; sizes 9-30; ft_unregister_30 ft_unregister_9
+    ft \o ".ft_transfer" :> [base |-> 0, per |-> 0] @@  \* 1 pt; constant; ft_transfer
+    ft \o ".storage_deposit/new" :> [base |-> 61, per |-> 1] @@  \* 3 pts; 3 sizes 9-64; ft_storage_new_30 ft_storage_new_64 ft_storage_new_9
+    ft \o ".storage_deposit/registered" :> [base |-> 0, per |-> 0] @@  \* 3 pts; 3 sizes 9-64; ft_storage_registered_30 ft_storage_registered_64 ft_storage_registered_9
+    ft \o ".storage_unregister" :> [base |-> -61, per |-> -1]  \* 3 pts; 3 sizes 9-46; ft_unregister_30 ft_unregister_46 ft_unregister_9
 
 StdWNearStorBytes(wnear) ==
-    wnear \o ".ft_transfer" :> [base |-> 0, per |-> 0] @@  \* 1 pt; size 0; wnear_transfer
-    wnear \o ".near_deposit/new" :> [base |-> 61, per |-> 1] @@  \* 2 pts; sizes 9-30; wnear_deposit_new_30 wnear_deposit_new_9
-    wnear \o ".near_deposit/registered" :> [base |-> 0, per |-> 0] @@  \* 1 pt; size 9; wnear_deposit_registered
-    wnear \o ".near_withdraw" :> [base |-> 0, per |-> 0] @@  \* 1 pt; size 0; wnear_withdraw
-    wnear \o ".storage_deposit/new" :> [base |-> 61, per |-> 1] @@  \* 2 pts; sizes 9-64; wnear_storage_new_64 wnear_storage_new_9
-    wnear \o ".storage_deposit/registered" :> [base |-> 0, per |-> 0] @@  \* 1 pt; size 9; wnear_storage_registered
-    wnear \o ".storage_unregister" :> [base |-> -61, per |-> -1]  \* 2 pts; sizes 9-30; wnear_unregister_30 wnear_unregister_9
+    wnear \o ".ft_transfer" :> [base |-> 0, per |-> 0] @@  \* 1 pt; constant; wnear_transfer
+    wnear \o ".near_deposit/new" :> [base |-> 61, per |-> 1] @@  \* 3 pts; 3 sizes 9-46; wnear_deposit_new_30 wnear_deposit_new_46 wnear_deposit_new_9
+    wnear \o ".near_deposit/registered" :> [base |-> 0, per |-> 0] @@  \* 3 pts; 3 sizes 9-46; wnear_deposit_registered_30 wnear_deposit_registered_46 wnear_deposit_registered_9
+    wnear \o ".near_withdraw" :> [base |-> 0, per |-> 0] @@  \* 1 pt; constant; wnear_withdraw
+    wnear \o ".storage_deposit/new" :> [base |-> 61, per |-> 1] @@  \* 3 pts; 3 sizes 9-64; wnear_storage_new_30 wnear_storage_new_64 wnear_storage_new_9
+    wnear \o ".storage_deposit/registered" :> [base |-> 0, per |-> 0] @@  \* 3 pts; 3 sizes 9-64; wnear_storage_registered_30 wnear_storage_registered_64 wnear_storage_registered_9
+    wnear \o ".storage_unregister" :> [base |-> -61, per |-> -1]  \* 3 pts; 3 sizes 9-46; wnear_unregister_30 wnear_unregister_46 wnear_unregister_9
 =============================================================================

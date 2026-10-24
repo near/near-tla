@@ -154,9 +154,9 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   behaviour in the sim (receipts, promises and gas; accounts, keys and stake; NEP-141 on the
   `ft` probe). None was refuted.
 - Storage bytes from the calibrator (SEMANTICS B2, `examples/storage-stake`): `calibrate --stor`
-  measures what each (method, path) adds to its receiver's `storage_usage`, once per flow and
-  not over the gas grid, and writes a `StorBytes` table (`base + per * size`, with its
-  provenance). A handler declares its bytes with `OStorKey(O, key, size)` instead of a hand
+  measures what each (method, path) adds to its receiver's `storage_usage` at every point of
+  each flow's gas grid (the bytes checked the same at all of them), and writes a `StorBytes`
+  table (`base + per * size`, exact over at least 3 sizes, with its provenance). A handler declares its bytes with `OStorKey(O, key, size)` instead of a hand
   count; `StorStd` holds the standard tokens' bytes, and a sim test pins
   `StdRegBytes(len) = 61 + len`.
 - The conformance suite in CI, nightly and on demand (`.github/workflows/conformance.yml`):
