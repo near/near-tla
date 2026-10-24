@@ -572,7 +572,7 @@ Each rule has four fields:
   `wnear_batch_DSC`). The floor-and-remainder rule (a few gas) is below that tolerance: sim
   (`conformance/tests/receipts.rs`, `leftover_split_floor_and_remainder`: three weight-1
   children get `⌊U/3⌋`, `⌊U/3⌋` and `⌊U/3⌋ + U mod 3`, U derived from the parent's attached
-  gas, burn and fees, not from the shares,, the last appended taking the
+  gas, burn and fees, not from the shares, the last appended taking the
   remainder, and one more prepaid gas gives one more leftover gas); the calibration's split
   check confirms it to the gas on every flow, against the formula rather than the model, and
   `examples/weight-split` covers it in the model under both modes. "Last" in host-call order
