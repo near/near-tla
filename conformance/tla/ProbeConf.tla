@@ -227,5 +227,9 @@ Spec == Init /\ [][Next]_vars
 Done == sent /\ ai = Len(After) /\ Quiet /\ data = {} /\ \A p \in post : IsYield(p)
 Parked == Cardinality({p \in post : IsYield(p)})
 Report == Done => PrintT(<<"CONF", pp, Parked, rlog>>)
+\* A branch that finishes every step but is not Done (data or a non-yield
+\* receipt left over, or a receipt that can never run) prints no report, so
+\* another branch at the same point would hide it: fail it outright.
+NotStuck == (sent /\ ai = Len(After) /\ Quiet) => Done
 TypeOK == TokSupplyOK
 =============================================================================

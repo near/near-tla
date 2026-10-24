@@ -146,6 +146,9 @@ A flow passes `conform.py` only if:
   `flows/probes.toml` and the flow's declared grid, and its `points` and `jsonl_sha256` are those
   of the JSONL beside it;
 - the sweep holds every point of that grid exactly once (an empty or truncated sweep fails);
+- TLC finds no violation of `NotStuck`: a model branch that has run every step and can do
+  nothing more is `Done` (no data or non-yield receipt left over). Such a branch prints no
+  report, so without this check another branch at the same point could hide it;
 - the model has every grid point and none outside it, and one outcome per point: TLC may print a
   point more than once, and two reports of it that differ in any field (parked yields,
   receiver, method, transaction, id, status, gas) fail the flow;

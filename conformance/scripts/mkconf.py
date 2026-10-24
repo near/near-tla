@@ -251,6 +251,7 @@ CONSTANTS
   YieldTicks <- mc_one
 INVARIANTS
   Report
+  NotStuck
   TypeOK
 """
 

@@ -400,6 +400,9 @@ Each entry ends with its migration.
   `expire` step no longer shifts the next one: `yield_resume_late`'s resume is transaction 2
   on both sides, it was 3 in the model), so outcomes swapped between two transactions fail
   the statuses, the gas pairing and the edges.
+- Conformance: `ProbeConf` checks `NotStuck`: a branch that has run every step and can do
+  nothing more must be `Done` (no data or non-yield receipt left over). Such a branch prints
+  no report, so before this another branch at the same prepaid point could hide it.
 - Conformance: the yields still parked once a point's last step has run are compared. Sweeps
   gain a per-line field `yields` (`Sim::yields()`; re-sweep: a line without it is
   unreadable), `ProbeConf`'s report prints `Parked` (`<<"CONF", pp, Parked, rlog>>`), and the
