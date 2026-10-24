@@ -505,6 +505,14 @@ them. A model that lists platform variables one by one must add each.
   `from = "arg_count:<field>"`, an array argument's length. `examples/mt-batch` has a
   gas-mode run on the table (`mt_batch_gas_std`: the 30 Tgas floor, `FloorHolds`). The
   existing sets, sweeps and tables are unchanged.
+- **Result-read gas** (SEMANTICS C4; `examples/result-read-gas`): `OReadRes(O, res, max)`
+  declares that a call reads a promise result with a byte bound (`max < 0`: unbounded), and
+  gas mode adds the copy's cost, 2,822,334 gas per byte at 88 (none for a too-long result
+  under a bound), to `Need`. The NEP-141 resolver declares its read with `TokResolveMaxLen`,
+  so an unbounded resolver runs out of gas on a receiver's 4 MiB answer (`OwedOK`). On by
+  default (`ResultReadGas <- FALSE` turns it off); only results that state their size cost
+  anything, and no example run changed. Sim: `conformance/tests/gas.rs`,
+  `result_read_gas_per_byte`.
 - **Worst-case storage gas, opt-in** (SEMANTICS G6; `examples/trie-gas`): at 88
   `storage_write` and `storage_remove` pay 2.28 Ggas per trie node on the key's path, which
   other users can lengthen; reads and `has_key` pay none (flat storage). `OWriteKey(O, n)`

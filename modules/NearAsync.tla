@@ -362,6 +362,34 @@ ResMinBytes(res) ==
 ResTooLong(res, max) == res.ok /\ max >= 0 /\ ResMinBytes(res) > max
 \* NumOr after a bounded read: a too-long result counts as unparsable.
 NumOrChecked(res, max, dflt) == IF ResTooLong(res, max) THEN dflt ELSE NumOr(res, dflt)
+\* Result-read gas (docs/SEMANTICS.md, C4).  promise_result puts the result
+\* in a register without a per-byte charge; reading it into memory costs
+\* read_register_byte + write_memory_byte = 2,822,334 gas per byte (88),
+\* which a bounded read of a too-long result skips (register_len first).
+\* OReadRes(O, res, max) declares that the call reads res with bound max
+\* bytes (max < 0: unbounded), so Need adds ReadGas(O): the bytes read
+\* (ResMaxBytes, the most the record allows; none when Failed or too long;
+\* at most max) at 2823 Kgas per byte, rounded up to whole Ggas.  Only the
+\* host's copy: parsing the bytes is the contract's burn (GasBurn per with
+\* OSz).  The calibrated burn already holds the read of the measured result,
+\* so a stated small result is counted twice, by a Ggas or so.
+\* ResultReadGas <- FALSE drops the charge.  Not on a panic path, nor per
+\* action (pa).
+ResultReadGas == TRUE
+ResMaxBytes(res) == IF "len" \in DOMAIN res /\ res.len > 0 THEN res.len ELSE 1000 * res.sz
+ResReadBytes(res, max) ==
+    IF ~res.ok \/ ResTooLong(res, max) THEN 0
+    ELSE IF max >= 0 /\ ResMaxBytes(res) > max THEN max
+    ELSE ResMaxBytes(res)
+ReadBytes(O) == IF "rdb" \in DOMAIN O THEN O.rdb ELSE 0
+OReadRes(O, res, max) == [rdb |-> ReadBytes(O) + ResReadBytes(res, max)] @@ O
+\* Ggas; below 700,000 bytes per byte (2823 Kgas), above per KB (2823 Mgas),
+\* to stay within TLC's integers.
+ReadGas(O) ==
+    LET b == ReadBytes(O) IN
+    IF ~ResultReadGas \/ b = 0 THEN 0
+    ELSE IF b <= 700000 THEN (b * 2823 + 999999) \div 1000000
+    ELSE (((b + 999) \div 1000) * 2823 + 999) \div 1000
 
 \* Built-in (non function-call) receipt kinds.
 XFER  == "XFER"     \* Transfer action (may carry a callback)
@@ -1277,7 +1305,7 @@ Burn(r, O) ==
 
 KidsCost(S) == RcptSum(LAMBDA c : c.gf + SumSeq(c.gs), S)
 
-Need(r, O) == Burn(r, O) + KidsCost(Kids(O)) + TrieGas(O)
+Need(r, O) == Burn(r, O) + KidsCost(Kids(O)) + TrieGas(O) + ReadGas(O)
 
 \* Per-action accounting.  Each function-call action runs with its own gas and
 \* its own promise manager (function_call.rs:61); its children share only

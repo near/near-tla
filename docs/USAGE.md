@@ -26,6 +26,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [5. Writing handlers](#5-writing-handlers)
 - [6. The dispatcher and Next](#6-the-dispatcher-and-next)
 - [7. Reading promise results](#7-reading-promise-results)
+  - [Reading a large result costs gas](#reading-a-large-result-costs-gas)
 - [8. Calling tokens](#8-calling-tokens)
 - [9. Receiving tokens](#9-receiving-tokens)
 - [10. Signer and keys](#10-signer-and-keys)
@@ -372,6 +373,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); another key type (a key with an allowance, `WithAllowance`, already counts its 16 bytes) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
+| `ResultReadGas` | `TRUE` | never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
 | `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at its worst-case trie-node gas ([section 12](#worst-case-storage-gas-trie-depth)) |
 | `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
@@ -644,6 +646,22 @@ Decide explicitly what your contract does for each case, as the real code does. 
 that treats "not a number" as success, or Failed as "nothing happened", is where the bugs are.
 `TokenCommon.RecvOutcome(amt, resp)` produces every shape from an arbitrary receiver, so TLC
 tries them all.
+
+### Reading a large result costs gas
+
+Copying a result into the contract's memory costs about 2.8 Mgas per byte: 11.8 Tgas for a
+4 MiB result, which the receiver chooses. A bounded read (near-sdk's
+`promise_result_checked(idx, max_len)`) of a longer result copies nothing. Declare the read in
+the callback's outcome, with its bound (`-1` for unbounded), and gas mode charges it:
+
+```tla
+O == OReadRes(OKey(Out0, "on_done"), r.res, 64)    \* read with a 64-byte bound
+```
+
+Only results that state their size (`RValLen`, `RValSz`) cost anything. The NEP-141 resolver
+declares its read (`TokResolveMaxLen`). `ResultReadGas <- FALSE` turns the charge off
+([C4](SEMANTICS.md#c4-result-size)); `examples/result-read-gas` shows an unbounded resolver
+running out of gas on a padded result.
 
 ## 8. Calling tokens
 
@@ -1991,5 +2009,6 @@ All examples are toy contracts written for this repo.
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |
   | `session-key` | a function-call key's allowance: sized as plays × cost, forgetting the gas refunds, it lets more plays through; a model that states no refund hides that |
   | `tx-nonce` | transaction nonces: a replay is refused; a wallet that signs payments in parallel loses one when a later one lands first; without nonces a replay pays twice |
+  | `result-read-gas` | an owed token resolver that reads its receiver's result unbounded runs out of gas on a 4 MiB answer; the 42-byte bound does not |
   | `trie-gas` | worst-case storage gas: an owed callback whose fixed budget fits its calibrated burn but not the trie-node gas of its writes in a deep trie (`TrieGasWorst`) |
   | `limits` | protocol limits at the last value nearcore accepts and the first it refuses: actions per receipt, promises per call, joint inputs, returned bytes, AddKey method names, logs |

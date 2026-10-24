@@ -388,14 +388,37 @@ Each rule has four fields:
   `sz ≤ 1` counts as too long only for a bound of 0 bytes, and is assumed short for any positive
   bound such as the resolver's 42; use `RValLen` when a sub-KB bound matters. `NumOrChecked(res, max, dflt)` is `NumOr` after such a
   read (a too-long result gives `dflt`); `max < 0` is an unbounded read.
+
+  **Reading a result costs gas per byte.** `promise_result` puts the result in a register
+  with no per-byte charge; copying it into the contract's memory
+  (`read_register`) costs `read_register_byte + write_memory_byte` = 2,822,334 gas per byte at
+  88, about 11.8 Tgas for 4 MiB. near-sdk's bounded read takes the register's length first and
+  copies nothing when the result is too long. `OReadRes(O, res, max)` declares that a call reads
+  `res` with bound `max` (`< 0`: unbounded); `Need` then adds `ReadGas(O)`: the bytes copied
+  (none for `Failed` or too long; at most `max`; the most the record allows, `len` or
+  `1000 × sz`) at 2823 Kgas per byte, rounded up to whole Ggas. On by default
+  (`ResultReadGas`); a record without `len` or `sz` reads 0 bytes, so only stated sizes cost
+  anything. Only the host's copy is counted: parsing the bytes is the contract's own burn
+  (`GasBurn` `per` with `OSz`). The NEP-141 resolver declares its read with
+  `TokResolveMaxLen` (`Tokens.TokHandle`), so an unbounded resolver (5.23.0 and older) runs
+  out of gas on a receiver's padded result and `OwedOK` reports it
+  (`examples/result-read-gas`).
 - **SDK source:** near-sdk 5.28.1 (the closest locally available version to the `~5.29.1` that
   near-contract-standards 5.29.1 requires; as read) `src/environment/env.rs:1833-1837`
   (`promise_result_checked`), `:129-137` (`read_register_bounded`: `len > max_len` is an error).
-  The same code is in 5.24.0 and 5.25.0.
+  The same code is in 5.24.0 and 5.25.0. The read's cost:
+  `runtime/near-vm-runner/src/logic/host.rs:4616-4646` (`promise_result`: `set_rc_data`),
+  `runtime/near-vm-runner/src/logic/vmstate.rs:87-121` (no per-byte charge for shared data),
+  `host.rs:407-417`, `:201-210` (`read_register`, `write_memory`);
+  `core/parameters/res/runtime_configs/parameters.snap:133-135` (the per-byte prices).
 - **Validated:** sim (`conformance/tests/receipts.rs`, `result_size_limit_and_per_receiver_fee`:
   a 4 MiB value is returned and one byte more fails the call; the returning receipt burns
   `new_data_receipt_byte` send + exec per byte for a waiting receiver, at the other-account
-  or the same-account send rate, to the gas). The protocol-87 input-size limit: nearcore
+  or the same-account send rate, to the gas; `conformance/tests/gas.rs`,
+  `result_read_gas_per_byte`: a callback that reads a result of 1,000, 100,000 and 1,000,000
+  bytes burns exactly 2,822,334 gas per byte more than one that takes only its length, and
+  that one, like one that only calls `promise_result`, burns the same at every size). The
+  protocol-87 input-size limit: nearcore
   reading; not sim-testable, since the sim runs 88. The bounded read: SDK source read; a
   near-contract-standards resolver's 42-byte bound is checked in the sim under T2.
 

@@ -69,7 +69,7 @@ BatchAct(acc, r, ch) ==
        ELSE IF a.nd > 0 /\ r.to \notin WNearAccts THEN AE(a4, "method not found")
        ELSE a4
 
-TokHandle(r, ch) ==
+TokHandle0(r, ch) ==
     LET acc == TAcc0(r)  a == r.a IN
     TokOut(r,
       CASE r.m = "ft_transfer"         -> FtTransferAct(YoctoAct(acc, r.dep), r, a.rc, a.amt, ch)
@@ -84,6 +84,13 @@ TokHandle(r, ch) ==
         [] r.m = "near_withdraw" /\ r.to \in WNearAccts -> NearWithdrawAct(YoctoAct(acc, r.dep), r, a.amt)
         [] r.m = "batch"               -> BatchAct(acc, r, ch)
         [] OTHER                       -> AE(acc, "method not found"))
+
+\* The resolver reads the receiver's result with its bound (TokResolveMaxLen;
+\* NearAsync OReadRes, result-read gas).
+TokHandle(r, ch) ==
+    LET O == TokHandle0(r, ch) IN
+    IF r.m = "ft_resolve_transfer" /\ "resolveIgnoresResult" \notin TokDev[r.to]
+    THEN OReadRes(O, r.res, ResolveMaxLen(r.to)) ELSE O
 
 IsTokRcpt(r) == r.to \in TokenAccts /\ IsCall(r)
 

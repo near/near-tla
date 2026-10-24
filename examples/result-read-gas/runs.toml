@@ -1,0 +1,102 @@
+# Result-read gas (docs/SEMANTICS.md, C4): an owed resolver that reads its receiver's result
+# unbounded runs out of gas on a result the receiver padded to 4 MiB; a bounded read does
+# not.  See ResultRead.tla.
+#
+#   python3 tools/run.py examples/result-read-gas
+#
+# OwedOK    no owed callback failed (the token's resolver is owed, TokOwedResolve).
+# Refunded  X asked for everything back: once idle, U holds its tokens again.
+# Sane      token supply and types, NEAR conserved, no orphans.
+
+spec = "ResultRead"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["OwedOK", "Refunded", "Sane"]
+tags = ["semantics:result-read-gas"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "RGasCall"
+GasBurn = "RGasBurn"
+LogOn = "FALSE"
+TokYocto = "0"
+TokenAccts = '{"ft"}'
+WNearAccts = "{}"
+TokHolders = "PTokHolders"
+TokStorageMin = "PTokMin"
+TokDev = "PTokDev"
+TokCallReserve = "PTokReserve"
+U = '"u"'
+X = '"x"'
+FT = '"ft"'
+MaxTx = "2"
+Amts = "{1, 2}"
+InitU = "2"
+XResps = '{"num", "huge"}'
+HugeLen = "4194304"
+Dev = "{}"
+
+# The standard resolver (42-byte bound): the padded answer is not read and counts as all
+# unused; the refund happens either way.
+[[run]]
+name = "read_bounded"
+expect = "pass"
+
+# A resolver that reads unbounded (near-contract-standards 5.23.0 and older): copying 4 MiB
+# costs 11.8 Tgas of its 5.
+[[run]]
+name = "read_unbounded"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "out of gas"'
+[run.constants]
+TokResolveMaxLen = "Unbounded"
+
+# The same resolver with plain answers only: the read costs nothing worth counting.
+[[run]]
+name = "read_unbounded_plain"
+expect = "pass"
+[run.constants]
+TokResolveMaxLen = "Unbounded"
+XResps = '{"num"}'
+
+# The unbounded resolver with result-read gas off: the model misses the out-of-gas.
+[[run]]
+name = "read_unbounded_uncharged"
+expect = "pass"
+[run.constants]
+TokResolveMaxLen = "Unbounded"
+ResultReadGas = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/result-read-gas --anti-vacuity ----
+
+[[witness]]
+id = "settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["read_bounded", "read_unbounded_plain"]
+
+# The resolver runs on the padded answer, and commits (bounded).
+[[witness]]
+id = "resolver_sees_huge"
+expr = '~(\E r \in Runnable : r.m = "ft_resolve_transfer" /\ r.res.ok /\ r.res.len = 4194304)'
+runs = ["read_bounded"]
+
+# The refund skipped: Refunded catches it.
+[[mutant]]
+id = "keeps_everything"
+file = "ResultRead.tla"
+find = 'THEN RValLen(r.a.amt, HugeLen) ELSE RVal(r.a.amt)'
+replace = 'THEN RValLen(0, HugeLen) ELSE RVal(0)'
+class = "wrong result"
+runs = ["read_bounded"]
+killed_by = ["Refunded"]

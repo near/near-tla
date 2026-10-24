@@ -1,6 +1,7 @@
-//! Gas that depends on more than the call's arguments (docs/SEMANTICS.md, G6):
-//! the trie-node charge of storage writes and removes, which grows with the
-//! depth of the trie at the key, while reads and `has_key` pay none.
+//! Gas that depends on more than the call's arguments: the trie-node charge
+//! of storage writes and removes, which grows with the depth of the trie at
+//! the key, while reads and `has_key` pay none (docs/SEMANTICS.md, G6); and
+//! the per-byte cost of reading a promise result (C4).
 //! Each test prints what it observed; `cargo test --test gas -- --nocapture`
 //! shows it.
 //!
@@ -149,4 +150,98 @@ fn trie_nodes_not_charged_twice_in_a_receipt() {
     let (x, y) = (two(&shallow), two(&deep));
     println!("two puts of one key in one receipt: shallow {x} gas, deep {y} gas: {} more trie nodes", (y - x) / TTN);
     assert_eq!(y - x, 16 * TTN, "only the first write pays the deeper path");
+}
+
+const R: &str = "r-read.near";
+
+/// `go_full`, `go_len`, `go_none`: call `big` on this account with the
+/// input, which returns it, then a callback that gets the result with
+/// `promise_result` and reads it into memory (`cb_full`), takes only its
+/// length (`cb_len`, what a bounded read of a too-long result does), or
+/// neither (`cb_none`).
+const READ: &str = r#"
+(module
+  (import "env" "input" (func $input (param i64)))
+  (import "env" "register_len" (func $register_len (param i64) (result i64)))
+  (import "env" "read_register" (func $read_register (param i64 i64)))
+  (import "env" "value_return" (func $value_return (param i64 i64)))
+  (import "env" "promise_create" (func $create (param i64 i64 i64 i64 i64 i64 i64 i64) (result i64)))
+  (import "env" "promise_then" (func $then (param i64 i64 i64 i64 i64 i64 i64 i64 i64) (result i64)))
+  (import "env" "promise_result" (func $result (param i64 i64) (result i64)))
+  (memory 128)
+  (export "memory" (memory 0))
+  (data (i32.const 0) "r-read.near")
+  (data (i32.const 32) "big")
+  (data (i32.const 48) "cb_full")
+  (data (i32.const 64) "cb_len")
+  (data (i32.const 80) "cb_none")
+  ;; the input, read to offset 4096; returns its length
+  (func $payload (result i64)
+    (call $input (i64.const 0))
+    (call $read_register (i64.const 0) (i64.const 4096))
+    (call $register_len (i64.const 0)))
+  (func (export "big") (call $value_return (call $payload) (i64.const 4096)))
+  ;; big(input) with 150 Tgas, then the callback at $m ($mlen bytes) with 20 Tgas
+  (func $go (param $m i64) (param $mlen i64)
+    (local $n i64)
+    (local.set $n (call $payload))
+    (drop (call $then
+      (call $create (i64.const 11) (i64.const 0) (i64.const 3) (i64.const 32)
+                    (local.get $n) (i64.const 4096) (i64.const 128) (i64.const 150000000000000))
+      (i64.const 11) (i64.const 0) (local.get $mlen) (local.get $m)
+      (i64.const 0) (i64.const 0) (i64.const 128) (i64.const 20000000000000))))
+  (func (export "go_full") (call $go (i64.const 48) (i64.const 7)))
+  (func (export "go_len") (call $go (i64.const 64) (i64.const 6)))
+  (func (export "go_none") (call $go (i64.const 80) (i64.const 7)))
+  (func (export "cb_full")
+    (drop (call $result (i64.const 0) (i64.const 1)))
+    (call $read_register (i64.const 1) (i64.const 4096)))
+  (func (export "cb_len")
+    (drop (call $result (i64.const 0) (i64.const 1)))
+    (drop (call $register_len (i64.const 1))))
+  (func (export "cb_none")
+    (drop (call $result (i64.const 0) (i64.const 1)))))
+"#;
+
+/// Reading a promise result costs `read_register_byte` + `write_memory_byte`
+/// (98,562 + 2,723,772 = 2,822,334 gas) per byte at 88, and getting it
+/// (`promise_result`) nothing per byte: a callback that reads a result of
+/// `n` bytes burns `2,822,334 n` more, plus fixed costs, than one that takes
+/// only its length, and that one burns the same at every size, as does one
+/// that only gets it (`runtime/near-vm-runner/src/logic/host.rs:4616-4646`,
+/// `promise_result` with `set_rc_data`, `runtime/near-vm-runner/src/logic/vmstate.rs:87-121`;
+/// `host.rs:407-417` and `:201-210`, `read_register` and `write_memory`).
+#[test]
+fn result_read_gas_per_byte() {
+    const PER_BYTE: u64 = 98_562 + 2_723_772;
+    let base = Fixture::new()
+        .account(ALICE, Balance::from_near(1000))
+        .contract(R, wat::parse_str(READ).unwrap())
+        .build();
+    let cb = |go: &str, n: usize| -> u64 {
+        let mut s = base.clone();
+        let o = s.tx(ALICE, R).call(go).args(vec![b'x'; n]).gas(Gas::from_teragas(300)).transact();
+        let r = o
+            .receipts
+            .iter()
+            .find(|r| r.method_names.iter().any(|m| m.starts_with("cb_")))
+            .unwrap_or_else(|| panic!("no callback: {o}"));
+        assert!(r.is_success(), "{o}");
+        r.gas_burnt.as_gas()
+    };
+    let sizes = [1_000usize, 100_000, 1_000_000];
+    let mut prev: Option<(usize, u64)> = None;
+    for n in sizes {
+        let (full, len, none) = (cb("go_full", n), cb("go_len", n), cb("go_none", n));
+        println!("result of {n:>9} bytes: callback reads it {full:>15} gas, takes its length {len:>15}, gets it {none:>15}");
+        assert_eq!(len, cb("go_len", sizes[0]), "taking the length does not depend on the size");
+        assert_eq!(none, cb("go_none", sizes[0]), "promise_result does not depend on the size");
+        if let Some((m, d)) = prev {
+            let slope = (full - len - d) / (n - m) as u64;
+            assert_eq!((full - len - d) % (n - m) as u64, 0);
+            println!("  read cost per byte between {m} and {n} bytes: {slope} gas");
+            assert_eq!(slope, PER_BYTE);
+        }
+        prev = Some((n, full - len));
+    }
 }
