@@ -3,11 +3,12 @@
 # ./build.sh (wasm32-unknown-unknown); the wasms and their sha256 are in res/.
 [workspace]
 resolver = "2"
-members = ["probe", "ft", "wrap", "async-probe", "probe2"]
+members = ["probe", "ft", "wrap", "async-probe", "probe2", "mt", "mtrecv"]
 
 [workspace.dependencies]
 near-sdk = { version = "=5.29.1" }
 near-contract-standards = { version = "=5.29.1" }
+near-sdk-contract-tools = { version = "=4.0.0" }
 
 [profile.release]
 codegen-units = 1

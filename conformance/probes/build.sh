@@ -24,14 +24,20 @@ target_dir=${CARGO_TARGET_DIR:-$here/target}
 export CARGO_TARGET_DIR="$target_dir"
 export RUSTFLAGS="--remap-path-prefix=$sysroot=/rustc --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$here=/probes --remap-path-prefix=$target_dir=/target -C link-arg=-s --cfg near"
 
-cargo build --locked --target wasm32-unknown-unknown --release
+# Two builds: the multi-token probes (mt, mtrecv) pull in
+# near-sdk-contract-tools, which turns on near-sdk's "legacy" feature; built
+# together with the others, Cargo's feature unification would change their
+# wasm too.
+cargo build --locked --target wasm32-unknown-unknown --release \
+  -p probe -p ft -p wrap -p async-probe -p probe2
+cargo build --locked --target wasm32-unknown-unknown --release -p mt -p mtrecv
 
 mkdir -p res
 out=$(mktemp -d)
-for c in probe ft wrap async_probe probe2; do
+for c in probe ft wrap async_probe probe2 mt mtrecv; do
   cp "$target_dir/wasm32-unknown-unknown/release/$c.wasm" "$out/$c.wasm"
 done
-(cd "$out" && shasum -a 256 probe.wasm ft.wasm wrap.wasm async_probe.wasm probe2.wasm) > "$out/SHA256SUMS"
+(cd "$out" && shasum -a 256 probe.wasm ft.wasm wrap.wasm async_probe.wasm probe2.wasm mt.wasm mtrecv.wasm) > "$out/SHA256SUMS"
 
 if [ "$check" = "--check" ]; then
   if diff -u res/SHA256SUMS "$out/SHA256SUMS"; then
