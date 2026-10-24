@@ -833,7 +833,10 @@ Each rule has four fields:
   sets the call's own deposit `r.dep` to 0, which is what a handler reading `r.dep` sees; set
   `r.dep` after `WithCreate` for a call deposit as well. The receipt carries both
   (`DepTotal`): credited at once, refunded together on failure, paid by the signer of a
-  transaction, counted by `NearConserved`. `Verdict` gets a first branch: the
+  transaction, counted by `NearConserved`. `near[r.to]` is the balance before the receipt;
+  the balance the call sees (`env::account_balance`) is `BalSeen(r)`: that balance after the
+  earlier actions (0 for a new account, plus the Transfer) plus the call's attached deposit
+  (`function_call.rs:269`; `runtime/near-vm-runner/src/logic/logic.rs:45-49`). `Verdict` gets a first branch: the
   account actions' checks (`AcCallErr`, which is `AcctErr` with the call's and the keys' bytes
   for the delete's large-state check) fail the receipt before anything else; then
   `CallTargetOK` on the account after the create and the deploy (`CodeSeen`: no code, the

@@ -1175,6 +1175,10 @@ RunBatch(r) == /\ Exec(r, InitOut(r))
                /\ owner' = IF Ok(r, InitOut(r)) THEN [owner EXCEPT ![r.to] = r.a.u] ELSE owner
 ```
 
+A handler that reads its own balance (`env::account_balance`) should read `BalSeen(r)`, not
+`near[r.to]`: it adds the call's attached deposit and, in a factory batch, starts from the new
+account's 0 plus the batch's Transfer, as nearcore does.
+
 Three things to know. The new account has no code, so `init` fails unless the batch deploys
 first: `WithDeploy(WithCreate(Rcpt(..)), "child")`, the batch `[CreateAccount, Transfer,
 DeployContract, FunctionCall(init)]`. With `StoragePerByte` the deposit must cover the code's

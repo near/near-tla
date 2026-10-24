@@ -203,8 +203,9 @@ H(r) ==
              c  == IF a.rto = "" THEN c1 ELSE WithDeleteTo(c1, a.rto) IN
          [O |-> Outcome({c}, {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
     [] r.m = "init" ->      \* the new account's init: adds a.amt bytes, returns 7; records its
-                            \* attached deposit ("idep")
-         [O |-> OStor(Outcome({}, {}, RVal(7), 0, 0), a.amt), s |-> {Sn(r, "init", 1), Sn(r, "idep", r.dep)}]
+                            \* attached deposit ("idep") and its balance ("ibal")
+         [O |-> OStor(Outcome({}, {}, RVal(7), 0, 0), a.amt),
+          s |-> {Sn(r, "init", 1), Sn(r, "idep", r.dep), Sn(r, "ibal", BalSeen(r))}]
     [] r.m = "closecall" -> \* [FunctionCall(last), DeleteAccount(u)] on a.to (c itself, or not)
          [O |-> Outcome({WithDeleteTo(Rcpt(nid, r.tx, a.to, r.to, "last", G("", "", "", a.amt, a.cd, "", ""), 0, r.to, 0), U)},
                         {}, RVal(0), 0, 1), s |-> {}]
@@ -229,7 +230,7 @@ H(r) ==
     [] r.m = "relay" ->     \* calls a.to.probe
          [O |-> Outcome({Rcpt(nid, r.tx, a.to, r.to, "probe", G0, 0, r.to, 0)}, {}, RVal(0), 0, 1), s |-> {}]
     [] r.m = "seebal" ->    \* records the receiver's balance when it runs
-         [O |-> Out0, s |-> {Sn(r, "bal", near[r.to])}]
+         [O |-> Out0, s |-> {Sn(r, "bal", BalSeen(r))}]
     [] r.m = "dostake" ->   \* Stake(a.amt) on v, then self.cb
          [O |-> Outcome({Rcpt(nid, r.tx, V, r.to, STAKE, [x1 |-> a.amt], 0, r.to, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), 0, 2), s |-> {}]
@@ -1092,6 +1093,8 @@ Expect(s) ==
          /\ S1("init", 1) \in seen /\ S1("num", 7) \in seen
          \* init's attached deposit is its own, 0, not the Transfer's 2.  function_call.rs:273
          /\ S1("idep", 0) \in seen
+         \* ... but its balance includes the Transfer.  function_call.rs:269; logic.rs:45-49
+         /\ S1("ibal", 2) \in seen
     [] s = "accall_exists" ->     \* AccountAlreadyExists comes first: init does not run
          \* actions.rs:822-828
          near[SB] = 1 /\ near[C] = 4 /\ S2("fail", 0) \in seen /\ <<2, SB, "init">> \notin ran

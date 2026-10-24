@@ -575,3 +575,14 @@ replace = 'ELSE IF a \in created /\ KindOf(a) # "eth_implicit" THEN NoCode'
 class = "wrong effect (library)"
 killed_by = ["Check"]
 runs = ["selftest_eth_recreate"]
+
+# ... a handler in a factory batch sees its balance without the batch's Transfer.
+[[mutant]]
+id = "lib_balseen_no_transfer"
+file = "NearAsync.tla"
+library = true
+find = 'BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]) + DepTotal(r)'
+replace = 'BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]) + r.dep'
+class = "wrong effect (library)"
+killed_by = ["Check"]
+runs = ["selftest_accall_code_off"]

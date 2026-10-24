@@ -426,6 +426,13 @@ Each entry ends with its migration.
   DeleteAccount), init's attached deposit in `accall_init`, and three library mutants in
   `platform-selftest`. Sim: `promise_call_then_delete`, `batch_call_sees_own_deposit`. A
   factory's `init` finds code once its batch deploys it (the DeployContract entry below).
+- **`BalSeen(r)`: the balance a handler sees** (`env::account_balance`, SEMANTICS A8):
+  `near[r.to]` after the receipt's earlier actions (0 for an account the receipt creates,
+  plus a factory batch's Transfer) plus the call's attached deposit
+  (`function_call.rs:269`, near-vm-runner `logic.rs:45-49`). Reading `near[r.to]` in a
+  handler gives the balance before the receipt, which in a factory batch misses the
+  Transfer. `platform-selftest`'s `seebal` and `init` use it (`accall_init` checks 2 NEAR);
+  library mutant `lib_balseen_no_transfer`.
 - **DeployContract** (SEMANTICS A9; docs/USAGE.md section 16). A code is a tag with
   `CodeLen[t]` bytes (overridable, default 0); the new platform variable `code` maps an
   account to the tag deployed at run time, `CodeOf(a)` falls back to `InitCode` (overridable,

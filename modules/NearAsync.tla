@@ -555,6 +555,13 @@ DataOf(r, ok, v) == DataOfSz(r, ok, v, 0)
 \* which is not the call's attached deposit (function_call.rs:273).
 XferOf(r)   == IF "ac" \in DOMAIN r /\ "xfer" \in DOMAIN r.ac THEN r.ac.xfer ELSE 0
 DepTotal(r) == r.dep + XferOf(r)
+\* The balance a handler sees at the start of r's call (env::account_balance):
+\* the receiver's balance after the receipt's earlier actions (a new
+\* account starts at 0; the batch's Transfer is credited by then,
+\* actions.rs:159-160, function_call.rs:269) plus the call's attached deposit
+\* (near-vm-runner logic.rs:45-49).  near[r.to] is the balance before the
+\* receipt; a handler that reads its own balance reads BalSeen(r).
+BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]) + DepTotal(r)
 Sum(S) == LET F[T \in SUBSET S] == IF T = {} THEN 0
                                    ELSE LET x == CHOOSE y \in T : TRUE IN DepTotal(x) + F[T \ {x}]
           IN F[S]
