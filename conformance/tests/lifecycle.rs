@@ -257,7 +257,7 @@ fn create_batch_atomic() {
     assert_eq!(ok_cost, gas(&o) * price + charge - create_exec * price, "the charge on success");
 
     // Early failure: the same batch on the account that now exists fails at
-    // its first action. nearcore stops at the failing action (lib.rs:997-1001);
+    // its first action. nearcore stops at the failing action (lib.rs:1001-1003);
     // each attempted action burns its exec fee as it starts (lib.rs:588-592),
     // so the receipt burns its base exec fee (lib.rs:908) plus create_account's.
     // The Transfer's and AddKey's exec fees, never attempted, come back with

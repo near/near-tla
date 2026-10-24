@@ -1082,7 +1082,7 @@ LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
 \* receipt's send + exec fees, ReceiptFee plus each action's ActionFee
 \* (NearFees), charged to its creator at creation whatever the outcome.
 \* That is the prepaid reservation, not the burn: nearcore stops a failed
-\* receipt at its failing action (lib.rs:997-1001) and burns the receipt's
+\* receipt at its failing action (lib.rs:1001-1003) and burns the receipt's
 \* exec fee plus the exec fees of the actions it attempted (each burns its
 \* own as it starts, :588-592); the exec fees of the actions after it come
 \* back with the gas refund (:1296-1307).  Gas refunds, like the creation
