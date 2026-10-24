@@ -202,6 +202,8 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   deterministic-account state init and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and other
   NEP-245 implementations than near-sdk-contract-tools 4.0.0.
+- **NEP-245's resolver as an owed callback:** mark `mt_resolve_transfer` the way `Nep141`
+  marks `ft_resolve_transfer` (SEMANTICS F2).
 
 ## License
 

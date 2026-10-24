@@ -1,0 +1,219 @@
+# Owed callbacks: a callback that completes or undoes an earlier receipt's commit must not
+# fail.  The model marks it (WithOwed) and lists the library's OwedOK; the library records
+# each failure of a marked receipt with its cause (ofail).  See Vault.tla and, for the
+# detached form, Payout.tla.
+#
+#   python3 tools/run.py examples/owed-effect
+#
+# OwedOK      no owed callback failed (NearAsync; the trace's last state shows ofail).
+# Books       once idle, nothing is held and U's balance plus T's takings is the start.
+# NoOverdraft V never lets the balance go negative.
+# Sane        NEAR conserved, no orphans.
+
+spec = "Vault"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["OwedOK", "Books", "NoOverdraft", "Sane"]
+tags = ["semantics:owed-effect"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+U = '"u"'
+V = '"v"'
+T = '"t"'
+MaxTx = "2"
+Amts = "{1, 2}"
+InitBal = "2"
+TResps = '{"ok", "panic", "mal"}'
+Memos = "{1, 16380, 4194290}"
+GasMenu = "{0}"
+Bug = '"none"'
+
+# The correct vault: whatever T does and whatever the memo, on_deliver commits.
+[[run]]
+name = "vault_ok"
+expect = "pass"
+
+# on_deliver unwraps T's result: malformed bytes make it panic, and U's debit stays.
+[[run]]
+name = "vault_panic"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "panic: unexpected result"'
+[run.constants]
+Bug = '"panic"'
+
+# on_deliver logs the memo: a 16380-byte memo puts its log over 16384 bytes.
+[[run]]
+name = "vault_log"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "TotalLogLengthExceeded"'
+[run.constants]
+Bug = '"log"'
+
+# on_deliver returns a receipt that echoes the memo: over 4 MiB with the longest memo.
+[[run]]
+name = "vault_ret"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "ReturnedValueLengthExceeded"'
+[run.constants]
+Bug = '"ret"'
+
+# The correct vault with on_deliver failing on its own (the forced switch): OwedOK
+# reports it as forced.  An owed callback the network could fail is a finding too.
+[[run]]
+name = "vault_forced"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "forced fault \(MayFail\)"'
+[run.constants]
+MayFail = '{"on_deliver"}'
+MaxFails = "1"
+
+# Gas mode: on_deliver has 6 Tgas, its refund path burns 4: it commits at every prepaid gas.
+[[run]]
+name = "vault_gas_ok"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "VGasCall"
+GasBurn = "VGasBurn"
+GasMenu = "Menu"
+MaxTx = "1"
+TResps = '{"ok"}'
+Memos = "{1}"
+
+# Gas mode, on_deliver with a fixed 3 Tgas: when T runs out of gas (prepaid 5.6-8.5 Tgas)
+# the refund path needs 4 Tgas and on_deliver runs out too (why "out of gas", g 3000,
+# need 4000 in the trace).
+[[run]]
+name = "vault_gas_short"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "out of gas"'
+[run.constants]
+GasMode = '"gas"'
+GasCall = "VGasCall"
+GasBurn = "VGasBurn"
+GasMenu = "Menu"
+MaxTx = "1"
+TResps = '{"ok"}'
+Memos = "{1}"
+Bug = '"gas"'
+
+# The same as a print-only window: OwedOK fails for prepaid 5.6-8.5 Tgas (withdraw needs 5.6;
+# from 8.6 T gets the 3 Tgas it burns).
+[[run]]
+name = "vault_gas_win"
+expect = "pass"
+invariants = ["WinOwed", "Sane"]
+expect_window = "5600-8500"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "VGasCall"
+GasBurn = "VGasBurn"
+GasMenu = "Menu"
+MaxTx = "1"
+TResps = '{"ok"}'
+Memos = "{1}"
+Bug = '"gas"'
+
+# ---- anti-vacuity: python3 tools/run.py examples/owed-effect --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Books' antecedent: the system settles again after a withdrawal.
+[[witness]]
+id = "withdraw_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["vault_ok", "vault_gas_ok"]
+
+# on_deliver's arms: T took the funds; T failed; T answered malformed bytes.
+[[witness]]
+id = "on_deliver_sees_number"
+expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ IsNum(r.res))'
+runs = ["vault_ok", "vault_gas_ok"]
+
+[[witness]]
+id = "on_deliver_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ IsFailed(r.res))'
+runs = ["vault_ok", "vault_gas_ok"]
+
+[[witness]]
+id = "on_deliver_sees_malformed"
+expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ r.res.ok /\ ~IsNum(r.res))'
+runs = ["vault_ok"]
+
+# The refund path with the longest memos, which the wrong vaults trip on.
+[[witness]]
+id = "refund_with_long_memo"
+expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ IsFailed(r.res) /\ r.a.memo = 4194290)'
+runs = ["vault_ok"]
+
+# The refund path in gas mode at the 4 Tgas burn (T ran out of gas).
+[[witness]]
+id = "gas_refund_path"
+expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ IsFailed(r.res) /\ oog # {})'
+runs = ["vault_gas_ok"]
+
+# The bug classes as mutants of the correct vault, each caught by OwedOK.
+[[mutant]]
+id = "unwrap_result"
+file = "Vault.tla"
+find = 'IF Bug = "panic" /\ r.res.ok /\ ~IsNum(r.res)'
+replace = 'IF r.res.ok /\ ~IsNum(r.res)'
+class = "inverted result check"
+runs = ["vault_ok"]
+killed_by = ["OwedOK"]
+
+[[mutant]]
+id = "log_echoes_memo"
+file = "Vault.tla"
+find = 'IF Bug = "log" THEN 7 + r.a.memo ELSE 20'
+replace = '7 + r.a.memo'
+class = "unbounded log"
+runs = ["vault_ok"]
+killed_by = ["OwedOK"]
+
+[[mutant]]
+id = "budget_below_refund"
+file = "Vault.tla"
+find = 'OnBudget == IF Bug = "gas" THEN 3000 ELSE 6000'
+replace = 'OnBudget == 3999'
+class = "off-by-one guard"
+runs = ["vault_gas_ok"]
+killed_by = ["OwedOK"]
+
+# The callback marked but never scheduled: NoOrphans (in Sane) catches the dangling result.
+[[mutant]]
+id = "dropped_then"
+file = "Vault.tla"
+find = 'Outcome({d}, {cb}, RProm, 0, 2)'
+replace = 'Outcome({d}, {}, RProm, 0, 2)'
+class = "dropped .then"
+runs = ["vault_ok"]
+
+# The refund arm skipped: Books catches it, OwedOK cannot (on_deliver commits).
+[[mutant]]
+id = "refund_skipped"
+file = "Vault.tla"
+find = 'b |-> IF took THEN bal ELSE bal + n'
+replace = 'b |-> bal'
+class = "failure branch skips rollback"
+runs = ["vault_ok", "vault_gas_ok"]
+killed_by = ["Books"]

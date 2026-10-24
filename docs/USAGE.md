@@ -32,6 +32,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [11. Local-receipt priority](#11-local-receipt-priority)
 - [12. Fault mode and gas mode](#12-fault-mode-and-gas-mode)
 - [13. The forced-fault switch and labels](#13-the-forced-fault-switch-and-labels)
+  - [Owed callbacks and detached work](#owed-callbacks-and-detached-work)
 - [14. Joint callbacks, yield/resume and the block clock](#14-joint-callbacks-yieldresume-and-the-block-clock)
 - [15. Storage staking per byte](#15-storage-staking-per-byte)
 - [16. Creating and deleting accounts](#16-creating-and-deleting-accounts)
@@ -405,7 +406,7 @@ Initialise every platform variable with one helper:
 |---|---|
 | `PlatformInit(near0, txIds)` | `near0`: `[Accounts -> Nat]`; `txIds`: the transaction ids (the domain of the `paid` ghost) |
 | `PlatformInitStaked(near0, locked0, txIds)` | the same, with `locked0` already staked on `StakingAcct` |
-| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `code`, `gcode`, `guse`, `gnonce`, `blk`, `stor` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage`) |
+| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `code`, `gcode`, `guse`, `gnonce`, `blk`, `stor`, `ofail` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage /\ PlatformInitOwed`) |
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
@@ -421,8 +422,8 @@ A step that touches no platform state writes `UNCHANGED platformVars`.
 Build `vars` (the tuple in `Spec == Init /\ [][Next]_vars`) from `platformVars` as above, not
 from a hand-written list of platform variables. A variable missing from `vars` is unconstrained
 by the stuttering steps of `[][Next]_vars`, and TLC only warns. When the library adds a
-platform variable (`blk` and `stor` in 0.2, `deleted`, `code`, `gcode`, `guse` and `gnonce`
-later), a hand-written list goes stale silently.
+platform variable (`blk` and `stor` in 0.2, `deleted`, `code`, `gcode`, `guse`, `gnonce` and
+`ofail` later), a hand-written list goes stale silently.
 
 ## 4. Receipts
 
@@ -1063,6 +1064,55 @@ Every counterexample carries a label (`Label`):
 
 Put the label in your printed output when you triage. `LogOn = TRUE` keeps a per-receipt log
 in `rlog` (`[tx, id, m, to, st, g]`), which is what conformance runs compare.
+
+### Owed callbacks and detached work
+
+Some receipts must not fail at all, whatever the cause
+([F2](SEMANTICS.md#f2-owed-callbacks-and-detached-work)). Mark them and list the library's
+check; you do not write an invariant about the callback yourself.
+
+- **Owed**: a callback that completes or undoes what an earlier receipt committed: a resolver
+  that refunds, a callback that credits back on `Failed`. Mark the child where you create it,
+  `WithOwed(Rcpt(..., "on_deliver", ...))`, or name its method once,
+  `OwedMethods <- {"on_deliver"}` (or `"v.on_deliver"`; this form counts only a postponed
+  callback on its own account, so a user calling the method directly is not reported). List
+  `OwedOK` as an invariant.
+- **Detached**: work handed to a call that may fail with nothing to fix it: a payout Transfer,
+  a job sent to another contract. Mark the receipt with `WithDetached(...)` (any kind, a
+  Transfer too) or `DetachedMethods`, say what "voided" means for that work, and list
+  `DetachedVoided`:
+
+  ```tla
+  Undone(x)  == <<x.a.k, x.a.t>> \notin done      \* x: the failed receipt's ofail record
+  PayVoided  == DetachedVoided(Undone)            \* checked once x's transaction has settled
+  ```
+
+  Name the work instance (a ticket in the args), not just the item: after a void, a second
+  legitimate attempt may mark the item done again.
+
+The library records every failure of a marked receipt in the ghost `ofail`, with its cause:
+
+```
+ofail = { [ m |-> "on_deliver", to |-> "v", tx |-> 1, id |-> 3, k |-> "owed",
+            why |-> "out of gas", g |-> 3000, need |-> 4000, a |-> [n |-> 1, memo |-> 1] ] }
+```
+
+`why` is a panic with the handler's message, `"out of gas"` (with the attached gas `g` and
+what it needed, `need`), a host limit (`TotalLogLengthExceeded`, `NumberOfLogsExceeded`,
+`ReturnedValueLengthExceeded`, `NumberPromisesExceeded`), `FunctionCallZeroAttachedGas`,
+`LackBalanceForState`, a missing account or code, or `"forced fault (MayFail)"`. A must-fail
+run can pin the cause with `expect_output = 'why \|-> "out of gas"'`. `OwedFailed` is the set
+of owed failures, for a print-only window:
+
+```tla
+WinOwed == OwedFailed # {} => PrintT(<<"WIN", "OwedOK", gas[1], OwedFailed>>)
+```
+
+The token modules mark the NEP-141 resolver (`ft_resolve_transfer`) owed by default
+(`TokOwedResolve`; `TokOwedResolve <- FALSE` leaves it unmarked), so a token model that lists
+`OwedOK` checks that no resolver fails. Unmarked receipts record nothing, so marking costs
+states only where a marked receipt fails. `examples/owed-effect` has a vault with one wrong
+variant per cause and a payout without a callback.
 
 ## 14. Joint callbacks, yield/resume and the block clock
 
@@ -1818,6 +1868,7 @@ All examples are toy contracts written for this repo.
   | example | rule |
   |---|---|
   | `callback-after-failure` | callbacks always run and see Failed; a failing callback reverts only itself |
+  | `owed-effect` | an owed callback must not fail: the library's `OwedOK` names each cause (panic, log and return limits, out of gas, a forced fault); `detached/`: a payout handed to a Transfer that fails must be voided (`DetachedVoided`) |
   | `revert-scope` | a failed receipt reverts only itself, not the transaction |
   | `signer-propagation` | the signer is inherited by children and callbacks |
   | `deletekey-atomicity` | `[DeleteKey, FunctionCall]` in one receipt is atomic |

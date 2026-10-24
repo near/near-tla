@@ -97,7 +97,8 @@ Init == /\ PlatformInit([a \in Accts |-> 0], TxIds)
         /\ ntx = 0
         /\ gT = [t \in TxIds |-> G0]
 
-Next == Send \/ Spend \/ Run
+\* The forced switch: off (MayFail = {}) but in refund_cap_resolver_fails.
+Next == Send \/ Spend \/ Run \/ \E r \in Runnable : ForcedFail(r) /\ UNCHANGED <<tk, ntx, gT>>
 Spec == Init /\ [][Next]_vars
 
 \* No resolution refunds more than its transfer moved.

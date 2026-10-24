@@ -38,6 +38,8 @@
 (*   TokResolveStatic[t]     resolver static (both shapes)                 *)
 (*   TokResolveMaxLen[t]     resolver's byte bound on the result (default  *)
 (*                           42; -1 = unbounded, 5.23.0 and older)         *)
+(*   TokOwedResolve          TRUE (default): the resolver receipt is owed  *)
+(*                           (WithOwed), checked by OwedOK                 *)
 (* A GasCall entry "t.ft_resolve_transfer" (or "ft_resolve_transfer")      *)
 (* wins for the resolver in both shapes; its .fee is the exec fee.         *)
 (* Burn keys: "<t>.<method>"; ft_resolve_transfer uses                     *)
@@ -98,6 +100,16 @@ ResolveGas(r, res) ==
     IF GasMode # "gas" \/ HasCallDef(r.to, "ft_resolve_transfer") THEN res
     ELSE WithCall(res, <<TMax(TokKnob(TokResolveStatic, r.to), 0)>>, <<0>>)
 
+\* The resolver is owed (NearAsync WithOwed, docs/SEMANTICS.md F2): it
+\* completes the transfer ft_transfer_call committed, refunding what the
+\* receiver did not use, and nothing retries it if it fails (a panic, out of
+\* gas, a forced fault): the receiver keeps the whole amount.  Every
+\* ft_transfer_call marks its resolver, so a model that lists OwedOK checks
+\* that no resolver fails.  TokOwedResolve <- FALSE leaves it unmarked (the
+\* 0.2 behaviour; ofail then stays empty for resolvers).
+TokOwedResolve == TRUE
+OwedResolve(c) == IF TokOwedResolve THEN WithOwed(c) ELSE c
+
 FtTransferCallAct(acc, r, rc, amt, msg) ==
     LET a1  == IF ReserveShort(r) /\ Live(acc)
                THEN AE(acc, "prepaid gas - GAS_FOR_FT_TRANSFER_CALL overflow")
@@ -105,8 +117,8 @@ FtTransferCallAct(acc, r, rc, amt, msg) ==
         onT == WithCall(Rcpt(a1.n, r.tx, rc, r.to, "ft_on_transfer",
                              OnArgs(r.fr, rc, amt, msg), 0, r.to, a1.n + 1),
                         <<OnTransferStatic(r)>>, <<OnTransferWeight(r)>>)
-        res == ResolveGas(r, Rcpt(a1.n + 1, r.tx, r.to, r.to, "ft_resolve_transfer",
-                                  ResArgs(r.fr, rc, amt), 0, r.to, r.cb))
+        res == ResolveGas(r, OwedResolve(Rcpt(a1.n + 1, r.tx, r.to, r.to, "ft_resolve_transfer",
+                                              ResArgs(r.fr, rc, amt), 0, r.to, r.cb)))
     IN IF ~Live(a1) THEN a1
        ELSE [a1 EXCEPT !.rd = @ \cup {onT}, !.ps = @ \cup {res}, !.n = @ + 2,
                        !.ret = RProm, !.ev.call = TRUE]

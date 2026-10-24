@@ -174,7 +174,8 @@ VARIABLES
     code,      \* code deployed at run time: a partial function account -> code tag (CodeOf)
     gcode,     \* published global contracts: a partial function identifier -> code tag (A10)
     guse,      \* accounts on a global contract: a partial function account -> identifier
-    gnonce     \* per identifier, the nonce of the last distribution applied (absent: 0)
+    gnonce,    \* per identifier, the nonce of the last distribution applied (absent: 0)
+    ofail      \* ghost: failed receipts the model marked owed or detached (OwedOK, DetachedVoided)
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
@@ -183,7 +184,7 @@ VARIABLES
 \* PlatformInitAccounts / PlatformInitClock / PlatformInitStorage) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+                  txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce, ofail>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
@@ -419,6 +420,33 @@ WithWeight(r, w) == [r EXCEPT !.gw = w]
 WithCall(r, s, w) == [r EXCEPT !.gs = s, !.gw = w]
 WithFee(r, f)    == [r EXCEPT !.gf = f]
 WithGas(r, p)    == [r EXCEPT !.g = <<p>>]       \* a transaction's first receipt: prepaid gas
+
+\* Owed and detached receipts (docs/SEMANTICS.md, F2).  A model marks the
+\* receipts whose failure is a bug in itself, and the library records each
+\* failure of a marked receipt, with its cause, in the ghost ofail (FailWhyL;
+\* OwedOK and DetachedVoided below check it).  Unmarked receipts leave
+\* ofail empty, so a model that marks nothing has the state space it had.
+\*  owed      a callback the contract scheduled to complete or undo a state
+\*            change an earlier receipt committed (a resolver, a rollback):
+\*            it must not fail, whatever the cause.  nearcore does not retry
+\*            or revert anything for it: a failed receipt reverts only its
+\*            own state (runtime/runtime/src/lib.rs:535-541, :1078-1088), so
+\*            the earlier commit stays and its completion is lost.
+\*            WithOwed(c) marks one child receipt; OwedMethods (overridable,
+\*            default {}) marks every postponed self-callback (r in post,
+\*            r.fr = r.to) whose method m or key "acct.m" it lists.  The
+\*            guard keeps a direct call of the same method (a user calling
+\*            a private resolver, which panics) out of the check.
+\*  detached  work the contract handed to a call (often one nothing waits
+\*            on: a payout Transfer, a job): if that call fails, the work
+\*            must not stay executable or credited once its transaction has
+\*            settled (DetachedVoided).  WithDetached(c) marks one receipt
+\*            of any kind (a Transfer too); DetachedMethods (overridable,
+\*            default {}) marks every function call with that method or key.
+WithOwed(r)     == [owed |-> TRUE] @@ r
+WithDetached(r) == [dtch |-> TRUE] @@ r
+OwedMethods     == {}
+DetachedMethods == {}
 
 \* Joint promise: promise_and(ks).then(c).  ks: the input receipts in
 \* promise_and order (built with any cb); c: the callback; d0: the first of
@@ -1508,6 +1536,28 @@ Verdict(r, O) ==
     ELSE IF ZeroGasMaybe(r, O) THEN "either"
     ELSE "ok"
 
+\* Why a receipt fails: Verdict's branches in Verdict's order, as nearcore's
+\* error name where there is one (F2).  "" when the verdict is "ok".
+FailWhy(r, O) ==
+    IF AcCall(r) /\ AcCallErr(r, O) # "" THEN AcCallErr(r, O)
+    ELSE IF ~CallTargetOK(r) THEN "AccountDoesNotExist, AccountNotInitialized or CodeDoesNotExist"
+    ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "out of gas before its panic" ELSE "panic: " \o O.err)
+    ELSE IF HostLimitErr(r, O) # "" THEN HostLimitErr(r, O)
+    ELSE IF ~GasOK(r, O) THEN "out of gas"
+    ELSE IF ZeroGasKid(r, O) THEN "FunctionCallZeroAttachedGas"
+    ELSE IF NewRcptLimitErr(O) THEN "NewReceiptValidationError: TotalNumberOfActionsExceeded"
+    ELSE IF ~Affordable(r, O) THEN "LackBalanceForState or BalanceExceeded"
+    ELSE IF ZeroGasMaybe(r, O) THEN "FunctionCallZeroAttachedGas (a share that may be 0 gas)"
+    ELSE ""
+\* The gas a receipt that ran out needed, for the report: Need, or the
+\* largest action's need under pa; 0 when it did not run out for gas.
+OogNeed(r, O) ==
+    IF GasMode # "gas" \/ O.err # "" \/ GasOK(r, O) THEN 0
+    ELSE IF PerAction(r, O)
+    THEN LET short == {k \in DOMAIN O.pa : ActGas(r, k) < ActNeed(O, k)}
+             k0 == CHOOSE k \in short : \A j \in short : k <= j IN ActNeed(O, k0)
+    ELSE Need(r, O)
+
 \* Outcome log (conformance).  st: "ok" | "fail" | "oog" | "forced"
 LogR(r, st) ==
     IF LogOn THEN rlog \cup {[tx |-> r.tx, id |-> r.id, m |-> r.m, to |-> r.to, st |-> st, g |-> GasOf(r)]}
@@ -1550,7 +1600,7 @@ CommitAc(r, O) ==
     /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
     /\ code' = CodeNext(r)
     /\ guse' = UsesNext(r)
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk, gcode, gnonce>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk, gcode, gnonce, ofail>>
 
 \* Commit: platform part.  The contract conjoins its own state update.
 Commit(r, O) ==
@@ -1563,11 +1613,25 @@ Commit(r, O) ==
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
     /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code, gcode, guse, gnonce>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code, gcode, guse, gnonce, ofail>>
+
+\* The kind of r's mark when it runs (F2): "owed", "detached" or "".
+MarkedIn(S, r) == r.m \in S \/ CallKey(r.to, r.m) \in S
+MarkOf(r) ==
+    IF \/ "owed" \in DOMAIN r /\ r.owed
+       \/ IsCall(r) /\ r.fr = r.to /\ MarkedIn(OwedMethods, r) /\ \E p \in post : p.id = r.id
+    THEN "owed"
+    ELSE IF \/ "dtch" \in DOMAIN r /\ r.dtch
+            \/ IsCall(r) /\ MarkedIn(DetachedMethods, r)
+    THEN "detached"
+    ELSE ""
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
-FailL(r, lbl) ==
+\* why: the cause, for ofail (FailWhy); need: the gas it needed when it ran
+\* out (OogNeed), else 0.  A marked receipt (MarkOf) is recorded in ofail
+\* as [tx, id, to, m, k (its mark), why, g (its attached gas), need, a].
+FailWhyL(r, lbl, why, need) ==
     /\ rq'   = RemR(r) \cup (IF DepTotal(r) > 0
                              THEN {Rcpt(nid, r.tx, r.rto, "system", REFND, r.a, DepTotal(r), r.rto, 0)}
                              ELSE {})
@@ -1577,7 +1641,12 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
+    /\ ofail' = LET k == MarkOf(r) IN
+                IF k = "" THEN ofail
+                ELSE ofail \cup {[tx |-> r.tx, id |-> r.id, to |-> r.to, m |-> r.m, k |-> k, why |-> why,
+                                  g |-> GasOf(r), need |-> need, a |-> r.a]}
     /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+FailL(r, lbl) == FailWhyL(r, lbl, lbl, 0)
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -1596,12 +1665,13 @@ Ok(r, O) ==
     IF v = "either" THEN Committed(r, O) ELSE v = "ok"
 Exec(r, O) ==
     LET v == Verdict(r, O) IN
-    IF v = "ok" THEN Commit(r, O) ELSE IF v = "oog" THEN FailOOG(r)
-    ELSE IF v = "either" THEN Commit(r, O) \/ FailP(r, FALSE)
-    ELSE FailP(r, FALSE)
+    IF v = "ok" THEN Commit(r, O)
+    ELSE IF v = "oog" THEN FailWhyL(r, "oog", FailWhy(r, O), OogNeed(r, O))
+    ELSE IF v = "either" THEN Commit(r, O) \/ FailWhyL(r, "fail", FailWhy(r, O), 0)
+    ELSE FailWhyL(r, "fail", FailWhy(r, O), 0)
 
 \* The forced-fault switch as one step (the contract conjoins UNCHANGED of its vars).
-ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailP(r, TRUE)
+ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailWhyL(r, "forced", "forced fault (MayFail)", 0)
 
 ----------------------------------------------------------------------------
 (* Built-in receipt execution (no contract code; no gas of their own).     *)
@@ -1630,7 +1700,7 @@ ExecTransfer(r) ==
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
     /\ deleted' = IF AcctExists(r.to) THEN deleted ELSE deleted \ {r.to}
     /\ stor' = IF StoragePerByte /\ ~AcctExists(r.to) THEN [stor EXCEPT ![r.to] = CreatedBytes(r.to)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk, code, gcode, guse, gnonce>>
+    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk, code, gcode, guse, gnonce, ofail>>
 
 \* A refund to a missing account fails and its amount is burnt
 \* (lib.rs:1046-1054); refunds never create accounts (actions.rs:930-933).
@@ -1640,14 +1710,14 @@ RefundBurn(r) ==
     /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
     /\ burnt' = burnt + r.dep
     /\ rlog'  = LogR(r, "fail")
-    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted, code, gcode, guse, gnonce>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted, code, gcode, guse, gnonce, ofail>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
 \* sees Failed.  A refund to a missing account is burnt.
 ExecTransferFail(r) ==
     /\ ~AcctExists(r.to)
-    /\ \/ r.m = XFER /\ ~IsImplicit(r.to) /\ FailP(r, FALSE)
+    /\ \/ r.m = XFER /\ ~IsImplicit(r.to) /\ FailWhyL(r, "fail", "AccountDoesNotExist", 0)
        \/ r.m = REFND /\ BurnLostRefunds /\ RefundBurn(r)
 
 \* Stake action (actions.rs:58-109): the account must exist
@@ -1676,7 +1746,7 @@ ExecStake(r) ==
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce, ofail>>
 
 \* A global contract's distribution receipt (A10): it publishes its code
 \* under its identifier unless a later deploy's distribution got there
@@ -1698,7 +1768,7 @@ ExecGDist(r) ==
        /\ gcode'  = IF fresh THEN (g :> r.a.t) @@ gcode ELSE gcode
        /\ gnonce' = IF fresh THEN (g :> r.id) @@ gnonce ELSE gnonce
     /\ UNCHANGED <<post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                   txsig, created, burnt, blk, stor, deleted, code, guse>>
+                   txsig, created, burnt, blk, stor, deleted, code, guse, ofail>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
 ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r) \/ ExecGDist(r)
@@ -1706,7 +1776,8 @@ ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r) \/ Exec
 \* A function call whose receiver is missing or has no code fails before
 \* any contract code runs.  Exec does this already (Verdict); this step lets
 \* a dispatcher handle such receipts without calling a handler.
-ExecNoCode(r) == IsCall(r) /\ ~CallTargetOK(r) /\ FailP(r, FALSE)
+ExecNoCode(r) == IsCall(r) /\ ~CallTargetOK(r)
+                 /\ FailWhyL(r, "fail", "AccountDoesNotExist, AccountNotInitialized or CodeDoesNotExist", 0)
 
 ----------------------------------------------------------------------------
 (* Account lifecycle, continued: ACCOUNT receipts (ExecAcct).            *)
@@ -1761,7 +1832,7 @@ ExecAcctWith(r, kb, kok) ==
             /\ stor' = IF ~StoragePerByte THEN stor
                        ELSE [stor EXCEPT ![a] = IF b # "" THEN 0 ELSE AcctBytes(r, kb)]
             /\ code' = CodeNext(r)
-            /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, blk, gnonce>>
+            /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, blk, gnonce, ofail>>
        ELSE FailP(r, FALSE)
 \* Without key actions (NearKeys.ExecAcctK runs them).
 ExecAcct(r) ==
@@ -1791,7 +1862,7 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce, ofail>>
 
 \* Block clock: one block passes (the model adds BlockTick /\ UNCHANGED of its
 \* own variables to Next).  Every receipt that runs at one value of blk sees
@@ -1805,7 +1876,7 @@ BlockTick ==
     /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
     /\ blk' = blk + 1
     /\ UNCHANGED <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog,
-                   rlog, txsig, created, burnt, stor, deleted, code, gcode, guse, gnonce>>
+                   rlog, txsig, created, burnt, stor, deleted, code, gcode, guse, gnonce, ofail>>
 BlockTs == TsOf(blk)
 
 ----------------------------------------------------------------------------
@@ -1838,7 +1909,7 @@ SubmitAs(r, a, k) ==
     /\ near'  = [near EXCEPT ![a] = @ - DepTotal(r)]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce, ofail>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
@@ -1889,20 +1960,23 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode] /\ blk = 0
     /\ gcode = InitGCode /\ guse = InitUses /\ gnonce = [g \in {} |-> 0]
     /\ stor = StorageInit /\ StorageInitOK(near0, locked0)
+    /\ ofail = {}
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
 \* Only the variables added in 0.1.0 and 0.2, for models that initialise the
 \* others themselves.  The parts compose: a model with its own txsig
 \* initialiser (e.g. a pre-sized function) conjoins PlatformInitAccounts,
-\* PlatformInitClock and PlatformInitStorage alone.  PlatformInitStorage
-\* does not check the initial cover: list StorageCovered as an invariant.
+\* PlatformInitClock, PlatformInitStorage and PlatformInitOwed alone.
+\* PlatformInitStorage does not check the initial cover: list
+\* StorageCovered as an invariant.
 PlatformInitSigner   == txsig = <<>>
 PlatformInitAccounts == created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode]
                         /\ gcode = InitGCode /\ guse = InitUses /\ gnonce = [g \in {} |-> 0]
 PlatformInitClock    == blk = 0
 PlatformInitStorage  == stor = StorageInit
+PlatformInitOwed     == ofail = {}
 PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock
-                        /\ PlatformInitStorage
+                        /\ PlatformInitStorage /\ PlatformInitOwed
 
 ----------------------------------------------------------------------------
 (* Platform sanity                                                         *)
@@ -1930,6 +2004,23 @@ NoOrphans ==
 \* hand-written Init, or steps of the model's own that move NEAR.
 StorageCovered ==
     IF StoragePerByte THEN \A a \in Accounts : StorageCovers(near[a] + LockedOf(a), stor[a]) ELSE TRUE
+
+\* Owed and detached receipts (F2; WithOwed, OwedMethods, WithDetached,
+\* DetachedMethods).  OwedOK: no owed callback has failed.  A violation's
+\* last state shows the failure in ofail: which receipt (tx, id, to, m),
+\* why (FailWhy: a panic and its message, "out of gas" with the gas it had
+\* (g) and needed (need), a host limit such as NumberOfLogsExceeded or
+\* ReturnedValueLengthExceeded, a forced fault, ...).  OwedFailed lists
+\* them, e.g. for a print-only window.
+OwedFailed == {x \in ofail : x.k = "owed"}
+OwedOK     == OwedFailed = {}
+\* DetachedVoided(Voided(_)): once the transaction of a failed detached
+\* receipt x has settled, Voided(x) holds: the model's own predicate that
+\* the work x carried (read it from x.a, x.to, x.m) is neither executable
+\* again nor counted as done or credited.  Before the transaction settles
+\* a callback may still void it (the escrow that restores its claim).
+DetachedFailed == {x \in ofail : x.k = "detached"}
+DetachedVoided(Voided(_)) == \A x \in DetachedFailed : TxSettled(x.tx) => Voided(x)
 
 \* No pending yield's deadline lies past the clock bound.  When this fails,
 \* some yield could time out before its deadline (at blk = MaxBlk, see

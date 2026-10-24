@@ -353,7 +353,7 @@ ExecKeyAct(r, k, p) ==
                /\ rlog' = LogR(r, "ok")
                /\ stor' = IF StoragePerByte THEN [stor EXCEPT ![r.to] = @ + KeyActBytes(r, k, p)] ELSE stor
                /\ UNCHANGED <<locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created,
-                              burnt, blk, deleted, code, gcode, guse, gnonce, sigpaid>>
+                              burnt, blk, deleted, code, gcode, guse, gnonce, ofail, sigpaid>>
           ELSE FailP(r, FALSE) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
@@ -430,7 +430,7 @@ OkK(r, O)   == OkWithKeys(r, AcKeyActs(r), O)
 \* Exec already fails such calls (NearAsync CallTargetOK); this is the same
 \* rule as an explicit step for dispatchers.  The code is the one the call
 \* sees (CodeSeen): after the receipt's CreateAccount and DeployContract.
-FailNoCode(r) == IsCall(r) /\ ~CodeSeen(r) /\ FailP(r, FALSE)
+FailNoCode(r) == IsCall(r) /\ ~CodeSeen(r) /\ FailWhyL(r, "fail", "CodeDoesNotExist", 0)
 
 ----------------------------------------------------------------------------
 (* Accounts: key actions in an ACCOUNT receipt, deletion, implicit keys    *)
@@ -590,7 +590,7 @@ ExecDelegate(r) ==
              /\ keys' = IF r.to \in KeyAccts THEN KeysWithNonce(r.to, sd.k, sd.n) ELSE keys
              /\ rlog' = LogR(r, "ok")
              /\ UNCHANGED <<near, locked, proposal, epoch, fails, paid, minted, oog, txsig, created,
-                            burnt, blk, stor, deleted, code, gcode, guse, gnonce, sigpaid>>
+                            burnt, blk, stor, deleted, code, gcode, guse, gnonce, ofail, sigpaid>>
           \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
              /\ FailP(r, FALSE)
              /\ UNCHANGED keyVars

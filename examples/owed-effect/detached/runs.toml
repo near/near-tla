@@ -1,0 +1,101 @@
+# Detached work: a payout handed to a Transfer that fails must not stay done.  See Payout.tla.
+#
+#   python3 tools/run.py examples/owed-effect/detached
+#
+# PayVoided  DetachedVoided(Undone): a failed payout's item is open again once settled.
+# Funded     once settled, P holds its own NEAR, plus the payment while the item is open.
+# Sane       NEAR conserved, no orphans.
+
+spec = "Payout"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["PayVoided", "Funded", "Sane"]
+tags = ["semantics:owed-effect"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"p"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+Contracts = "PCode"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+WithCb = "TRUE"
+
+# on_paid reopens the item when the Transfer failed.
+[[run]]
+name = "payout_cb"
+expect = "pass"
+
+# No callback: B deletes itself before the Transfer lands; the NEAR returns to P and the
+# item stays done.
+[[run]]
+name = "payout_detached"
+expect = "violation"
+invariant = "PayVoided"
+[run.constants]
+WithCb = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/owed-effect/detached --anti-vacuity ----
+
+# Funded's antecedent: the system settles after a payout.
+[[witness]]
+id = "settles_after_pay"
+expr = '~(Idle /\ "pay1" \in sent)'
+
+# DetachedVoided's antecedent: a detached payout failed and its transaction settled.
+[[witness]]
+id = "detached_payout_failed"
+expr = '~(\E x \in DetachedFailed : TxSettled(x.tx))'
+
+# on_paid's two arms.
+[[witness]]
+id = "on_paid_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ ~IsFailed(r.res))'
+
+[[witness]]
+id = "on_paid_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_paid" /\ IsFailed(r.res))'
+
+# A second pay (transaction 2) after the first payout failed and its item was reopened.
+[[witness]]
+id = "paid_again"
+expr = '~(\E d \in done : d = <<Item, 2>>) \/ ~(\E x \in DetachedFailed : x.tx = 1)'
+
+[[mutant]]
+id = "reopen_skipped"
+file = "Payout.tla"
+find = 'd |-> IF IsFailed(r.res) THEN done \ {<<r.a.k, r.a.t>>} ELSE done'
+replace = 'd |-> done'
+class = "failure branch skips rollback"
+killed_by = ["PayVoided"]
+
+[[mutant]]
+id = "reopen_inverted"
+file = "Payout.tla"
+find = 'd |-> IF IsFailed(r.res) THEN done \ {<<r.a.k, r.a.t>>} ELSE done'
+replace = 'd |-> IF ~IsFailed(r.res) THEN done \ {<<r.a.k, r.a.t>>} ELSE done'
+class = "inverted result check"
+
+[[mutant]]
+id = "dropped_then"
+file = "Payout.tla"
+find = 'Outcome({pay}, {cb}, RVal(EMPTY), 1, 2)'
+replace = 'Outcome({pay}, {}, RVal(EMPTY), 1, 2)'
+class = "dropped .then"
+
+[[mutant]]
+id = "paid_twice"
+file = "Payout.tla"
+find = 'IF Paid THEN [O |-> OErr(Out0, "already paid"), d |-> done]'
+replace = 'IF FALSE THEN [O |-> OErr(Out0, "already paid"), d |-> done]'
+class = "removed precondition"

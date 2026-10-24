@@ -2156,6 +2156,48 @@ is available locally.
 - **Validated:** gas mode: sim as far as G1-G5 are (every flow runs the model in gas mode).
   <!-- conformance --> Fault mode is an abstraction by design and has no sim counterpart.
 
+### F2. Owed callbacks and detached work
+
+- **Rule (model-only check over R4, C1, C2):** a failed receipt reverts only its own state
+  and receipts (R4); nothing in nearcore retries it or undoes the receipts before it. So two
+  shapes of contract code are bugs whenever the receipt can fail, whatever the cause:
+  - **an owed callback**, one the contract scheduled to complete or undo a state change an
+    earlier receipt committed (a resolver that refunds, a callback that credits back on
+    `Failed`). If it fails, the earlier commit stays and its completion is lost.
+  - **detached work**, work the contract handed to a call (a payout Transfer, a job call). If
+    that call fails, the work must not stay executable or counted as done or credited once
+    the transaction settles; only a callback of the contract's own can void it, and a call
+    nothing waits on has none.
+- **nearcore:** `runtime/runtime/src/lib.rs:535-541` (`set_error`), `:1078-1088` (the
+  failing receipt's state and new receipts are dropped, nothing else), as in R4.
+- **Model:** the model marks receipts: `WithOwed(c)` or `OwedMethods` (keys `"method"` or
+  `"acct.method"`; only for a postponed self-callback, `r.fr = r.to` and `r` in `post`, so a
+  direct call of a private resolver that panics is not reported), and `WithDetached(c)`
+  (any receipt kind, a Transfer too) or `DetachedMethods`. Every failure of a marked receipt
+  goes into the ghost `ofail` as `[tx, id, to, m, k, why, g, need, a]`: `k` is `"owed"` or
+  `"detached"`, `why` the cause (`FailWhy`, in `Verdict`'s order: an account-action error
+  name, a missing account or code, `"panic: "` and the handler's message, `"out of gas before
+  its panic"`, a host limit such as `NumberOfLogsExceeded`, `TotalLogLengthExceeded`,
+  `ReturnedValueLengthExceeded` or `NumberPromisesExceeded`, `"out of gas"`,
+  `FunctionCallZeroAttachedGas`, the new-receipt action limit, `LackBalanceForState`;
+  `"forced fault (MayFail)"`; `AccountDoesNotExist` for a Transfer), `g` its attached gas and
+  `need` what it needed when it ran out (`OogNeed`). Checks: `OwedOK` (no owed failure;
+  `OwedFailed` lists them) and `DetachedVoided(Voided(_))`: once a failed detached receipt's
+  transaction has settled (`TxSettled`), the model's own `Voided(x)` holds. `Voided` should
+  name the work instance (a ticket in `x.a`), not just the item: after a void a second,
+  legitimate attempt may mark the item done again. `FailWhyL(r, lbl, why, need)` is the
+  failure step with a cause; `FailL`, `FailP` and `FailOOG` keep their meaning (`why` is
+  then the label). Nothing is recorded for unmarked receipts, so a model that marks nothing
+  has the state space it had.
+
+  The NEP-141 resolver is owed by default: `Nep141.FtTransferCallAct` marks
+  `ft_resolve_transfer` (`TokOwedResolve`, default `TRUE`; `FALSE` leaves it unmarked).
+  NEP-245's `mt_resolve_transfer` is not marked yet.
+- **Validated:** model-only (a check over rules validated elsewhere). `examples/owed-effect`
+  reaches each cause the check names in a toy vault (a panic, the log and return limits, a
+  forced fault, out of gas with its gas and need) and the detached form in a payout without a
+  callback; `examples/nep141-refund-cap`, `refund_cap_resolver_fails`, a failing resolver.
+
 ---
 
 ## Not modelled

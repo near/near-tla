@@ -175,3 +175,16 @@ find = 'sReg   == s \in L.reg'
 replace = 'sReg   == FALSE'
 class = "wrong refund account"
 runs = ["refund_cap_std"]
+
+# The resolver is owed by default (Nep141 TokOwedResolve): when it fails, U's refund is
+# lost and nothing retries it.  OwedOK names it (m "ft_resolve_transfer", why "forced
+# fault (MayFail)") without an invariant of the model's own.
+[[run]]
+name = "refund_cap_resolver_fails"
+expect = "violation"
+invariant = "OwedOK"
+invariants = ["OwedOK", "RefundCapped", "Sane"]
+expect_output = 'm \|-> "ft_resolve_transfer".*why \|-> "forced fault \(MayFail\)"'
+[run.constants]
+MayFail = '{"ft_resolve_transfer"}'
+MaxFails = "1"

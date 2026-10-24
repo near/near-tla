@@ -21,8 +21,8 @@ near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 Each entry ends with its migration.
 
 **New platform variables, in one place.** Since the pre-release module set `NearAsync` has
-gained `txsig`, `created`, `burnt`, `blk`, `stor`, `deleted`, `code`, `gcode`, `guse` and
-`gnonce` (each has its own entry below). A model that initialises the platform with
+gained `txsig`, `created`, `burnt`, `blk`, `stor`, `deleted`, `code`, `gcode`, `guse`,
+`gnonce` and `ofail` (each has its own entry below; `PlatformInitOwed` initialises `ofail`). A model that initialises the platform with
 `PlatformInit` / `PlatformInitStaked`, or conjoins `PlatformInitExtra` to its own `Init`, and
 writes `UNCHANGED platformVars` and `vars == <<platformVars, ...>>`, needs no change for any of
 them. A model that lists platform variables one by one must add each.
@@ -505,6 +505,20 @@ them. A model that lists platform variables one by one must add each.
   `from = "arg_count:<field>"`, an array argument's length. `examples/mt-batch` has a
   gas-mode run on the table (`mt_batch_gas_std`: the 30 Tgas floor, `FloorHolds`). The
   existing sets, sweeps and tables are unchanged.
+- **Owed callbacks and detached work** (SEMANTICS F2; `examples/owed-effect`): a model marks
+  a callback that completes or undoes an earlier commit as owed (`WithOwed(c)`, or
+  `OwedMethods` for postponed self-callbacks by method), and work handed to a call as detached
+  (`WithDetached(c)`, `DetachedMethods`). Every failure of a marked receipt is recorded in the
+  new ghost platform variable `ofail` with its cause (`why`: a panic and its message, out of
+  gas with the attached gas and the need, a host limit by nearcore's error name, a forced
+  fault, ...). Checks: `OwedOK` (no owed failure; `OwedFailed` lists them) and
+  `DetachedVoided(Voided(_))` (once a failed detached receipt's transaction settles, the
+  model's `Voided` holds). `FailWhyL(r, lbl, why, need)` is the failure step with a cause;
+  `Exec`, `ForcedFail`, `ExecNoCode`, `ExecTransferFail` and `NearKeys.FailNoCode` pass one.
+  The NEP-141 resolver is owed by default (`Nep141.TokOwedResolve == TRUE`). A model that
+  marks nothing, and every token model whose resolver never fails, keeps its state space:
+  every example run kept its verdict and state counts. Migration for a model that lists
+  platform variables one by one: add `ofail` (initially `{}`).
 - **Access-key allowances** (SEMANTICS K2, N-allowance; `examples/session-key`), opt-in:
   `WithAllowance(perm, n)` gives a function-call key an allowance. `SubmitSigned` refuses a
   transaction that costs more (`AllowanceOK`; an allowance equal to the cost is enough, as
