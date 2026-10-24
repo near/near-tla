@@ -741,10 +741,10 @@ Each rule has four fields:
   (`AcctErr`, then `AcctStorOK`). Toy ids carry no structure, so the model states it:
   `AcctParent` (overridable; `Parents({<<child, parent>>, ...})`, default every account
   top-level) and `TopCreator` (the `registrar_account_id`, overridable) (N-acct-ids). The
-  receipt's `gf` is its whole send + exec fee, the reservation (`AcctFee`). An ACCOUNT receipt never creates an
-  implicit account: a batched Transfer to an absent id fails (A4; N-universal). Calls in the
-  same receipt as account actions (a factory's `[CreateAccount, Transfer, AddKey,
-  FunctionCall(init)]`) and DeployContract are not modelled (N-deploy).
+  receipt's `gf` is its whole send + exec fee, the reservation (`AcctFee`). An ACCOUNT receipt
+  never creates an implicit account: a batched Transfer to an absent id fails (A4;
+  N-universal). A call receipt can carry a CreateAccount too, the factory batch (A8);
+  DeployContract is not modelled (N-deploy).
 - **Validated:** sim (`conformance/tests/lifecycle.rs`: `create_account_rules`,
   `create_batch_atomic`, with the early-failure burn, `account_action_fees`);
   `examples/platform-selftest` (the `acct_` scenarios).
@@ -782,7 +782,7 @@ Each rule has four fields:
   (`remove_account`); refund burn `runtime/runtime/src/lib.rs:1046-1054`; signer
   `runtime/runtime/src/verifier.rs:170-175`.
 - **Model:** `DeleteAcctRcpt(id, tx, acct, a, b, cb)` (or `WithDeleteTo(r, b)` on an ACCOUNT
-  receipt), run by `ExecAcct` / `NearKeys.ExecAcctK`. On success the account joins the
+  receipt or, after its call, on a call receipt, A8; a second DeleteAccount is an Assert), run by `ExecAcct` / `NearKeys.ExecAcctK`. On success the account joins the
   platform variable `deleted` (a later creation removes it again); `near` and `stor` become 0,
   `NearKeys` clears its keys, and a `REFND` receipt from `"system"` carries the payout
   (`ExecTransfer` credits a present beneficiary, `RefundBurn` burns it otherwise).
@@ -795,6 +795,54 @@ Each rule has four fields:
   `recreate_clears_keys_and_data`, `delete_leaves_postponed_callback`,
   `delete_leaves_received_data`, `delete_leaves_yield`); `examples/platform-selftest` (the
   `del_`, `recreate` and `stale_cb_recreate` scenarios); `examples/account-lifecycle`.
+
+### A8. Account actions in a call receipt
+
+- **Rule:** A receipt may hold account actions and function calls together: a factory sends
+  `[CreateAccount, Transfer, AddKey?, FunctionCall(init)]` to the new account, and a contract
+  may end a call to itself with `DeleteAccount`. The actions run in order, each checked as in
+  A6 and A7, so a failing CreateAccount or AddKey stops the receipt before the call starts,
+  and the DeleteAccount's checks (actor, staking, 10,000 bytes) see the state the call left.
+  The call runs on the account the earlier actions left: after a CreateAccount that is a new
+  account with **no code**, so `init` fails (`CodeDoesNotExist`) unless the batch deploys code
+  first (DeployContract, not modelled). The receipt is atomic (A6): a failure anywhere reverts
+  all of it and the deposit goes back to the predecessor, the factory. The storage check runs
+  once, after all actions, and is skipped if the receipt deleted the account. The receipt's
+  result is its **last action's**: after a `DeleteAccount` that is empty bytes, whatever the
+  call returned; a returned promise is then not the result either.
+- **nearcore:** `runtime/runtime/src/lib.rs:946-1005` (the actions in order, the loop stops at
+  the first failure, `:1001-1003`), `:507-513` (`ActionResult::merge` keeps the last action's
+  result), `:1172-1175` (a result other than a value or a promise gives the callback empty
+  bytes), `:1245` (`ReturnData::None` is `SuccessValue([])`), `:1008-1031` (the storage check,
+  skipped at `:1010`); `runtime/runtime/src/actions.rs:202-208` (the new account has no code);
+  `runtime/runtime/src/verifier.rs:213-217` (a function-call key signs one FunctionCall only).
+- **Model:** `WithCreate(r)` puts a CreateAccount (and, if `r.dep > 0`, a Transfer of `r.dep`)
+  before the call of a call receipt `r`; `WithDeleteTo(r, b)` puts a DeleteAccount after it;
+  `NearKeys.WithAcctKeys` adds key actions. Such a receipt has the `ac` field (`HasAc`,
+  `AcCall`) and is run by `Exec` (with key actions by `NearKeys.ExecK`, read with `OkK`; plain
+  `Exec` asserts on key actions). `r.dep` is the batch's whole deposit, credited at once; a
+  handler that reads it sees the Transfer's amount. `Verdict` gets a first branch: the
+  account actions' checks (`AcCallErr`, which is `AcctErr` with the call's and the keys' bytes
+  for the delete's large-state check) fail the receipt before anything else; then
+  `CallTargetOK` on the account after the create (no code: the call fails unless
+  `CallsNeedCode <- FALSE`, also when the id was deleted before); then the usual order. This
+  branch is deterministic, so it never yields "either", and `Ok` / `Committed` read the commit
+  as before (a delete's payout is not one of the call's children). `Affordable`
+  (`AcAffordable`): a new account starts at 0 balance and 100 bytes, plus the keys' and the
+  call's bytes, and the storage half is skipped when the receipt deletes the account.
+  `Commit` (`CommitAc`) applies the call's effects and the account actions' together: the new
+  account joins `created` with the deposit and bytes, a deleted one joins `deleted` with its
+  payout as a `REFND` receipt after the call's children, and the callback gets empty bytes
+  after a DeleteAccount (a call that returns a promise there is an Assert). `gf`: the call's
+  fee (`GasCall`, the receipt base included) plus the account actions' send and exec fees
+  (`AcctActsFee`, and the key actions'); a calibrated burn for such a flow must leave those
+  out. A function-call key cannot sign a transaction with account actions (`KeyCanSign`).
+  A `[FunctionCall, DeleteAccount]` receipt is not instant (S5).
+- **Validated:** sim (`conformance/tests/lifecycle.rs`, `call_then_delete_result`: `[get,
+  DeleteAccount]` returns empty bytes where `get` alone returns the value);
+  `examples/platform-selftest` (`selftest_accall`, `selftest_accall_code_off`,
+  `selftest_accall_storage`, and `acct_fee` in `selftest_lifecycle_gas`);
+  `examples/account-lifecycle/factory`.
 
 ---
 
@@ -1836,7 +1884,13 @@ against the current module code; some may be fixed in the modules later.
   `GasKeyBalanceTooHigh` refusal and its burn of the gas keys' balance
   (`runtime/runtime/src/actions.rs:370-379`, `:388-391`).
 - **N-deploy. DeployContract and code upgrades mid-flow.** Code is the TLA+ handler; it does
-  not change during a run.
+  not change during a run. An account created at run time has no code (A5, A6), so a
+  factory's `[CreateAccount, Transfer, FunctionCall(init)]` (A8) always fails at `init`, where
+  in nearcore a `DeployContract` before it would give the account code. To model a factory
+  whose child runs code, set `CallsNeedCode <- FALSE` (every account is then taken to have
+  code, so calls to accounts without code are no longer refused anywhere;
+  `examples/account-lifecycle/factory`). Deploying (a code variable, storage deltas, the
+  deploy fees) is planned.
 - **N-compute. Compute costs versus gas.** Some actions charge more compute than gas (for
   example deploy, `core/parameters/res/runtime_configs/84.yaml`). This affects chunk packing,
   that is timing only, which the free ordering covers with the local-priority switch OFF.

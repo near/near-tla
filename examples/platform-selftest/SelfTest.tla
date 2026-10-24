@@ -191,6 +191,22 @@ H(r) ==
     [] r.m = "mkacct" ->    \* CreateAccount a.to with a.amt NEAR (a factory), then self.cb
          [O |-> Outcome({CreateAcctRcpt(nid, r.tx, a.to, r.to, G0, a.amt, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
+    [] r.m = "mkinit" ->    \* the factory batch [CreateAccount, Transfer(a.amt), AddKey(a.key)?,
+                            \* FunctionCall(init), DeleteAccount(a.rto)?] on a.to, init adding
+                            \* a.cd bytes; then self.cb
+         LET c0 == WithCreate(Rcpt(nid, r.tx, a.to, r.to, "init", G("", "", "", a.cd, 0, "", ""), a.amt, r.to, nid + 1))
+             c1 == IF a.key = "" THEN c0 ELSE WithAcctKeys(c0, <<AddKeyAct(a.key, PermOf(a.key))>>)
+             c  == IF a.rto = "" THEN c1 ELSE WithDeleteTo(c1, a.rto) IN
+         [O |-> Outcome({c}, {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
+    [] r.m = "init" ->      \* the new account's init: adds a.amt bytes, returns 7
+         [O |-> OStor(Outcome({}, {}, RVal(7), 0, 0), a.amt), s |-> {Sn(r, "init", 1)}]
+    [] r.m = "closecall" -> \* [FunctionCall(last), DeleteAccount(u)] on a.to (c itself, or not)
+         [O |-> Outcome({WithDeleteTo(Rcpt(nid, r.tx, a.to, r.to, "last", G("", "", "", a.amt, a.cd, "", ""), 0, r.to, 0), U)},
+                        {}, RVal(0), 0, 1), s |-> {}]
+    [] r.m = "last" ->      \* sends a.amt to u and adds a.cd bytes, before the delete
+         [O |-> OStor(Outcome(IF a.amt > 0 THEN {Rcpt(nid, r.tx, U, r.to, XFER, G0, a.amt, r.to, 0)} ELSE {},
+                              {}, RVal(0), a.amt, IF a.amt > 0 THEN 1 ELSE 0), a.cd),
+          s |-> {Sn(r, "last", 1)}]
     [] r.m = "bye" ->       \* c closes: DeleteAccount(c -> u), instant, and d.relay(c.probe)
          [O |-> Outcome({DeleteAcctRcpt(nid, r.tx, r.to, G0, U, 0),
                          Rcpt(nid + 1, r.tx, D, r.to, "relay", G("", "", r.to, 0, 0, "", ""), 0, r.to, 0)},
@@ -330,6 +346,14 @@ RunAcct(r) == /\ ExecAcctK(r)
               /\ seen' = IF IsInstant(r) THEN seen \cup {Sn(r, "inst", 1)} ELSE seen
               /\ UNCHANGED <<tk, scn, ntx, acc, ran>>
 
+\* A call receipt with account actions (A8): with its key actions (ExecK, OkK).
+RunAcC(r) ==
+    LET h == H(r)  O == h.O IN
+    /\ ExecK(r, O)
+    /\ ran'  = IF OkK(r, O) THEN ran \cup {<<r.tx, r.to, r.m>>} ELSE ran
+    /\ seen' = IF OkK(r, O) THEN seen \cup h.s ELSE seen
+    /\ UNCHANGED <<tk, scn, ntx, acc>>
+
 RunTok(r) == \E ch \in TokChoices(r) : TokStep(r, TokHandle(r, ch)) /\ UNCHANGED <<keyVars, mine>>
 RunKey(r) == ExecKeyAct(r, Ar(r).key, PermOf(Ar(r).key)) /\ UNCHANGED <<tk, mine>>
 
@@ -340,6 +364,7 @@ Run == \E r \in Runnable :
          ELSE IF IsAcctRcpt(r) THEN RunAcct(r)
          ELSE IF IsTokRcpt(r) THEN RunTok(r)
          ELSE IF r.m = "kbundle" THEN RunBundle(r)
+         ELSE IF HasAc(r) THEN RunAcC(r)
          ELSE RunC(r)
 
 ----------------------------------------------------------------------------
@@ -559,6 +584,21 @@ Script(s) ==
     [] s = "instant_deleg_local" -> << Dl(D, "k0", D, "k0", 1, NoExpiry, D, ACCT, 0) >>
     [] s = "instant_tx"       -> << Ac(W, W, FALSE, 0, U, <<>>) >>
     [] s = "del_large"        -> << Ac(W, W, FALSE, 0, U, <<>>), Ac(V, V, FALSE, 0, U, <<>>) >>
+    \* Call receipts with account actions (A8).  c is s.c's parent.
+    [] s = "accall_nocode"    -> << Tx(C, U, "mkinit", G("", "", SB, 2, 0, "", ""), 0) >>
+    [] s = "accall_delete"    -> << Tx(C, U, "closecall", G("", "", C, 0, 0, "", ""), 0) >>
+    [] s = "accall_actor"     -> << Tx(C, U, "closecall", G("", "", D, 0, 0, "", ""), 0) >>
+    [] s = "accall_init"      -> << Tx(C, U, "mkinit", G("", "", SB, 2, 0, "", "k0"), 0) >>
+    [] s = "accall_exists"    -> << Ac(SB, C, TRUE, 1, "", <<>>),
+                                    Tx(C, U, "mkinit", G("", "", SB, 2, 0, "", ""), 0) >>
+    [] s = "accall_recreate"  -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>),
+                                    Ac(SB, SB, FALSE, 0, C, <<>>),
+                                    Tx(C, U, "mkinit", G("", "", SB, 2, 0, "", ""), 0) >>
+    [] s = "accall_create_del"-> << Tx(C, U, "mkinit", G("", "", SB, 2, 0, C, ""), 0) >>
+    [] s = "accall_not_parent"-> << Tx(D, U, "mkinit", G("", "", SB, 0, 0, "", ""), 0) >>
+    [] s = "accall_bytes"     -> << Tx(C, U, "mkinit", G("", "", SB, 1, 0, "", "k0"), 0) >>
+    [] s = "accall_lackstate" -> << Tx(C, U, "mkinit", G("", "", SB, 0, 1000, "", ""), 0) >>
+    [] s = "accall_del_stor"  -> << Tx(C, U, "closecall", G("", "", C, 4, 5000, "", ""), 0) >>
     \* Without UniversalOn (protocol < 87) 0u1 is a named top-level id.
     [] s = "universal_off"    -> << Ac(UA, W, TRUE, 2, "", <<AddK("k0")>>),             \* w creates it
                                     Ac(UA, UA, FALSE, 0, "", <<AddK("k1")>>),            \* a key action
@@ -950,10 +990,19 @@ Expect(s) ==
          \* AddKey(full)] costs what a NEAR-implicit Transfer costs; [DeleteAccount] 218 + 296.
          \* config.rs:98-108, :143
          LET r1 == WithAcctKeys(CreateAcctRcpt(0, 0, SB, C, G0, 1, 0), <<AddKeyAct("k0", FullPerm)>>)
-             r2 == DeleteAcctRcpt(0, 0, W, G0, U, 0) IN
+             r2 == DeleteAcctRcpt(0, 0, W, G0, U, 0)
+             \* A8: a call receipt's account actions add their send + exec fees to the call's.
+             c0 == Rcpt(0, 0, SB, C, "init", G0, 1, C, 0)
+             c1 == WithCreate(c0)
+             c2 == WithDeleteTo(Rcpt(0, 0, C, C, "last", G0, 0, C, 0), U) IN
          GasMode = "gas" =>
            /\ r1.gf = NearFeeTable!TransferFeeTotal(FALSE, "near_implicit")
-           /\ NearFeeTable!FeeRounding = "up" => r1.gf = 8354 /\ r2.gf = 514
+           /\ c1.gf = c0.gf + NearFeeTable!ActionFee("create_account", FALSE, "named")
+                             + NearFeeTable!ActionFee("transfer", FALSE, "named")
+           /\ NearFeeTable!FeeRounding = "up" =>
+                /\ r1.gf = 8354 /\ r2.gf = 514
+                /\ c1.gf - c0.gf = 7700 + NearFeeTable!ActionFee("transfer", FALSE, "named")
+                /\ c2.gf - Rcpt(0, 0, C, C, "last", G0, 0, C, 0).gf = 296
     [] s = "del_beneficiary" ->   \* only the account deletes itself; its balance goes to the
          \* beneficiary in a later receipt.  actions.rs:776-783, :380-386
          deleted = {W} /\ near[W] = 0 /\ near[U] = 20 /\ near[C] = 5 /\ burnt = 0
@@ -983,6 +1032,43 @@ Expect(s) ==
          \* core/store/src/utils/mod.rs:504-575; ext.rs:406-428
          deleted = {} /\ EA \in created /\ near[EA] = 1 /\ post = {}
          /\ S1("ycb", 5) \in seen /\ S(4, "ans", 1) \in seen
+    \* Call receipts with account actions (docs/SEMANTICS.md A8).
+    [] s = "accall_nocode" ->     \* [CreateAccount, Transfer, FunctionCall(init)]: the new account has
+         \* no code, so init fails and the batch with it; the deposit goes back to c, the callback
+         \* sees Failed.  actions.rs:202-208; function_call.rs:309-312; lib.rs:946-1005
+         created = {} /\ near[C] = 5 /\ S1("fail", 0) \in seen /\ <<1, SB, "init">> \notin ran
+    [] s = "accall_delete" ->     \* [FunctionCall, DeleteAccount] on c by c: the call runs, then the
+         \* delete; the payout to u.  actions.rs:776-783, :380-386
+         deleted = {C} /\ near[C] = 0 /\ near[U] = 15 /\ DOMAIN keys[C] = {} /\ S1("last", 1) \in seen
+    [] s = "accall_actor" ->      \* the same on d by c: ActorNoPermission, before the call runs
+         deleted = {} /\ near[D] = 0 /\ <<1, D, "last">> \notin ran
+    [] s = "accall_init" ->       \* CallsNeedCode = FALSE: the batch commits; init runs on s.c, which
+         \* has the deposit and the key; the callback sees init's value.  actions.rs:202-208
+         created = {SB} /\ near[SB] = 2 /\ near[C] = 3 /\ keys[SB] = ("k0" :> FullPerm)
+         /\ S1("init", 1) \in seen /\ S1("num", 7) \in seen
+    [] s = "accall_exists" ->     \* AccountAlreadyExists comes first: init does not run
+         \* actions.rs:822-828
+         near[SB] = 1 /\ near[C] = 4 /\ S2("fail", 0) \in seen /\ <<2, SB, "init">> \notin ran
+    [] s = "accall_recreate" ->   \* a deleted id created again by a factory batch: the call sees the
+         \* new account (not AccountDoesNotExist); no keys
+         created = {SB} /\ deleted = {} /\ near[SB] = 2 /\ near[C] = 3 /\ DOMAIN keys[SB] = {}
+         /\ <<3, SB, "init">> \in ran
+    [] s = "accall_create_del" -> \* [CreateAccount, Transfer, FunctionCall(init), DeleteAccount(c)]:
+         \* the result is the delete's, empty bytes, not init's 7; the 2 NEAR come back as payout.
+         \* lib.rs:507-513, :1172-1175
+         created = {SB} /\ deleted = {SB} /\ near[C] = 5 /\ S1("init", 1) \in seen
+         /\ S1("empty", 0) \in seen /\ S1("num", 7) \notin seen
+    [] s = "accall_not_parent" -> \* d is not s.c's parent: CreateAccountNotAllowed.  actions.rs:190-197
+         created = {} /\ S1("fail", 0) \in seen
+    [] s = "accall_bytes" ->      \* the new account's bytes: 100 + its key 82 + init's 0
+         created = {SB} /\ stor[SB] = 182 /\ near[SB] = 1
+    [] s = "accall_lackstate" ->  \* 100 + 1000 bytes on 0 balance: LackBalanceForState, all reverted.
+         \* lib.rs:1008-1031
+         created = {} /\ stor[SB] = 0 /\ near[C] = 5 /\ S1("fail", 0) \in seen
+    [] s = "accall_del_stor" ->   \* the call adds 5000 bytes and leaves c 1 NEAR (2000 bytes'
+         \* worth), but the storage check is skipped for an account the receipt deletes.
+         \* lib.rs:1008-1031, the skip at :1010
+         deleted = {C} /\ stor[C] = 0 /\ near[U] = 15 /\ S1("last", 1) \in seen
     [] s = "universal_off" ->     \* before 87 a 0u id is named: created by CreateAccount, it is an
          \* ordinary account (no AccountNotInitialized): its key action, its delegate (signed with
          \* the key it added) and its delete succeed.  actions.rs:880-887, :918-924

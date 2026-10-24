@@ -653,6 +653,32 @@ fn recreate_clears_keys_and_data() {
     assert!(o.is_failure(), "no code");
 }
 
+/// A8: a receipt's result is its last action's. `[FunctionCall(get),
+/// DeleteAccount]` returns empty bytes, not get's value (ActionResult::merge,
+/// lib.rs:507-513; ReturnData::None is SuccessValue([]), :1245).
+#[test]
+fn call_then_delete_result() {
+    let (wasm, _) = probe_wasm("probe");
+    let mut sim = world();
+    let x = "v.alice.near";
+    create(&mut sim, ALICE, x, near(10), "v1", Some(&wasm)).assert_success();
+    sim.call(ALICE, x, "put").args_json(json!({ "key": "d", "value": "1" })).transact().assert_success();
+    let o = sim.call(x, x, "get").args_json(json!({ "key": "d" })).transact();
+    o.assert_success();
+    let alone = o.value().map(|v| v.to_vec());
+    let o = sim.call(x, x, "get").args_json(json!({ "key": "d" })).action(del(ALICE)).transact();
+    println!(
+        "get alone returns {:?}; [get, DeleteAccount] returns {:?}, account exists {}",
+        alone.as_ref().map(|v| String::from_utf8_lossy(v).into_owned()),
+        o.value().map(|v| String::from_utf8_lossy(v).into_owned()),
+        exists(&sim, x)
+    );
+    o.assert_success();
+    assert!(alone.is_some_and(|v| !v.is_empty()), "get returns the stored value");
+    assert_eq!(o.value(), Some(&b""[..]), "the delete's empty result, not get's");
+    assert!(!exists(&sim, x));
+}
+
 /// p's `chain` on `x`: kid `q.mark("k")`, callback `x.mark("cb")`.
 fn chain_tx<'a>(sim: &'a mut Sim, x: &str) -> Tx<'a> {
     let kids =

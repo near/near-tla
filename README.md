@@ -141,7 +141,9 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
 - CreateAccount and DeleteAccount (SEMANTICS A6, A7, `examples/account-lifecycle`): the
   creation rules, deletion with its payout, receipts to a deleted account, and an account
   created again; a lone DeleteAccount created by a receipt runs right after it (instant
-  receipts, S5). DeployContract is still open.
+  receipts, S5); account actions in a call receipt, such as a factory's
+  `[CreateAccount, Transfer, FunctionCall(init)]` (A8, `examples/account-lifecycle/factory`).
+  DeployContract is still open.
 
 ### Later
 

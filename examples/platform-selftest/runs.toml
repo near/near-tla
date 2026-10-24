@@ -361,6 +361,34 @@ expect = "pass"
 UniversalOn = "FALSE"
 Scns = '{"universal_off"}'
 
+# Call receipts with account actions (A8): a factory batch whose init finds no code, a call
+# followed by its account's DeleteAccount, and one on another account (ActorNoPermission).
+[[run]]
+name = "selftest_accall"
+expect = "pass"
+[run.constants]
+Scns = '{"accall_nocode", "accall_delete", "accall_actor"}'
+
+# CallsNeedCode = FALSE (the new account's code is assumed): the batch commits; checks first.
+[[run]]
+name = "selftest_accall_code_off"
+expect = "pass"
+[run.constants]
+CallsNeedCode = "FALSE"
+Scns = '{"accall_init", "accall_exists", "accall_recreate", "accall_not_parent", "accall_create_del"}'
+
+# Per-byte storage: the new account's bytes, an unaffordable batch, the skip on delete.
+[[run]]
+name = "selftest_accall_storage"
+expect = "pass"
+[run.constants]
+CallsNeedCode = "FALSE"
+StoragePerByte = "TRUE"
+StorageInit = "LStor"
+StorageByteCost = "LCost"
+CodeSize = "LCode"
+Scns = '{"accall_bytes", "accall_lackstate", "accall_del_stor"}'
+
 # Instant receipts: a contract's self-delete runs before the call it made alongside (so a
 # call back to it fails), a delegate's inner delete (relayed by another account, and by the
 # user itself: a local creator), a transaction's own delete (not instant).

@@ -564,8 +564,14 @@ HasCode(a) == /\ AcctExists(a)
               /\ a \in Contracts
               /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
 \* A deleted receiver fails the call even with CallsNeedCode = FALSE
-\* (AccountDoesNotExist, actions.rs:874-879).
-CallTargetOK(r) == ~IsCall(r) \/ (r.to \notin deleted /\ (~CallsNeedCode \/ HasCode(r.to)))
+\* (AccountDoesNotExist, actions.rs:874-879).  A call in the same receipt
+\* as a CreateAccount (HasAc, the factory batch) sees the new account,
+\* which has no code (actions.rs:202-208): it fails unless CallsNeedCode is
+\* FALSE, also when the id was deleted before.
+CallTargetOK(r) ==
+    \/ ~IsCall(r)
+    \/ IF "ac" \in DOMAIN r /\ r.ac.mk THEN ~CallsNeedCode
+       ELSE r.to \notin deleted /\ (~CallsNeedCode \/ HasCode(r.to))
 
 \* The transaction signer, inherited by every receipt of the transaction.
 SignerOf(t)  == txsig[t]               \* [a |-> account, k |-> key id]
@@ -693,7 +699,171 @@ StorageCovers(bal, bytes) ==
 StorAfter(r, O) ==
     LET b == stor[r.to] + StorDelta(O) IN
     IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
+----------------------------------------------------------------------------
+(* Account lifecycle: CreateAccount and DeleteAccount (docs/SEMANTICS.md,  *)
+(* A6, A7, A8).  An ACCOUNT receipt (m = ACCT) holds only account actions, *)
+(* in this order: [CreateAccount]? [Transfer(dep)]? [key actions]*         *)
+(* [DeleteAccount(bnf)]?, recorded in the optional field ac = [mk |->      *)
+(* BOOLEAN (CreateAccount), bnf |-> beneficiary or "" (DeleteAccount), ka  *)
+(* |-> key actions (NearKeys.WithAcctKeys)].  The Transfer is present iff  *)
+(* dep > 0.  It runs no code, never runs out of gas, and is run by         *)
+(* ExecAcct (NearKeys.ExecAcctK with key actions); Exec asserts on it.  A  *)
+(* dispatcher routes IsAcctRcpt(r) there before any contract handler.  A   *)
+(* call receipt may carry the same field (HasAc, A8, below): Exec runs     *)
+(* it.  Sim: conformance/tests/lifecycle.rs.                               *)
+
+\* Account-id structure.  Toy ids carry none, so the model states it.
+\* AcctParent[a]: a's direct parent ("near" for "alice.near"), or NoParent
+\* for a top-level id.  A sub-account can be created only by its direct
+\* parent (actions.rs:190-197; near-account-id 3.0.0 src/account_id_ref.rs
+\* :216-221).  A top-level id shorter than min_allowed_top_level_account_length
+\* can be created only by the registrar_account_id; that length is 65 from
+\* protocol 64 on and ids have at most 64 characters, so at 88 only that
+\* account (TopCreator) creates top-level ids (actions.rs:175-186;
+\* core/parameters/res/runtime_configs/64.yaml:2; near-account-id
+\* src/validation.rs:6-8).  Overridable: AcctParent <- MyParents,
+\* MyParents == Parents({<<"sub", "c">>}); TopCreator <- "x".
+NoParent == ""
+AcctParent == [a \in Accounts |-> NoParent]
+Parents(pairs) == [a \in Accounts |-> IF \E p \in pairs : p[1] = a
+                                      THEN (CHOOSE p \in pairs : p[1] = a)[2] ELSE NoParent]
+ParentOf(a) == IF a \in DOMAIN AcctParent THEN AcctParent[a] ELSE NoParent
+TopCreator == "top-creator"
+
+\* DeleteAccountWithLargeState: an account whose storage minus its contract
+\* code exceeds 10,000 bytes cannot be deleted (actions.rs:342-369;
+\* core/primitives-core/src/account.rs:248; from protocol 85 the global
+\* contract identifier is subtracted too, version.rs:612-628).  The check
+\* reads stor, so it applies only with StoragePerByte (N-delete-large).
+\* CodeSize[a]: the code bytes counted in a's StorageInit (overridable,
+\* default 0); an eth-implicit account created by a Transfer holds the
+\* 32-byte global contract hash; other created accounts have no code.
+MaxDeleteBytes == 10000
+CodeSize == [a \in Accounts |-> 0]
+CodeBytes(a) == IF a \in created /\ KindOf(a) = "eth_implicit" THEN 32
+                ELSE IF ~HasCode(a) THEN 0
+                ELSE IF a \in DOMAIN CodeSize THEN CodeSize[a] ELSE 0
+LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
+
+\* Fees (gas mode).  gf convention: an ACCOUNT receipt's gf is the whole
+\* receipt's send + exec fees, ReceiptFee plus each action's ActionFee
+\* (NearFees), charged to its creator at creation whatever the outcome.
+\* That is the prepaid reservation, not the burn: nearcore stops a failed
+\* receipt at its failing action (lib.rs:1001-1003) and burns the receipt's
+\* exec fee plus the exec fees of the actions it attempted (each burns its
+\* own as it starts, :588-592); the exec fees of the actions after it come
+\* back with the gas refund (:1299-1309).  Gas refunds, like the creation
+\* charge withheld on failure, are gas money, which is not modelled
+\* (N-gas-money; sim lifecycle.rs account_action_fees, create_batch_atomic).
+\* NearKeys.WithAcctKeys adds the key actions' fees.
+\* sir: the receipt is on its predecessor's own account.  AcctActsFee: the
+\* account actions alone (a call receipt's base is in its call's fee, A8).
+AcctActsFee(fr, to, mk, dep, bnf) ==
+    IF GasMode # "gas" THEN 0
+    ELSE LET sir == (fr = to) IN
+         (IF mk THEN NearFeeTable!ActionFee("create_account", sir, KindOf(to)) ELSE 0)
+         + (IF dep > 0 THEN NearFeeTable!ActionFee("transfer", sir, KindOf(to)) ELSE 0)
+         + (IF bnf # "" THEN NearFeeTable!ActionFee("delete_account", sir, KindOf(to)) ELSE 0)
+AcctFee(fr, to, mk, dep, bnf) ==
+    IF GasMode # "gas" THEN 0
+    ELSE NearFeeTable!ReceiptFee(fr = to) + AcctActsFee(fr, to, mk, dep, bnf)
+
+\* Constructors.  CreateAcctRcpt: [CreateAccount, Transfer(dep)?] for the
+\* new account, from its creator fr (refunds go to fr).  DeleteAcctRcpt:
+\* [DeleteAccount(b)] on acct, sent by acct itself (its own transaction or a
+\* receipt it creates).  WithDeleteTo(r, b) appends DeleteAccount(b) to an
+\* ACCOUNT receipt or a call receipt (it must be last, action_validation.rs
+\* :139-142), e.g. WithDeleteTo(CreateAcctRcpt(..), b).
+AcctRcpt(id, tx, to, fr, a, dep, cb, mk, bnf) ==
+    WithFee([ac |-> [mk |-> mk, bnf |-> bnf, ka |-> <<>>]] @@ Rcpt(id, tx, to, fr, ACCT, a, dep, fr, cb),
+            AcctFee(fr, to, mk, dep, bnf))
+CreateAcctRcpt(id, tx, new, fr, a, dep, cb) == AcctRcpt(id, tx, new, fr, a, dep, cb, TRUE, "")
+DeleteAcctRcpt(id, tx, acct, a, b, cb)      == AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, b)
+WithDeleteTo(r, b) ==
+    IF ~(IsAcctRcpt(r) \/ IsCall(r)) \/ b = "" \/ ("ac" \in DOMAIN r /\ r.ac.bnf # "")
+    THEN Assert(FALSE, <<"WithDeleteTo needs an ACCOUNT or call receipt without a DeleteAccount, and a beneficiary", r.id>>)
+    ELSE LET r1 == IF "ac" \in DOMAIN r THEN r ELSE [ac |-> [mk |-> FALSE, bnf |-> "", ka |-> <<>>]] @@ r IN
+         [r1 EXCEPT !.ac.bnf = b, !.gf = @ + AcctActsFee(r.fr, r.to, FALSE, 0, b)]
+
+\* The actor after the CreateAccount (the new account) or without one (the
+\* predecessor) (actions.rs:202; lib.rs:599-610).
+AcctActor(r) == IF r.ac.mk THEN r.to ELSE r.fr
+\* Does the receiver exist for the actions after CreateAccount?  A universal
+\* account created by a Transfer is uninitialised: only a Transfer accepts it
+\* (actions.rs:880-887).
+AcctThere(r) == r.ac.mk \/ AcctExists(r.to)
+AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
+
+\* The first failing action check, as nearcore's error name, or "".  Per
+\* action: existence, then the actor, then the action (lib.rs:599-610).
+\* kb: the bytes the key actions add; kok: they all apply (NearKeys).
+\*  CreateAccount: AccountAlreadyExists (actions.rs:822-828); an implicit id
+\*    (IsImplicit, which follows get_account_type at 88, universal included)
+\*    only by a Transfer (:829-840); a top-level id only by TopCreator
+\*    (:175-186); a sub-account only by its direct parent (:190-197).
+\*  Transfer: the receiver must exist (:842-849; an ACCOUNT receipt never
+\*    creates an implicit account, see ExecTransfer).
+\*  Key actions: exist, initialised, actor = the account (:862-886,
+\*    :755-801), each one applies (access_keys.rs:84, :158).
+\*  DeleteAccount: exists; actor = the account (:776-783, ActorNoPermission);
+\*    nothing locked (:784-790, DeleteAccountStaking); not large state.
+AcctErr(r, kb, kok) ==
+    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf
+        bytes == (IF r.ac.mk THEN AccountBytes ELSE stor[a]) + kb IN
+    \* (IF, not CASE: the first failing check wins.)
+    IF r.ac.mk /\ AcctExists(a) THEN "AccountAlreadyExists"
+    ELSE IF r.ac.mk /\ IsImplicit(a) THEN "OnlyImplicitAccountCreationAllowed"
+    ELSE IF r.ac.mk /\ ParentOf(a) = NoParent /\ r.fr # TopCreator THEN "CreateAccountOnlyByRegistrar"
+    ELSE IF r.ac.mk /\ ParentOf(a) # NoParent /\ ParentOf(a) # r.fr THEN "CreateAccountNotAllowed"
+    ELSE IF (r.dep > 0 \/ ka # <<>> \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
+    ELSE IF (ka # <<>> \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
+    ELSE IF (ka # <<>> \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
+    ELSE IF ka # <<>> /\ ~kok THEN "AddKeyAlreadyExists or DeleteKeyDoesNotExist"
+    ELSE IF b # "" /\ LockedOf(a) > 0 THEN "DeleteAccountStaking"
+    ELSE IF b # "" /\ LargeState(a, bytes) THEN "DeleteAccountWithLargeState"
+    ELSE ""
+
+\* Call receipts that carry account actions (HasAc on a call: the factory
+\* batch [CreateAccount, Transfer, key actions?, FunctionCall(init)] on the
+\* new account, or [FunctionCall, DeleteAccount(b)] on the account itself).
+\* WithCreate(r) puts a CreateAccount (and, if r.dep > 0, a Transfer of
+\* r.dep) before r's call; WithDeleteTo(r, b) puts a DeleteAccount after it;
+\* NearKeys.WithAcctKeys adds key actions before it.  Exec runs such a
+\* receipt: its account actions as in an ACCOUNT receipt (AcCallErr, the
+\* first Verdict branch), the call on the account they leave (CallTargetOK:
+\* a new account has no code), the storage check after all of them, skipped
+\* when the account is deleted (AcAffordable), and on commit their effects
+\* with the call's (CommitAc).  r.dep is the batch's deposit, credited at
+\* once (in nearcore the Transfer runs before the call; the end state is
+\* the same).  gf: the call's fee (GasCall) plus the account actions' send
+\* and exec fees (AcctActsFee), the receipt base being in the call's fee.
+HasAc(r)  == "ac" \in DOMAIN r
+AcCall(r) == HasAc(r) /\ IsCall(r)
+\* The account actions' first failing check (AcctErr; kb: the bytes the
+\* call and the key actions add, which the DeleteAccount's 10,000-byte check
+\* reads after the call; key failures come in O.err, NearKeys.WithKeyActs).
+AcCallErr(r, O) == AcctErr(r, StorDelta(O), TRUE)
+\* The receiver's balance and bytes after the receipt (a new account starts
+\* at 0 and 100 bytes).
+AcBal(r, O)   == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep - O.out
+AcBytes(r, O) ==
+    LET b == (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + StorDelta(O) IN
+    IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
+\* The storage check runs once, after all actions, and not on an account
+\* the receipt deleted (lib.rs:1008-1031, the skip at :1010).
+AcAffordable(r, O) ==
+    /\ AcBal(r, O) >= 0
+    /\ IF r.ac.bnf # "" THEN TRUE
+       ELSE IF StoragePerByte THEN StorageCovers(AcBal(r, O) + LockedOf(r.to), AcBytes(r, O))
+       ELSE AcBal(r, O) + LockedOf(r.to) >= StorageFloor[r.to]
+WithCreate(r) ==
+    IF ~IsCall(r) \/ HasAc(r) THEN Assert(FALSE, <<"WithCreate needs a call receipt without account actions", r.id>>)
+    ELSE [ac |-> [mk |-> TRUE, bnf |-> "", ka |-> <<>>]]
+         @@ [r EXCEPT !.gf = @ + AcctActsFee(r.fr, r.to, TRUE, r.dep, "")]
+----------------------------------------------------------------------------
+(* Affordability                                                          *)
 Affordable(r, O) ==
+    IF AcCall(r) THEN AcAffordable(r, O) ELSE
     /\ near[r.to] + r.dep - O.out >= 0
     /\ IF StoragePerByte
        THEN StorageCovers(near[r.to] + r.dep - O.out + LockedOf(r.to), StorAfter(r, O))
@@ -883,7 +1053,10 @@ PoolCheck(r, O) ==
 \* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas)
 \* | "either" (gas mode, "up": a child's gas may be 0 in nearcore or not,
 \* ZeroGasMaybe; the receipt commits or fails, and Exec takes both).
-\* Order: the receiver check comes first (the call never starts); a panic
+\* Order: a call receipt's account actions come first (AcCallErr: the
+\* CreateAccount, Transfer and key actions before the call fail it before
+\* it starts; the DeleteAccount after it is checked on the state after the
+\* call); then the receiver check (the call never starts); a panic
 \* the gas could not reach is "oog"; new-receipt validation and the storage
 \* check run after the call (an unaffordable receipt fails either way).  A
 \* Delegate receipt runs no code: a dispatcher that hands one to a contract
@@ -891,6 +1064,7 @@ PoolCheck(r, O) ==
 Verdict(r, O) ==
     IF IsDeleg(r) THEN Assert(FALSE, <<"DELEGATE receipt passed to Exec; run it with NearKeys' ExecDelegate", r.id>>)
     ELSE IF IsAcctRcpt(r) THEN Assert(FALSE, <<"ACCOUNT receipt passed to Exec; run it with ExecAcct (NearKeys: ExecAcctK)", r.id>>)
+    ELSE IF AcCall(r) /\ AcCallErr(r, O) # "" THEN "fail"
     ELSE IF ~PoolCheck(r, O) THEN "fail"
     ELSE IF ~CallTargetOK(r) THEN "fail"
     ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "oog" ELSE "fail")
@@ -910,8 +1084,39 @@ LogR(r, st) ==
 Label == IF fails > 0 THEN "forced" ELSE IF oog # {} THEN "caller-gas" ELSE "no-fault"
 
 ----------------------------------------------------------------------------
+\* Commit of a call receipt with account actions (AcCall): the call's
+\* commit, plus the account actions' effects as in ExecAcctWith.  The
+\* payout of a DeleteAccount gets the id after the call's children.  With a
+\* DeleteAccount last, the receipt's result is that action's, empty bytes,
+\* whatever the call returned (ActionResult::merge keeps the last action's
+\* result, lib.rs:507-513; ReturnData::None gives the callback empty bytes,
+\* :1172-1175, and the status SuccessValue([]), :1245), so
+\* a call that returns a promise there is a modelling error (an Assert).
+CommitAc(r, O) ==
+    LET a == r.to  mk == r.ac.mk  b == r.ac.bnf  bal == AcBal(r, O)
+        pay == b # "" /\ bal > 0 IN
+    /\ Assert(~mk \/ near[a] = 0, <<"CreateAccount of an account whose near is not 0", a, near[a]>>)
+    /\ Assert(r.ac.ka = <<>> \/ "kf" \in DOMAIN O,
+              <<"call receipt with key actions run with Exec; run it with NearKeys' ExecK", r.id>>)
+    /\ Assert(b = "" \/ O.ret.k # "prom",
+              <<"a call followed by DeleteAccount returns a promise; the receipt's result is the delete's (empty)", r.id>>)
+    /\ rq'   = RemR(r) \cup {InstantTag(c) : c \in Give(r, O, O.ready)}
+                     \cup (IF pay THEN {Rcpt(nid + O.ids, r.tx, b, "system", REFND, r.a, bal, b, 0)} ELSE {})
+    /\ post' = RemP(r) \cup {InstantTagP(c) : c \in Give(r, O, O.post)}
+    /\ data' = RemD(r) \cup (IF b # "" THEN DataOf(r, TRUE, EMPTY)
+                            ELSE IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
+                     \cup ResumeData(r, O)
+    /\ near' = [near EXCEPT ![a] = IF b # "" THEN 0 ELSE bal]
+    /\ nid'  = nid + O.ids + (IF pay THEN 1 ELSE 0)
+    /\ rlog' = LogR(r, "ok")
+    /\ stor' = IF ~StoragePerByte THEN stor ELSE [stor EXCEPT ![a] = IF b # "" THEN 0 ELSE AcBytes(r, O)]
+    /\ created' = IF mk THEN created \cup {a} ELSE created
+    /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk>>
+
 \* Commit: platform part.  The contract conjoins its own state update.
 Commit(r, O) ==
+    IF AcCall(r) THEN CommitAc(r, O) ELSE
     /\ rq'   = RemR(r) \cup {InstantTag(c) : c \in Give(r, O, O.ready)}
     /\ post' = RemP(r) \cup {InstantTagP(c) : c \in Give(r, O, O.post)}
     /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
@@ -1044,125 +1249,7 @@ ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
 ExecNoCode(r) == IsCall(r) /\ ~CallTargetOK(r) /\ FailP(r, FALSE)
 
 ----------------------------------------------------------------------------
-(* Account lifecycle: CreateAccount and DeleteAccount (docs/SEMANTICS.md,  *)
-(* A6, A7).  An ACCOUNT receipt (m = ACCT) holds only account actions, in  *)
-(* this order: [CreateAccount]? [Transfer(dep)]? [key actions]*            *)
-(* [DeleteAccount(bnf)]?, recorded in the optional field ac = [mk |->      *)
-(* BOOLEAN (CreateAccount), bnf |-> beneficiary or "" (DeleteAccount),     *)
-(* ka |-> key actions (NearKeys.WithAcctKeys)].  The Transfer is present   *)
-(* iff dep > 0.  It runs no code, never runs out of gas, and is run by     *)
-(* ExecAcct (NearKeys.ExecAcctK with key actions); Exec asserts on it.  A  *)
-(* dispatcher routes IsAcctRcpt(r) there before any contract handler.      *)
-(* Sim: conformance/tests/lifecycle.rs.                                    *)
-
-\* Account-id structure.  Toy ids carry none, so the model states it.
-\* AcctParent[a]: a's direct parent ("near" for "alice.near"), or NoParent
-\* for a top-level id.  A sub-account can be created only by its direct
-\* parent (actions.rs:190-197; near-account-id 3.0.0 src/account_id_ref.rs
-\* :216-221).  A top-level id shorter than min_allowed_top_level_account_length
-\* can be created only by the registrar_account_id; that length is 65 from
-\* protocol 64 on and ids have at most 64 characters, so at 88 only that
-\* account (TopCreator) creates top-level ids (actions.rs:175-186;
-\* core/parameters/res/runtime_configs/64.yaml:2; near-account-id
-\* src/validation.rs:6-8).  Overridable: AcctParent <- MyParents,
-\* MyParents == Parents({<<"sub", "c">>}); TopCreator <- "x".
-NoParent == ""
-AcctParent == [a \in Accounts |-> NoParent]
-Parents(pairs) == [a \in Accounts |-> IF \E p \in pairs : p[1] = a
-                                      THEN (CHOOSE p \in pairs : p[1] = a)[2] ELSE NoParent]
-ParentOf(a) == IF a \in DOMAIN AcctParent THEN AcctParent[a] ELSE NoParent
-TopCreator == "top-creator"
-
-\* DeleteAccountWithLargeState: an account whose storage minus its contract
-\* code exceeds 10,000 bytes cannot be deleted (actions.rs:342-369;
-\* core/primitives-core/src/account.rs:248; from protocol 85 the global
-\* contract identifier is subtracted too, version.rs:612-628).  The check
-\* reads stor, so it applies only with StoragePerByte (N-delete-large).
-\* CodeSize[a]: the code bytes counted in a's StorageInit (overridable,
-\* default 0); an eth-implicit account created by a Transfer holds the
-\* 32-byte global contract hash; other created accounts have no code.
-MaxDeleteBytes == 10000
-CodeSize == [a \in Accounts |-> 0]
-CodeBytes(a) == IF a \in created /\ KindOf(a) = "eth_implicit" THEN 32
-                ELSE IF ~HasCode(a) THEN 0
-                ELSE IF a \in DOMAIN CodeSize THEN CodeSize[a] ELSE 0
-LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
-
-\* Fees (gas mode).  gf convention: an ACCOUNT receipt's gf is the whole
-\* receipt's send + exec fees, ReceiptFee plus each action's ActionFee
-\* (NearFees), charged to its creator at creation whatever the outcome.
-\* That is the prepaid reservation, not the burn: nearcore stops a failed
-\* receipt at its failing action (lib.rs:1001-1003) and burns the receipt's
-\* exec fee plus the exec fees of the actions it attempted (each burns its
-\* own as it starts, :588-592); the exec fees of the actions after it come
-\* back with the gas refund (:1299-1309).  Gas refunds, like the creation
-\* charge withheld on failure, are gas money, which is not modelled
-\* (N-gas-money; sim lifecycle.rs account_action_fees, create_batch_atomic).
-\* NearKeys.WithAcctKeys adds the key actions' fees.
-\* sir: the receipt is on its predecessor's own account.
-AcctFee(fr, to, mk, dep, bnf) ==
-    IF GasMode # "gas" THEN 0
-    ELSE LET sir == (fr = to) IN
-         NearFeeTable!ReceiptFee(sir)
-         + (IF mk THEN NearFeeTable!ActionFee("create_account", sir, KindOf(to)) ELSE 0)
-         + (IF dep > 0 THEN NearFeeTable!ActionFee("transfer", sir, KindOf(to)) ELSE 0)
-         + (IF bnf # "" THEN NearFeeTable!ActionFee("delete_account", sir, KindOf(to)) ELSE 0)
-
-\* Constructors.  CreateAcctRcpt: [CreateAccount, Transfer(dep)?] for the
-\* new account, from its creator fr (refunds go to fr).  DeleteAcctRcpt:
-\* [DeleteAccount(b)] on acct, sent by acct itself (its own transaction or a
-\* receipt it creates).  WithDeleteTo(r, b) appends DeleteAccount(b) to an
-\* ACCOUNT receipt (it must be last, action_validation.rs:139-142), e.g.
-\* WithDeleteTo(CreateAcctRcpt(..), b).
-AcctRcpt(id, tx, to, fr, a, dep, cb, mk, bnf) ==
-    WithFee([ac |-> [mk |-> mk, bnf |-> bnf, ka |-> <<>>]] @@ Rcpt(id, tx, to, fr, ACCT, a, dep, fr, cb),
-            AcctFee(fr, to, mk, dep, bnf))
-CreateAcctRcpt(id, tx, new, fr, a, dep, cb) == AcctRcpt(id, tx, new, fr, a, dep, cb, TRUE, "")
-DeleteAcctRcpt(id, tx, acct, a, b, cb)      == AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, b)
-WithDeleteTo(r, b) ==
-    IF ~IsAcctRcpt(r) \/ b = "" THEN Assert(FALSE, <<"WithDeleteTo needs an ACCOUNT receipt and a beneficiary", r.id>>)
-    ELSE [r EXCEPT !.ac.bnf = b,
-                   !.gf = @ + (IF GasMode = "gas"
-                               THEN NearFeeTable!ActionFee("delete_account", r.fr = r.to, KindOf(r.to)) ELSE 0)]
-
-\* The actor after the CreateAccount (the new account) or without one (the
-\* predecessor) (actions.rs:202; lib.rs:599-610).
-AcctActor(r) == IF r.ac.mk THEN r.to ELSE r.fr
-\* Does the receiver exist for the actions after CreateAccount?  A universal
-\* account created by a Transfer is uninitialised: only a Transfer accepts it
-\* (actions.rs:880-887).
-AcctThere(r) == r.ac.mk \/ AcctExists(r.to)
-AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
-
-\* The first failing action check, as nearcore's error name, or "".  Per
-\* action: existence, then the actor, then the action (lib.rs:599-610).
-\* kb: the bytes the key actions add; kok: they all apply (NearKeys).
-\*  CreateAccount: AccountAlreadyExists (actions.rs:822-828); an implicit id
-\*    (IsImplicit, which follows get_account_type at 88, universal included)
-\*    only by a Transfer (:829-840); a top-level id only by TopCreator
-\*    (:175-186); a sub-account only by its direct parent (:190-197).
-\*  Transfer: the receiver must exist (:842-849; an ACCOUNT receipt never
-\*    creates an implicit account, see ExecTransfer).
-\*  Key actions: exist, initialised, actor = the account (:862-886,
-\*    :755-801), each one applies (access_keys.rs:84, :158).
-\*  DeleteAccount: exists; actor = the account (:776-783, ActorNoPermission);
-\*    nothing locked (:784-790, DeleteAccountStaking); not large state.
-AcctErr(r, kb, kok) ==
-    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf
-        bytes == (IF r.ac.mk THEN AccountBytes ELSE stor[a]) + kb IN
-    \* (IF, not CASE: the first failing check wins.)
-    IF r.ac.mk /\ AcctExists(a) THEN "AccountAlreadyExists"
-    ELSE IF r.ac.mk /\ IsImplicit(a) THEN "OnlyImplicitAccountCreationAllowed"
-    ELSE IF r.ac.mk /\ ParentOf(a) = NoParent /\ r.fr # TopCreator THEN "CreateAccountOnlyByRegistrar"
-    ELSE IF r.ac.mk /\ ParentOf(a) # NoParent /\ ParentOf(a) # r.fr THEN "CreateAccountNotAllowed"
-    ELSE IF (r.dep > 0 \/ ka # <<>> \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
-    ELSE IF (ka # <<>> \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
-    ELSE IF (ka # <<>> \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
-    ELSE IF ka # <<>> /\ ~kok THEN "AddKeyAlreadyExists or DeleteKeyDoesNotExist"
-    ELSE IF b # "" /\ LockedOf(a) > 0 THEN "DeleteAccountStaking"
-    ELSE IF b # "" /\ LargeState(a, bytes) THEN "DeleteAccountWithLargeState"
-    ELSE ""
-
+(* Account lifecycle, continued: ACCOUNT receipts (ExecAcct).            *)
 \* The storage check after the actions (lib.rs:1008-1031), skipped when the
 \* receipt deleted the account (:1010).  bal: the liquid after the actions.
 AcctBal(r) == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep

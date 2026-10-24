@@ -1,0 +1,151 @@
+# An account factory: the batch [CreateAccount, Transfer, FunctionCall(init)] is atomic and
+# its deposit returns to the factory.  See Factory.tla.
+#
+#   python3 tools/run.py examples/account-lifecycle/factory
+
+spec = "Factory"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["UserFundsBack", "PaidImpliesAccount", "Sane"]
+tags = ["semantics:account-lifecycle"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"f"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "{F, U1, U2}"
+Contracts = "FCode"
+CallsNeedCode = "FALSE"    # no DeployContract: init is assumed to find code
+AcctParent = "FParents"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+Users = "{U1, U2}"
+Name = "N"
+Refund = "TRUE"
+Checks = "TRUE"
+Reserve = "2"
+
+# Two users race for n.f: one batch creates it, the other fails AccountAlreadyExists and its
+# deposit returns to F, which repays the user from on_create.
+[[run]]
+name = "factory_cb_refunds"
+expect = "pass"
+
+# F has no reserve: on_create may run before the batch's refund reaches F, and its repayment
+# to the user then fails for want of balance (refunds are unordered, SEMANTICS S4).
+[[run]]
+name = "factory_no_reserve"
+expect = "violation"
+invariant = "UserFundsBack"
+[run.constants]
+Reserve = "0"
+
+# on_create keeps the deposit of a failed batch: the loser of the race is not repaid.
+[[run]]
+name = "factory_assumes_created"
+expect = "violation"
+invariant = "UserFundsBack"
+[run.constants]
+Refund = "FALSE"
+
+# F creates n.x, which it is not the parent of, and records the owner without looking at the
+# result: CreateAccountNotAllowed every time, and reg names an owner of no account.
+[[run]]
+name = "factory_not_parent"
+expect = "violation"
+invariant = "PaidImpliesAccount"
+invariants = ["PaidImpliesAccount", "Sane"]
+[run.constants]
+Users = "{U1}"
+Name = "X"
+Checks = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/account-lifecycle/factory --anti-vacuity ----
+
+# Both users' batches in flight at once (the race).
+[[witness]]
+id = "two_batches_in_flight"
+expr = '~(Cardinality({r \in rq : HasAc(r)}) = 2)'
+runs = ["factory_cb_refunds"]
+
+# A batch commits: n.f created, init ran.
+[[witness]]
+id = "batch_commits"
+expr = '~(N \in created /\ owner[N] # "")'
+runs = ["factory_cb_refunds"]
+
+# The losing batch's deposit on its way back to F.
+[[witness]]
+id = "deposit_back_to_factory"
+expr = '~(\E r \in rq : r.m = REFND /\ r.to = F)'
+runs = ["factory_cb_refunds"]
+
+# on_create runs before that refund arrives (F pays from its reserve).
+[[witness]]
+id = "callback_before_refund"
+expr = '~(\E r \in Runnable : r.m = "on_create" /\ IsFailed(r.res) /\ \E y \in rq : y.m = REFND /\ y.to = F)'
+runs = ["factory_cb_refunds"]
+
+# The user repaid by on_create.
+[[witness]]
+id = "user_repaid"
+expr = '~(\E r \in rq : r.m = XFER /\ r.fr = F)'
+runs = ["factory_cb_refunds"]
+
+[[mutant]]
+id = "cb_no_refund"
+file = "Factory.tla"
+find = 'ELSE IF Refund'
+replace = 'ELSE IF FALSE'
+class = "dropped compensation"
+killed_by = ["UserFundsBack"]
+runs = ["factory_cb_refunds"]
+
+[[mutant]]
+id = "cb_ignores_result"
+file = "Factory.tla"
+find = 'ELSE IF ~IsFailed(r.res) THEN'
+replace = 'ELSE IF TRUE THEN'
+class = "removed result check"
+killed_by = ["PaidImpliesAccount"]
+runs = ["factory_cb_refunds"]
+
+[[mutant]]
+id = "init_wrong_owner"
+file = "Factory.tla"
+find = "[owner EXCEPT ![r.to] = r.a.u]"
+replace = "[owner EXCEPT ![r.to] = F]"
+class = "wrong effect"
+killed_by = ["PaidImpliesAccount", "UserFundsBack"]
+runs = ["factory_cb_refunds"]
+
+# The library: a call receipt's account actions are not checked (a second create of n.f
+# commits over the first).
+[[mutant]]
+id = "lib_accall_unchecked"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF AcCall(r) /\ AcCallErr(r, O) # "" THEN "fail"'
+replace = 'ELSE IF FALSE THEN "fail"'
+class = "platform rule dropped (library)"
+killed_by = ["assert", "PaidImpliesAccount", "UserFundsBack"]
+runs = ["factory_cb_refunds"]
+
+# The library: the batch's deposit is not credited to the new account.
+[[mutant]]
+id = "lib_create_drops_deposit"
+file = "NearAsync.tla"
+library = true
+find = "/\\ near' = [near EXCEPT ![a] = IF b # \"\" THEN 0 ELSE bal]\n    /\\ nid'  = nid + O.ids + (IF pay THEN 1 ELSE 0)"
+replace = "/\\ near' = [near EXCEPT ![a] = 0]\n    /\\ nid'  = nid + O.ids + (IF pay THEN 1 ELSE 0)"
+class = "dropped effect (library)"
+killed_by = ["Sane"]
+runs = ["factory_cb_refunds"]

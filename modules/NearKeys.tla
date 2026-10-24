@@ -122,6 +122,7 @@ KeyCanSign(a, k, r) ==
     /\ IF IsFull(keys[a][k]) THEN TRUE
        ELSE /\ IsCall(r)
             /\ ~IsMultiCall(r)
+            /\ ~HasAc(r)          \* one FunctionCall only (verifier.rs:213-217)
             /\ r.dep = 0
 
 \* Submit a signed transaction.  A key of a \in KeyAccts must be able to sign it.
@@ -194,21 +195,33 @@ KeysFold(ks, acts) ==
               THEN [ok |-> FALSE, ks |-> ks]
               ELSE KeysFold((x.k :> x.p) @@ ks, Tail(acts))
 
+\* In a receipt with account actions (HasAc) the actor and the key map
+\* follow its CreateAccount: the new account, with no keys (A6, A8).
+KeyActor(r) == IF HasAc(r) THEN AcctActor(r) ELSE r.fr
+KeyBase(r)  == IF HasAc(r) /\ r.ac.mk THEN <<>> ELSE keys[r.to]
 KeyActsOK(r, acts) ==
-    acts = <<>> \/ (r.to = r.fr /\ r.to \in KeyAccts /\ KeysFold(keys[r.to], acts).ok)
+    acts = <<>> \/ (KeyActor(r) = r.to /\ r.to \in KeyAccts /\ KeysFold(KeyBase(r), acts).ok)
+\* On commit; with account actions a create starts from no keys and a
+\* delete clears them (core/store/src/utils/mod.rs:504-575).
 KeysAfter(r, acts) ==
-    IF acts = <<>> THEN keys ELSE [keys EXCEPT ![r.to] = KeysFold(keys[r.to], acts).ks]
+    IF HasAc(r) /\ r.to \in KeyAccts /\ (r.ac.mk \/ r.ac.bnf # "" \/ acts # <<>>)
+    THEN [keys EXCEPT ![r.to] = IF r.ac.bnf # "" THEN <<>> ELSE KeysFold(KeyBase(r), acts).ks]
+    ELSE IF acts = <<>> THEN keys ELSE [keys EXCEPT ![r.to] = KeysFold(keys[r.to], acts).ks]
 
 \* The bytes the key actions add to r.to (StoragePerByte).
 KeyActsBytes(r, acts) ==
     IF acts = <<>> THEN 0
-    ELSE KeyMapBytes(KeysFold(keys[r.to], acts).ks) - KeyMapBytes(keys[r.to])
+    ELSE KeyMapBytes(KeysFold(KeyBase(r), acts).ks) - KeyMapBytes(KeyBase(r))
 
 \* The handler's outcome O for the function call, failed as a whole if a key
 \* action fails (the call then does not run).  With StoragePerByte the key
 \* actions' bytes join the call's (OStor): nearcore checks storage once, at
 \* the end of the receipt (lib.rs:1008-1031).
-WithKeyActs(r, acts, O) ==
+\* For a receipt with account actions the outcome is marked (kf): NearAsync's
+\* CommitAc asserts it when the receipt has key actions, so running one with
+\* plain Exec, which would drop them, is an error.
+WithKeyActs(r, acts, O0) ==
+    LET O == IF HasAc(r) THEN [kf |-> TRUE] @@ O0 ELSE O0 IN
     IF ~KeyActsOK(r, acts) THEN OErr(O, "key action failed")
     ELSE IF StoragePerByte /\ acts # <<>> THEN OStor(O, StorDelta(O) + KeyActsBytes(r, acts))
     ELSE O
@@ -221,6 +234,14 @@ ExecWithKeys(r, acts, O) ==
     /\ Exec(r, O2)
     /\ keys' = IF Ok(r, O2) THEN KeysAfter(r, acts) ELSE keys
     /\ UNCHANGED sigpaid
+
+\* A call receipt with account actions (NearAsync HasAc, A8) and the key
+\* actions WithAcctKeys put in it: run it with ExecK, which also resets the
+\* new or deleted account's keys, and read the outcome with OkK.  The same
+\* as ExecWithKeys(r, <<>>, O) / Ok(r, O) for any other receipt.
+AcKeyActs(r) == IF HasAc(r) THEN r.ac.ka ELSE <<>>
+ExecK(r, O) == ExecWithKeys(r, AcKeyActs(r), O)
+OkK(r, O)   == OkWithKeys(r, AcKeyActs(r), O)
 
 \* A function call to an account that has no contract (or does not exist).
 \* Exec already fails such calls (NearAsync CallTargetOK); this is the same
@@ -245,7 +266,7 @@ AcctKeyFee(r, x) ==
 RECURSIVE AcctKeysFee(_, _)
 AcctKeysFee(r, acts) == IF acts = <<>> THEN 0 ELSE AcctKeyFee(r, Head(acts)) + AcctKeysFee(r, Tail(acts))
 WithAcctKeys(r, acts) ==
-    IF ~IsAcctRcpt(r) THEN Assert(FALSE, <<"WithAcctKeys needs an ACCOUNT receipt", r.id>>)
+    IF ~(IsAcctRcpt(r) \/ AcCall(r)) THEN Assert(FALSE, <<"WithAcctKeys needs an ACCOUNT receipt or a call receipt with account actions", r.id>>)
     ELSE [r EXCEPT !.ac.ka = @ \o acts, !.gf = @ + AcctKeysFee(r, acts)]
 
 \* The key map the key actions start from, and their result.

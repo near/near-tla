@@ -1086,9 +1086,10 @@ before `Submit`, since an uncovered `Submit` is a disabled step.
 
 ## 16. Creating and deleting accounts
 
-The rules are [A6](SEMANTICS.md#a6-createaccount) and [A7](SEMANTICS.md#a7-deleteaccount).
-Worked example: [`account-lifecycle`](../examples/account-lifecycle/). Account actions travel
-in an ACCOUNT receipt (`m = ACCT`), which runs no code:
+The rules are [A6](SEMANTICS.md#a6-createaccount), [A7](SEMANTICS.md#a7-deleteaccount) and
+[A8](SEMANTICS.md#a8-account-actions-in-a-call-receipt). Worked examples:
+[`account-lifecycle`](../examples/account-lifecycle/) and its `instant/` and `factory/`.
+Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 
 | constructor | actions |
 |---|---|
@@ -1096,6 +1097,8 @@ in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 | `DeleteAcctRcpt(id, tx, acct, a, b, cb)` | `[DeleteAccount(b)]` on `acct`, sent by `acct` itself |
 | `WithDeleteTo(r, b)` | appends `DeleteAccount(b)` to an ACCOUNT receipt |
 | `NearKeys.WithAcctKeys(r, acts)` | adds key actions (`AddKeyAct`, `DelKeyAct`) after the Transfer, e.g. the new account's first key |
+| `WithCreate(r)` | puts `[CreateAccount, Transfer(r.dep)]` before the call of a call receipt `r` (the factory batch, A8) |
+| `WithDeleteTo(r, b)` on a call receipt | puts `DeleteAccount(b)` after its call (sent by the account itself, or after a CreateAccount) |
 
 In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee
 table, the prepaid reservation, whether the receipt succeeds or fails (nearcore refunds a
@@ -1143,6 +1146,29 @@ your variables. Read `DeletesAcct(r)` after `ExecAcct`, like `Ok`:
 RunAcct(r) == /\ ExecAcct(r)
               /\ bal' = IF DeletesAcct(r) THEN [bal EXCEPT ![r.to] = 0] ELSE bal
 ```
+
+**Account actions in a call receipt** ([A8](SEMANTICS.md#a8-account-actions-in-a-call-receipt)).
+A factory sends `WithCreate(Rcpt(nid, r.tx, child, r.to, "init", args, dep, r.to, cb))`: one
+receipt that creates the child, funds it with `dep` and calls `init` on it. A contract that
+closes itself can end its last call with `WithDeleteTo(Rcpt(nid, r.tx, r.to, r.to, "last",
+args, 0, r.to, 0), b)`. `Exec` runs such a receipt (`HasAc(r)`): the account actions' checks
+come first, then the call on the account they leave, then the storage check (skipped after a
+delete); on commit the account actions' effects join the call's. With key actions in it use
+`NearKeys.ExecK(r, O)` and `OkK(r, O)` (they also reset the new or deleted account's keys);
+plain `Exec` asserts. Route it to your handler as usual (the handler is the child's code), and
+reset your own state with `DeletesAcct(r)`:
+
+```tla
+RunBatch(r) == /\ Exec(r, InitOut(r))
+               /\ owner' = IF Ok(r, InitOut(r)) THEN [owner EXCEPT ![r.to] = r.a.u] ELSE owner
+```
+
+Three things to know. The new account has no code, since DeployContract is not modelled, so
+`init` fails unless the run sets `CallsNeedCode <- FALSE` (N-deploy). A failed batch returns
+its deposit to the factory, not to the user, and the factory's callback may run before that
+refund arrives (S4), so a factory that repays the user from its callback needs a reserve
+(`examples/account-lifecycle/factory`, `factory_no_reserve`). After a DeleteAccount the
+receipt's result is empty bytes, whatever the call returned.
 
 An account that a model creates must be in `Accounts` (with balance 0 in the initial state)
 and outside `Exists`. Without `StoragePerByte` the large-state refusal never happens
@@ -1575,5 +1601,5 @@ All examples are toy contracts written for this repo.
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |
-  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt; `instant/`: a self-closing contract relies on its delete being instant |
+  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt; `instant/`: a self-closing contract relies on its delete being instant; `factory/`: a factory batch is atomic and its deposit returns to the factory, whose callback must repay the user, from a reserve |
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |

@@ -377,6 +377,27 @@ Each entry ends with its migration.
 
 ### Added
 
+- **Account actions in a call receipt** (SEMANTICS A8; docs/USAGE.md section 16). A call
+  receipt can carry the `ac` field (`HasAc`, `AcCall`): `WithCreate(r)` puts
+  `[CreateAccount, Transfer(r.dep)]` before its call (a factory's batch on the new account),
+  `WithDeleteTo(r, b)` now also accepts a call receipt (a DeleteAccount after its call; a
+  second one is an Assert), and `NearKeys.WithAcctKeys` adds key actions. `Exec` runs it:
+  `Verdict` has a new first branch for the account actions' checks (`AcCallErr`, the delete's
+  large-state check on the bytes after the call), `CallTargetOK` sees the account after the
+  create (no code: the call fails unless `CallsNeedCode <- FALSE`), `Affordable`
+  (`AcAffordable`) starts a new account at 0 balance and 100 bytes and skips the storage half
+  after a delete, and `Commit` (`CommitAc`) applies the account actions with the call (payout
+  after the call's children; after a DeleteAccount the callback gets empty bytes, and a
+  returned promise is an Assert). With key actions: `NearKeys.ExecK` / `OkK` (plain `Exec`
+  asserts). `gf` adds `AcctActsFee` (`AcctFee` without the receipt base) to the call's fee.
+  `KeyCanSign` refuses a function-call key for such a receipt. Receipts without `ac` are
+  unchanged: every example run kept its verdict and its generated, distinct and depth counts
+  (all 123 runs compared at one worker). New `platform-selftest` runs `selftest_accall`,
+  `selftest_accall_code_off` and `selftest_accall_storage` (11 scenarios, and a fee check in
+  `acct_fee`); new example `account-lifecycle/factory` (`factory_cb_refunds` passes;
+  `factory_no_reserve`, `factory_assumes_created` and `factory_not_parent` must fail; with
+  witnesses and mutants). DeployContract is still not modelled (N-deploy, updated): a
+  factory's `init` finds code only with `CallsNeedCode <- FALSE`.
 - **Instant receipts** (SEMANTICS S5; docs/USAGE.md section 16). A lone DeleteAccount
   (`IsInstantShape`) that a receipt creates, in its outcome's ready set, as a joint callback
   with no inputs in its postponed set (`.then` on an empty `promise_and`, `InstantTagP`) or as
@@ -415,12 +436,13 @@ Each entry ends with its migration.
   an ordinary named account. `ExecTransfer` takes a deleted implicit account
   out of `deleted` when it creates it again, and `NearKeys.ExecTransferK` / `ExecBuiltinK`
   give a NEAR-implicit account a Transfer creates its full-access key (`ImplicitKeyId`).
-  Validated against the sim (`conformance/tests/lifecycle.rs`, 13 tests: creation rules,
+  Validated against the sim (`conformance/tests/lifecycle.rs`, 14 tests: creation rules,
   atomic batches, payouts, the actor and staking checks, the 10,000-byte limit at its
   boundary, receipts to a deleted account, re-creation, postponed callbacks, data and yields
-  surviving deletion, deploy storage, an instant delete via a delegate, fees). New
-  `platform-selftest` runs `selftest_lifecycle`, `selftest_lifecycle_gas`,
-  `selftest_lifecycle_storage` and `selftest_universal_off` (18 scenarios), and a new example `account-lifecycle`
+  surviving deletion, deploy storage, an instant delete via a delegate, fees, the empty
+  result of a call followed by DeleteAccount). New `platform-selftest` runs
+  `selftest_lifecycle`, `selftest_lifecycle_gas`, `selftest_lifecycle_storage` and
+  `selftest_universal_off` (18 scenarios), and a new example `account-lifecycle`
   (`escrow_pays_deleted` must fail, `escrow_pays_cb` passes, `refund_to_deleted_burns` must
   fail; with witnesses and mutants). SEMANTICS: N-create-account and N-delete-account are
   gone; new N-acct-ids, N-delete-large and N-wipe; N-refund-stuck, N-storage, N-universal,
