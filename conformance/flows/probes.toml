@@ -182,13 +182,13 @@ actions = [[4000, 0]]
 child = "p.near.on_read"
 actions = [[3000, 0]]
 
-# nearcore rejects the zero-gas call (the parent fails), so chain/burn,on_count
-# never succeeds: the model borrows chain/burn,on_read for its path.
+# nearcore rejects the zero-gas call: the parent fails after running, with
+# no children, so its key is named here and calibrated from that failure.
 [[flow]]
 name = "chain_s0"
 about = "q.burn(500) with static 0 and weight 0: a function call with no gas"
 grid = "standard"
-model_keys = { "p.chain/burn,on_count" = "p.chain/burn,on_read" }
+keys = { "chain" = "chain/burn,on_count" }
 tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":500}", "static_ggas": 0, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_count", "args": "", "static_ggas": 3000, "weight": 1}}', deposit = "" }
 [[flow.static]]
 child = "q.near.burn"

@@ -60,14 +60,14 @@ fn smoke_grid_split_and_burns() {
     assert!(split.multi_children > 0, "multi-call children checked per action");
     let (rows, _) = calib::burn_rows(&burns, &["ft".into(), "wrap".into()]);
     let burn = |acct: &str, key: &str| rows.iter().find(|r| r.acct == acct && r.key == key).map(|r| r.base);
-    // As in modules/CalibStd.tla.
+    // As in modules/CalibStd.tla (burns rounded up to whole Ggas).
     // (1584 is the largest over all six ft_call flows; these two give 1583)
     assert!(matches!(burn("ft", "ft_transfer_call"), Some(1583..=1584)));
-    assert_eq!(burn("ft", "ft_resolve_transfer"), Some(855));
+    assert_eq!(burn("ft", "ft_resolve_transfer"), Some(856));
     assert_eq!(burn("ft", "batch/C"), Some(1587));
     assert_eq!(burn("wrap", "ft_transfer_call"), Some(1585));
     assert_eq!(burn("wrap", "ft_resolve_transfer"), Some(863));
-    assert_eq!(burn("wrap", "near_withdraw"), Some(578));
+    assert_eq!(burn("wrap", "near_withdraw"), Some(579));
     assert_eq!(burn("wrap", "batch/DSC"), Some(2729));
     // the per-action check's inferred burn of the batch's last action
     let last = split.per_action.iter().find(|x| x.0 == "wrap_batch_DSC").map(|x| x.2.round() as u64);

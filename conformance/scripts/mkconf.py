@@ -181,8 +181,9 @@ CONSTANTS
   TokCallReserve <- ConfReserve
   WNearAccts <- mc_wnear
   AcctKind <- ConfKinds
-  TokOnTransferWeight <- ConfOnTransferWeight
-  TokOnTransferStatic <- ConfOnTransferStatic
+  TokBatchPerAction <- ConfTrue
+  BatchPA <- ConfBatchPA
+  Contracts <- ConfContracts
   FirstRcpt <- mc_first
   Signer0 <- mc_signer
   Grid <- mc_grid

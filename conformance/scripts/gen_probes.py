@@ -183,8 +183,8 @@ chain("chain_w0", "W = 0: q.burn(1000) static 4000 w0, then p.on_read static 300
 chain("chain_s0", "q.burn(500) with static 0 and weight 0: a function call with no gas",
       [call("q.near", "burn", '{"ggas":500}', 0, 0)], call(None, "on_count", "", 3000, 1),
       [("q.near.burn", [[0, 0]]), ("p.near.on_count", [[3000, 1]])],
-      model_keys={"p.chain/burn,on_count": "p.chain/burn,on_read"},
-      comment="# nearcore rejects the zero-gas call (the parent fails), so chain/burn,on_count\n# never succeeds: the model borrows chain/burn,on_read for its path.\n")
+      keys={"chain": "chain/burn,on_count"},
+      comment="# nearcore rejects the zero-gas call: the parent fails after running, with\n# no children, so its key is named here and calibrated from that failure.\n")
 for n in (0, 1000, 10000, 100000):
     st = 10000 if n == 100000 else 3000  # returning 100 KB burns about 7 Tgas
     chain(f"ret{n}", f"q.ret({n} bytes) static {st} w0, then p.on_read (reads them) static 5000 w1",

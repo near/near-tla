@@ -1,6 +1,6 @@
 //! Receipt semantics the library encodes, observed in the sim on the probe
-//! contract: local-receipt priority (CONTRACTS D2), signer propagation
-//! (D1) and the atomicity of a `[DeleteKey, FunctionCall]` receipt.
+//! contract: local-receipt priority, signer propagation and the atomicity
+//! of a `[DeleteKey, FunctionCall]` receipt (docs/SEMANTICS.md S1, K1, M1).
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
 use near_contract_sim::{AccessKey, TxOutcome};
@@ -30,7 +30,7 @@ fn mark<'a>(sim: &'a mut Sim, signer: &str, tag: &str) -> Tx<'a> {
     sim.call(signer, P, "mark").args_json(json!({ "tag": tag }))
 }
 
-/// D2: a transaction whose signer is its receiver becomes a local receipt
+/// Local receipts: a transaction whose signer is its receiver becomes a local receipt
 /// and runs in the block that converts it, before the incoming receipts of
 /// that block (runtime/runtime/src/lib.rs, `process_receipts`). A receipt
 /// a contract sends to itself is not local.
@@ -47,7 +47,7 @@ fn local_receipt_runs_before_incoming() {
     let (oa, op) = (sim.outcome(a), sim.outcome(p));
     let ha = oa.receipts.iter().find(|r| r.method_names == ["mark"]).unwrap().block_height;
     let hp = op.receipts.iter().find(|r| r.method_names == ["mark"]).unwrap().block_height;
-    println!("D2 local: alice's mark ran at #{ha}, p's self-signed mark at #{hp}; marks = {}", marks(&sim));
+    println!("local receipt: alice's mark ran at #{ha}, p's self-signed mark at #{hp}; marks = {}", marks(&sim));
     assert_eq!(ha, hp, "both run in the same block");
     assert_eq!(marks(&sim), "p,a,", "the local receipt runs first");
 }
@@ -68,7 +68,7 @@ fn contract_self_call_is_not_local() {
     sim.settle();
     let h = |o: &TxOutcome| o.receipts.iter().find(|r| r.method_names == ["mark"]).unwrap().block_height;
     let (hc, hb, hp) = (h(&sim.outcome(c)), h(&sim.outcome(b)), h(&sim.outcome(p)));
-    println!("D2 self-call: chain's self-call mark at #{hc}, bob's at #{hb}, p's self-signed at #{hp}; marks = {}", marks(&sim));
+    println!("self-call: chain's self-call mark at #{hc}, bob's at #{hb}, p's self-signed at #{hp}; marks = {}", marks(&sim));
     assert_eq!((hc, hb), (hp, hp), "all three run in one block");
     // p's transaction receipt is local and runs first; bob's receipt and
     // chain's self-call arrive as incoming receipts, in that order.
@@ -84,7 +84,7 @@ fn records(o: &TxOutcome) -> Vec<Value> {
         .collect()
 }
 
-/// D1: every receipt of a transaction sees its signer and the key that
+/// Signer propagation: every receipt of a transaction sees its signer and the key that
 /// signed it, callbacks and cross-contract children included; the
 /// predecessor is the immediate creator. alice holds two full-access keys
 /// and signs with the second.
@@ -99,7 +99,7 @@ fn signer_propagates_to_children_and_callbacks() {
     let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kids, "cb": cb })).sign_with(&second).transact();
     o.assert_success();
     let rs = records(&o);
-    println!("D1 records: {rs:?}");
+    println!("records: {rs:?}");
     assert_eq!(rs.len(), 2);
     let pk = second.public_key().to_string();
     assert_ne!(pk, first.to_string());

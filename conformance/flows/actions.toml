@@ -1,9 +1,11 @@
-# Action-only children the calibrator must price (CONTRACTS D6: a burn
-# excludes the send fees of the receipt's action-only children). Run by
-# tests/smoke.rs; `calibrate --flows flows/actions.toml` prints the fee
-# check. AddKey's fee depends on the key's permission, which the outcome
-# does not record: its send fee is derived from the exec fee the child
-# prepaid (send = exec in the fee table, which the calibrator checks).
+# Action-only children the calibrator must price: a receipt's burn excludes
+# the send fees of its action-only children, which its creator pays out of
+# its gas (docs/SEMANTICS.md G4). Run by tests/smoke.rs; `calibrate --flows
+# flows/actions.toml` prints the fee check. AddKey's fee depends on the
+# key's permission and method names, which the outcome does not record: the
+# calibrator solves it from the exec fee the child prepaid (a full-access
+# key, or a function-call key with n bytes of method names) and prices the
+# send fee from the same fee-table entries.
 
 [world]
 names = { "alice.near" = "alice", "p.near" = "p" }

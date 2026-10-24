@@ -52,7 +52,8 @@ pub fn probe_wasm(name: &str) -> (Vec<u8>, String) {
     (wasm, got)
 }
 
-/// What every calibrated table and sweep records (CONTRACTS C4).
+/// What every calibrated table and sweep records: the sim, nearcore and
+/// protocol the numbers were measured on.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Provenance {
     pub sim_rev: String,

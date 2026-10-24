@@ -45,9 +45,20 @@ ConfHolders == [t \in {"ft", "wrap"} |-> Holders]
 ConfStorageMin == [t \in {"ft", "wrap"} |-> 1]
 ConfDev == [t \in {"ft", "wrap"} |-> {}]
 ConfReserve == [t \in {"ft", "wrap"} |-> 0]
-\* near-contract-standards 5.29.1: ft_on_transfer gets static 0 and the leftover by weight 1.
-ConfOnTransferWeight == [t \in {"ft", "wrap"} |-> 1]
-ConfOnTransferStatic == [t \in {"ft", "wrap"} |-> 0]
+
+\* Accounts with code (calls to any other account fail).
+ConfContracts == {"p", "q", "ft", "wrap"}
+
+\* Per-call burns of a token batch (cfg: BatchPA <- ConfBatchPA, with
+\* TokBatchPerAction <- TRUE): the key "<acct>.batch/<shape>#<method>", the
+\* burn of that call at its place in the batch (CalibProbes, --batch-actions);
+\* the library's BatchPA keys each call by its standalone method.
+ConfBatchPA(r, a, n0, n1, n2, n3) ==
+    LET Act(m, lo, hi) == <<[gk |-> CallKey(r.to, BatchKey(a) \o "#" \o m), sz |-> 0, kids |-> lo..(hi - 1)]>> IN
+    (IF a.nd > 0 THEN Act("near_deposit", n0, n1) ELSE <<>>)
+    \o (IF a.sd > 0 THEN Act("storage_deposit", n1, n2) ELSE <<>>)
+    \o (IF a.xf # "" THEN Act(a.xf, n2, n3) ELSE <<>>)
+ConfTrue == TRUE
 
 \* Model units: 1 NEAR = 1000; the storage minimum is 1; 1 yocto is 1.
 \* As after the spec's setup: alice minted 1000000 FT and sent p 100000;

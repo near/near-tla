@@ -8,6 +8,13 @@ Batch keys <acct>.batch/<shape> (shape [D][S](T|C), modules/Tokens.tla;
 FT: S?(T|C) and S; wNEAR: every shape with at least one action) are
 burns; their GasCall .fee is the batch receipt's exec fee, for the
 creator's WithFee.  An empty batch ("batch/") is not calibrated.
+Per-call keys <acct>.batch/<shape>#<method> (multi-call shapes): the
+burn of that call at its place in the batch, for per-action accounting
+(TokBatchPerAction): the batch with calls 1..i minus the batch with
+calls 1..i-1; the last call's burn agrees with the split check's
+inference within 0.3 Ggas.  A call's burn depends on its place
+(ft_transfer: 806 after storage_deposit, 780 after near_deposit, 818
+alone), so the standalone keys do not fit here.
 ft_on_transfer's exec fee belongs to the receiver's own GasCall entry
 (888 Ggas measured for the probe receiver).
 near-contract-standards 5.29.1 gives ft_on_transfer static 0 and

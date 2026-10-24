@@ -47,7 +47,7 @@ once per point.
 | `src/spec.rs` | the flow-spec format |
 | `src/calib.rs` | the split check, burn collection and fit, and the TLA+ emitter |
 | `src/bin/calibrate.rs` | the calibration / sweep tool |
-| `tests/semantics.rs` | receipt semantics: local-receipt priority (D2), signer propagation (D1), DeleteKey batch atomicity |
+| `tests/semantics.rs` | receipt semantics: local-receipt priority, signer propagation, DeleteKey batch atomicity (`docs/SEMANTICS.md` S1, K1, M1) |
 | `tests/smoke.rs` | the smoke grid: split check (per action too), standard burns, action-only fees, two window edges |
 | `tla/ProbeConf.tla` | the model side: the probe contract on the library, one flow per run, `PrintT` per receipt |
 | `tla/CalibProbes.tla` | the probe world's burn and exec-fee table (generated) |
@@ -135,6 +135,11 @@ A flow passes `conform.py` only if TLC finished without error, the sweep's `.met
 current `flows/probes.toml`, the model has every grid point, every status vector is equal, the
 edges are identical and every attached gas is within `--tol` (5 Ggas).
 
+The model runs with `TokBatchPerAction <- TRUE`, `Contracts` = the four probe accounts with
+code, and `BatchPA <- ConfBatchPA` (`tla/ProbeConf.tla`), which keys each call of a token batch
+`<acct>.batch/<shape>#<method>` (the per-call keys above) instead of the library's standalone
+`<acct>.<method>`. Token gas knobs are the library defaults.
+
 For a quick look, `mkconf.py --grid smoke` runs the model on the smoke grid, and
 `conform.py --subset` compares only the points the model has (it says so). Calibrate on the
 standard grid only: burns are taken at the top of each flow's grid, but a coarse grid can miss
@@ -150,10 +155,10 @@ file sha256, grid. `--force-data` uses it anyway and records the difference in t
 
 ```sh
 cargo run --release --bin calibrate -- --flows flows/probes.toml --from-data \
-  --merge-accts ft,wrap --tla tla/CalibProbes.tla --prefix Probe
+  --merge-accts ft,wrap --batch-actions --tla tla/CalibProbes.tla --prefix Probe
 
 cargo run --release --bin calibrate -- --flows flows/probes.toml --from-data \
-  --merge-accts ft,wrap --group ft:StdFt --group wrap:StdWNear \
+  --merge-accts ft,wrap --batch-actions --group ft:StdFt --group wrap:StdWNear \
   --tla ../modules/CalibStd.tla --module CalibStd --notes flows/calibstd.notes
 ```
 
@@ -187,14 +192,24 @@ The tool works in three steps:
      the outcome, so it is inferred at the top of the grid and the prediction checked at every
      other point. The report prints the last call's burn and the earlier calls' burn.
 2. **Burns.** It takes each receipt's burn at the top of the grid:
-   `gas_burnt − exec_fees − send fees of action-only children` (D6). Send fees come from the fee
+   `gas_burnt − exec_fees − send fees of action-only children` (the creator pays those children's
+   send fees out of its own gas: `docs/SEMANTICS.md` G4). Send fees come from the fee
    table: Transfer by the receiver's account kind (named, NEAR-implicit, eth-implicit),
    CreateAccount, DeleteAccount, DeleteKey, Stake. AddKey and the deploy actions depend on
    arguments the outcome does not record; one per receipt is solved from the exec fee the child
    prepaid (full-access key, or base + per byte · n with n whole) and priced from the same
    parameters.
 3. **Fit.** For each key it fits `base + per · size` (Ggas, size in the unit of `[[size]]`). It
-   prints the residuals and the spread over all successful receipts.
+   prints the residuals and the spread over all successful receipts. `base` and exec fees are
+   rounded up to whole Ggas, so the model never has more gas left than nearcore; otherwise a
+   receipt that needs a fraction of a Ggas more than its prepaid gas succeeds in the model.
+
+A key that never succeeds (a receipt that always fails, such as a receiver that panics) takes
+the burn up to its failure (status `failed`, not out of gas), commented as such: the model
+needs it to tell a panic from running out of gas first. `--batch-actions` adds, for every
+multi-call key `K` (calls m1..mn), per-call keys `K#mi`: the burn of the receipt holding
+m1..mi minus that of m1..m(i-1), so the prefixes must be calibrated too. The last call's burn
+is checked against the split check's inference.
 
 It writes a table only if every check passed: no split mismatch, no child without a declared
 static (such a parent would otherwise go unchecked), every action-only fee priced, every size
@@ -277,44 +292,120 @@ An "edge" is a grid point where the status vector changes. The status vector is 
   (checked per action), 0 mismatches, worst difference 0 gas.
 - **Action-only children:** exec fees equal the fee table (named 223.18, eth-implicit 7423.18,
   NEAR-implicit 7524.95 Ggas; `flows/actions.toml` adds AddKey, CreateAccount, DeleteAccount).
-- **Multi-call receipts** (burn of the last call / of the earlier calls, Ggas): wNEAR DC
-  1545.9 / 608.2, DSC 1545.9 / 1183.0, SC 1571.0 / 590.8; FT SC 1570.7 / 591.4.
+- **Token batches, per call** (Ggas): a call's burn depends on its place. `ft_transfer` burns
+  818 alone, 806 after `storage_deposit`, 780 after `near_deposit`; `ft_transfer_call` 1584
+  alone, 1571 after `storage_deposit`, 1546 after `near_deposit`. The last call's burn by
+  prefixes agrees with the split check's inference within 1 Ggas (DC, DSC 1545.9; SC 1570.7
+  and 1571.0).
 - **near-contract-standards 5.29.1, `ft_transfer_call`:** `ft_on_transfer` gets static 0 and the
   leftover by weight 1; `ft_resolve_transfer` static 5 Tgas, weight 0. No reserve and no
   prepaid check: the call fails for lack of gas only when burn + 2 child exec fees + 5 Tgas
   exceeds prepaid (edge at 8.4 Tgas); between 8.4 and 8.8 Tgas the receiver runs out of gas.
 
-**Model conformance:** to be re-run on `../modules/` after the library changes listed in the
-mismatch log land; `scripts/conform.py` prints the table.
+**Model conformance** on `../modules/` at commit `09b28f5` (output of `scripts/conform.py`;
+1313 points per flow; edges in Tgas). 56 of 58 flows pass.
+
+| flow | points | missing | statuses equal | gas within 5 Ggas | gas worst (Ggas) | sim edges (Tgas) | model edges equal | result |
+|---|---:|---:|---:|---:|---:|---|---|---|
+| chain1 | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 12.9 | yes | pass |
+| chain3w | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 13.1 | yes | pass |
+| chain_w0 | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 9.9 | yes | pass |
+| chain_s0 | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 5.9 | yes | pass |
+| ret0 | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 10.9 | yes | pass |
+| ret1000 | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 10.9 | yes | pass |
+| ret10000 | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 10.9 | yes | pass |
+| ret100000 | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 17.9 | yes | pass |
+| retc0 | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 10.9 | yes | pass |
+| retc10000 | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 10.9 | yes | pass |
+| send_named | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.8 | yes | pass |
+| send_named_missing | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.8 | yes | pass |
+| send_nimp | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 8.7 | yes | pass |
+| send_nimp_new | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 8.7 | yes | pass |
+| send_eth | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 8.5 | yes | pass |
+| send_eth_new | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 8.5 | yes | pass |
+| send_eth_new_cb | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 14.8 | yes | pass |
+| send_named_missing_cb | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 7.1 | yes | pass |
+| ft_call_keep | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 8.4, 8.8 | yes | pass |
+| ft_call_return | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 8.8 | yes | pass |
+| ft_call_over | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 8.4, 8.8 | yes | pass |
+| ft_call_panic | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 8.7 | yes | pass |
+| ft_call_burn20000 | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 28.5 | yes | pass |
+| ft_call_big2000 | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 8.9 | yes | pass |
+| ft_transfer | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.9 | yes | pass |
+| ft_storage_new | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.6 | yes | pass |
+| ft_storage_again | 1313 | 0 | 1312 | 1313 | 0 | 0.5, 1.0 | no (0.5, 1.1) | FAIL |
+| wrap_deposit | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.7 | yes | pass |
+| wrap_deposit_new | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.7 | yes | pass |
+| wrap_withdraw | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 1.1 | yes | pass |
+| wrap_transfer | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.9 | yes | pass |
+| wrap_call | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 8.8 | yes | pass |
+| wrap_call_return | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 8.8 | yes | pass |
+| wrap_call_over | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 8.4, 8.8 | yes | pass |
+| wrap_storage_new | 1313 | 0 | 1313 | 1313 | 0 | 0.5, 0.6 | yes | pass |
+| wrap_storage_again | 1313 | 0 | 1312 | 1313 | 0 | 0.5, 1.0 | no (0.5, 1.1) | FAIL |
+| ft_balance_of | 1313 | 0 | 1313 | 1313 | 0 | 0.5 | yes | pass |
+| ft_total_supply | 1313 | 0 | 1313 | 1313 | 0 | 0.5 | yes | pass |
+| ft_storage_balance_of | 1313 | 0 | 1313 | 1313 | 0 | 0.5 | yes | pass |
+| wrap_balance_of | 1313 | 0 | 1313 | 1313 | 0 | 0.5 | yes | pass |
+| wrap_total_supply | 1313 | 0 | 1313 | 1313 | 0 | 0.5 | yes | pass |
+| wrap_storage_balance_of | 1313 | 0 | 1313 | 1313 | 0 | 0.5 | yes | pass |
+| ft_batch_T | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 6.6 | yes | pass |
+| ft_batch_C | 1313 | 0 | 1313 | 1313 | 4 | 0.5, 31.6 | yes | pass |
+| ft_batch_ST | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 12.6 | yes | pass |
+| ft_batch_SC | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 37.6 | yes | pass |
+| ft_batch_S | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 6.6 | yes | pass |
+| wrap_batch_T | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 6.6 | yes | pass |
+| wrap_batch_C | 1313 | 0 | 1313 | 1313 | 3 | 0.5, 31.6 | yes | pass |
+| wrap_batch_ST | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 12.6 | yes | pass |
+| wrap_batch_SC | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 37.6 | yes | pass |
+| wrap_batch_S | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 6.6 | yes | pass |
+| wrap_batch_D | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 6.6 | yes | pass |
+| wrap_batch_DS | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 12.6 | yes | pass |
+| wrap_batch_DT | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 12.6 | yes | pass |
+| wrap_batch_DC | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 37.6 | yes | pass |
+| wrap_batch_DST | 1313 | 0 | 1313 | 1313 | 1 | 0.5, 18.6 | yes | pass |
+| wrap_batch_DSC | 1313 | 0 | 1313 | 1313 | 2 | 0.5, 43.6 | yes | pass |
 
 ## Mismatch log
 
-Differences between the model and nearcore found by these flows. The sim was not patched, and
-none is a sim-vs-nearcore divergence: the sim runs nearcore's runtime.
+Differences between the model and nearcore found by these flows, and what became of them. The
+sim was not patched, and none is a sim-vs-nearcore divergence: the sim runs nearcore's runtime.
 
-1. **chain_s0: a function call with 0 attached gas.** nearcore rejects the parent's promise
+Open:
+
+1. **ft_storage_again, wrap_storage_again: edge at 1.0 Tgas in nearcore, 1.1 in the model.**
+   `storage_deposit` for an account already registered refunds the deposit and burns 552 Ggas;
+   registering burns 591. The token modules have one burn key per method, which holds the
+   larger. At 1.0 Tgas nearcore needs 552 + 446 (the refund Transfer's fees) = 998 Ggas and
+   succeeds; the model needs 591 + 446 = 1037 and runs out of gas. Needs per-path token burn
+   keys in the library (below the merged-key table).
+
+Fixed (in the library at `09b28f5`, or here):
+
+2. **chain_s0: a function call with 0 attached gas.** nearcore rejects the parent's promise
    (`ActionsValidation(FunctionCallZeroAttachedGas)`): the parent fails and no child exists.
-   The model created the child, which ran out of gas, and the parent succeeded. Library fix in
-   progress.
-2. **ft_call_panic, 8.4-8.6 Tgas.** The receiver runs out of gas before it reaches its panic
-   (`oog`); the model reported `failed` (it checked the error before gas). Label only; the
-   revert and refund are the same. Library fix in progress.
-3. **Token batches with ft_transfer_call (DC, DSC, SC): attached gas of `ft_on_transfer`.**
-   nearcore splits the leftover per function-call action (the last call's gas minus its burn
-   and its children's costs; earlier calls' leftover is refunded); the model split the
-   receipt's whole leftover. Statuses and edges agree; attached gas differed by up to 180 Tgas.
-   The calibrator's per-action check reproduces nearcore exactly (numbers above). Library fix
-   in progress.
-4. **p.send's burn grows with the receiver id's length** (286-306 Ggas). The send flows now key
-   it per receiver (`path`), which removes the 11 Ggas difference an earlier single key gave.
-5. **Merged token keys.** The token modules have one burn key per method, so a key whose burn
-   depends on the path holds the largest burn, seen at the top of a flow's grid:
+   Now in the library; the parent's burn is calibrated from that failure.
+3. **ft_call_panic, 8.4-8.6 Tgas.** The receiver runs out of gas before it reaches its panic.
+   The library labels a panic its gas could not reach `oog`; this needs the panic path's burn
+   (`q.ft_on_transfer/panic`, the burn up to the failure, 288 Ggas).
+4. **Token batches with `ft_transfer_call`: attached gas of `ft_on_transfer`.** nearcore splits
+   the leftover per call. The library does too with `TokBatchPerAction`, but keys each call by
+   its standalone burn; in a batch `ft_transfer_call` burns 39 Ggas less after `near_deposit`
+   (13 after `storage_deposit`), so `ft_on_transfer` got up to 38 Ggas too little. With the
+   per-call keys (`ConfBatchPA`) all batch flows pass.
+5. **wrap_batch_D at 6.5 Tgas.** nearcore needs a fraction of a Ggas more than 6500; with burns
+   and fees rounded to the nearest Ggas the model needed exactly 6500 and succeeded. Burns and
+   fees now round up.
+6. **p.send's burn grows with the receiver id's length** (286-306 Ggas): keyed per receiver.
 
-   | key | path burns (Ggas) |
-   |---|---|
-   | `wrap.near_deposit` | 604 registered / 674 registering |
-   | `ft.ft_resolve_transfer` | 415 / 855 with a refund |
-   | `wrap.ft_resolve_transfer` | 417 / 863 with a refund |
-   | `ft.storage_deposit`, `wrap.storage_deposit` | 552 with a refund / 591 |
+**Merged token keys.** The token modules have one burn key per method, so a key whose burn
+depends on the path holds the largest burn, seen at the top of a flow's grid:
 
-   Conservative by construction.
+| key | path burns (Ggas) |
+|---|---|
+| `wrap.near_deposit` | 604 registered / 674 registering |
+| `ft.ft_resolve_transfer` | 415 / 855 with a refund |
+| `wrap.ft_resolve_transfer` | 417 / 863 with a refund |
+| `ft.storage_deposit`, `wrap.storage_deposit` | 552 with a refund / 591 |
+
+This is conservative, and it shows only at a low edge (item 1).

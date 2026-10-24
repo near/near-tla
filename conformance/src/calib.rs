@@ -331,6 +331,8 @@ pub struct Obs {
     pub path: String,
     pub size: u64,
     pub burn: u64,
+    /// A failed receipt's burn up to its failure.
+    pub failure: bool,
 }
 
 #[derive(Default, Debug)]
@@ -347,6 +349,8 @@ pub struct Burns {
     pub notes: Vec<String>,
     /// Problems that block a table.
     pub errors: Vec<String>,
+    /// Burns of failed (not out-of-gas) receipts at the top of a grid.
+    pub fail_obs: BTreeMap<(String, String, String), Vec<Obs>>,
     /// Keys whose receipt never succeeded.
     pub never_ok: BTreeSet<String>,
 }
@@ -382,7 +386,8 @@ fn size_of(res: &Resolved, flow: &Flow, p: &Value) -> Result<u64, String> {
 }
 
 /// Burn of every ok function-call receipt: `burnt - exec_fees - send fees
-/// of its action-only children` (CONTRACTS D6). The flow's calibration
+/// of its action-only children` (the creator pays those children's send fees
+/// out of its gas, docs/SEMANTICS.md G4). The flow's calibration
 /// point is its largest grid gas.
 pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b: &mut Burns) {
     let top = lines.iter().map(|v| u(&v["gas"])).max().unwrap_or(0);
@@ -412,6 +417,12 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
                 if !b.obs.contains_key(&key) {
                     b.never_ok.insert(format!("{acct}.{mkey} ({})", flow.name));
                 }
+                // A receipt that failed (not out of gas) burnt this much up
+                // to its failure; used for keys that never succeed.
+                if s(&p["status"]) == "failed" && u(&v["gas"]) == top {
+                    let burn = u(&p["burnt"]) - u(&p["exec_fees"]);
+                    b.fail_obs.entry(key).or_default().push(Obs { flow: flow.name.clone(), path, size, burn, failure: true });
+                }
                 continue;
             }
             let mut ao_send = 0u64;
@@ -432,7 +443,7 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
             e.0 = e.0.min(burn);
             e.1 = e.1.max(burn);
             if u(&v["gas"]) == top {
-                b.obs.entry(key).or_default().push(Obs { flow: flow.name.clone(), path, size, burn });
+                b.obs.entry(key).or_default().push(Obs { flow: flow.name.clone(), path, size, burn, failure: false });
             }
         }
     }
@@ -448,8 +459,12 @@ pub struct BurnRow {
     /// or `method/<flow path>`.
     pub key: String,
     pub shape: String,
-    /// Ggas.
+    /// Ggas, rounded up (so the model never overstates the gas left).
     pub base: u64,
+    /// Gas, unrounded.
+    pub base_exact: f64,
+    /// Measured on the failure path (the key never succeeded).
+    pub failure: bool,
     /// Ggas per size unit, rounded; `per_exact` unrounded.
     pub per: u64,
     pub per_exact: f64,
@@ -486,7 +501,19 @@ fn fit(obs: &[Obs]) -> (f64, f64, f64) {
 pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
     let mut warn = vec![];
     let mut shapes: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-    for (a, m, sh) in b.obs.keys() {
+    // Keys that never succeeded take the burn up to their failure (not for
+    // merged accounts, whose keys hold successful paths).
+    // (A failure path is one (account, key, shape, path) with no success.)
+    let mut all: BTreeMap<(String, String, String), Vec<Obs>> = b.obs.clone();
+    for (k, v) in &b.fail_obs {
+        if merge.contains(&k.0) {
+            continue;
+        }
+        let ok_paths: BTreeSet<String> = b.obs.get(k).map(|os| os.iter().map(|o| o.path.clone()).collect()).unwrap_or_default();
+        let e = all.entry(k.clone()).or_default();
+        e.extend(v.iter().filter(|o| !ok_paths.contains(&o.path)).cloned());
+    }
+    for (a, m, sh) in all.keys() {
         shapes.entry((a.clone(), m.clone())).or_default().insert(sh.clone());
     }
     let mut merged: BTreeMap<(String, String), Vec<Obs>> = BTreeMap::new();
@@ -524,7 +551,9 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
             acct: a.clone(),
             key: m.clone(),
             shape: shapes[&(a.clone(), m.clone())].iter().cloned().collect::<Vec<_>>().join(" | "),
-            base: (base / GGAS as f64).round().max(0.0) as u64,
+            base: (base / GGAS as f64).ceil().max(0.0) as u64,
+            base_exact: base,
+            failure: false,
             per: (per / GGAS as f64).round().max(0.0) as u64,
             per_exact: per / GGAS as f64,
             max_resid_gas: resid,
@@ -533,7 +562,7 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
             spread,
         });
     }
-    for ((a, m, sh), obs) in &b.obs {
+    for ((a, m, sh), obs) in &all {
         if merge.contains(a) {
             continue;
         }
@@ -544,6 +573,7 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
         let multi = shapes[&(a.clone(), m.clone())].len() > 1;
         let by_path_n = by_path.len();
         for (path, os) in by_path {
+            let is_fail = os.iter().all(|o| o.failure);
             let mut key = m.clone();
             if multi {
                 key = format!("{key}/{}", if sh.is_empty() { "-" } else { sh.as_str() });
@@ -557,13 +587,15 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
                 acct: a.clone(),
                 key,
                 shape: sh.clone(),
-                base: (base / GGAS as f64).round().max(0.0) as u64,
+                base: (base / GGAS as f64).ceil().max(0.0) as u64,
+                base_exact: base,
+                failure: is_fail,
                 per: (per / GGAS as f64).round().max(0.0) as u64,
                 per_exact: per / GGAS as f64,
                 max_resid_gas: resid,
                 n: os.len(),
                 flows: flows.into_iter().collect(),
-                spread: if by_path_n > 1 { (os.iter().map(|o| o.burn).min().unwrap(), os.iter().map(|o| o.burn).max().unwrap()) } else { b.spread[&(a.clone(), m.clone(), sh.clone())] },
+                spread: if by_path_n > 1 || is_fail { (os.iter().map(|o| o.burn).min().unwrap(), os.iter().map(|o| o.burn).max().unwrap()) } else { b.spread[&(a.clone(), m.clone(), sh.clone())] },
             });
         }
     }
@@ -582,7 +614,8 @@ pub struct Table {
     pub calls: Vec<(String, String, Vec<[u64; 2]>, u64, String)>,
 }
 
-/// Writes a TLA+ module with the provenance header (CONTRACTS C4) and the
+/// Writes a TLA+ module with its provenance header (what the numbers were
+/// measured on, and how to reproduce them) and the
 /// tables.
 pub fn emit_tla(
     module: &str,
@@ -683,7 +716,7 @@ fn emit_table(o: &mut String, t: &Table) {
             r.spread.1 as f64 / 1e12,
             if r.per_exact != 0.0 { format!("; per exact {:.4}", r.per_exact) } else { String::new() },
             if resid >= 0.5 { format!("; max residual {resid:.1}") } else { String::new() },
-        ));
+        ) + if r.failure { "; burn up to the failure (never succeeds)" } else { "" });
     }
     let _ = writeln!(o, "{prefix}GasBurn{args} ==");
     if burn.is_empty() {

@@ -8,7 +8,7 @@
 //!             [--merge-accts a,..] [--accts a,..]
 //!             [--tla OUT.tla [--module NAME] [--prefix P] [--params a,..]
 //!              [--group acct:Prefix]... [--note TEXT]... [--notes FILE]
-//!              [--allow-partial]]
+//!              [--allow-partial]] [--batch-actions]
 //!
 //! A table is written only if every check passed: every function-call
 //! child's attached gas reproduced (single-call parents directly,
@@ -32,7 +32,7 @@ fn usage() -> ! {
         "usage: calibrate --flows FILE [--wasm PATH] [--flow NAME]... [--grid standard|smoke|lo:hi:step]\n\
          \x20                [--data DIR] [--from-data [--force-data]] [--merge-accts a,b] [--accts a,b]\n\
          \x20                [--tla OUT.tla [--module NAME] [--prefix P] [--params a,b] [--group acct:Prefix]...\n\
-         \x20                 [--note TEXT]... [--notes FILE] [--allow-partial]]"
+         \x20                 [--note TEXT]... [--notes FILE] [--allow-partial]] [--batch-actions]"
     );
     std::process::exit(2)
 }
@@ -75,7 +75,7 @@ fn main() {
     let mut a = std::env::args().skip(1);
     let (mut flows_path, mut wasm, mut only, mut grid, mut data, mut tla, mut module, mut prefix, mut params) =
         (None, None, vec![], None, None, None, None, String::new(), vec![]);
-    let (mut from_data, mut force_data, mut allow_partial) = (false, false, false);
+    let (mut from_data, mut force_data, mut allow_partial, mut batch_actions) = (false, false, false, false);
     let (mut merge, mut accts, mut groups, mut notes): (Vec<String>, Vec<String>, Vec<String>, Vec<String>) = (vec![], vec![], vec![], vec![]);
     while let Some(x) = a.next() {
         let mut val = || a.next().unwrap_or_else(|| usage());
@@ -92,6 +92,7 @@ fn main() {
             "--from-data" => from_data = true,
             "--force-data" => force_data = true,
             "--allow-partial" => allow_partial = true,
+            "--batch-actions" => batch_actions = true,
             "--merge-accts" => merge = list(val()),
             "--group" => groups.push(val()),
             "--note" => notes.push(val()),
@@ -210,7 +211,14 @@ fn main() {
             println!("  {rx}: measured {got} table {want}{}", if got == want { "" } else { "  DIFFERS" });
         }
     }
-    let (rows, merge_warn) = calib::burn_rows(&burns, &merge);
+    let (mut rows, merge_warn) = calib::burn_rows(&burns, &merge);
+    let mut pa_fail: Vec<String> = vec![];
+    if batch_actions {
+        let (extra, fail) = per_action_rows(&res, &rows, &split);
+        rows.extend(extra);
+        rows.sort_by(|x, y| (&x.acct, &x.key).cmp(&(&y.acct, &y.key)));
+        pa_fail = fail;
+    }
     println!("\n| key | children | burn base Ggas | per (Ggas/size) | points | spread Tgas | flows |");
     println!("|---|---|---:|---:|---:|---|---|");
     for r in &rows {
@@ -249,6 +257,7 @@ fn main() {
     failed.extend(split.errors.iter().cloned());
     failed.extend(burns.errors.iter().cloned());
     failed.extend(merge_warn.iter().cloned());
+    failed.extend(pa_fail.iter().cloned());
     failed.extend(data_warn.iter().cloned());
     if !failed.is_empty() {
         println!("\nchecks FAILED:");
@@ -306,7 +315,7 @@ fn main() {
             (vec![], "static/weight vary by caller: set them with WithCall".to_owned())
         };
         let fee = *fs.iter().max().unwrap();
-        calls.push((acct.to_owned(), m.to_owned(), acts, (fee as f64 / 1e9).round() as u64, cmt));
+        calls.push((acct.to_owned(), m.to_owned(), acts, fee.div_ceil(1_000_000_000), cmt));
     }
     let rows: Vec<_> = rows.iter().filter(|r| accts.is_empty() || accts.contains(&r.acct)).cloned().collect();
     calls.sort();
@@ -335,4 +344,76 @@ fn main() {
     let text = calib::emit_tla(&module, &prov, &wasms, &tables, &command_line(), &data_lines, &notes, if failed.is_empty() { &[] } else { &failed });
     std::fs::write(&out, text).unwrap();
     println!("\nwrote {}{}", out.display(), if failed.is_empty() { "" } else { " (PARTIAL)" });
+}
+
+/// With `--batch-actions`: the burn of each call in a multi-call receipt
+/// key `K` (methods m1+..+mn), as `K#mi` = burn of the receipt holding
+/// m1..mi minus that of m1..m(i-1). The prefixes must be calibrated keys
+/// of the same account (by `world.keys` or a flow's `keys`). The last
+/// call's burn is checked against the per-action split check's inference
+/// where that ran (a receipt whose last call creates weighted children).
+fn per_action_rows(res: &Resolved, rows: &[calib::BurnRow], split: &SplitReport) -> (Vec<calib::BurnRow>, Vec<String>) {
+    let fwd = |raw: &str| -> Option<String> {
+        res.spec.world.keys.get(raw).or_else(|| res.spec.flows.iter().find_map(|f| f.keys.get(raw))).cloned()
+    };
+    let mut rev: BTreeMap<String, String> = BTreeMap::new();
+    for (raw, mk) in res.spec.world.keys.iter().chain(res.spec.flows.iter().flat_map(|f| f.keys.iter())) {
+        rev.insert(mk.clone(), raw.clone());
+    }
+    let (mut out, mut fail) = (vec![], vec![]);
+    for r in rows {
+        let Some(raw) = rev.get(&r.key) else { continue };
+        let ms: Vec<&str> = raw.split('+').collect();
+        if ms.len() < 2 {
+            continue;
+        }
+        let mut prev = 0i64;
+        let mut acts = vec![];
+        for i in 1..=ms.len() {
+            let pre = ms[..i].join("+");
+            let base = fwd(&pre).and_then(|mk| rows.iter().find(|x| x.acct == r.acct && x.key == mk)).map(|x| x.base_exact.round() as i64);
+            let Some(b) = base else {
+                fail.push(format!("{}.{}: no calibrated receipt for the prefix {pre}: per-call burns not derived", r.acct, r.key));
+                acts.clear();
+                break;
+            };
+            if b < prev {
+                fail.push(format!("{}.{}: prefix {pre} burns less than the one before it", r.acct, r.key));
+            }
+            acts.push((ms[i - 1], (b - prev).max(0) as u64)); // gas
+            prev = b;
+        }
+        if acts.is_empty() {
+            continue;
+        }
+        let acts: Vec<(&str, u64)> = acts.into_iter().map(|(m, g)| (m, g.div_ceil(1_000_000_000))).collect();
+        let last = acts.last().unwrap();
+        let suffix = format!(".{raw} -> ");
+        for (f, k, inferred, _) in &split.per_action {
+            if res.name(k.split(&suffix).next().unwrap_or("")) == r.acct && k.contains(&suffix) {
+                let d = (inferred - last.1 as f64).abs();
+                println!("  per-call burn {}.{}#{}: {} by prefixes, {:.1} inferred in {f}", r.acct, r.key, last.0, last.1, inferred);
+                if d > 1.5 {
+                    fail.push(format!("{}.{}#{}: {} by prefixes but {inferred:.1} inferred from the split ({f})", r.acct, r.key, last.0, last.1));
+                }
+            }
+        }
+        for (m, b) in acts {
+            out.push(calib::BurnRow {
+                acct: r.acct.clone(),
+                key: format!("{}#{m}", r.key),
+                shape: String::new(),
+                base: b,
+                base_exact: (b * 1_000_000_000) as f64,
+                failure: false,
+                per: 0,
+                per_exact: 0.0,
+                max_resid_gas: 0.0,
+                n: 1,
+                flows: r.flows.clone(),
+                spread: (b * 1_000_000_000, b * 1_000_000_000),
+            });
+        }
+    }
+    (out, fail)
 }

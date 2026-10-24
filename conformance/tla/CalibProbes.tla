@@ -26,9 +26,9 @@
 (*     sha256 fe61c212e119387f479195e64098ceea                             *)
 (*            cbed184cac9ef07728172d2cac084b2d                             *)
 (* command: calibrate --flows flows/probes.toml --from-data --merge-accts  *)
-(*     ft,wrap --tla tla/CalibProbes.tla --prefix Probe                    *)
+(*     ft,wrap --batch-actions --tla tla/CalibProbes.tla --prefix Probe    *)
 (* flows: probes.toml sha256                                               *)
-(*     88453282515f122a187fdb440fcd41c077c21c1cddba987eb1a089c25f7986ea    *)
+(*     e3a014bd724fd62d342e60048be3767adbd7cc75d3020bc496b6559a78311800    *)
 (* grid: standard (1313 points), 58 flows                                  *)
 (* split check: 76662 children, 0 mismatches; 7408 per action              *)
 (*                                                                         *)
@@ -39,94 +39,116 @@ EXTENDS TLC, Sequences
 
 ProbeGasBurn ==
     "ft.batch/C" :> [base |-> 1587, per |-> 0] @@  \* 1 pt; spread 1.587-1.587 Tgas
-    "ft.batch/S" :> [base |-> 591, per |-> 0] @@  \* 1 pt; spread 0.591-0.591 Tgas
-    "ft.batch/SC" :> [base |-> 2162, per |-> 0] @@  \* 1 pt; spread 2.162-2.162 Tgas
+    "ft.batch/S" :> [base |-> 592, per |-> 0] @@  \* 1 pt; spread 0.591-0.591 Tgas
+    "ft.batch/SC" :> [base |-> 2163, per |-> 0] @@  \* 1 pt; spread 2.162-2.162 Tgas
+    "ft.batch/SC#ft_transfer_call" :> [base |-> 1571, per |-> 0] @@  \* 1 pt; spread 1.571-1.571 Tgas
+    "ft.batch/SC#storage_deposit" :> [base |-> 592, per |-> 0] @@  \* 1 pt; spread 0.592-0.592 Tgas
     "ft.batch/ST" :> [base |-> 1397, per |-> 0] @@  \* 1 pt; spread 1.397-1.397 Tgas
-    "ft.batch/T" :> [base |-> 821, per |-> 0] @@  \* 1 pt; spread 0.821-0.821 Tgas
+    "ft.batch/ST#ft_transfer" :> [base |-> 806, per |-> 0] @@  \* 1 pt; spread 0.806-0.806 Tgas
+    "ft.batch/ST#storage_deposit" :> [base |-> 592, per |-> 0] @@  \* 1 pt; spread 0.592-0.592 Tgas
+    "ft.batch/T" :> [base |-> 822, per |-> 0] @@  \* 1 pt; spread 0.821-0.821 Tgas
     "ft.ft_balance_of" :> [base |-> 352, per |-> 0] @@  \* 1 pt; spread 0.352-0.352 Tgas
-    "ft.ft_resolve_transfer" :> [base |-> 855, per |-> 0] @@  \* 8 pts; spread 0.415-0.855 Tgas; max residual 440.1
+    "ft.ft_resolve_transfer" :> [base |-> 856, per |-> 0] @@  \* 8 pts; spread 0.415-0.855 Tgas; max residual 440.1
     "ft.ft_total_supply" :> [base |-> 267, per |-> 0] @@  \* 1 pt; spread 0.267-0.267 Tgas
     "ft.ft_transfer" :> [base |-> 818, per |-> 0] @@  \* 1 pt; spread 0.818-0.818 Tgas
     "ft.ft_transfer_call" :> [base |-> 1584, per |-> 0] @@  \* 6 pts; spread 1.583-1.584 Tgas; max residual 0.6
-    "ft.storage_balance_of" :> [base |-> 345, per |-> 0] @@  \* 1 pt; spread 0.345-0.345 Tgas
-    "ft.storage_deposit" :> [base |-> 591, per |-> 0] @@  \* 2 pts; spread 0.552-0.591 Tgas; max residual 39.0
+    "ft.storage_balance_of" :> [base |-> 346, per |-> 0] @@  \* 1 pt; spread 0.345-0.345 Tgas
+    "ft.storage_deposit" :> [base |-> 592, per |-> 0] @@  \* 2 pts; spread 0.552-0.591 Tgas; max residual 39.0
     "p.batch/ft_transfer" :> [base |-> 621, per |-> 0] @@  \* 2 pts; spread 0.620-0.621 Tgas; max residual 0.7
     "p.batch/ft_transfer_call" :> [base |-> 624, per |-> 0] @@  \* 2 pts; spread 0.623-0.624 Tgas; max residual 0.7
-    "p.batch/near_deposit" :> [base |-> 612, per |-> 0] @@  \* 1 pt; spread 0.612-0.612 Tgas
-    "p.batch/near_deposit+ft_transfer" :> [base |-> 843, per |-> 0] @@  \* 1 pt; spread 0.843-0.843 Tgas
-    "p.batch/near_deposit+ft_transfer_call" :> [base |-> 846, per |-> 0] @@  \* 1 pt; spread 0.846-0.846 Tgas
+    "p.batch/near_deposit" :> [base |-> 613, per |-> 0] @@  \* 1 pt; spread 0.612-0.612 Tgas
+    "p.batch/near_deposit+ft_transfer" :> [base |-> 844, per |-> 0] @@  \* 1 pt; spread 0.843-0.843 Tgas
+    "p.batch/near_deposit+ft_transfer_call" :> [base |-> 847, per |-> 0] @@  \* 1 pt; spread 0.846-0.846 Tgas
     "p.batch/near_deposit+storage_deposit" :> [base |-> 843, per |-> 0] @@  \* 1 pt; spread 0.843-0.843 Tgas
-    "p.batch/near_deposit+storage_deposit+ft_transfer" :> [base |-> 1071, per |-> 0] @@  \* 1 pt; spread 1.071-1.071 Tgas
-    "p.batch/near_deposit+storage_deposit+ft_transfer_call" :> [base |-> 1074, per |-> 0] @@  \* 1 pt; spread 1.074-1.074 Tgas
-    "p.batch/storage_deposit" :> [base |-> 620, per |-> 0] @@  \* 2 pts; spread 0.619-0.620 Tgas; max residual 0.7
+    "p.batch/near_deposit+storage_deposit+ft_transfer" :> [base |-> 1072, per |-> 0] @@  \* 1 pt; spread 1.071-1.071 Tgas
+    "p.batch/near_deposit+storage_deposit+ft_transfer_call" :> [base |-> 1075, per |-> 0] @@  \* 1 pt; spread 1.074-1.074 Tgas
+    "p.batch/storage_deposit" :> [base |-> 621, per |-> 0] @@  \* 2 pts; spread 0.619-0.620 Tgas; max residual 0.7
     "p.batch/storage_deposit+ft_transfer" :> [base |-> 849, per |-> 0] @@  \* 2 pts; spread 0.848-0.849 Tgas; max residual 0.7
     "p.batch/storage_deposit+ft_transfer_call" :> [base |-> 852, per |-> 0] @@  \* 2 pts; spread 0.851-0.852 Tgas; max residual 0.7
-    "p.burn" :> [base |-> 2000, per |-> 0] @@  \* 1 pt; spread 2.000-2.000 Tgas
-    "p.chain/burn,burn,on_read" :> [base |-> 1372, per |-> 0] @@  \* 1 pt; spread 1.372-1.372 Tgas
+    "p.burn" :> [base |-> 2001, per |-> 0] @@  \* 1 pt; spread 2.000-2.000 Tgas
+    "p.chain/burn,burn,on_read" :> [base |-> 1373, per |-> 0] @@  \* 1 pt; spread 1.372-1.372 Tgas
+    "p.chain/burn,on_count" :> [base |-> 1033, per |-> 0] @@  \* 1 pt; spread 1.033-1.033 Tgas; burn up to the failure (never succeeds)
     "p.chain/burn,on_read" :> [base |-> 1033, per |-> 0] @@  \* 2 pts; spread 1.033-1.033 Tgas
     "p.chain/on_count,ret" :> [base |-> 1033, per |-> 0] @@  \* 2 pts; spread 1.033-1.033 Tgas
-    "p.chain/on_read,ret" :> [base |-> 1033, per |-> 0] @@  \* 4 pts; spread 1.033-1.033 Tgas
-    "p.on_count" :> [base |-> 259, per |-> 0] @@  \* 2 pts; spread 0.259-0.259 Tgas
+    "p.chain/on_read,ret" :> [base |-> 1034, per |-> 0] @@  \* 4 pts; spread 1.033-1.033 Tgas
+    "p.on_count" :> [base |-> 260, per |-> 0] @@  \* 2 pts; spread 0.259-0.259 Tgas
     "p.on_read" :> [base |-> 268, per |-> 3] @@  \* 9 pts; spread 0.260-0.552 Tgas; per exact 2.8413; max residual 8.0
     "p.send/[Transfer],on_read/eth_new" :> [base |-> 714, per |-> 0] @@  \* 1 pt; spread 0.714-0.714 Tgas
     "p.send/[Transfer],on_read/nobody" :> [base |-> 703, per |-> 0] @@  \* 1 pt; spread 0.703-0.703 Tgas
-    "p.send/[Transfer]/eth" :> [base |-> 298, per |-> 0] @@  \* 1 pt; spread 0.298-0.298 Tgas
-    "p.send/[Transfer]/eth_new" :> [base |-> 298, per |-> 0] @@  \* 1 pt; spread 0.298-0.298 Tgas
-    "p.send/[Transfer]/nimp" :> [base |-> 306, per |-> 0] @@  \* 1 pt; spread 0.306-0.306 Tgas
-    "p.send/[Transfer]/nimp_new" :> [base |-> 306, per |-> 0] @@  \* 1 pt; spread 0.306-0.306 Tgas
+    "p.send/[Transfer]/eth" :> [base |-> 299, per |-> 0] @@  \* 1 pt; spread 0.298-0.298 Tgas
+    "p.send/[Transfer]/eth_new" :> [base |-> 299, per |-> 0] @@  \* 1 pt; spread 0.298-0.298 Tgas
+    "p.send/[Transfer]/nimp" :> [base |-> 307, per |-> 0] @@  \* 1 pt; spread 0.306-0.306 Tgas
+    "p.send/[Transfer]/nimp_new" :> [base |-> 307, per |-> 0] @@  \* 1 pt; spread 0.306-0.306 Tgas
     "p.send/[Transfer]/nobody" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas
     "p.send/[Transfer]/q" :> [base |-> 286, per |-> 0] @@  \* 1 pt; spread 0.286-0.286 Tgas
     "q.burn" :> [base |-> 0, per |-> 1] @@  \* 3 pts; spread 1.000-2.000 Tgas; per exact 1.0002
-    "q.ft_on_transfer/big2000" :> [base |-> 500, per |-> 0] @@  \* 1 pt; spread 0.500-0.500 Tgas
+    "q.ft_on_transfer/big2000" :> [base |-> 501, per |-> 0] @@  \* 1 pt; spread 0.500-0.500 Tgas
     "q.ft_on_transfer/burn20000" :> [base |-> 20085, per |-> 0] @@  \* 1 pt; spread 20.085-20.085 Tgas
     "q.ft_on_transfer/keep" :> [base |-> 362, per |-> 0] @@  \* 8 pts; spread 0.361-0.362 Tgas
     "q.ft_on_transfer/over" :> [base |-> 363, per |-> 0] @@  \* 2 pts; spread 0.362-0.363 Tgas; max residual 1.0
+    "q.ft_on_transfer/panic" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas; burn up to the failure (never succeeds)
     "q.ft_on_transfer/return" :> [base |-> 363, per |-> 0] @@  \* 2 pts; spread 0.362-0.363 Tgas; max residual 1.0
     "q.ret" :> [base |-> 271, per |-> 70] @@  \* 6 pts; spread 0.270-7.223 Tgas; per exact 69.5272
     "wrap.batch/C" :> [base |-> 1587, per |-> 0] @@  \* 1 pt; spread 1.587-1.587 Tgas
-    "wrap.batch/D" :> [base |-> 608, per |-> 0] @@  \* 1 pt; spread 0.608-0.608 Tgas
-    "wrap.batch/DC" :> [base |-> 2154, per |-> 0] @@  \* 1 pt; spread 2.154-2.154 Tgas
-    "wrap.batch/DS" :> [base |-> 1183, per |-> 0] @@  \* 1 pt; spread 1.183-1.183 Tgas
+    "wrap.batch/D" :> [base |-> 609, per |-> 0] @@  \* 1 pt; spread 0.608-0.608 Tgas
+    "wrap.batch/DC" :> [base |-> 2155, per |-> 0] @@  \* 1 pt; spread 2.154-2.154 Tgas
+    "wrap.batch/DC#ft_transfer_call" :> [base |-> 1546, per |-> 0] @@  \* 1 pt; spread 1.546-1.546 Tgas
+    "wrap.batch/DC#near_deposit" :> [base |-> 609, per |-> 0] @@  \* 1 pt; spread 0.609-0.609 Tgas
+    "wrap.batch/DS" :> [base |-> 1184, per |-> 0] @@  \* 1 pt; spread 1.183-1.183 Tgas
+    "wrap.batch/DS#near_deposit" :> [base |-> 609, per |-> 0] @@  \* 1 pt; spread 0.609-0.609 Tgas
+    "wrap.batch/DS#storage_deposit" :> [base |-> 575, per |-> 0] @@  \* 1 pt; spread 0.575-0.575 Tgas
     "wrap.batch/DSC" :> [base |-> 2729, per |-> 0] @@  \* 1 pt; spread 2.729-2.729 Tgas
+    "wrap.batch/DSC#ft_transfer_call" :> [base |-> 1546, per |-> 0] @@  \* 1 pt; spread 1.546-1.546 Tgas
+    "wrap.batch/DSC#near_deposit" :> [base |-> 609, per |-> 0] @@  \* 1 pt; spread 0.609-0.609 Tgas
+    "wrap.batch/DSC#storage_deposit" :> [base |-> 575, per |-> 0] @@  \* 1 pt; spread 0.575-0.575 Tgas
     "wrap.batch/DST" :> [base |-> 1963, per |-> 0] @@  \* 1 pt; spread 1.963-1.963 Tgas
+    "wrap.batch/DST#ft_transfer" :> [base |-> 780, per |-> 0] @@  \* 1 pt; spread 0.780-0.780 Tgas
+    "wrap.batch/DST#near_deposit" :> [base |-> 609, per |-> 0] @@  \* 1 pt; spread 0.609-0.609 Tgas
+    "wrap.batch/DST#storage_deposit" :> [base |-> 575, per |-> 0] @@  \* 1 pt; spread 0.575-0.575 Tgas
     "wrap.batch/DT" :> [base |-> 1388, per |-> 0] @@  \* 1 pt; spread 1.388-1.388 Tgas
+    "wrap.batch/DT#ft_transfer" :> [base |-> 780, per |-> 0] @@  \* 1 pt; spread 0.780-0.780 Tgas
+    "wrap.batch/DT#near_deposit" :> [base |-> 609, per |-> 0] @@  \* 1 pt; spread 0.609-0.609 Tgas
     "wrap.batch/S" :> [base |-> 591, per |-> 0] @@  \* 1 pt; spread 0.591-0.591 Tgas
     "wrap.batch/SC" :> [base |-> 2162, per |-> 0] @@  \* 1 pt; spread 2.162-2.162 Tgas
+    "wrap.batch/SC#ft_transfer_call" :> [base |-> 1572, per |-> 0] @@  \* 1 pt; spread 1.572-1.572 Tgas
+    "wrap.batch/SC#storage_deposit" :> [base |-> 591, per |-> 0] @@  \* 1 pt; spread 0.591-0.591 Tgas
     "wrap.batch/ST" :> [base |-> 1396, per |-> 0] @@  \* 1 pt; spread 1.396-1.396 Tgas
+    "wrap.batch/ST#ft_transfer" :> [base |-> 805, per |-> 0] @@  \* 1 pt; spread 0.805-0.805 Tgas
+    "wrap.batch/ST#storage_deposit" :> [base |-> 591, per |-> 0] @@  \* 1 pt; spread 0.591-0.591 Tgas
     "wrap.batch/T" :> [base |-> 821, per |-> 0] @@  \* 1 pt; spread 0.821-0.821 Tgas
-    "wrap.ft_balance_of" :> [base |-> 351, per |-> 0] @@  \* 1 pt; spread 0.351-0.351 Tgas
+    "wrap.ft_balance_of" :> [base |-> 352, per |-> 0] @@  \* 1 pt; spread 0.351-0.351 Tgas
     "wrap.ft_resolve_transfer" :> [base |-> 863, per |-> 0] @@  \* 7 pts; spread 0.417-0.863 Tgas; max residual 445.8
-    "wrap.ft_total_supply" :> [base |-> 268, per |-> 0] @@  \* 1 pt; spread 0.268-0.268 Tgas
-    "wrap.ft_transfer" :> [base |-> 818, per |-> 0] @@  \* 1 pt; spread 0.818-0.818 Tgas
+    "wrap.ft_total_supply" :> [base |-> 269, per |-> 0] @@  \* 1 pt; spread 0.268-0.268 Tgas
+    "wrap.ft_transfer" :> [base |-> 819, per |-> 0] @@  \* 1 pt; spread 0.818-0.818 Tgas
     "wrap.ft_transfer_call" :> [base |-> 1585, per |-> 0] @@  \* 3 pts; spread 1.584-1.585 Tgas
-    "wrap.near_deposit" :> [base |-> 674, per |-> 0] @@  \* 2 pts; spread 0.604-0.674 Tgas; max residual 70.0
-    "wrap.near_withdraw" :> [base |-> 578, per |-> 0] @@  \* 1 pt; spread 0.578-0.578 Tgas
+    "wrap.near_deposit" :> [base |-> 675, per |-> 0] @@  \* 2 pts; spread 0.604-0.674 Tgas; max residual 70.0
+    "wrap.near_withdraw" :> [base |-> 579, per |-> 0] @@  \* 1 pt; spread 0.578-0.578 Tgas
     "wrap.storage_balance_of" :> [base |-> 345, per |-> 0] @@  \* 1 pt; spread 0.345-0.345 Tgas
     "wrap.storage_deposit" :> [base |-> 591, per |-> 0]  \* 2 pts; spread 0.552-0.591 Tgas; max residual 39.0
 
 ProbeGasCall ==
-    "ft.batch/C" :> [st |-> <<30000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "ft.batch/S" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "ft.batch/SC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "ft.batch/ST" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "ft.batch/T" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "ft.ft_resolve_transfer" :> [st |-> <<5000>>, wt |-> <<0>>, fee |-> 888] @@
-    "p.burn" :> [st |-> <<2000>>, wt |-> <<2>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "p.on_count" :> [st |-> <<>>, wt |-> <<>>, fee |-> 888] @@  \* static/weight vary by caller: set them with WithCall
-    "p.on_read" :> [st |-> <<>>, wt |-> <<>>, fee |-> 888] @@  \* static/weight vary by caller: set them with WithCall
-    "q.burn" :> [st |-> <<>>, wt |-> <<>>, fee |-> 888] @@  \* static/weight vary by caller: set them with WithCall
-    "q.ft_on_transfer" :> [st |-> <<0>>, wt |-> <<1>>, fee |-> 888] @@
-    "q.ret" :> [st |-> <<>>, wt |-> <<>>, fee |-> 888] @@  \* static/weight vary by caller: set them with WithCall
-    "wrap.batch/C" :> [st |-> <<30000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/D" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/DC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/DS" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/DSC" :> [st |-> <<5000, 5000, 30000>>, wt |-> <<1, 1, 1>>, fee |-> 2448] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/DST" :> [st |-> <<5000, 5000, 5000>>, wt |-> <<1, 1, 1>>, fee |-> 2448] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/DT" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/S" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/SC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/ST" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1668] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.batch/T" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 888] @@  \* static/weight as the probe flows' caller declared them
-    "wrap.ft_resolve_transfer" :> [st |-> <<5000>>, wt |-> <<0>>, fee |-> 888]
+    "ft.batch/C" :> [st |-> <<30000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "ft.batch/S" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "ft.batch/SC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "ft.batch/ST" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "ft.batch/T" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "ft.ft_resolve_transfer" :> [st |-> <<5000>>, wt |-> <<0>>, fee |-> 889] @@
+    "p.burn" :> [st |-> <<2000>>, wt |-> <<2>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "p.on_count" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
+    "p.on_read" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
+    "q.burn" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
+    "q.ft_on_transfer" :> [st |-> <<0>>, wt |-> <<1>>, fee |-> 889] @@
+    "q.ret" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
+    "wrap.batch/C" :> [st |-> <<30000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/D" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/DC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/DS" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/DSC" :> [st |-> <<5000, 5000, 30000>>, wt |-> <<1, 1, 1>>, fee |-> 2449] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/DST" :> [st |-> <<5000, 5000, 5000>>, wt |-> <<1, 1, 1>>, fee |-> 2449] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/DT" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/S" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/SC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/ST" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.batch/T" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "wrap.ft_resolve_transfer" :> [st |-> <<5000>>, wt |-> <<0>>, fee |-> 889]
 =============================================================================
