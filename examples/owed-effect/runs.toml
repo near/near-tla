@@ -39,8 +39,9 @@ MaxTx = "2"
 Amts = "{1, 2}"
 InitBal = "2"
 TResps = '{"ok", "panic", "mal"}'
-Memos = "{1, 16380, 4194290}"
+Memos = "{1, 16377, 16380, 4194290}"
 GasMenu = "{0}"
+MemoCap = "4194304"            # no cap below the 4 MiB argument limit
 Bug = '"none"'
 
 # The correct vault: whatever T does and whatever the memo, on_deliver commits.
@@ -65,6 +66,15 @@ invariant = "OwedOK"
 expect_output = 'why \|-> "TotalLogLengthExceeded"'
 [run.constants]
 Bug = '"log"'
+
+# The same logging vault, with withdraw capping the memo at 16377 bytes: its log is at most
+# 7 + 16377 = 16384 bytes.  The memo_cap sweeps check the cap against the log limit.
+[[run]]
+name = "vault_log_capped"
+expect = "pass"
+[run.constants]
+Bug = '"log"'
+MemoCap = "16377"
 
 # on_deliver returns a receipt that echoes the memo: over 4 MiB with the longest memo.
 [[run]]
@@ -165,6 +175,12 @@ id = "refund_with_long_memo"
 expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ IsFailed(r.res) /\ r.a.memo = 4194290)'
 runs = ["vault_ok"]
 
+# The capped vault logs a memo at its cap (16377 bytes): the log is exactly 16384 bytes.
+[[witness]]
+id = "log_at_cap"
+expr = '~(\E r \in Runnable : r.m = "on_deliver" /\ IsFailed(r.res) /\ r.a.memo = 16377)'
+runs = ["vault_log_capped"]
+
 # The refund path in gas mode at the 4 Tgas burn (T ran out of gas).
 [[witness]]
 id = "gas_refund_path"
@@ -217,3 +233,46 @@ replace = 'b |-> bal'
 class = "failure branch skips rollback"
 runs = ["vault_ok", "vault_gas_ok"]
 killed_by = ["Books"]
+
+# ---- sweeps: python3 tools/run.py examples/owed-effect --sweep ----
+
+# Least gas: the smallest prepaid gas at which the short-budget vault's on_deliver cannot fail
+# (from there T.deliver gets its 3 Tgas, so on_deliver never takes the refund path).  The
+# window run brackets it between 8500 (its top bad value) and 8600.
+[[sweep]]
+id = "vault_need"
+kind = "least_gas"
+run = "vault_gas_short"
+knob = "GasMenu"
+form = '{%d}'
+lo = 0
+hi = 300000
+success = ["OwedOK"]
+window_run = "vault_gas_win"
+expect_need = 8600
+
+# Sizes: the memo at 1, at the vault's cap (16377) and at the log limit (16384), +-1 each.
+# The cap refuses every memo above it, so on_deliver's log never exceeds the limit.
+[[sweep]]
+id = "memo_cap"
+kind = "size"
+run = "vault_log_capped"
+knob = "Memos"
+form = '{%d}'
+cap = 16377
+limit = "MaxLogBytes"
+expect = { "0" = "pass", "1" = "pass", "2" = "pass", "16376" = "pass", "16377" = "pass", "16378" = "pass", "16383" = "pass", "16384" = "pass", "16385" = "pass" }
+
+# The same with the cap one byte too high: the memo at cap fails on_deliver's log.
+[[sweep]]
+id = "memo_cap_off_by_one"
+kind = "size"
+run = "vault_log_capped"
+knob = "Memos"
+form = '{%d}'
+cap = 16378
+limit = "MaxLogBytes"
+floor = 1
+expect = { "1" = "pass", "2" = "pass", "16377" = "pass", "16378" = "violation OwedOK", "16379" = "pass", "16383" = "pass", "16384" = "pass", "16385" = "pass" }
+[sweep.constants]
+MemoCap = "16378"

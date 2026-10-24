@@ -42,6 +42,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [Every invariant must be able to fail](#every-invariant-must-be-able-to-fail)
 - [Witnesses and mutants](#witnesses-and-mutants)
 - [Print-only window invariants](#print-only-window-invariants)
+- [Least gas and size sweeps](#least-gas-and-size-sweeps)
 - [Worked material](#worked-material)
 
 ## The method
@@ -1631,7 +1632,8 @@ definitions are set the same way.
 - These keys belong to one run only and cannot be given at the top level: `name`, `expect`,
   `invariant`, `expect_output`, `expect_window`, `window_step` and `allow_no_invariants`.
 - `[[witness]]` and `[[mutant]]` tables sit beside the `[[run]]` tables and name the runs
-  they apply to ([Witnesses and mutants](#witnesses-and-mutants)).
+  they apply to ([Witnesses and mutants](#witnesses-and-mutants)); so do `[[sweep]]` tables
+  ([Least gas and size sweeps](#least-gas-and-size-sweeps)).
 - `expect_output` (a regex on TLC's output) pins a detail, such as the gas value in the
   violating state.
 - `deadlock = true` makes a stuck receipt an error. Add a terminal stutter step once the model
@@ -1848,6 +1850,66 @@ action-only receipt, plus less than 1 Ggas per weighted child for each split on 
 plus what the smaller leftover passes on. Burns are only as good as their calibration
 ([N-burn](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Under `"nearest"` either
 edge can err by a few Ggas either way, the split included.
+
+## Least gas and size sweeps
+
+A window maps where something breaks on a menu of values. Two questions need exact edges:
+the least prepaid gas at which a run's operation is safe, and how a contract behaves at its own
+size cap and at the protocol limit. `[[sweep]]` tables in `runs.toml` answer both; run them with
+`--sweep` (they are validated on every load, and skipped otherwise). Each sweep value is one
+TLC run of a base run of the same file with a knob constant set to the value.
+
+**Least gas.**
+
+```toml
+[[sweep]]
+id = "vault_need"
+kind = "least_gas"
+run = "vault_gas_short"       # base run: its constants, budget and workers
+knob = "GasMenu"              # the constant set to each value (or a list of constants)
+form = '{%d}'                 # its TLA+ text; %d is the value (default '%d')
+lo = 0                        # a value where success fails
+hi = 300000                   # a value where it holds
+success = ["OwedOK"]          # what "safe" means (default: the run's invariants)
+window_run = "vault_gas_win"  # optional: bracket from a window run's top bad value
+expect_need = 8600            # optional
+```
+
+The runner checks that `success` holds at `hi` and fails at `lo`, bisects in between (about
+20 TLC runs over 0..1,000,000 Ggas; with `window_run`, the window's top bad value and the next
+menu step bracket it in a few), and reports `need − 1`, `need` and `need + 1` with their
+verdicts. The sweep fails unless `need − 1` fails and both `need` and `need + 1` hold; a
+failure at `need + 1` is reported as non-monotone. Give `success` explicitly when the run's
+invariants also hold at low gas for the wrong reason: below the gas the first receipt needs,
+nothing happens and every invariant holds, so `lo` must sit in the failing region (the
+window's top value does). Any other verdict (an `Assert`, a deadlock, a timeout) stops the
+sweep with an error. The base run's own `expect` does not matter: a must-fail run is the
+natural base. `--least-gas 'GasMenu={%d}' --gas-range 0:300000 [--success OwedOK]` runs the
+same search ad hoc on each selected run.
+
+**Sizes.**
+
+```toml
+[[sweep]]
+id = "memo_cap"
+kind = "size"
+run = "vault_log_capped"
+knob = "Memos"
+form = '{%d}'
+cap = 16377                   # the contract's own cap (optional)
+limit = "MaxLogBytes"         # the protocol limit: a number or a NearAsync limit name
+floor = 1                     # optional: drop values below it (default 0)
+expect = { "16378" = "pass" } # optional, per value: "pass", "violation <Inv>", "assert", "deadlock"
+[sweep.constants]             # optional overrides of the base run's constants
+MemoCap = "16377"
+```
+
+The values are 1, `cap` and `limit`, each with −1 and +1, at or above `floor`. Each runs with
+the base run's invariants (or `success`), and its verdict is reported; a value listed in
+`expect` must match. The limit names are NearAsync's (`MaxActionsPerReceipt`,
+`MaxPromisesPerCall`, `MaxJointInputs`, `MaxReturnedData`, `MaxLogs`, `MaxLogBytes`), read
+from the run's library. `examples/owed-effect` has both kinds; `examples/limits` sweeps joint
+inputs around 128.
 
 ## Worked material
 

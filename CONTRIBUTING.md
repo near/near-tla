@@ -31,7 +31,15 @@ python3 tools/run.py 'pay_*'            # runs by name under examples/ (globs wo
 python3 tools/run.py --print-trace pay_ignore   # show the counterexample of a violating run
 python3 tools/run.py --keep pay_std     # keep the generated wrapper, cfg and log in build/
 python3 tools/run.py examples/pay --anti-vacuity   # also its witnesses and mutants
+python3 tools/run.py examples/owed-effect --sweep  # also its least-gas and size sweeps
+python3 tools/run.py examples/owed-effect vault_gas_short --least-gas 'GasMenu={%d}' --gas-range 0:300000
 ```
+
+A `[[sweep]]` finds the least value of a gas knob at which a run's success invariants hold
+and reports need − 1, need and need + 1, or runs a size knob at 1, at the contract's cap and
+at the protocol limit, ±1 each ([Least gas and size
+sweeps](docs/USAGE.md#least-gas-and-size-sweeps)). A change that moves a gas or size edge
+keeps an example's sweeps as expected.
 
 For each run the runner generates a wrapper `MC_<run>.tla` and a config `MC_<run>.cfg` in a
 fresh temporary directory, runs TLC there with `-DTLA-Library` pointing at `modules/`, and

@@ -99,6 +99,40 @@ Anti-vacuity checks (run with --anti-vacuity, after the plain runs; always valid
   or an error is its own result, never "survived", and fails. Each job has its run's
   budget_s and is stopped at it.
 
+Sweeps (run with --sweep, after the plain runs; always validated)
+  [[sweep]]                   # least gas: the smallest knob value at which `success` holds
+  id = "need"                 # [A-Za-z][A-Za-z0-9_]*, unique in the file
+  kind = "least_gas"
+  run = "vault_gas_short"     # the base run (this file's): its constants, budget, workers
+  knob = "GasMenu"            # a constant (or a list of constants) set to each value
+  form = '{%d}'               # its TLA+ text, %d replaced by the value (default '%d')
+  lo = 0                      # a value at which success fails (default 0)
+  hi = 300000                 # a value at which it holds
+  success = ["OwedOK"]        # invariants that define success (default: the run's)
+  window_run = "vault_gas_win"   # optional: a print-only window run of this file; its
+                              # windows' top value becomes lo and the next value hi
+  # window_label = "OwedOK"   # optional: only that label's window
+  # expect_need = 8600        # optional: the need must be this
+  [sweep.constants]           # optional overrides of the base run's constants
+  It checks hi (must hold) and lo (must fail), bisects with one TLC run per value, then
+  reports need - 1, need and need + 1. The sweep fails unless need - 1 fails and need and
+  need + 1 hold (a failure at need + 1 is non-monotone), or if a job ends in anything but
+  pass or a violation of a success invariant.
+
+  [[sweep]]                   # sizes: each value at 1, the cap and the protocol limit, +-1
+  id = "memo"
+  kind = "size"
+  run = "vault_log_capped"
+  knob = "Memos"
+  form = '{%d}'
+  cap = 16377                 # the contract's own cap (optional)
+  limit = "MaxLogBytes"       # the protocol limit: a number or a NearAsync limit name
+  floor = 1                   # optional: drop values below it (default 0)
+  expect = { "16378" = "pass" }   # optional: verdicts per value ("pass", "violation Inv",
+                              # "assert", "deadlock"); without it every verdict is reported
+  Each value runs with the base run's invariants (or `success`). The sweep fails on a
+  value whose verdict differs from `expect`, or on a timeout or error.
+
 Checks
 - "pass" needs TLC's exit code 0, its "No error has been found" line, and at least one
   distinct state; expect = "pass" needs at least one invariant (properties alone do not
@@ -123,6 +157,10 @@ other expectation requires that nothing was peeled. Peel mode checks verdicts, b
 and vacuity only, not expect_output or expect_window.
 
 A temporal formula goes in `specification` (not `spec`, which names the module).
+
+--sweep: after the plain runs, run every [[sweep]] whose base run is selected, and print
+a table. --least-gas 'KNOB=FORM' --gas-range LO:HI [--success INV,..] runs an ad-hoc
+least-gas sweep on each selected run.
 
 --anti-vacuity: after the plain runs, check every [[witness]] and [[mutant]] of the
 selected runs (a check of a run that did not match its expectation is skipped) and print
@@ -151,7 +189,7 @@ import tempfile  # noqa: E402
 import textwrap  # noqa: E402
 import time  # noqa: E402
 import tomllib  # noqa: E402
-from dataclasses import asdict, dataclass, field  # noqa: E402
+from dataclasses import asdict, dataclass, field, replace  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -170,14 +208,20 @@ NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 FILE_KEYS = {"spec", "workers", "library", "budget_s", "init", "next", "specification",
-             "invariants", "properties", "deadlock", "tags", "constants", "run", "witness", "mutant"}
+             "invariants", "properties", "deadlock", "tags", "constants", "run", "witness", "mutant",
+             "sweep"}
 RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step",
                  "allow_no_invariants"}
-RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant"}) | RUN_ONLY_KEYS
+RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant", "sweep"}) | RUN_ONLY_KEYS
 WITNESS_KEYS = {"id", "expr", "about", "runs", "expect", "reason"}
 MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "library", "equivalent",
                "killed_by"}
 WITNESS_EXPECTS = ("reached", "unreachable")
+SWEEP_KEYS = {"id", "kind", "run", "knob", "form", "constants", "lo", "hi", "success", "window_run",
+              "window_label", "expect_need", "cap", "limit", "floor", "expect"}
+SWEEP_KINDS = ("least_gas", "size")
+LEAST_GAS_ONLY = {"lo", "hi", "success", "window_run", "window_label", "expect_need"}
+SIZE_ONLY = {"cap", "limit", "floor", "expect"}
 
 # Standard and community modules that declare no CONSTANTS.
 NO_CONSTANT_MODULES = {
@@ -254,6 +298,32 @@ class Mutant:
     library: bool = False
     equivalent: str | None = None
     killed_by: list[str] | None = None  # accepted kills: invariant names, "assert", "deadlock"
+
+
+@dataclass
+class Sweep:
+    """A [[sweep]]: least gas (bisect a knob) or sizes (1, cap and limit, +-1) on one run."""
+    id: str
+    toml: Path
+    kind: str
+    run: str
+    knobs: list[str]
+    form: str = "%d"
+    constants: dict[str, str] = field(default_factory=dict)
+    lo: int = 0
+    hi: int | None = None
+    success: list[str] | None = None
+    window_run: str | None = None
+    window_label: str | None = None
+    expect_need: int | None = None
+    cap: int | None = None
+    limit: int | str | None = None
+    floor: int = 0
+    expect: dict[str, str] = field(default_factory=dict)
+
+
+# Sweeps by runs.toml, filled by load_doc (which keeps its 3-tuple for callers).
+_SWEEPS: dict[Path, list[Sweep]] = {}
 
 
 # ---------------------------------------------------------------- loading
@@ -422,7 +492,86 @@ def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
                 raise ConfigError(f"{where}: bad expect_output regex: {e}") from e
         out.append(r)
     wits, muts = load_checks(path, doc, out)
+    _SWEEPS[path] = load_sweeps(path, doc, out)
     return out, wits, muts
+
+
+def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
+    """Validate the [[sweep]] tables of one runs.toml."""
+    raw_list = doc.get("sweep", [])
+    if not isinstance(raw_list, list) or not all(isinstance(x, dict) for x in raw_list):
+        raise ConfigError(f"{rel(path)}: sweep must be an array of tables ([[sweep]])")
+    by = {r.name: r for r in runs}
+    out: list[Sweep] = []
+    for i, raw in enumerate(raw_list):
+        where = f"{rel(path)} sweep #{i + 1}"
+        unknown = set(raw) - SWEEP_KEYS
+        if unknown:
+            raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
+        sid = _typed(where, raw, "id", str)
+        if not sid or not NAME_RE.match(sid):
+            raise ConfigError(f"{where}: id must match {NAME_RE.pattern}")
+        where = f"{rel(path)} sweep {sid}"
+        if any(s.id == sid for s in out):
+            raise ConfigError(f"{where}: duplicate id")
+        kind = _typed(where, raw, "kind", str)
+        if kind not in SWEEP_KINDS:
+            raise ConfigError(f"{where}: kind must be one of {SWEEP_KINDS}")
+        wrong = set(raw) & (SIZE_ONLY if kind == "least_gas" else LEAST_GAS_ONLY)
+        if wrong:
+            raise ConfigError(f"{where}: {sorted(wrong)} do not apply to kind = \"{kind}\"")
+        base = _typed(where, raw, "run", str)
+        if base not in by:
+            raise ConfigError(f"{where}: run {base!r} is not a run of this file")
+        knob = _typed(where, raw, "knob", (str, list))
+        knobs = [knob] if isinstance(knob, str) else _str_list(where, raw, "knob")
+        if not knobs or not all(all(IDENT_RE.match(x) for x in k.split("!", 1)) for k in knobs):
+            raise ConfigError(f"{where}: knob must name a constant (Name or Mod!Name), or a list of them")
+        form = _typed(where, raw, "form", str, "%d")
+        if "%d" not in form:
+            raise ConfigError(f"{where}: form must contain %d (the value)")
+        consts = raw.get("constants", {})
+        if not isinstance(consts, dict):
+            raise ConfigError(f"{where}: constants must be a table")
+        sw = Sweep(sid, path, kind, base, knobs, form, {k: tla_value(k, v) for k, v in consts.items()})
+        if kind == "least_gas":
+            sw.lo = _typed(where, raw, "lo", int, 0)
+            sw.hi = _typed(where, raw, "hi", int)
+            if sw.hi is None or sw.hi <= sw.lo:
+                raise ConfigError(f"{where}: hi is required and must be above lo")
+            if "success" in raw:
+                sw.success = _str_list(where, raw, "success")
+                if not sw.success or not all(IDENT_RE.match(x) for x in sw.success):
+                    raise ConfigError(f"{where}: success must be a non-empty list of invariant names")
+            elif not by[base].invariants:
+                raise ConfigError(f"{where}: run {base} has no invariants; give success = [...]")
+            sw.window_run = _typed(where, raw, "window_run", str)
+            if sw.window_run is not None and (sw.window_run not in by or by[sw.window_run].expect_window is None):
+                raise ConfigError(f"{where}: window_run must name a run of this file with expect_window")
+            sw.window_label = _typed(where, raw, "window_label", str)
+            if sw.window_label is not None and sw.window_run is None:
+                raise ConfigError(f"{where}: window_label needs window_run")
+            sw.expect_need = _typed(where, raw, "expect_need", int)
+        else:
+            sw.cap = _typed(where, raw, "cap", int)
+            sw.limit = _typed(where, raw, "limit", (int, str))
+            if sw.cap is None and sw.limit is None:
+                raise ConfigError(f"{where}: give cap, limit or both")
+            if isinstance(sw.limit, str) and not IDENT_RE.match(sw.limit):
+                raise ConfigError(f"{where}: limit must be a number or a NearAsync limit name")
+            sw.floor = _typed(where, raw, "floor", int, 0)
+            exp = raw.get("expect", {})
+            if not isinstance(exp, dict) or not all(isinstance(v, str) for v in exp.values()):
+                raise ConfigError(f"{where}: expect must be a table of value = \"verdict\" strings")
+            for k, v in exp.items():
+                if not re.fullmatch(r"-?\d+", k):
+                    raise ConfigError(f"{where}: expect key {k!r} is not a value")
+                if not (v in ("pass", "assert", "deadlock") or re.fullmatch(r"violation [A-Za-z_]\w*", v)):
+                    raise ConfigError(f"{where}: expect {k} = {v!r}: give \"pass\", \"violation <Inv>\", "
+                                      f"\"assert\" or \"deadlock\"")
+            sw.expect = dict(exp)
+        out.append(sw)
+    return out
 
 
 def _check_runs(where: str, d: dict, runs: list[Run], mutant: bool) -> list[str]:
@@ -1220,6 +1369,13 @@ def check_table(outs: list[Outcome]) -> str:
     return _table(head, rows, outs)
 
 
+def sweep_table(outs: list[Outcome]) -> str:
+    head = ("sweep", "run", "expect", "actual", "distinct", "secs", "result")
+    rows = [(o.check, o.run, o.expect, o.actual, fmt_n(o.distinct), f"{o.seconds:.1f}", "ok" if o.ok else "FAIL")
+            for o in outs]
+    return _table(head, rows, outs)
+
+
 def summary(outs: list[Outcome]) -> str:
     """One line per example directory: what the mutants and witnesses gave."""
     lines = []
@@ -1243,6 +1399,185 @@ def summary(outs: list[Outcome]) -> str:
                          f"other {sum(o.actual not in ('reached', 'never reached') for o in wo)}")
         lines.append(f"{ex}: " + "; ".join(parts))
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- sweeps
+
+
+def select_sweeps(picked: set[str]) -> list[Sweep]:
+    """The loaded sweeps whose base run is among the picked runs."""
+    return [sw for t in _SWEEPS for sw in _SWEEPS[t] if sw.run in picked]
+
+
+_LIMIT_DEF = r"^{}\s*==\s*(\d+)"
+
+
+def limit_value(sw: Sweep, run: Run) -> int | None:
+    """A size sweep's protocol limit: a number, or a NearAsync definition such as MaxLogBytes
+    (read from the run's library)."""
+    if sw.limit is None or isinstance(sw.limit, int):
+        return sw.limit
+    for d in run.library:
+        f = Path(d) / "NearAsync.tla"
+        if f.is_file():
+            m = re.search(_LIMIT_DEF.format(re.escape(sw.limit)), f.read_text(encoding="utf-8"), re.M)
+            if m:
+                return int(m.group(1))
+    raise ConfigError(f"{rel(sw.toml)} sweep {sw.id}: no numeric definition {sw.limit} in NearAsync.tla "
+                      f"of run {run.name}'s library")
+
+
+def size_values(one_cap_limit: list[int | None], floor: int) -> list[int]:
+    """1, the cap and the limit, each with -1 and +1; at or above floor, ascending."""
+    vals = {x + d for x in one_cap_limit if x is not None for d in (-1, 0, 1)}
+    return sorted(v for v in vals if v >= floor)
+
+
+def search_least(ok, lo: int, hi: int) -> int:
+    """The least v in (lo, hi] with ok(v), given ok(hi) and not ok(lo); ok raises to abort.
+    Bisection: assumes success is monotone between lo and hi."""
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if ok(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def sweep_run(sw: Sweep, base: Run, v: int, invariants: list[str]) -> Run:
+    """The base run with the knob(s) set to v, checking `invariants` and expecting a pass."""
+    text = sw.form.replace("%d", str(v))
+    tag = str(v) if v >= 0 else f"n{-v}"
+    return replace(base, name=f"{base.name}__s_{sw.id}_{tag}",
+                   constants={**base.constants, **sw.constants, **{k: text for k in sw.knobs}},
+                   expect="pass", invariant=None, invariants=list(invariants), expect_output=None,
+                   expect_window=None, allow_no_invariants=None, tags=list(base.tags))
+
+
+def do_sweep(sw: Sweep, by_name: dict[str, Run], jar: str, workers: int | None, keep: bool) -> list[Outcome]:
+    """Run one sweep; one Outcome row per reported value, then a summary row."""
+    base = by_name[sw.run]
+    invs = sw.success if sw.success is not None else base.invariants
+    seen: dict[int, Attempt] = {}
+    rows: list[Outcome] = []
+
+    class Abort(Exception):
+        pass
+
+    def job(v: int) -> Attempt:
+        if v not in seen:
+            r = sweep_run(sw, base, v, invs)
+            warn = check_constants(r)
+            if warn:
+                print(f"warning: {warn}", file=sys.stderr)
+            print(f"sweep {sw.id}: {', '.join(sw.knobs)} = {v} ...", file=sys.stderr, flush=True)
+            a = tlc_once(r, f"MC_{r.name}", None, None, jar, effective_workers(r, workers))
+            seen[v] = a
+            keep_or_clean(r, [a], a.res.verdict in ("pass", "violation"), keep)
+        return seen[v]
+
+    def label(a: Attempt) -> str:
+        return a.res.label() if not (a.res.verdict == "pass" and not a.res.distinct) else "vacuous"
+
+    def row(v, expect, actual, ok, notes=(), a: Attempt | None = None) -> Outcome:
+        res = a.res if a else tlcparse.Result()
+        return Outcome(base.name, rel(base.dir), expect, actual, ok, a.wall if a else 0.0, base.budget_s,
+                       res.generated, res.distinct, res.depth, res.tlc_seconds, list(notes),
+                       "" if ok or a is None else rel(a.log_path), kind="sweep",
+                       check=f"{sw.id} {'/'.join(sw.knobs)}={v}" if v is not None else sw.id)
+
+    if sw.kind == "size":
+        lim = limit_value(sw, base)
+        vals = size_values([1, sw.cap, lim], sw.floor)
+        for v in vals:
+            a = job(v)
+            got = label(a)
+            want = sw.expect.get(str(v))
+            ok = got not in ("timeout", "error", "unfinished", "vacuous") and (want is None or got == want)
+            what = [n for n, x in (("1", 1), ("cap", sw.cap), ("limit", lim)) if x is not None and abs(v - x) <= 1]
+            rows.append(row(v, want or "-", got, ok, [f"around {', '.join(what)}"] + (
+                [a.res.message] if a.res.message and a.res.verdict not in ("pass", "violation") else []), a))
+        return rows
+
+    def holds(v: int) -> bool:
+        a = job(v)
+        if a.res.verdict == "pass" and a.res.distinct:
+            return True
+        if a.res.verdict == "violation" and a.res.name in invs:
+            return False
+        raise Abort(f"{', '.join(sw.knobs)} = {v}: {label(a)}" + (f" ({a.res.message})" if a.res.message else ""))
+
+    lo, hi = sw.lo, sw.hi
+    notes: list[str] = []
+    try:
+        if sw.window_run:
+            wr = by_name.get(sw.window_run)
+            if wr is None:
+                raise ConfigError(f"{rel(sw.toml)} sweep {sw.id}: select window_run {sw.window_run} too")
+            print(f"sweep {sw.id}: window run {wr.name} ...", file=sys.stderr, flush=True)
+            a = tlc_once(wr, f"MC_{wr.name}__s_{sw.id}", None, None, jar, effective_workers(wr, workers))
+            keep_or_clean(wr, [a], a.res.verdict == "pass", keep)
+            rep = windows.reports(a.tlc_text)
+            vals = rep.get(sw.window_label, set()) if sw.window_label else set().union(*rep.values()) if rep else set()
+            if vals and max(vals) < hi:
+                top = max(vals)
+                notes.append(f"window run {wr.name}: top bad value {top}")
+                lo = max(lo, top)
+                if lo + wr.window_step < hi and holds(lo + wr.window_step):
+                    hi = lo + wr.window_step
+            else:
+                notes.append(f"window run {wr.name}: no window below hi; bracket {lo}..{hi}")
+        if not holds(hi):
+            raise Abort(f"success fails at hi = {hi}")
+        if holds(lo):
+            raise Abort(f"success already holds at lo = {lo}: lower lo")
+        need = search_least(holds, lo, hi)
+        holds(need + 1)
+    except Abort as e:
+        rows.append(row(None, "need" if sw.expect_need is None else f"need {sw.expect_need}", "error", False,
+                        notes + [str(e)]))
+        return rows
+    for v, want in ((need - 1, "fail"), (need, "pass"), (need + 1, "pass")):
+        a = seen[v]
+        ok = (label(a) == "pass") == (want == "pass")
+        rows.append(row(v, "pass" if want == "pass" else "violation", label(a), ok,
+                        ["non-monotone: success fails above need"] if v == need + 1 and not ok else [], a))
+    good = all(o.ok for o in rows) and (sw.expect_need is None or need == sw.expect_need)
+    rows.append(row(None, "need" if sw.expect_need is None else f"need {sw.expect_need}", f"need {need}", good,
+                    notes + [f"{len(seen)} TLC runs; least {', '.join(sw.knobs)} at which "
+                             f"{', '.join(invs)} {'holds' if len(invs) == 1 else 'hold'}: {need}"]))
+    return rows
+
+
+def run_sweeps(sweeps: list[Sweep], by_name: dict[str, Run], jar: str,
+               workers: int | None, keep: bool) -> list[Outcome]:
+    """Every sweep, in order.  A base run's own verdict does not matter: a must-fail run is a
+    natural base (its sweep checks `success`, not the run's expectation)."""
+    outs: list[Outcome] = []
+    for sw in sweeps:
+        outs += do_sweep(sw, by_name, jar, workers, keep)
+    return outs
+
+
+def adhoc_sweeps(runs: list[Run], spec: str, rng: str, success: str | None) -> list[Sweep]:
+    """--least-gas 'KNOB=FORM' --gas-range LO:HI [--success A,B] on each selected run."""
+    knob, _, form = spec.partition("=")
+    if not IDENT_RE.match(knob) or (form and "%d" not in form):
+        raise ConfigError("--least-gas takes KNOB or 'KNOB=FORM' with %d in FORM")
+    try:
+        lo, hi = (int(x) for x in rng.split(":"))
+    except ValueError as e:
+        raise ConfigError("--gas-range takes LO:HI") from e
+    if hi <= lo:
+        raise ConfigError("--gas-range: HI must be above LO")
+    succ = [x for x in (success or "").split(",") if x] or None
+    out = []
+    for r in runs:
+        if succ is None and not r.invariants:
+            raise ConfigError(f"run {r.name} has no invariants: give --success")
+        out.append(Sweep("adhoc", r.toml, "least_gas", r.name, [knob], form or "%d", {}, lo, hi, succ))
+    return out
 
 
 # ---------------------------------------------------------------- output
@@ -1289,6 +1624,12 @@ def main(argv=None) -> int:
     ap.add_argument("--json", metavar="PATH", help="also write the results as JSON")
     ap.add_argument("--anti-vacuity", action="store_true",
                     help="after the runs, check every [[witness]] and [[mutant]] of the selected runs")
+    ap.add_argument("--sweep", action="store_true",
+                    help="after the runs, run every [[sweep]] whose base run is selected")
+    ap.add_argument("--least-gas", metavar="KNOB[=FORM]",
+                    help="ad-hoc least-gas sweep of each selected run (FORM: TLA+ text with %%d)")
+    ap.add_argument("--gas-range", metavar="LO:HI", help="bracket for --least-gas (LO fails, HI holds)")
+    ap.add_argument("--success", metavar="INV,..", help="success invariants for --least-gas (default: the run's)")
     a = ap.parse_args(argv)
     try:
         if a.workers is not None and a.workers < 1:
@@ -1296,6 +1637,11 @@ def main(argv=None) -> int:
         runs, wits, muts = select_checks(a.targets)
         if not a.anti_vacuity:
             wits, muts = [], []
+        sweeps = select_sweeps({r.name for r in runs}) if a.sweep else []
+        if a.least_gas:
+            if not a.gas_range:
+                raise ConfigError("--least-gas needs --gas-range LO:HI")
+            sweeps += adhoc_sweeps(runs, a.least_gas, a.gas_range, a.success)
         lib = a.library or os.environ.get("NEAR_TLA_LIBRARY")
         if lib:
             for r in runs:
@@ -1313,6 +1659,8 @@ def main(argv=None) -> int:
             for m in muts:
                 exp = "equivalent" if m.equivalent is not None else "killed"
                 print(f"mutant  {m.id:18} {rel(m.toml.parent):38} {exp:26} {' '.join(m.runs)}")
+            for sw in sweeps:
+                print(f"sweep   {sw.id:18} {rel(sw.toml.parent):38} {sw.kind:26} {sw.run}")
             return 0
         if not runs:
             print("no runs selected", file=sys.stderr)
@@ -1326,6 +1674,7 @@ def main(argv=None) -> int:
             outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace))
         failed = {o.run for o in outs if not o.ok}
         checks = run_checks(wits, muts, by_name, failed, jar, a.workers, a.keep) if a.anti_vacuity else []
+        swept = run_sweeps(sweeps, by_name, jar, a.workers, a.keep) if sweeps else []
     except ConfigError as e:
         print(f"run.py: {e}", file=sys.stderr)
         return 2
@@ -1340,9 +1689,15 @@ def main(argv=None) -> int:
         bad_checks = [f"{o.kind}:{o.check}@{o.run}" for o in checks if not o.ok]
         print(f"\n{len(checks) - len(bad_checks)}/{len(checks)} checks as expected"
               + (f"; FAILED: {' '.join(bad_checks)}" if bad_checks else ""))
+    bad_sweeps = []
+    if sweeps:
+        print("\n" + sweep_table(swept))
+        bad_sweeps = [o.check for o in swept if not o.ok]
+        print(f"\n{len(swept) - len(bad_sweeps)}/{len(swept)} sweep rows as expected"
+              + (f"; FAILED: {'; '.join(bad_sweeps)}" if bad_sweeps else ""))
     if a.json:
-        Path(a.json).write_text(json.dumps([asdict(o) for o in outs + checks], indent=2, default=str) + "\n")
-    return 1 if bad or bad_checks else 0
+        Path(a.json).write_text(json.dumps([asdict(o) for o in outs + checks + swept], indent=2, default=str) + "\n")
+    return 1 if bad or bad_checks or bad_sweeps else 0
 
 
 if __name__ == "__main__":

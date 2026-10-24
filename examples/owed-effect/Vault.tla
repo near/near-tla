@@ -21,7 +21,8 @@
 (*   "panic"  on_deliver unwraps the result as a number and panics on      *)
 (*            malformed bytes.                                             *)
 (*   "log"    on_deliver logs "refund " ++ memo: past 16384 bytes it fails *)
-(*            with TotalLogLengthExceeded (R6).                            *)
+(*            with TotalLogLengthExceeded (R6), unless withdraw caps the   *)
+(*            memo (MemoCap) at 16377 bytes or less.                       *)
 (*   "ret"    on_deliver returns a receipt that echoes the memo: past      *)
 (*            4 MiB it fails with ReturnedValueLengthExceeded (R6).        *)
 (*   "gas"    (gas mode) on_deliver gets a fixed 3 Tgas; its refund path   *)
@@ -38,6 +39,7 @@ CONSTANTS U, V, T,
     TResps,     \* T.deliver behaviours: subset of {"ok", "panic", "mal"}
     Memos,      \* memo lengths (bytes) U may send
     GasMenu,    \* prepaid gas U may attach (gas mode), Ggas
+    MemoCap,    \* withdraw refuses a longer memo
     Bug         \* "none" | "panic" | "log" | "ret" | "gas"
 
 VARIABLES bal, held, got, ntx, gas
@@ -71,6 +73,7 @@ H_withdraw(r) ==
         d  == Rcpt(nid, r.tx, T, V, "deliver", r.a, 0, V, nid + 1)
         cb == WithOwed(Rcpt(nid + 1, r.tx, V, V, "on_deliver", r.a, 0, V, r.cb))
     IN IF bal < n THEN [O |-> OErr(Out0, "not enough balance"), b |-> bal, h |-> held]
+       ELSE IF r.a.memo > MemoCap THEN [O |-> OErr(Out0, "memo too long"), b |-> bal, h |-> held]
        ELSE [O |-> Outcome({d}, {cb}, RProm, 0, 2), b |-> bal - n, h |-> held + n]
 
 \* on_deliver(n, memo): T took n (a number came back), or credit n back.

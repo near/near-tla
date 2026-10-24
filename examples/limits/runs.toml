@@ -432,3 +432,15 @@ replace = 'IF LogCount(O) < MaxLogs /\ LogBytes(O) <= MaxLogBytes THEN FALSE'
 class = "off-by-one"
 runs = ["limit_log_100"]
 
+
+# ---- sweeps: python3 tools/run.py examples/limits --sweep ----
+
+# Joint inputs at 1 and at the protocol limit (MaxJointInputs, 128), +-1 each.
+[[sweep]]
+id = "join_inputs"
+kind = "size"
+run = "limit_join_128"
+knob = "N"
+limit = "MaxJointInputs"
+floor = 1
+expect = { "1" = "pass", "2" = "pass", "127" = "pass", "128" = "pass", "129" = "violation Done" }

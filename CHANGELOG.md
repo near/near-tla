@@ -505,6 +505,13 @@ them. A model that lists platform variables one by one must add each.
   `from = "arg_count:<field>"`, an array argument's length. `examples/mt-batch` has a
   gas-mode run on the table (`mt_batch_gas_std`: the 30 Tgas floor, `FloorHolds`). The
   existing sets, sweeps and tables are unchanged.
+- **Least-gas and size sweeps in `tools/run.py`** (`[[sweep]]` in `runs.toml`, `--sweep`;
+  ad hoc `--least-gas KNOB=FORM --gas-range LO:HI [--success ..]`): `kind = "least_gas"`
+  bisects a gas knob for the least value at which `success` holds (bracketed by a window
+  run's top bad value when `window_run` is given) and reports need − 1, need and need + 1;
+  `kind = "size"` runs a size knob at 1, the contract's `cap` and the protocol `limit` (a
+  number or a NearAsync limit name), ±1 each, against optional per-value expectations.
+  Existing `runs.toml` files are unchanged (USAGE, "Least gas and size sweeps").
 - **Owed callbacks and detached work** (SEMANTICS F2; `examples/owed-effect`): a model marks
   a callback that completes or undoes an earlier commit as owed (`WithOwed(c)`, or
   `OwedMethods` for postponed self-callbacks by method), and work handed to a call as detached

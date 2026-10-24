@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -870,6 +871,136 @@ class AntiVacuityFakeTLCTest(unittest.TestCase):
         log = (self.d / "build" / "t_ok__w_seen.log").read_text()
         self.assertIn("~/models/Toy.tla", log)
         self.assertNotIn(home + "/", log)
+
+
+SWEEP_RUNS = """\
+spec = "Toy"
+library = "lib"
+invariants = ["Small"]
+[constants]
+Menu = "{0}"
+[[run]]
+name = "t_gas"
+expect = "pass"
+[[run]]
+name = "t_win"
+expect = "pass"
+expect_window = "1"
+"""
+LEAST = ("[[sweep]]\nid = \"need\"\nkind = \"least_gas\"\nrun = \"t_gas\"\nknob = \"Menu\"\n"
+         "form = '{%d}'\nlo = 0\nhi = 100\n")
+SIZE = "[[sweep]]\nid = \"sz\"\nkind = \"size\"\nrun = \"t_gas\"\nknob = \"N\"\ncap = 10\nlimit = \"MaxLogs\"\n"
+
+
+class SweepTest(unittest.TestCase):
+    """[[sweep]] loading, the value and search helpers, and both kinds end to end."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name).resolve()
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\nCONSTANTS Menu, N\n====\n")
+        (self.d / "lib").mkdir()
+        write(self.d / "lib", "NearAsync.tla", "---- MODULE NearAsync ----\nMaxLogs              == 100      \\* x\n====\n")
+        self.calls = []
+        self.outputs = {}
+        self._orig = run.subprocess.run
+        run.subprocess.run = self.fake
+
+    def tearDown(self):
+        run.subprocess.run = self._orig
+        self.tmp.cleanup()
+
+    def fake(self, cmd, cwd=None, timeout=None, **kw):
+        wrapper = Path(cwd, cmd[-1]).read_text()
+        self.calls.append(wrapper)
+        m = re.search(r"const_N == (-?\d+)", wrapper) or re.search(r"const_Menu == \{(-?\d+)\}", wrapper)
+        text = WIN_PASS if "MC_t_win" in cmd[-1] else self.outputs(int(m.group(1)))
+        return subprocess.CompletedProcess(cmd, 0 if text is PASS or text is WIN_PASS else 12, stdout=text.encode())
+
+    def load(self, extra: str):
+        runs, _, _ = run.load_doc(write(self.d, "runs.toml", SWEEP_RUNS + extra))
+        return {r.name: r for r in runs}, run._SWEEPS[(self.d / "runs.toml").resolve()]
+
+    def sweep(self, by, sw):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return run.do_sweep(sw, by, "tla2tools.jar", None, keep=False)
+
+    def test_load(self):
+        _, (sw,) = self.load(LEAST + 'success = ["Small"]\nexpect_need = 7\n')
+        self.assertEqual((sw.kind, sw.run, sw.knobs, sw.form, sw.lo, sw.hi, sw.success, sw.expect_need),
+                         ("least_gas", "t_gas", ["Menu"], "{%d}", 0, 100, ["Small"], 7))
+        _, (sz,) = self.load(SIZE + 'knob = ["N", "Menu"]\n'.replace("knob", "form = '%d'\nfloor = 1\n#"))
+        self.assertEqual((sz.cap, sz.limit, sz.floor), (10, "MaxLogs", 1))
+        bad = {
+            "unknown key": LEAST + "lim = 1\n",
+            "kind": LEAST.replace("least_gas", "most_gas"),
+            "run of another file": LEAST.replace('"t_gas"', '"nope"'),
+            "no %d": LEAST.replace("{%d}", "{1}"),
+            "hi below lo": LEAST.replace("hi = 100", "hi = 0"),
+            "size key on least_gas": LEAST + "cap = 3\n",
+            "least_gas key on size": SIZE + "hi = 3\n",
+            "neither cap nor limit": SIZE.replace("cap = 10\nlimit = \"MaxLogs\"\n", ""),
+            "bad expect verdict": SIZE + 'expect = { "10" = "fails" }\n',
+            "window_run without window": LEAST + 'window_run = "t_gas"\n',
+            "duplicate id": LEAST + LEAST,
+        }
+        for what, text in bad.items():
+            with self.subTest(what=what), self.assertRaises(run.ConfigError):
+                self.load(text)
+
+    def test_helpers(self):
+        self.assertEqual(run.size_values([1, 10, 100], 0), [0, 1, 2, 9, 10, 11, 99, 100, 101])
+        self.assertEqual(run.size_values([1, None, 2], 1), [1, 2, 3])
+        for need in (1, 2, 37, 100):
+            seen = []
+            got = run.search_least(lambda v: seen.append(v) or v >= need, 0, 100)
+            self.assertEqual(got, need)
+            self.assertLessEqual(len(seen), 7)
+        by, (sz,) = self.load(SIZE)
+        self.assertEqual(run.limit_value(sz, by["t_gas"]), 100)
+
+    def test_least_gas_end_to_end(self):
+        by, (sw,) = self.load(LEAST + "expect_need = 37\n")
+        self.outputs = lambda v: PASS if v >= 37 else INV
+        rows = self.sweep(by, sw)
+        self.assertEqual([(o.check, o.actual, o.ok) for o in rows],
+                         [("need Menu=36", "violation Small", True), ("need Menu=37", "pass", True),
+                          ("need Menu=38", "pass", True), ("need", "need 37", True)])
+        self.assertIn("const_Menu == {37}", "\n".join(self.calls))
+
+    def test_least_gas_non_monotone_and_errors(self):
+        by, (sw,) = self.load(LEAST)
+        self.outputs = lambda v: PASS if v == 37 or v >= 50 else INV
+        rows = self.sweep(by, sw)
+        self.assertFalse(rows[-1].ok)
+        self.assertIn("non-monotone", " ".join(rows[2].notes))
+        self.outputs = lambda v: ASSERT
+        (row,) = self.sweep(by, sw)
+        self.assertEqual((row.actual, row.ok), ("error", False))
+        self.outputs = lambda v: PASS
+        (row,) = self.sweep(by, sw)
+        self.assertIn("already holds at lo", " ".join(row.notes))
+
+    def test_least_gas_from_window(self):
+        by, (sw,) = self.load(LEAST + 'window_run = "t_win"\n')
+        self.outputs = lambda v: PASS if v >= 37 else INV
+        rows = self.sweep(by, sw)
+        self.assertEqual(rows[-1].actual, "need 37")
+        self.assertIn("top bad value 30", " ".join(rows[-1].notes))
+
+    def test_size_end_to_end(self):
+        by, (sz,) = self.load(SIZE + 'floor = 1\nexpect = { "11" = "violation Small" }\n')
+        self.outputs = lambda v: INV if v == 11 else PASS
+        rows = self.sweep(by, sz)
+        self.assertEqual([o.check.split("=")[1] for o in rows], ["1", "2", "9", "10", "11", "99", "100", "101"])
+        self.assertTrue(all(o.ok for o in rows), [(o.check, o.actual, o.notes) for o in rows])
+        self.outputs = lambda v: PASS
+        rows = self.sweep(by, sz)
+        self.assertEqual([o.ok for o in rows if o.check.endswith("=11")], [False])
+
+
+WIN_PASS = PASS.replace("Model checking completed.", '<<"WIN", "Small", 30, 0>>\n<<"WIN", "Small", 20, 0>>\n'
+                        "Model checking completed.")
 
 
 class SelectionAndLibraryTest(unittest.TestCase):
