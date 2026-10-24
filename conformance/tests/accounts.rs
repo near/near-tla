@@ -3,7 +3,8 @@
 //! uninitialised universal accounts (A1), fees by account pattern for
 //! deterministic and universal ids (A2), what an implicit Transfer creates
 //! and when (A3, A4), a call to an account without code (A5), function-call
-//! keys (K2), AddKey and DeleteKey failures (K3), Stake's checks and the
+//! keys, their allowance and transaction nonces (K2, K5),
+//! AddKey and DeleteKey failures (K3), Stake's checks and the
 //! result a callback reads after a Stake (B1) and the locked balance in the
 //! storage check (B2). Each test prints what it observed; `cargo test
 //! --test accounts -- --nocapture` shows it.
@@ -310,6 +311,170 @@ fn function_call_key_scope() {
     println!("allowance of 1 yocto: {}", err(&o));
     assert!(err(&o).contains("NotEnoughAllowance"), "{o}");
     assert_eq!(sim.view(P, "marks", json!({})).json::<String>(), "a,");
+}
+
+/// A function-call key on p's `mark`, with or without an allowance.
+fn fc_key(allowance: Option<Balance>) -> AccessKey {
+    AccessKey {
+        nonce: 0,
+        permission: AccessKeyPermission::FunctionCall(FunctionCallPermission {
+            allowance,
+            receiver_id: P.into(),
+            method_names: vec!["mark".into()],
+        }),
+    }
+}
+
+fn allowance_of(sim: &Sim, pk: &PublicKey) -> Balance {
+    match sim.access_key(ALICE, pk).unwrap().permission {
+        AccessKeyPermission::FunctionCall(p) => p.allowance.unwrap(),
+        _ => unreachable!(),
+    }
+}
+
+fn nonce_of(sim: &Sim, id: &str, pk: &PublicKey) -> u64 {
+    sim.access_key(id, pk).unwrap().nonce
+}
+
+/// K2, the allowance (N-allowance). Conversion charges the transaction's
+/// whole cost to the key's allowance (`total_cost`: the conversion's gas at
+/// the gas price, and the prepaid gas with the receipt's exec fees at
+/// max(gas price, `min_gas_purchase_price`), runtime/runtime/src/config.rs:515-536;
+/// runtime/runtime/src/verifier.rs:282-303 `check_and_compute_new_allowance`,
+/// called at :365-373); the allowance
+/// must cover it (`checked_sub`, so equal is enough), else the
+/// transaction is invalid with NotEnoughAllowance and nothing changes:
+/// no receipt, the key's nonce and allowance as they were. Each gas
+/// refund to the signer adds back to the key that signed
+/// (runtime/runtime/src/lib.rs:3041-3047, runtime/runtime/src/actions.rs:133-157
+/// `try_refund_allowance`), so once the transaction settles the key has
+/// paid exactly the tokens burnt. A key with an allowance is 16 bytes
+/// larger than one without (`Option<u128>`: 17 bytes, 1 for `None`;
+/// core/primitives-core/src/account.rs:959-978).
+#[test]
+fn allowance_charge_refund_and_boundary() {
+    let base = world();
+    let fck = sk("alice-fc");
+    let a0 = near(1);
+    let mut sim = base.clone();
+    let u0 = usage(&sim, ALICE);
+    sim.tx(ALICE, ALICE).add_key(fck.public_key(), fc_key(Some(a0))).transact().assert_success();
+    let u1 = usage(&sim, ALICE);
+    sim.tx(ALICE, ALICE).add_key(sk("alice-fc-none").public_key(), fc_key(None)).transact().assert_success();
+    let u2 = usage(&sim, ALICE);
+    println!("key bytes: with an allowance {}, without {}", u1 - u0, u2 - u1);
+    assert_eq!((u1 - u0) - (u2 - u1), 16);
+
+    let mark = |sim: &mut Sim, key: &SecretKey| sim.call(ALICE, P, "mark").args_json(json!({ "tag": "a" })).sign_with(key).submit();
+    let hash = mark(&mut sim, &fck);
+    sim.step();
+    let converted = allowance_of(&sim, &fck.public_key());
+    sim.settle();
+    let o = sim.outcome(hash);
+    o.assert_success();
+    let settled = allowance_of(&sim, &fck.public_key());
+    let conv = o.transaction.as_ref().unwrap().gas_burnt.as_gas() as u128;
+    // What the receipt will need besides the conversion: the prepaid gas, the
+    // receipt's and the call's exec fees (15 bytes of method name and args),
+    // bought at max(gas price, min_gas_purchase_price).
+    let rc = sim.config.runtime_config();
+    let exec = |c: ActionCosts| rc.fees.fee(c).exec_fee().gas.as_gas() as u128;
+    let remaining = Gas::from_teragas(300).as_gas() as u128
+        + exec(ActionCosts::new_action_receipt)
+        + exec(ActionCosts::function_call_base)
+        + 15 * exec(ActionCosts::function_call_byte);
+    let (price, purchase) = (yocto(sim.config.gas_price), yocto(rc.min_gas_purchase_price).max(yocto(sim.config.gas_price)));
+    let cost = yocto(a0) - yocto(converted);
+    println!(
+        "allowance {a0}: {converted} after conversion (charged {cost} yocto: conversion {conv} gas at {price}, {remaining} gas at {purchase}), \
+         {settled} once settled (paid {}, tokens burnt {})",
+        yocto(a0) - yocto(settled),
+        o.tokens_burnt().as_yoctonear()
+    );
+    assert_eq!(cost, conv as i128 * price + remaining as i128 * purchase, "the whole cost at conversion");
+    assert_eq!(yocto(a0) - yocto(settled), yocto(o.tokens_burnt()), "the refunds added back");
+    assert!(settled > converted);
+
+    // The boundary: an allowance of exactly the cost passes, one yocto less is refused.
+    for (allowance, ok) in [(cost, true), (cost - 1, false)] {
+        let mut sim = base.clone();
+        sim.tx(ALICE, ALICE).add_key(fck.public_key(), fc_key(Some(Balance::from_yoctonear(allowance as u128)))).transact().assert_success();
+        let n = nonce_of(&sim, ALICE, &fck.public_key());
+        let hash = mark(&mut sim, &fck);
+        sim.settle();
+        let o = sim.outcome(hash);
+        let left = allowance_of(&sim, &fck.public_key());
+        println!("allowance {allowance} yocto: {}; {} receipts, nonce {n} -> {}, allowance left {left}", err(&o), o.receipts.len(), nonce_of(&sim, ALICE, &fck.public_key()));
+        if ok {
+            o.assert_success();
+            assert_eq!(yocto(left), cost - yocto(o.tokens_burnt()), "charged to 0, then refunded");
+        } else {
+            assert!(matches!(o.failure(), Some(Failure::InvalidTx(InvalidTxError::InvalidAccessKeyError(_)))), "{o}");
+            assert!(err(&o).contains("NotEnoughAllowance"), "{o}");
+            assert!(o.receipts.is_empty(), "nothing runs");
+            assert_eq!((yocto(left), nonce_of(&sim, ALICE, &fck.public_key())), (allowance, n), "allowance and nonce unchanged");
+            assert_eq!(sim.view(P, "marks", json!({})).json::<String>(), "");
+        }
+    }
+}
+
+/// K5, nonces. A transaction's nonce must be above its key's
+/// (`verify_nonce`, runtime/runtime/src/verifier.rs:254-280: `tx_nonce <=
+/// current_nonce` is InvalidNonce, :262-264; any gap is fine), and below
+/// `block_height × 1e6` (:272-277, NonceTooLarge; the nonces here stay far
+/// below it). Acceptance sets the key's nonce to the transaction's
+/// (`AccessKeyUpdate::Regular`, :402, applied at runtime/runtime/src/lib.rs:350-352),
+/// not to the old nonce + 1; a refused transaction changes nothing. Each
+/// key has its own nonce. A delegate shares its key's nonce
+/// (runtime/runtime/src/actions.rs:648-657): a direct transaction with a
+/// higher nonce, converted first, makes it fail.
+#[test]
+fn transaction_nonces() {
+    let mut sim = world();
+    let pk = sim.secret_key(ALICE).public_key();
+    let n0 = nonce_of(&sim, ALICE, &pk);
+    assert!(n0 + 100 < (sim.height() + 1) * 1_000_000, "below NonceTooLarge");
+    let mark = |sim: &mut Sim, tag: &str, n: u64| sim.call(ALICE, P, "mark").args_json(json!({ "tag": tag })).nonce(n).transact();
+    let marks = |sim: &Sim| sim.view(P, "marks", json!({})).json::<String>();
+
+    let o = mark(&mut sim, "a", n0 + 5);
+    println!("nonce {n0} + 5: {}; key nonce {}", err(&o), nonce_of(&sim, ALICE, &pk));
+    o.assert_success();
+    assert_eq!(nonce_of(&sim, ALICE, &pk), n0 + 5, "the transaction's nonce, not the old one + 1");
+    for (what, n) in [("the same transaction again", n0 + 5), ("a lower, unused nonce", n0 + 3)] {
+        let o = mark(&mut sim, "a", n);
+        println!("{what} ({n0} + {}): {}", n - n0, err(&o));
+        assert!(matches!(o.failure(), Some(Failure::InvalidTx(InvalidTxError::InvalidNonce { .. }))), "{o}");
+        assert!(o.receipts.is_empty(), "nothing runs");
+        assert_eq!(nonce_of(&sim, ALICE, &pk), n0 + 5);
+    }
+    // A refused transaction (here NotEnoughBalance) leaves the nonce free.
+    let o = sim.tx(ALICE, BOB).transfer(near(100_000)).nonce(n0 + 6).transact();
+    println!("nonce {n0} + 6, short of balance: {}; key nonce {}", err(&o), nonce_of(&sim, ALICE, &pk));
+    assert!(err(&o).contains("NotEnoughBalance"), "{o}");
+    assert_eq!(nonce_of(&sim, ALICE, &pk), n0 + 5);
+    mark(&mut sim, "b", n0 + 6).assert_success();
+    assert_eq!(marks(&sim), "a,b,");
+    // Another key of the same account keeps its own nonce.
+    let k2 = sk("alice-2");
+    sim.tx(ALICE, ALICE).add_key(k2.public_key(), AccessKey::full_access()).transact().assert_success();
+    let m0 = nonce_of(&sim, ALICE, &k2.public_key());
+    let o = sim.call(ALICE, P, "mark").args_json(json!({ "tag": "c" })).sign_with(&k2).nonce(m0 + 1).transact();
+    println!("second key at its nonce {m0} + 1: {}", err(&o));
+    o.assert_success();
+    // A delegate signed for the next nonce, then a direct transaction above it.
+    let h = sim.height();
+    let signed = sim.call(ALICE, P, "mark").args_json(json!({ "tag": "d" })).sign_delegate(h + 100);
+    let dn = signed.delegate_action.nonce;
+    let o = sim.call(ALICE, P, "mark").args_json(json!({ "tag": "e" })).transact();
+    let tn = nonce_of(&sim, ALICE, &pk);
+    let r = sim.tx(BOB, ALICE).action(signed).transact();
+    let outer = r.receipts.iter().find(|x| x.actions.iter().any(|a| a.contains("Delegate"))).unwrap();
+    println!("delegate nonce {dn}, a direct transaction at {tn} first: {}; the relayed delegate: {:?}", err(&o), outer.failure());
+    o.assert_success();
+    assert!(tn > dn);
+    assert!(format!("{:?}", outer.failure()).contains("DelegateActionInvalidNonce"), "{:?}", outer.failure());
+    assert_eq!(marks(&sim), "a,b,c,e,");
 }
 
 /// K3. AddKey of a present key fails with AddKeyAlreadyExists and DeleteKey

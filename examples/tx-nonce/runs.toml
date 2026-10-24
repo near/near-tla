@@ -1,0 +1,102 @@
+# Transaction nonces: a replayed signed transaction is refused, and so is one overtaken by a
+# later nonce.  See Nonces.tla.
+#
+#   python3 tools/run.py examples/tx-nonce
+
+spec = "Nonces"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["PaidOnce", "NoLostPayment", "Sane"]
+tags = ["semantics:tx-nonce"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+KeyAccts = '{"u"}'
+Contracts = '{"m"}'
+U = '"u"'
+M = '"m"'
+MaxSign = "2"
+MaxTx = "4"
+Parallel = "FALSE"
+NoNonce = "FALSE"
+
+# The wallet signs one payment at a time; the network replays every payment that landed and
+# nearcore refuses each replay.
+[[run]]
+name = "nonce_sequential"
+expect = "pass"
+
+# The wallet signs both payments at once; payment 2 lands first and payment 1 is refused.
+[[run]]
+name = "nonce_parallel_loses"
+expect = "violation"
+invariant = "NoLostPayment"
+[run.constants]
+Parallel = "TRUE"
+
+# Without the nonce rule (SubmitSigned) a replay pays M again.
+[[run]]
+name = "nonce_unchecked_replays"
+expect = "violation"
+invariant = "PaidOnce"
+[run.constants]
+NoNonce = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/tx-nonce --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# M has no callback and reads no result: the dropped .then and result check classes have
+# nothing to mutate here.
+
+# The case the nonce rule is for: a payment that landed is delivered again and refused.
+[[witness]]
+id = "replay_refused"
+expr = '~ReplayRefused'
+runs = ["nonce_sequential"]
+
+# Both payments land.
+[[witness]]
+id = "both_paid"
+expr = '~(credits[1] = 1 /\ credits[2] = 1)'
+runs = ["nonce_sequential"]
+
+# The library: a nonce equal to the key's is accepted.
+[[mutant]]
+id = "nonce_equal_accepted"
+file = "NearKeys.tla"
+library = true
+find = '[] ka /\ st.n <= KeyNonce(a, k)'
+replace = '[] ka /\ st.n < KeyNonce(a, k)'
+class = "off-by-one"
+runs = ["nonce_sequential"]
+
+# The library: acceptance does not advance the key's nonce.
+[[mutant]]
+id = "nonce_not_advanced"
+file = "NearKeys.tla"
+library = true
+find = '[keys EXCEPT ![a][k] = ("nonce" :> st.n) @@ Charged(@, st.r)]'
+replace = '[keys EXCEPT ![a][k] = Charged(@, st.r)]'
+class = "effect never happens"
+runs = ["nonce_sequential"]
+
+# The model: the wallet signs its first payment with the key's current nonce, not the next.
+[[mutant]]
+id = "wallet_reuses_nonce"
+file = "Nonces.tla"
+find = 'Pay(n) == SignedTx(U, "k0", n, '
+replace = 'Pay(n) == SignedTx(U, "k0", n - 1, '
+class = "off-by-one"
+runs = ["nonce_sequential"]

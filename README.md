@@ -173,6 +173,15 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
 - The conformance suite in CI, nightly and on demand (`.github/workflows/conformance.yml`):
   sim tests, a full sweep, the generated tables diffed against the committed ones, TLC and
   `conform.py`.
+- Access keys and transactions, opt-in: a function-call key's allowance, charged at
+  conversion, refused when short, refunded (SEMANTICS K2, `examples/session-key`); transaction
+  nonces, so a replayed or out-of-order transaction is refused (`SignedTx`, `SubmitTx`,
+  `TxErr`; K5, `examples/tx-nonce`). Both asserted at their boundaries by sim tests.
+- Protocol limits at 88 (SEMANTICS R6, `examples/limits`): 100 actions per receipt (a
+  transaction, or a receipt a call creates), 1024 promises per function-call action, 128
+  joint-promise inputs, 4 MiB returned, and 100 logs or 16 KiB of them (declared with `OLog`)
+  fail as in nearcore; 10 deploys, 4 MiB of code and 2000 bytes of AddKey method names are
+  `Assert`s. Sim tests assert each boundary.
 
 ### Later
 
@@ -186,7 +195,8 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   Per-byte storage is checked by sim tests and the calibrator's storage table only; a probe
   flow comparing it with the model needs a re-sweep of every flow.
 - **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:**
-  access-key allowances and transaction validity (nonces);
+  the rest of transaction validity (the nonce's upper bound, expiry) and the limits the
+  model cannot count (sizes, undeclared logs, the storage proof; N-limits);
   deterministic-account state init and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 

@@ -1,0 +1,124 @@
+# A function-call key's allowance: charged at conversion, refused when short, refunded.  See
+# Session.tla.
+#
+#   python3 tools/run.py examples/session-key
+
+spec = "Session"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["PlaysCapped", "CapUsable", "Counted", "Sane"]
+tags = ["semantics:allowance"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+KeyAccts = '{"u"}'
+Contracts = '{"g"}'
+U = '"u"'
+G = '"g"'
+Cost = "3"
+Refund = "2"
+Cap = "3"
+MaxTx = "8"
+Allow = "5"
+
+# Allow = Cost + (Cap - 1) * (Cost - Refund) = 5: plays at 5, 4 and 3; the fourth needs 3 and
+# finds 2.
+[[run]]
+name = "session_sized"
+expect = "pass"
+
+# Allow = Cap * Cost = 9 forgets the refunds: seven plays get through (9 down to 3).
+[[run]]
+name = "session_naive_size"
+expect = "violation"
+invariant = "PlaysCapped"
+[run.constants]
+Allow = "9"
+
+# The same allowance in a model that states no refund (Refund = 0): the plays stop at three and
+# the bug above stays hidden.  A refund left out understates the allowance (N-allowance).
+[[run]]
+name = "session_naive_no_refund_hides"
+expect = "pass"
+[run.constants]
+Allow = "9"
+Refund = "0"
+
+# ---- anti-vacuity: python3 tools/run.py examples/session-key --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# No callback, result or deposit: the dropped .then, result check and refund classes have
+# nothing to mutate here.
+
+# CapUsable's antecedent: the allowance refuses a play.
+[[witness]]
+id = "allowance_refuses"
+expr = '~Exhausted'
+runs = ["session_sized"]
+
+# The refunds matter: the third play goes through on an allowance only the refunds kept up.
+[[witness]]
+id = "third_play"
+expr = '~(ntx = 3)'
+runs = ["session_sized"]
+
+# The library: NotEnoughAllowance never refuses.
+[[mutant]]
+id = "allowance_never_short"
+file = "NearKeys.tla"
+library = true
+find = 'AllowanceOK(a, k, r) == IF HasAllowance(keys[a][k]) THEN keys[a][k].al >= TxCost(r) ELSE TRUE'
+replace = 'AllowanceOK(a, k, r) == TRUE'
+class = "removed precondition"
+runs = ["session_sized"]
+
+# The library: an allowance equal to the cost is refused (nearcore's checked_sub accepts it).
+[[mutant]]
+id = "allowance_strict"
+file = "NearKeys.tla"
+library = true
+find = 'THEN keys[a][k].al >= TxCost(r) ELSE TRUE'
+replace = 'THEN keys[a][k].al > TxCost(r) ELSE TRUE'
+class = "off-by-one"
+runs = ["session_sized"]
+
+# The library: conversion charges nothing.
+[[mutant]]
+id = "allowance_not_charged"
+file = "NearKeys.tla"
+library = true
+find = 'Charged(p, r) == IF HasAllowance(p) THEN [p EXCEPT !.al = @ - TxCost(r) + TxRefund(r)] ELSE p'
+replace = 'Charged(p, r) == p'
+class = "effect never happens"
+runs = ["session_sized"]
+
+# The library: the gas refund never comes back to the allowance.
+[[mutant]]
+id = "refund_dropped"
+file = "NearKeys.tla"
+library = true
+find = '!.al = @ - TxCost(r) + TxRefund(r)'
+replace = '!.al = @ - TxCost(r)'
+class = "refund lost"
+runs = ["session_sized"]
+
+# The model: the app signs plays with U's full-access key, which has no allowance.
+[[mutant]]
+id = "plays_on_full_key"
+file = "Session.tla"
+find = '/\ SubmitSigned(PlayTx(nid, ntx + 1), U, "s")'
+replace = '/\ SubmitSigned(PlayTx(nid, ntx + 1), U, "k0")'
+class = "wrong argument"
+runs = ["session_sized"]

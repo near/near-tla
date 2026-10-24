@@ -366,7 +366,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `GlobalByteCost` | `<<1, 10000>>` (0.0001 NEAR per byte) | your NEAR unit is not 1 NEAR, as for `StorageByteCost`: the burn of a DeployGlobalContract per code byte, `num/den` units; the burn of a deploy must be a whole number of units (an `Assert`) |
 | `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
-| `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
+| `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); another key type (a key with an allowance, `WithAllowance`, already counts its 16 bytes) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
@@ -535,6 +535,19 @@ When a handler also computes new state, return both: `<<O, newState>>`, as `Pay.
 (`Contracts`). After the call it checks the receiver's balance and storage floor. The verdict
 order is in `Verdict`.
 
+`Exec` also fails a call that breaks a protocol limit ([R6](SEMANTICS.md#r6-protocol-limits)):
+more than 1024 receipts and joint callbacks from one function-call action, a joint callback
+on more than 128 results, a returned value over 4 MiB (state its bytes with `RValLen` near
+the limit; 4195 KB is an `Assert`), or a child receipt of more than 100 actions. A handler
+that splits a large batch keeps each receipt at 100 actions or fewer; `examples/limits` shows
+each limit at its boundary. Deploys (one per receipt) and AddKey method names (2000 bytes)
+are `Assert`s.
+
+Logs count only if the handler declares them: `OLog(O, b)` adds one log of `b` bytes (UTF-8)
+to the outcome, and more than 100 logs or 16384 bytes of them fail the call, as in nearcore.
+Declare them when a handler's logs grow with its input (an event per item, say); a model
+that declares none never hits the limit.
+
 ## 6. The dispatcher and Next
 
 Pick a runnable receipt and route it:
@@ -683,13 +696,14 @@ In gas mode:
 
 ## 10. Signer and keys
 
-Three ways to submit a transaction, all on its first receipt:
+Four ways to submit a transaction, all on its first receipt:
 
 | operator | signer | key |
 |---|---|---|
 | `Submit(r)` | `r.fr` | `DefaultKey` |
 | `SubmitAs(r, a, k)` | `a` | `k` |
-| `SubmitSigned(r, a, k)` (`NearKeys`) | `a` | `k`, which must be able to sign it if `a \in KeyAccts` (`KeyCanSign`) |
+| `SubmitSigned(r, a, k)` (`NearKeys`) | `a` | `k`, which must be able to sign it if `a \in KeyAccts` (`KeyCanSign`, and its allowance) |
+| `SubmitTx(st)` (`NearKeys`) | `st.sgn` | `st.k`, as for `SubmitSigned`, and the nonce `st.n` must be above the key's ([below](#nonces-signedtx-submittx-txerr)) |
 
 Every receipt of the transaction sees the signer: `Signer(r)` (`env::signer_account_id()`),
 `SignerKey(r)` (`env::signer_account_pk()`), `SignerOf(tx)`. Use `r.fr` for the predecessor.
@@ -703,6 +717,56 @@ A contract that authorises on the signer instead of the predecessor is a classic
 - A function-call key (`Perm(receiver, methods, all)`) signs only a single zero-deposit
   function call to its receiver, with a permitted method. An empty method set allows every
   method.
+
+A transaction of more than 100 actions is invalid
+([R6](SEMANTICS.md#r6-protocol-limits)): `CanSubmit` and `TxErr` refuse it.
+
+### Allowances
+
+`WithAllowance(Perm(...), n)` gives a function-call key an allowance of `n`
+([K2](SEMANTICS.md#k2-full-access-versus-function-call-keys)). `SubmitSigned` and `SubmitTx`
+refuse a transaction that costs more than the key's allowance (`AllowanceOK`; equal is
+enough), and charge the cost less its gas refund. State both on the first receipt with
+`WithTxCost(r, cost, refund)`, in the allowance's units:
+
+```tla
+PlayTx(id, t) == WithTxCost(Rcpt(id, t, G, U, "play", 0, 0, U, 0), Cost, Refund)
+Play == SubmitSigned(PlayTx(nid, ntx + 1), U, "s") /\ ...
+```
+
+The refund comes back at once, not when nearcore's refund receipt runs. Without
+`WithTxCost` the refund is the whole cost, so the allowance is never used up. If your
+property depends on the allowance running out, state both, and do not state a refund lower
+than nearcore's: that hides transactions nearcore lets through
+([N-allowance](SEMANTICS.md#over-approximations)). `examples/session-key` sizes an
+allowance for a number of plays. `KeyAllowance(a, k)` reads what is left.
+
+### Nonces: `SignedTx`, `SubmitTx`, `TxErr`
+
+`SubmitSigned` checks no nonce, so a model where a transaction can be submitted twice, or
+signed transactions can land out of order, needs `SubmitTx`
+([K5](SEMANTICS.md#k5-transaction-nonces)):
+
+- `SignedTx(a, k, n, r)` is a signed transaction, a value your model can keep, hand to an
+  attacker or submit again.
+- `TxErr(st)` is nearcore's first refusal of it, or `""`: `"InvalidNonce"` when `n` is not
+  above the key's nonce, and the others in nearcore's order (K5).
+- `SubmitTx(st)` submits it if `TxErr(st) = ""` and sets the key's nonce to `n`.
+
+Branch on `TxErr` rather than letting `SubmitTx` disable the step, so the refusal is a state
+your invariants can see. From `examples/tx-nonce/Nonces.tla`:
+
+```tla
+ELSE IF TxErr(s) = ""
+THEN /\ SubmitTx(s)
+     /\ landed' = landed \cup {st.n} /\ ntx' = ntx + 1
+     /\ UNCHANGED <<signed, nn, lost, credits>>
+ELSE /\ TxErr(s) = "InvalidNonce" /\ st.n \notin landed \cup lost
+     /\ lost' = lost \cup {st.n}
+     /\ UNCHANGED <<platformVars, keyVars, signed, nn, landed, credits, ntx>>
+```
+
+Nonces are abstract integers, from 0 for a new key; the key's delegates share them (K4).
 
 ### Key actions as child receipts
 
@@ -1703,3 +1767,6 @@ All examples are toy contracts written for this repo.
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |
   | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt; `instant/`: a self-closing contract relies on its delete being instant; `factory/`: a factory batch is atomic and its deposit returns to the factory, whose callback must repay the user, from a reserve, and a batch can use a global contract instead of deploying one; `global-upgrade/`: a by-account global contract's redeploy reaches a user's callback already in flight, and a use sent right after the deploy can fail |
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |
+  | `session-key` | a function-call key's allowance: sized as plays × cost, forgetting the gas refunds, it lets more plays through; a model that states no refund hides that |
+  | `tx-nonce` | transaction nonces: a replay is refused; a wallet that signs payments in parallel loses one when a later one lands first; without nonces a replay pays twice |
+  | `limits` | protocol limits at the last value nearcore accepts and the first it refuses: actions per receipt, promises per call, joint inputs, returned bytes, AddKey method names, logs |

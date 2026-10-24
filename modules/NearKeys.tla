@@ -9,7 +9,15 @@
 (*     action, a zero-deposit function call to its receiver with a         *)
 (*     permitted method; an empty method list allows every method          *)
 (*     (runtime/runtime/src/verifier.rs:209-250, :213, :223, :238).        *)
-(*  2. SubmitSigned(r, a, k): a transaction signed by a with key k.        *)
+(*  2. SubmitSigned(r, a, k): a transaction signed by a with key k.  A     *)
+(*     function-call key may carry an allowance (WithAllowance), charged   *)
+(*     the transaction's cost at conversion and refused when short         *)
+(*     (verifier.rs:282-303, NotEnoughAllowance); the gas refund adds back *)
+(*     (actions.rs:133-157), here at conversion (WithTxCost).              *)
+(*     SignedTx / SubmitTx: a transaction with a nonce, which must exceed  *)
+(*     the key's (verifier.rs:254-280, InvalidNonce) and becomes the key's *)
+(*     nonce, shared with its delegates; TxErr gives nearcore's first      *)
+(*     failing check.  SubmitSigned checks no nonce.                       *)
 (*  3. AddKey / DeleteKey receipts (ADDK / DELK, ExecKeyAct).  Key actions *)
 (*     are only allowed on the predecessor's own account                   *)
 (*     (runtime/runtime/src/actions.rs:755-801, ActorNoPermission);        *)
@@ -56,6 +64,12 @@ keyVars == <<keys, sigpaid>>
 Perm(rcv, ms, all) == [rcv |-> rcv, ms |-> ms, all |-> all]
 FullPerm == [rcv |-> "", ms |-> {}, all |-> TRUE, full |-> TRUE]
 IsFull(p) == "full" \in DOMAIN p /\ p.full
+\* A function-call key with an allowance of n (model units, the units of
+\* TxCost); Perm alone has none, nearcore's `None`: unlimited.
+WithAllowance(p, n) ==
+    IF IsFull(p) THEN Assert(FALSE, <<"WithAllowance: a full-access key has no allowance", p>>)
+    ELSE ("al" :> n) @@ p
+HasAllowance(p) == "al" \in DOMAIN p
 
 KeyPresent(a, k) == k \in DOMAIN keys[a]
 \* The cases are written with IF so that they are mutually exclusive: an
@@ -68,6 +82,13 @@ KeyAllows(a, k, to, m) ==
             /\ IF keys[a][k].all \/ keys[a][k].ms = {} THEN TRUE ELSE m \in keys[a][k].ms
 KeysWithout(a, k) == [keys EXCEPT ![a] = [x \in DOMAIN keys[a] \ {k} |-> keys[a][x]]]
 KeysWith(a, k, p)  == [keys EXCEPT ![a] = (k :> p) @@ keys[a]]
+\* Nonces, per key, in the key record (field "nonce"; absent = 0): one per
+\* key in nearcore, checked and set by SubmitTx and by delegates (K4).
+\* A key re-added after a DeleteKey starts again at 0 (KeysWith); nearcore
+\* starts a new key at (height - 1) * 1e6 (access_keys.rs:46-49, :240): an
+\* over-approximation, see docs/SEMANTICS.md (K4).
+KeyNonce(a, k) == IF "nonce" \in DOMAIN keys[a][k] THEN keys[a][k].nonce ELSE 0
+KeysWithNonce(a, k, n) == [keys EXCEPT ![a][k] = ("nonce" :> n) @@ @]
 
 \* The bytes a function-call AddKey is charged per byte for: the sum over its
 \* method names of (length + 1) (runtime/near-vm-runner/src/logic/utils.rs:4-6,
@@ -81,6 +102,18 @@ NameBytes(M) == IF M = {} THEN 0
                 ELSE LET m == CHOOSE x \in M : TRUE IN Len(m) + 1 + NameBytes(M \ {m})
 WithMethodBytes(p, n) == ("mb" :> n) @@ p
 MethodBytes(p) == IF "mb" \in DOMAIN p THEN p.mb ELSE NameBytes(p.ms)
+\* max_number_bytes_method_names (2000 at 88): a function-call AddKey whose
+\* MethodBytes exceed it makes the transaction invalid, or fails the
+\* receipt that creates it (runtime/runtime/src/action_validation.rs
+\* :456-474; runtime/runtime/src/lib.rs:968-979).  The model sees the
+\* permission only where the AddKey is built or run, not on the creator,
+\* so it asserts instead (AddKeyAct, AddKeyRcpt, ExecKeyAct).
+MaxMethodNameBytes == 2000
+MethodBytesOK(p) ==
+    IF IsFull(p) \/ MethodBytes(p) <= MaxMethodNameBytes THEN TRUE
+    ELSE Assert(FALSE, <<"AddKey with more than 2000 bytes of method names (max_number_bytes_method_names):"
+                         \o " nearcore refuses it where it is created, which the model does not represent",
+                         MethodBytes(p)>>)
 
 \* Storage bytes of a key with permission p (with StoragePerByte):
 \* trie id + borsh(AccessKey) + 40 (access_key_storage_usage,
@@ -94,13 +127,14 @@ MethodBytes(p) == IF "mb" \in DOMAIN p THEN p.mb ELSE NameBytes(p.ms)
 \* length comes from IdBytes (overridable; default 10).  Method names count
 \* as the AddKey fee counts them (MethodBytes: each name's length + 1, or the
 \* WithMethodBytes figure), plus 3 more per name for the borsh length prefix.
-\* Overridable: KeyBytes <- MyKeyBytes for an allowance (+16) or another key
-\* type.
+\* A key with an allowance (WithAllowance) is 16 bytes larger (sim:
+\* conformance/tests/accounts.rs, allowance_charge_refund_and_boundary).
+\* Overridable: KeyBytes <- MyKeyBytes for another key type.
 IdBytes(s) == 10
 KeyBytes(p) ==
     IF IsFull(p) THEN FullKeyBytes
     ELSE LET mb == IF p.all THEN 0 ELSE MethodBytes(p) + 3 * Cardinality(p.ms)
-         IN 33 + 8 + 1 + 1 + 4 + IdBytes(p.rcv) + 4 + mb + RecordExtraBytes
+         IN 33 + 8 + 1 + (IF HasAllowance(p) THEN 17 ELSE 1) + 4 + IdBytes(p.rcv) + 4 + mb + RecordExtraBytes
 \* The bytes of a key map (key id -> permission).
 KeyMapBytes(ks) ==
     LET F[S \in SUBSET DOMAIN ks] == IF S = {} THEN 0
@@ -129,12 +163,85 @@ KeyCanSign(a, k, r) ==
             /\ ~HasAc(r)          \* one FunctionCall only (verifier.rs:213-217)
             /\ r.dep = 0
 
-\* Submit a signed transaction.  A key of a \in KeyAccts must be able to sign it.
+\* The allowance (docs/SEMANTICS.md, K2 and N-allowance).  Conversion
+\* charges a function-call key with an allowance the transaction's whole
+\* cost; an allowance below it makes the transaction invalid
+\* (NotEnoughAllowance; equal is enough, runtime/runtime/src/verifier.rs
+\* :282-303, :365-373).  Each gas refund of the transaction adds back to the
+\* key when it runs (runtime/runtime/src/lib.rs:3041-3047,
+\* runtime/runtime/src/actions.rs:133-157).  The model credits the whole
+\* refund at conversion: the allowance is then never below nearcore's, so
+\* the key can sign every transaction it can sign in nearcore, and more
+\* while refunds are in flight (an over-approximation).
+\* WithTxCost(r, c, f) on a transaction's first receipt r states its cost c
+\* and refund f (0 <= f <= c), in the allowance's units.  Defaults: c is
+\* the prepaid gas in gas mode (GasOf(r), in Ggas: below nearcore's cost,
+\* which adds the conversion's gas, the receipt's exec fees and a purchase
+\* price of at least 10x the gas price at 88) and 0 in fault mode; f is c,
+\* so by default an allowance refuses only a transaction that alone costs
+\* more and is never used up.  A model whose property depends on the
+\* allowance running out states both: f = 0 there under-approximates.  The
+\* fields are dropped when the transaction is submitted.
+WithTxCost(r, c, f) ==
+    IF f < 0 \/ f > c THEN Assert(FALSE, <<"WithTxCost: the refund must be within 0..cost", c, f>>)
+    ELSE [tc |-> c, trf |-> f] @@ r
+TxCost(r)   == IF "tc" \in DOMAIN r THEN r.tc ELSE IF GasMode = "gas" THEN GasOf(r) ELSE 0
+TxRefund(r) == IF "trf" \in DOMAIN r THEN r.trf ELSE TxCost(r)
+Bare(r) == IF "tc" \in DOMAIN r THEN [f \in DOMAIN r \ {"tc", "trf"} |-> r[f]] ELSE r
+KeyAllowance(a, k) == keys[a][k].al
+AllowanceOK(a, k, r) == IF HasAllowance(keys[a][k]) THEN keys[a][k].al >= TxCost(r) ELSE TRUE
+Charged(p, r) == IF HasAllowance(p) THEN [p EXCEPT !.al = @ - TxCost(r) + TxRefund(r)] ELSE p
+
+\* Submit a signed transaction.  A key of a \in KeyAccts must be able to sign
+\* it, and its allowance, if it has one, pay for it.  No nonce: see SubmitTx.
 SubmitSigned(r, a, k) ==
-    /\ (a \in KeyAccts) => KeyCanSign(a, k, r)
-    /\ SubmitAs(r, a, k)
+    /\ (a \in KeyAccts) => (KeyCanSign(a, k, r) /\ AllowanceOK(a, k, r))
+    /\ SubmitAs(Bare(r), a, k)
     /\ sigpaid' = [sigpaid EXCEPT ![a] = @ + 1]
-    /\ UNCHANGED keys
+    /\ keys' = IF a \in KeyAccts /\ KeyPresent(a, k) /\ HasAllowance(keys[a][k])
+               THEN [keys EXCEPT ![a][k] = Charged(@, r)] ELSE keys
+
+\* Transactions with nonces (docs/SEMANTICS.md, K5).  A signed
+\* transaction is a value: the signer a, its key k, the nonce n (any
+\* integer) and the first receipt r.  Anyone holding it may submit it, any
+\* number of times: a replay.  For a in KeyAccts, nearcore accepts it only
+\* if n exceeds the key's nonce (runtime/runtime/src/verifier.rs:254-280,
+\* :343-348; any gap is fine), and acceptance sets the key's nonce to n
+\* (:402; lib.rs:350-352), the nonce its delegates are checked against
+\* (K4).  So a replay, or a transaction below one already accepted, is
+\* refused.  The upper bound (block height x 1e6, NonceTooLarge) is not
+\* modelled; a key re-added after a DeleteKey starts at nonce 0, as for
+\* delegates (N-delegate-rekey).  For a signer outside KeyAccts there is no
+\* key, so no nonce check.
+SignedTx(a, k, n, r) == [sgn |-> a, k |-> k, n |-> n, r |-> r]
+
+\* The first check that refuses st, in nearcore's order, or "": the
+\* transaction's actions (verifier.rs:92-104), the signer (:164-195), then
+\* nonce, balance, allowance, storage and the function-call key's scope
+\* (:343-393).  A model branches on it to see a refusal.
+TxErr(st) ==
+    LET a == st.sgn  k == st.k  r == st.r  ka == a \in KeyAccts IN
+    CASE NActs(r) > MaxActionsPerReceipt
+         \/ (IsDeleg(r) /\ NActs(r.a.inner) > MaxActionsPerReceipt) -> "TotalNumberOfActionsExceeded"
+      [] a \in deleted                                             -> "SignerDoesNotExist"
+      [] ka /\ ~KeyPresent(a, k)                                    -> "AccessKeyNotFound"
+      [] ka /\ st.n <= KeyNonce(a, k)                               -> "InvalidNonce"
+      [] near[a] < DepTotal(r)                                      -> "NotEnoughBalance"
+      [] ka /\ ~AllowanceOK(a, k, r)                                -> "NotEnoughAllowance"
+      [] StoragePerByte
+         /\ ~StorageCovers(near[a] - DepTotal(r) + LockedOf(a), stor[a]) -> "LackBalanceForState"
+      [] ka /\ ~KeyCanSign(a, k, r)                                 -> "AccessKeyError"
+      [] OTHER                                                      -> ""
+
+\* Submit the signed transaction st: refused unless TxErr(st) = "".  The
+\* key's nonce becomes st.n and its allowance is charged.
+SubmitTx(st) ==
+    LET a == st.sgn  k == st.k IN
+    /\ TxErr(st) = ""
+    /\ SubmitAs(Bare(st.r), a, k)
+    /\ sigpaid' = [sigpaid EXCEPT ![a] = @ + 1]
+    /\ keys' = IF a \in KeyAccts THEN [keys EXCEPT ![a][k] = ("nonce" :> st.n) @@ Charged(@, st.r)]
+               ELSE keys
 
 ----------------------------------------------------------------------------
 (* AddKey / DeleteKey receipts                                             *)
@@ -149,7 +256,8 @@ KeyFee(m, p) ==
     ELSE IF IsFull(p) THEN NearFeeTable!OneActionReceiptFee("add_key_full", TRUE, "named")
     ELSE NearFeeTable!OneActionReceiptFee("add_key_fc", TRUE, "named")
          + NearFeeTable!AddKeyFcBytesFee(TRUE, MethodBytes(p))
-AddKeyRcpt(id, tx, acct, a, p, cb) == WithFee(Rcpt(id, tx, acct, acct, ADDK, a, 0, acct, cb), KeyFee(ADDK, p))
+AddKeyRcpt(id, tx, acct, a, p, cb) ==
+    IF MethodBytesOK(p) THEN WithFee(Rcpt(id, tx, acct, acct, ADDK, a, 0, acct, cb), KeyFee(ADDK, p)) ELSE FALSE
 DelKeyRcpt(id, tx, acct, a, cb)    == WithFee(Rcpt(id, tx, acct, acct, DELK, a, 0, acct, cb), KeyFee(DELK, FullPerm))
 
 \* Execute an AddKey / DeleteKey receipt.  k: key id, p: permission (AddKey only);
@@ -160,6 +268,7 @@ DelKeyRcpt(id, tx, acct, a, cb)    == WithFee(Rcpt(id, tx, acct, acct, DELK, a, 
 KeyActBytes(r, k, p) == IF r.m = DELK THEN -KeyBytes(keys[r.to][k]) ELSE KeyBytes(p)
 ExecKeyAct(r, k, p) ==
     /\ r.m \in {ADDK, DELK}
+    /\ r.m = ADDK => MethodBytesOK(p)
     /\ LET ok == /\ AcctExists(r.to)       \* AccountDoesNotExist (actions.rs:862-879)
                  /\ r.to = r.fr
                  /\ r.to \in KeyAccts
@@ -183,7 +292,7 @@ ExecKeyAct(r, k, p) ==
 (* FunctionCall(m)].  acts: the key actions that precede the call, in      *)
 (* order (AddKeyAct / DelKeyAct).                                          *)
 KAct(op, k, p) == [op |-> op, k |-> k, p |-> p]
-AddKeyAct(k, p) == KAct("add", k, p)
+AddKeyAct(k, p) == IF MethodBytesOK(p) THEN KAct("add", k, p) ELSE FALSE
 DelKeyAct(k)    == KAct("del", k, FullPerm)
 
 \* Fold acts over one account's key map: [ok, ks].
@@ -342,12 +451,6 @@ ExecBuiltinK(r) ==
 \* mbh of a delegate without an expiry height.
 NoExpiry == -1
 
-\* Delegate nonces, per key, in the key record (field "nonce"; absent = 0).
-\* A key re-added after a DeleteKey starts again at 0 (KeysWith); nearcore
-\* starts a new key at (height - 1) * 1e6 (access_keys.rs:46-49, :240): an
-\* over-approximation, see docs/SEMANTICS.md (K4).
-KeyNonce(a, k) == IF "nonce" \in DOMAIN keys[a][k] THEN keys[a][k].nonce ELSE 0
-KeysWithNonce(a, k, n) == [keys EXCEPT ![a][k] = ("nonce" :> n) @@ @]
 
 \* The user s's signed delegate: its key k, nonce n (any integer; it must
 \* exceed the key's last delegate nonce when it runs), expiry height mbh

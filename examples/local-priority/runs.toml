@@ -89,7 +89,7 @@ runs = ["local_on"]
 id = "no_key_check_at_submission"
 file = "NearKeys.tla"
 library = true
-find = '/\ (a \in KeyAccts) => KeyCanSign(a, k, r)'
+find = '/\ (a \in KeyAccts) => (KeyCanSign(a, k, r) /\ AllowanceOK(a, k, r))'
 replace = '/\ TRUE'
 class = "removed precondition"
 runs = ["local_on"]

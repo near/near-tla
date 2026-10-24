@@ -783,6 +783,12 @@ LockedOf(a) == IF a = StakingAcct THEN locked ELSE 0
 \* frees bytes).  Without StoragePerByte it is ignored.
 OStor(O, d)  == [sb |-> d] @@ O
 StorDelta(O) == IF "sb" \in DOMAIN O THEN O.sb ELSE 0
+\* Log outcome field (docs/SEMANTICS.md, R6): OLog(O, b) adds one log of b
+\* bytes (the message's UTF-8 length) to what the call writes; logs are
+\* checked against the protocol limits (HostLimitErr) and not kept.
+LogCount(O) == IF "lgn" \in DOMAIN O THEN O.lgn ELSE 0
+LogBytes(O) == IF "lgb" \in DOMAIN O THEN O.lgb ELSE 0
+OLog(O, b) == [lgn |-> LogCount(O) + 1, lgb |-> LogBytes(O) + b] @@ O
 \* Measured bytes (docs/SEMANTICS.md, B2): StorBytes is a table the
 \* calibrator writes (conformance/, `calibrate --stor`), keyed like GasBurn
 \* ("acct.method/path"): [key -> [base |-> Int, per |-> Int]], the receiver's
@@ -1123,6 +1129,67 @@ Affordable(r, O) ==
        ELSE near[r.to] + r.dep - O.out + LockedOf(r.to) >= StorageFloor[r.to]
 
 ----------------------------------------------------------------------------
+(* Protocol limits (docs/SEMANTICS.md, R6), protocol 88's values           *)
+(* (core/parameters/src/snapshots/near_parameters__config_store__tests__88 *)
+(* .json.snap:244-256).  The ones the model can count fail the receipt as  *)
+(* nearcore does (Verdict, CanSubmit); the deploy limits are Asserts       *)
+(* (WithDeploy, WithDeployGlobal).                                         *)
+MaxActionsPerReceipt == 100      \* max_actions_per_receipt
+MaxPromisesPerCall   == 1024     \* max_promises_per_function_call_action
+MaxJointInputs       == 128      \* max_number_input_data_dependencies
+MaxReturnedData      == 4194304  \* max_length_returned_data, bytes
+MaxLogs              == 100      \* max_number_logs
+MaxLogBytes          == 16384    \* max_total_log_length, bytes
+
+\* The actions of a receipt record: its function calls (one per static or
+\* gas entry, at least one), and the account actions it carries (A8):
+\* CreateAccount, Transfer, key actions, DeployContract,
+\* DeployGlobalContract, UseGlobalContract, DeleteAccount.  An ACCOUNT
+\* receipt's deposit is its Transfer.  Any other receipt is one action.
+AcActCount(r) ==
+    (IF r.ac.mk THEN 1 ELSE 0) + (IF (IsAcctRcpt(r) /\ r.dep > 0) \/ XferOf(r) > 0 THEN 1 ELSE 0)
+    + Len(r.ac.ka) + (IF Dpl(r) # NoCode THEN 1 ELSE 0) + (IF DgTag(r) # NoCode THEN 1 ELSE 0)
+    + (IF Ug(r) # NoGid THEN 1 ELSE 0) + (IF r.ac.bnf # "" THEN 1 ELSE 0)
+NCalls(r) == LET n == IF Len(r.gs) > Len(r.g) THEN Len(r.gs) ELSE Len(r.g) IN IF n > 1 THEN n ELSE 1
+NActs(r) ==
+    IF IsAcctRcpt(r) THEN AcActCount(r)
+    ELSE IF IsCall(r) THEN NCalls(r) + (IF HasAc(r) THEN AcActCount(r) ELSE 0)
+    ELSE 1
+
+\* Host-function limits, hit while the call runs (HostLimitErr): the call
+\* fails there, as a panic would, and creates nothing.
+\*  - a joint callback waiting on more than 128 inputs (promise_and,
+\*    runtime/near-vm-runner/src/logic/host.rs:2523-2532);
+\*  - more than 1024 promises in one function-call action (host.rs:610-622,
+\*    checked by every host function that makes a promise).  The model
+\*    counts each receipt the action creates and one promise_and per joint
+\*    callback (AndThen); a contract that nests promise_and makes more, so
+\*    the count is a lower bound.  Without per-action accounting (pa) the
+\*    receipt's children count as one action's;
+\*  - a returned value over 4 MiB (value_return, host.rs:4711-4717), in
+\*    bytes when the outcome states them (RValLen), else from the KB size:
+\*    4196 KB is surely over and 4195 KB may be either (an Assert);
+\*  - more than 100 logs, or more than 16384 bytes of them, in one
+\*    function-call action (runtime/near-vm-runner/src/logic/logic.rs:81-101,
+\*    host.rs:486-512, :4792-4800), as the outcome declares them (OLog).  The
+\*    limits are per action: over them in a receipt of several function
+\*    calls is an Assert, since the model cannot tell which call logs what.
+PromiseCount(S) == Cardinality(S) + Cardinality({c \in S : IsJoint(c)})
+LogsOver(r, O) ==
+    IF LogCount(O) <= MaxLogs /\ LogBytes(O) <= MaxLogBytes THEN FALSE
+    ELSE IF NCalls(r) > 1
+    THEN Assert(FALSE, <<"logs over max_number_logs or max_total_log_length in a receipt of several function calls;"
+                         \o " the limits are per call", r.m, LogCount(O), LogBytes(O)>>)
+    ELSE TRUE
+RetTooLong(O) ==
+    /\ O.ret.k = "val"
+    /\ IF RetLen(O) > 0 THEN RetLen(O) > MaxReturnedData
+       ELSE IF RetSz(O) = (MaxReturnedData + 999) \div 1000
+       THEN Assert(FALSE, <<"a returned value of", RetSz(O), "KB may or may not exceed max_length_returned_data;"
+                            \o " state its bytes with RValLen">>)
+       ELSE RetSz(O) > (MaxReturnedData + 999) \div 1000
+
+----------------------------------------------------------------------------
 (* Need, verdict and the unused-gas split                                  *)
 Kids(O) == O.ready \cup O.post
 
@@ -1303,6 +1370,24 @@ PoolCheck(r, O) ==
        \/ (O.err # "" /\ ~HasPanicKey(O)) THEN TRUE
     ELSE Assert(FALSE, <<"receipt with several function calls but no pa (per-action gas); PooledGasOK <- TRUE to pool", r.to, r.m>>)
 
+\* The first host-function limit the outcome O of r exceeds, or "" (see
+\* "Protocol limits": joint inputs, promises per action, returned bytes,
+\* logs).
+HostLimitErr(r, O) ==
+    CASE \E c \in Kids(O) : IsJoint(c) /\ Len(c.ins) > MaxJointInputs -> "NumberInputDataDependenciesExceeded"
+      [] PromiseCount(Kids(O)) > MaxPromisesPerCall
+         /\ IF PerAction(r, O) THEN \E k \in DOMAIN O.pa : PromiseCount(ActKids(O, k)) > MaxPromisesPerCall
+            ELSE TRUE                                         -> "NumberPromisesExceeded"
+      [] RetTooLong(O)                                        -> "ReturnedValueLengthExceeded"
+      [] LogsOver(r, O) /\ LogCount(O) > MaxLogs              -> "NumberOfLogsExceeded"
+      [] LogsOver(r, O)                                       -> "TotalLogLengthExceeded"
+      [] OTHER                                                -> ""
+\* New-receipt validation, after the call succeeded: a receipt it creates
+\* with more than 100 actions fails it (runtime/runtime/src/lib.rs:968-979,
+\* NewReceiptValidationError; runtime/runtime/src/action_validation.rs
+\* :104-109), and the call's receipts are dropped.
+NewRcptLimitErr(O) == \E c \in Kids(O) : NActs(c) > MaxActionsPerReceipt
+
 \* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas)
 \* | "either" (gas mode, "up": a child's gas may be 0 in nearcore or not,
 \* ZeroGasMaybe; the receipt commits or fails, and Exec takes both).
@@ -1310,8 +1395,10 @@ PoolCheck(r, O) ==
 \* CreateAccount, Transfer and key actions before the call fail it before
 \* it starts; the DeleteAccount after it is checked on the state after the
 \* call); then the receiver check (the call never starts); a panic
-\* the gas could not reach is "oog"; new-receipt validation and the storage
-\* check run after the call (an unaffordable receipt fails either way).  A
+\* the gas could not reach is "oog"; a host-function limit (HostLimitErr)
+\* fails the call as a panic does; new-receipt validation (a zero-gas
+\* child, more than 100 actions) and the storage check run after the call
+\* (an unaffordable receipt fails either way).  A
 \* Delegate receipt runs no code: a dispatcher that hands one to a contract
 \* handler is a modelling error (an Assert).
 Verdict(r, O) ==
@@ -1321,8 +1408,10 @@ Verdict(r, O) ==
     ELSE IF ~PoolCheck(r, O) THEN "fail"
     ELSE IF ~CallTargetOK(r) THEN "fail"
     ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "oog" ELSE "fail")
+    ELSE IF HostLimitErr(r, O) # "" THEN "fail"
     ELSE IF ~GasOK(r, O) THEN "oog"
     ELSE IF ZeroGasKid(r, O) THEN "fail"
+    ELSE IF NewRcptLimitErr(O) THEN "fail"
     ELSE IF ~Affordable(r, O) THEN "fail"
     ELSE IF ZeroGasMaybe(r, O) THEN "either"
     ELSE "ok"
@@ -1637,8 +1726,12 @@ BlockTs == TsOf(blk)
 \* Gas money is not modelled (docs/SEMANTICS.md, N-gas-money).  A deleted
 \* signer cannot sign (InvalidTxError::SignerDoesNotExist, verifier.rs
 \* :170-175).  A scripted model branches on this rather than letting Submit
-\* disable its step.
+\* disable its step.  A transaction of more than 100 actions (a delegate's
+\* inner actions too) is invalid (verifier.rs:92-104;
+\* action_validation.rs:104-109, :266-272).
 CanSubmit(r, a) ==
+    /\ NActs(r) <= MaxActionsPerReceipt
+    /\ IF IsDeleg(r) THEN NActs(r.a.inner) <= MaxActionsPerReceipt ELSE TRUE
     /\ a \notin deleted
     /\ near[a] >= DepTotal(r)
     /\ IF StoragePerByte THEN StorageCovers(near[a] - DepTotal(r) + LockedOf(a), stor[a]) ELSE TRUE

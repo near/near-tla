@@ -1,0 +1,293 @@
+# Protocol limits at their boundaries: the last value nearcore accepts passes, the first it
+# refuses fails the receipt (or the transaction) as in nearcore, or is an Assert.  See Limits.tla.
+#
+#   python3 tools/run.py examples/limits
+
+spec = "Limits"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Done", "Sane"]
+tags = ["semantics:limits"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+KeyAccts = '{"u"}'
+Contracts = '{"d", "p"}'
+U = '"u"'
+D = '"d"'
+P = '"p"'
+Shape = '"batch"'
+N = "100"
+B = "100"
+Bytes = "0"
+
+# 100 actions per receipt (max_actions_per_receipt).
+[[run]]
+name = "limit_batch_100"
+expect = "pass"
+
+[[run]]
+name = "limit_batch_101"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+N = "101"
+B = "101"
+
+# The same 101 calls in receipts of at most 100.
+[[run]]
+name = "limit_batch_split"
+expect = "pass"
+[run.constants]
+N = "101"
+
+# The same limit on a transaction: 101 actions are never sent.
+[[run]]
+name = "limit_tx_100"
+expect = "pass"
+[run.constants]
+Shape = '"tx"'
+
+[[run]]
+name = "limit_tx_101"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+Shape = '"tx"'
+N = "101"
+
+# 1024 promises per function-call action (max_promises_per_function_call_action).
+[[run]]
+name = "limit_fan_1024"
+expect = "pass"
+[run.constants]
+Shape = '"fan"'
+N = "1024"
+
+[[run]]
+name = "limit_fan_1025"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+Shape = '"fan"'
+N = "1025"
+
+# 128 joint-promise inputs (max_number_input_data_dependencies).
+[[run]]
+name = "limit_join_128"
+expect = "pass"
+[run.constants]
+Shape = '"join"'
+N = "128"
+
+[[run]]
+name = "limit_join_129"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+Shape = '"join"'
+N = "129"
+
+# 4 MiB of returned data (max_length_returned_data).
+[[run]]
+name = "limit_ret_4mib"
+expect = "pass"
+[run.constants]
+Shape = '"ret"'
+Bytes = "4194304"
+
+[[run]]
+name = "limit_ret_over"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+Shape = '"ret"'
+Bytes = "4194305"
+
+# 2000 bytes of method names in a function-call AddKey (max_number_bytes_method_names): an
+# Assert past it.
+[[run]]
+name = "limit_addkey_2000"
+expect = "pass"
+[run.constants]
+Shape = '"addkey"'
+Bytes = "2000"
+
+[[run]]
+name = "limit_addkey_2001"
+expect = "assert"
+[run.constants]
+Shape = '"addkey"'
+Bytes = "2001"
+
+# Logs in one function call: 16384 bytes in all (max_total_log_length), in one log or two, and
+# 100 logs (max_number_logs).
+[[run]]
+name = "limit_log_16384"
+expect = "pass"
+[run.constants]
+Shape = '"log"'
+N = "1"
+Bytes = "16384"
+
+[[run]]
+name = "limit_log_16385"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+Shape = '"log"'
+N = "1"
+Bytes = "16385"
+
+[[run]]
+name = "limit_log_two_halves"
+expect = "pass"
+[run.constants]
+Shape = '"log"'
+N = "2"
+Bytes = "8192"
+
+[[run]]
+name = "limit_log_100"
+expect = "pass"
+[run.constants]
+Shape = '"log"'
+N = "100"
+Bytes = "1"
+
+[[run]]
+name = "limit_log_101"
+expect = "violation"
+invariant = "Done"
+[run.constants]
+Shape = '"log"'
+N = "101"
+Bytes = "1"
+
+# ---- anti-vacuity: python3 tools/run.py examples/limits --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# Each mutant makes a limit one tighter, so the run at the limit fails.  No refund or result
+# check to mutate besides the ones below.
+
+[[witness]]
+id = "receipt_of_100"
+expr = '~(\E x \in rq : NActs(x) = 100)'
+runs = ["limit_batch_100", "limit_tx_100"]
+
+[[witness]]
+id = "fan_of_1024"
+expr = '~(Cardinality(rq) = 1024)'
+runs = ["limit_fan_1024"]
+
+[[witness]]
+id = "join_of_128"
+expr = '~(\E x \in post : IsJoint(x) /\ Len(x.ins) = 128)'
+runs = ["limit_join_128"]
+
+[[witness]]
+id = "blob_read"
+expr = '~(got = 1)'
+runs = ["limit_ret_4mib"]
+
+[[witness]]
+id = "logged"
+expr = '~(got = 1)'
+runs = ["limit_log_16384", "limit_log_100"]
+
+[[mutant]]
+id = "actions_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = 'NewRcptLimitErr(O) == \E c \in Kids(O) : NActs(c) > MaxActionsPerReceipt'
+replace = 'NewRcptLimitErr(O) == \E c \in Kids(O) : NActs(c) >= MaxActionsPerReceipt'
+class = "off-by-one"
+runs = ["limit_batch_100"]
+
+[[mutant]]
+id = "tx_actions_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = '''    /\ NActs(r) <= MaxActionsPerReceipt
+    /\ IF IsDeleg(r)'''
+replace = '''    /\ NActs(r) < MaxActionsPerReceipt
+    /\ IF IsDeleg(r)'''
+class = "off-by-one"
+runs = ["limit_tx_100"]
+
+[[mutant]]
+id = "promise_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = '[] PromiseCount(Kids(O)) > MaxPromisesPerCall'
+replace = '[] PromiseCount(Kids(O)) >= MaxPromisesPerCall'
+class = "off-by-one"
+runs = ["limit_fan_1024"]
+
+[[mutant]]
+id = "join_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = 'IsJoint(c) /\ Len(c.ins) > MaxJointInputs'
+replace = 'IsJoint(c) /\ Len(c.ins) >= MaxJointInputs'
+class = "off-by-one"
+runs = ["limit_join_128"]
+
+[[mutant]]
+id = "return_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = 'IF RetLen(O) > 0 THEN RetLen(O) > MaxReturnedData'
+replace = 'IF RetLen(O) > 0 THEN RetLen(O) >= MaxReturnedData'
+class = "off-by-one"
+runs = ["limit_ret_4mib"]
+
+[[mutant]]
+id = "method_bytes_limit_tight"
+file = "NearKeys.tla"
+library = true
+find = 'IF IsFull(p) \/ MethodBytes(p) <= MaxMethodNameBytes THEN TRUE'
+replace = 'IF IsFull(p) \/ MethodBytes(p) < MaxMethodNameBytes THEN TRUE'
+class = "off-by-one"
+runs = ["limit_addkey_2000"]
+killed_by = ["assert"]
+
+# The model: D puts every call in one receipt whatever B says.
+[[mutant]]
+id = "batch_not_split"
+file = "Limits.tla"
+find = 'NBatches == (N + B - 1) \div B'
+replace = 'NBatches == 1'
+class = "removed precondition"
+runs = ["limit_batch_split"]
+
+[[mutant]]
+id = "log_bytes_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = 'IF LogCount(O) <= MaxLogs /\ LogBytes(O) <= MaxLogBytes THEN FALSE'
+replace = 'IF LogCount(O) <= MaxLogs /\ LogBytes(O) < MaxLogBytes THEN FALSE'
+class = "off-by-one"
+runs = ["limit_log_16384"]
+
+[[mutant]]
+id = "log_count_limit_tight"
+file = "NearAsync.tla"
+library = true
+find = 'IF LogCount(O) <= MaxLogs /\ LogBytes(O) <= MaxLogBytes THEN FALSE'
+replace = 'IF LogCount(O) < MaxLogs /\ LogBytes(O) <= MaxLogBytes THEN FALSE'
+class = "off-by-one"
+runs = ["limit_log_100"]
+
