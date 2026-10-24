@@ -106,6 +106,25 @@ Shape = '"nest"'
 N = "1019"
 J = "2"
 
+# Stated as one flat promise_and of the 3 quotes (J = 1): 1019 pays make exactly 1024.
+[[run]]
+name = "limit_nest_flat_1024"
+expect = "pass"
+[run.constants]
+Shape = '"nest"'
+N = "1019"
+J = "1"
+
+# Stated below the joint callbacks the call creates (J = 0, one callback): an Assert, not a
+# count of 1023 that would hide a promise.
+[[run]]
+name = "limit_nest_understated"
+expect = "assert"
+[run.constants]
+Shape = '"nest"'
+N = "1019"
+J = "0"
+
 # Not stated: 1018 pays stay within 1024 however the 3 quotes are joined (at most 2 joins).
 [[run]]
 name = "limit_nest_unstated_ok"
@@ -268,7 +287,7 @@ runs = ["limit_nest_1024", "limit_nest_unstated_ok"]
 [[witness]]
 id = "nest_gathered"
 expr = '~(got = 3)'
-runs = ["limit_nest_1024"]
+runs = ["limit_nest_1024", "limit_nest_flat_1024"]
 
 # Two calls in one receipt, then their 1200 receipts in flight.
 [[witness]]
@@ -335,6 +354,17 @@ find = 'ELSE IF NCalls(r) <= 1 THEN CallPromisesOver(S, StatedJoins(O))'
 replace = 'ELSE IF TRUE THEN CallPromisesOver(S, StatedJoins(O))'
 class = "removed precondition"
 runs = ["limit_multi_600_600"]
+
+# The library refuses a stated count equal to the joint callbacks (1 for 1 callback).
+[[mutant]]
+id = "stated_joins_check_strict"
+file = "NearAsync.tla"
+library = true
+find = 'IF "nj" \notin DOMAIN R \/ R.nj >= NJoins(S) THEN TRUE'
+replace = 'IF "nj" \notin DOMAIN R \/ R.nj > NJoins(S) THEN TRUE'
+class = "off-by-one"
+runs = ["limit_nest_flat_1024"]
+killed_by = ["assert"]
 
 # The library's bound on nested joins is one too high: 1018 pays and 3 quotes assert.
 [[mutant]]

@@ -585,17 +585,22 @@ BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]) + DepTota
 \* takes one element per level recurses |S| deep, and with a few hundred
 \* receipts that is past a 512 KB thread stack (TLC's StackOverflowError;
 \* the default stack is 1 MB on 64-bit Linux and macOS).  So a set of more
-\* than 16 is split in two by id (ids are unique integers), which keeps the
-\* depth near 16 + 2 x log2 of the id range.
+\* than 16 is split in two by id (ids are unique integers), halving an id
+\* range that starts as all of TLC's integers (negative ids, then the
+\* rest): every id is inside it, so each level halves the range its
+\* receipts can occupy, and the depth stays below 16 + 2 x 32 whatever the
+\* ids are.  Only receipts that share an id reach a range of one id, where
+\* the sum is linear.
 RECURSIVE RcptSumIn(_, _, _, _)
 RcptSumIn(F(_), S, lo, hi) ==
     IF Cardinality(S) <= 16 \/ lo >= hi
     THEN LET G[T \in SUBSET S] == IF T = {} THEN 0
                                   ELSE LET x == CHOOSE y \in T : TRUE IN F(x) + G[T \ {x}]
          IN G[S]
-    ELSE LET mid == (lo + hi) \div 2 IN
+    ELSE LET mid == lo + (hi - lo) \div 2 IN
          RcptSumIn(F, {x \in S : x.id <= mid}, lo, mid) + RcptSumIn(F, {x \in S : x.id > mid}, mid + 1, hi)
-RcptSum(F(_), S) == RcptSumIn(F, S, -1073741824, 1073741824)
+RcptSum(F(_), S) ==
+    RcptSumIn(F, {x \in S : x.id < 0}, -2147483647, -1) + RcptSumIn(F, {x \in S : x.id >= 0}, 0, 2147483647)
 Sum(S) == RcptSum(LAMBDA x : DepTotal(x), S)
 
 \* Ids are unique, so Sum over a set of receipts is well defined.
@@ -1403,6 +1408,13 @@ MaxJoins(S) == JoinsUpTo({c \in S : IsJoint(c)})
 PromiseCount(S) == Cardinality(S) + NJoins(S)
 \* The joins a record states (OJoins, or nj in a pa record), or -1.
 StatedJoins(R) == IF "nj" \in DOMAIN R THEN R.nj ELSE -1
+\* A stated count is at least the joint callbacks of the call's children S:
+\* each is the .then of at least one promise_and.  Below that (or negative)
+\* is a modelling error, so the model asserts before using it.
+JoinsFieldOK(S, R) ==
+    IF "nj" \notin DOMAIN R \/ R.nj >= NJoins(S) THEN TRUE
+    ELSE Assert(FALSE, <<"a stated promise_and count (OJoins, or nj in a pa record) below the joint callbacks"
+                         \o " the call creates, each of which needs one", R.nj, NJoins(S)>>)
 \* Does the call that creates S, with nj joins stated (-1: none), go over?
 CallPromisesOver(S, nj) ==
     IF Cardinality(S) + (IF nj >= 0 THEN nj ELSE NJoins(S)) > MaxPromisesPerCall THEN TRUE
@@ -1428,12 +1440,24 @@ Partitioned(r, O) ==
 PAJoins(O) == IF "pa" \in DOMAIN O
               THEN SumSeq([k \in DOMAIN O.pa |-> IF "nj" \in DOMAIN O.pa[k] THEN O.pa[k].nj ELSE 0])
               ELSE 0
+\* The stated counts are checked first: an outcome-level one against all
+\* of the children (and only for a receipt of one call: several calls state
+\* theirs in pa), each pa one for being >= 0 here and against its call's
+\* children once pa is read.
+JoinsStatedOK(r, O) ==
+    /\ IF "nj" \in DOMAIN O /\ NCalls(r) > 1
+       THEN Assert(FALSE, <<"OJoins on a receipt of several function calls: state each call's count as nj in its pa record", r.m>>)
+       ELSE JoinsFieldOK(Kids(O), O)
+    /\ "pa" \in DOMAIN O => \A k \in DOMAIN O.pa : JoinsFieldOK({}, O.pa[k])
 PromisesOver(r, O) ==
     LET S == Kids(O) IN
-    IF Cardinality(S) + MaxJoins(S) + (IF "nj" \in DOMAIN O THEN O.nj ELSE 0) + PAJoins(O) <= MaxPromisesPerCall
+    IF ~JoinsStatedOK(r, O) THEN FALSE
+    ELSE IF Cardinality(S) + MaxJoins(S) + (IF "nj" \in DOMAIN O THEN O.nj ELSE 0) + PAJoins(O) <= MaxPromisesPerCall
     THEN FALSE        \* no call can go over: most outcomes stop here
     ELSE IF NCalls(r) <= 1 THEN CallPromisesOver(S, StatedJoins(O))
-    ELSE IF Partitioned(r, O) THEN \E k \in DOMAIN O.pa : CallPromisesOver(ActKids(O, k), StatedJoins(O.pa[k]))
+    ELSE IF Partitioned(r, O)
+    THEN /\ \A k \in DOMAIN O.pa : JoinsFieldOK(ActKids(O, k), O.pa[k])
+         /\ \E k \in DOMAIN O.pa : CallPromisesOver(ActKids(O, k), StatedJoins(O.pa[k]))
     ELSE Assert(FALSE, <<"a receipt of several function calls whose receipts and joins could exceed"
                          \o " max_promises_per_function_call_action (1024) in all; the limit is per call:"
                          \o " give the outcome pa (one record per call, its children in kids)", r.m, Cardinality(S)>>)

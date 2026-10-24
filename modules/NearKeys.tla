@@ -227,14 +227,18 @@ Charged(p, r) == IF HasAllowance(p) THEN [p EXCEPT !.al = @ - TxCost(r) + TxRefu
 \* (a, k) may still have one in flight: AllowanceAddOK asserts when txsig
 \* holds one (with TrackSigner = FALSE there is no txsig to read, so it
 \* asserts on every such AddKey).  Give the new key a fresh id.  ExecKeyAct,
-\* ExecWithKeys and ExecAcctK check it for an AddKey that takes effect.
+\* ExecWithKeys and ExecAcctK check it for an AddKey whose key is still in
+\* the account's key map ks after the receipt (AllowanceAddsOK): a later
+\* DeleteKey of it, or a DeleteAccount, in the same receipt leaves no key
+\* for a late refund to reach.
 SignedWith(a, k) == ~TrackSigner \/ \E t \in DOMAIN txsig : txsig[t].a = a /\ txsig[t].k = k
 AllowanceAddOK(a, k, p) ==
     IF IsFull(p) \/ ~HasAllowance(p) \/ ~SignedWith(a, k) THEN TRUE
     ELSE Assert(FALSE, <<"AddKey of a key with an allowance under a key id that has signed transactions:"
                          \o " nearcore adds their late gas refunds to the new key, the model does not;"
                          \o " give the new key a fresh id (docs/SEMANTICS.md, N-allowance)", a, k>>)
-AllowanceAddsOK(a, acts) == \A i \in DOMAIN acts : acts[i].op = "add" => AllowanceAddOK(a, acts[i].k, acts[i].p)
+AllowanceAddsOK(a, acts, ks) ==
+    \A i \in DOMAIN acts : acts[i].op = "add" /\ acts[i].k \in DOMAIN ks => AllowanceAddOK(a, acts[i].k, ks[acts[i].k])
 
 \* Submit a signed transaction.  A key of a \in KeyAccts must be able to sign
 \* it, and its allowance, if it has one, pay for it.  No nonce: see SubmitTx.
@@ -410,7 +414,7 @@ OkWithKeys(r, acts, O)  == Ok(r, WithKeyActs(r, acts, O))
 ExecWithKeys(r, acts, O) ==
     LET O2 == WithKeyActs(r, acts, O) IN
     /\ Exec(r, O2)
-    /\ Ok(r, O2) => AllowanceAddsOK(r.to, acts)
+    /\ acts # <<>> /\ Ok(r, O2) => AllowanceAddsOK(r.to, acts, KeysAfter(r, acts)[r.to])
     /\ keys' = IF Ok(r, O2) THEN KeysAfter(r, acts) ELSE keys
     /\ UNCHANGED sigpaid
 
@@ -467,7 +471,8 @@ ExecAcctK(r) ==
               <<"ACCOUNT receipt with key actions on an account outside KeyAccts", r.to>>)
     /\ LET kb == AcctKeysBytes(r)  kok == AcctKeysFold(r).ok IN
        /\ ExecAcctWith(r, kb, kok)
-       /\ AcctOK(r, kb, kok) /\ r.to \in KeyAccts => AllowanceAddsOK(r.to, r.ac.ka)
+       /\ AcctOK(r, kb, kok) /\ r.to \in KeyAccts
+          => AllowanceAddsOK(r.to, r.ac.ka, IF r.ac.bnf # "" THEN <<>> ELSE AcctKeysFold(r).ks)
        /\ keys' = IF AcctOK(r, kb, kok) /\ r.to \in KeyAccts
                   THEN [keys EXCEPT ![r.to] = IF r.ac.bnf # "" THEN <<>>
                                               ELSE IF r.ac.ka = <<>> /\ ~r.ac.mk THEN @

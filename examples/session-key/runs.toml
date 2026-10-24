@@ -35,6 +35,7 @@ MaxTx = "8"
 Allow = "5"
 Stated = "TRUE"
 NewKey = '""'
+BatchRekey = "FALSE"
 
 # Allow = Cost + (Cap - 1) * (Cost - Refund) = 5: plays at 5, 4 and 3; the fourth needs 3 and
 # finds 2.
@@ -73,6 +74,15 @@ name = "session_rekey_same_id"
 expect = "assert"
 [run.constants]
 NewKey = '"s"'
+MaxTx = "5"
+
+# Adding "s" and deleting it again in one receipt, after plays: no re-added key remains, fine.
+[[run]]
+name = "session_rekey_batch_deleted"
+expect = "pass"
+[run.constants]
+NewKey = '"s"'
+BatchRekey = "TRUE"
 MaxTx = "5"
 
 # A fresh id for the new key is fine.
@@ -145,6 +155,23 @@ runs = ["session_sized"]
 id = "fresh_key_after_play"
 expr = '~(KeyPresent(U, "s2") /\ plays >= 1)'
 runs = ["session_rekey_fresh_id"]
+
+# The batch ran after a play: "s" was added (and deleted again) under an id that had signed.
+[[witness]]
+id = "batch_after_play"
+expr = '~(~KeyPresent(U, "s") /\ plays >= 1)'
+runs = ["session_rekey_batch_deleted"]
+
+# The library checks every AddKey of a receipt, not the keys left after it.
+[[mutant]]
+id = "rekey_check_every_add"
+file = "NearKeys.tla"
+library = true
+find = '\A i \in DOMAIN acts : acts[i].op = "add" /\ acts[i].k \in DOMAIN ks => AllowanceAddOK(a, acts[i].k, ks[acts[i].k])'
+replace = '\A i \in DOMAIN acts : acts[i].op = "add" => AllowanceAddOK(a, acts[i].k, acts[i].p)'
+class = "removed precondition"
+runs = ["session_rekey_batch_deleted"]
+killed_by = ["assert"]
 
 # The library: every key id counts as having signed, so the fresh id asserts too.
 [[mutant]]

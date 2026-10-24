@@ -419,7 +419,7 @@ them. A model that lists platform variables one by one must add each.
   `PromiseCount`, `RetTooLong`, `HostLimitErr`, `NewRcptLimitErr`, `MaxLogs`, `MaxLogBytes`,
   `OLog`, `LogCount`, `LogBytes`, `LogsOver`, `RcptSum`, `RcptSumIn`, `OJoins`, `NJoins`,
   `JoinsUpTo`, `MaxJoins`, `StatedJoins`, `CallPromisesOver`, `PAPartOK`, `Partitioned`,
-  `PAJoins`, `PromisesOver`; in `NearKeys` also `SignedWith`, `AllowanceAddOK`,
+  `PAJoins`, `PromisesOver`, `JoinsFieldOK`, `JoinsStatedOK`; in `NearKeys` also `SignedWith`, `AllowanceAddOK`,
   `AllowanceAddsOK`, `NonceHeight0`, `NoncePerHeight`, `NonceCeiling`, `NonceTooLarge`,
   `AsciiChars`, `AsciiName`.
   Migration: rename the model's own definition. A model-local local-receipt rule
@@ -458,8 +458,9 @@ them. A model that lists platform variables one by one must add each.
   (`Charged`). `WithTxCost(r, cost, refund)` states both on the first receipt, and a
   transaction signed with a key that has an allowance must carry it (an `Assert` otherwise,
   and for a cost of 0: nearcore's cost is never 0). An AddKey of a key with an allowance under
-  a key id that has signed a transaction is an `Assert` (`AllowanceAddOK`): nearcore adds the
-  old transactions' late gas refunds to the new key; use a fresh id. A model without
+  a key id that has signed a transaction is an `Assert` (`AllowanceAddOK`) when the key is still
+  there after its receipt: nearcore adds the old transactions' late gas refunds to the new
+  key; use a fresh id. A model without
   allowances is unchanged. `KeyBytes` counts an allowance's 16 bytes (it was an override). New sim test
   `conformance/tests/accounts.rs`, `allowance_charge_refund_and_boundary`: the exact charge
   (`total_cost`, with the purchase price at `max(gas price, min_gas_purchase_price)`), the
@@ -477,7 +478,7 @@ them. A model that lists platform variables one by one must add each.
 - **Protocol limits** (SEMANTICS R6, N-limits; `examples/limits`): 100 actions per receipt,
   1024 promises per function-call action, 128 joint inputs and 4 MiB returned fail as in
   nearcore (see Breaking), the promises per call counting each `promise_and` (stated with
-  `OJoins`, else one per joint callback) and partitioned by `pa` in fault mode as in gas mode;
+  `OJoins`, at least one per joint callback, else one per joint callback) and partitioned by `pa` in fault mode as in gas mode;
   so do 100 logs and 16384 bytes of logs per function call, opt-in:
   a handler declares each log with `OLog(O, bytes)`, and logs over a limit in a receipt of
   several calls are an `Assert`; more than 2000 bytes of AddKey method names is an `Assert`, as
@@ -492,7 +493,7 @@ them. A model that lists platform variables one by one must add each.
   a rule. Method names outside printable ASCII are an `Assert` unless `WithMethodBytes` gives
   their bytes (TLC counts characters, nearcore UTF-8 bytes). New runs in `examples/limits`
   (`limit_nest_*`, `limit_multi_*`), `examples/session-key` (`session_cost_unstated`,
-  `session_rekey_*`) and `examples/tx-nonce` (`nonce_below_ceiling`, `nonce_too_large`).
+  `session_rekey_*`, `session_rekey_batch_deleted` adding and deleting the key in one receipt) and `examples/tx-nonce` (`nonce_below_ceiling`, `nonce_too_large`).
 
 - **Flow sets, and model-vs-sim flows for `probe2`** (`conformance/scripts/flowsets.py`,
   `flows/probes2.toml` from `scripts/gen_probes2.py`, `tla/Probe2Conf.tla`,
@@ -1017,8 +1018,10 @@ them. A model that lists platform variables one by one must add each.
   mode) no longer recurse once per receipt. With a few hundred receipts in flight that
   recursion ran past the JVM's thread stack: `limits`' `limit_join_128` (129 receipts) threw
   `StackOverflowError` on the Linux CI runner, and locally at `-Xss1m` in 5 of 6 tries. They
-  are now `RcptSum`, which splits a set of more than 16 receipts in two by id; the same run
-  passes at `-Xss640k` (6 of 6). The values are unchanged, and so is every run's verdict and
+  are now `RcptSum`, which splits a set of more than 16 receipts in two by id, halving a
+  range that starts as all of TLC's integers, so the depth stays below 16 + 2 × 32 whatever
+  the ids (a first version halved ±2^30 and fell back to one level per receipt for ids
+  outside it); the same run passes at `-Xss640k` (6 of 6). The values are unchanged, and so is every run's verdict and
   state count. `examples/limits` now checks `NearConserved` on the 1024-receipt fan-out too
   (`limit_fan_1024`: 2 s to 9 s).
 - Docs: SEMANTICS N-order and N-resume-order were wrong. nearcore keeps no per-pair order at

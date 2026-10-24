@@ -546,7 +546,7 @@ are `Assert`s.
 The model sees receipts, not `promise_and` calls. It counts one per joint callback, which is
 right when each `promise_and` feeds one `.then` directly. A nested one,
 `promise_and(promise_and(a, b), c)`, is two promises; state the count with
-`OJoins(O, n)`. Near the limit an unstated count that nesting could take past 1024 is an
+`OJoins(O, n)`, at least one per joint callback the call creates (fewer is an `Assert`). Near the limit an unstated count that nesting could take past 1024 is an
 `Assert`. The limit is per function call: in a receipt of several calls give the outcome
 `pa` ([section 12](#per-action-gas-pa)), in fault mode too, with `nj` in each record for
 its `promise_and` calls. Without `pa`, a receipt whose children could pass 1024 in all is an
@@ -751,8 +751,9 @@ refund lower than nearcore's: that hides transactions nearcore lets through
 allowance for a number of plays. `KeyAllowance(a, k)` reads what is left.
 
 To replace a key that has an allowance, add the new one under a fresh key id. Adding a key
-with an allowance under an id that has already signed a transaction is an `Assert`: nearcore
-would add the old transactions' late gas refunds to the new key, which the model cannot.
+with an allowance under an id that has already signed a transaction is an `Assert` if the key
+is still there when the receipt ends: nearcore would add the old transactions' late gas
+refunds to the new key, which the model cannot.
 
 ### Nonces: `SignedTx`, `SubmitTx`, `TxErr`
 

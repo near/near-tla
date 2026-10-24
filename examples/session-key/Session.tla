@@ -19,6 +19,10 @@
 (* and add the key NewKey with the same allowance (Rekey).  Re-adding "s"  *)
 (* after a play is an Assert: nearcore adds the old plays' late refunds to *)
 (* the new key, which the model does not represent; a fresh id is fine.    *)
+(* BatchRekey = TRUE: U instead sends one ACCOUNT receipt that adds        *)
+(* NewKey and deletes it again ([DeleteKey, AddKey, DeleteKey], the first  *)
+(* only if present): no re-added key is left for a late refund, so it is   *)
+(* fine even for "s".                                                      *)
 (*                                                                         *)
 (* PlaysCapped: the key gets at most Cap plays through.                    *)
 (* CapUsable:   once the allowance refuses a play, the key has had Cap.    *)
@@ -27,7 +31,7 @@
 (***************************************************************************)
 EXTENDS NearKeys
 
-CONSTANTS U, G, Allow, Cost, Refund, Cap, MaxTx, Stated, NewKey
+CONSTANTS U, G, Allow, Cost, Refund, Cap, MaxTx, Stated, NewKey, BatchRekey
 
 VARIABLES plays, ntx, nk
 mine == <<plays, ntx, nk>>
@@ -52,9 +56,13 @@ Play == /\ ntx + nk < MaxTx
         /\ ntx' = ntx + 1
         /\ UNCHANGED <<plays, nk>>
 
-\* U deletes NewKey if present, else adds it, signed with its full-access key.
+\* U deletes NewKey if present, else adds it, signed with its full-access key;
+\* or, with BatchRekey, adds it and deletes it again in one ACCOUNT receipt.
+BatchActs == (IF KeyPresent(U, NewKey) THEN <<DelKeyAct(NewKey)>> ELSE <<>>)
+             \o <<AddKeyAct(NewKey, SessionPerm), DelKeyAct(NewKey)>>
 Rekey == /\ NewKey # "" /\ ntx + nk < MaxTx
-         /\ SubmitSigned(IF KeyPresent(U, NewKey) THEN DelKeyRcpt(nid, ntx + nk + 1, U, 0, 0)
+         /\ SubmitSigned(IF BatchRekey THEN WithAcctKeys(AcctRcpt(nid, ntx + nk + 1, U, U, 0, 0, 0, FALSE, ""), BatchActs)
+                         ELSE IF KeyPresent(U, NewKey) THEN DelKeyRcpt(nid, ntx + nk + 1, U, 0, 0)
                          ELSE AddKeyRcpt(nid, ntx + nk + 1, U, 0, SessionPerm, 0), U, "k0")
          /\ nk' = nk + 1
          /\ UNCHANGED <<plays, ntx>>
@@ -66,6 +74,7 @@ RunG(r) ==
     /\ UNCHANGED <<keyVars, ntx, nk>>
 
 Run == \E r \in Runnable : IF IsKeyRcpt(r) THEN ExecKeyAct(r, NewKey, SessionPerm) /\ UNCHANGED mine
+                            ELSE IF IsAcctRcpt(r) THEN ExecAcctK(r) /\ UNCHANGED mine
                             ELSE RunG(r)
 
 Init == /\ PlatformInit([a \in Accts |-> 0], TxIds)

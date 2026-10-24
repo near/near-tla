@@ -238,8 +238,10 @@ Each rule has four fields:
     callback with more than 128 inputs, more than 1024 promises in one function call, or
     returns more than 4 MiB. The promise count (`PromisesOver`) is the receipts a call
     creates plus its `promise_and` calls, nested ones included. The handler states those
-    with `OJoins(O, n)` (for a receipt of several calls, a field `nj` in each `pa` record);
-    without it the model counts one per joint callback (`NJoins`, exact when each
+    with `OJoins(O, n)` (for a receipt of several calls, a field `nj` in each `pa` record),
+    which must be at least the call's joint callbacks, each the `.then` of one
+    `promise_and` or more (an `Assert` below that, or below 0: `JoinsFieldOK`); without
+    it the model counts one per joint callback (`NJoins`, exact when each
     `promise_and` feeds one callback directly), and asserts where nesting could cross the
     limit: a joint callback on `n` inputs stands for up to `n − 1` nested `promise_and`
     calls (`MaxJoins`, assuming each joins two promises or more). A `promise_and` no
@@ -295,7 +297,8 @@ Each rule has four fields:
   Each test reads the value from the sim's config and asserts protocol 88's. The
   delegate's inner actions, 4 MiB of code, the yields' promises and the count of nested
   `promise_and` calls: nearcore reading. `examples/limits` checks the model's side at each
-  boundary, a nested `promise_and` (`limit_nest_*`) and a receipt of two calls
+  boundary, a nested `promise_and` (`limit_nest_*`, a stated count below the joint
+  callbacks included) and a receipt of two calls
   (`limit_multi_*`) included. <!-- conformance --> No flow reaches a limit.
 
 ---
@@ -1282,8 +1285,8 @@ Each rule has four fields:
   `WithTxCost(r, c, f)` states a transaction's cost `c > 0` and refund `0 ≤ f ≤ c`; a
   transaction signed with a key that has an allowance must carry it (`TxCost` is an `Assert`
   otherwise), since nearcore's cost is never 0. An AddKey of a key with an allowance under a
-  key id that has signed a transaction is an `Assert` (`AllowanceAddOK`): nearcore would add
-  the old transactions' late refunds to the new key. The refund's timing is in N-allowance. It does not check key actions a model bundles into a call
+  key id that has signed a transaction, and still there after its receipt, is an `Assert`
+  (`AllowanceAddOK`): nearcore would add the old transactions' late refunds to the new key. The refund's timing is in N-allowance. It does not check key actions a model bundles into a call
   receipt (N-fckey-one-action). There is no bootstrap path.
 - **Validated:** sim (`conformance/tests/accounts.rs`, `function_call_key_scope`: one
   zero-deposit FunctionCall to the key's receiver and methods, an empty list allowing every
@@ -2127,8 +2130,10 @@ against the current module code; some may be fixed in the modules later.
   old key. Refunds are not receipts in the model, so it cannot tell when the last one has
   landed: an AddKey of a key with an allowance under a key id that has signed any
   transaction (`txsig`; every such AddKey when `TrackSigner = FALSE`) is an `Assert`
-  (`AllowanceAddOK`; `examples/session-key`, `session_rekey_same_id`). Give a new key a
-  fresh id (`session_rekey_fresh_id`).
+  (`AllowanceAddOK`; `examples/session-key`, `session_rekey_same_id`), when the key is
+  still there after its receipt (a DeleteKey of it, or a DeleteAccount, later in the same
+  receipt leaves nothing for a refund to reach: `session_rekey_batch_deleted`). Give a new
+  key a fresh id (`session_rekey_fresh_id`).
 - **N-fckey-one-action. Function-call keys and bundled key actions.** nearcore refuses a
   transaction signed by a function-call key unless it has exactly one action
   (`runtime/runtime/src/verifier.rs:213-217`). `KeyCanSign` refuses Transfer, Stake, key
