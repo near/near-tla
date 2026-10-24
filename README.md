@@ -153,6 +153,11 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
 - 33 rules promoted to "sim" validation by tests in `conformance/tests/` that assert nearcore's
   behaviour in the sim (receipts, promises and gas; accounts, keys and stake; NEP-141 on the
   `ft` probe). None was refuted.
+- The rule parts the first probes could not reach, promoted to "sim" by tests on a second
+  probe, `probe2`: `refund_to` (R5), a joint promise returned, appended to or given a
+  `refund_to` and one joint result read by index (C5, C6), the timestamp a contract reads
+  (S3), the `_with_id` yield, a yield's deposit, a returned yield and its signer (C7),
+  interleaved appends (G3), a callback after a Stake (B1). None was refuted.
 - Storage bytes from the calibrator (SEMANTICS B2, `examples/storage-stake`): `calibrate --stor`
   measures what each (method, path) adds to its receiver's `storage_usage` at every point of
   each flow's gas grid (the bytes checked the same at all of them), and writes a `StorBytes`
