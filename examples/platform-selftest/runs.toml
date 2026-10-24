@@ -377,6 +377,23 @@ expect = "pass"
 CallsNeedCode = "FALSE"
 Scns = '{"accall_init", "accall_exists", "accall_recreate", "accall_not_parent", "accall_create_del"}'
 
+# A call that returns a promise, then DeleteAccount: the child runs, the callback gets the
+# delete's empty bytes (the child wired to the callback is not forwarded).
+[[run]]
+name = "selftest_accall_prom"
+expect = "pass"
+[run.constants]
+Scns = '{"accall_prom"}'
+
+# CallsNeedCode = FALSE switches off the code check only: a missing or uninitialised receiver
+# still fails the call.
+[[run]]
+name = "selftest_code_off_missing"
+expect = "pass"
+[run.constants]
+CallsNeedCode = "FALSE"
+Scns = '{"code_off_missing"}'
+
 # Per-byte storage: the new account's bytes, an unaffordable batch, the skip on delete.
 [[run]]
 name = "selftest_accall_storage"
@@ -425,3 +442,39 @@ invariant = "PayoutAfterSeen"
 invariants = ["PayoutAfterSeen"]
 [run.constants]
 Scns = '{"instant_payout"}'
+
+# ---- anti-vacuity: python3 tools/run.py examples/platform-selftest --anti-vacuity ----
+
+# The library: a child wired to the callback of a [call, DeleteAccount] receipt is still
+# forwarded, so the callback gets a second result.
+[[mutant]]
+id = "lib_delete_forwards_promise"
+file = "NearAsync.tla"
+library = true
+find = 'Unfwd(c) == IF b # "" /\ r.cb # 0 /\ c.cb = r.cb THEN [c EXCEPT !.cb = 0] ELSE c'
+replace = 'Unfwd(c) == c'
+class = "platform rule dropped (library)"
+killed_by = ["Sane", "Check", "deadlock"]
+runs = ["selftest_accall_prom"]
+
+# The library: the factory batch's Transfer is also the call's attached deposit.
+[[mutant]]
+id = "lib_create_deposit_to_call"
+file = "NearAsync.tla"
+library = true
+find = "xfer |-> r.dep]]\n         @@ [r EXCEPT !.dep = 0,"
+replace = "xfer |-> 0]]\n         @@ [r EXCEPT !.dep = @,"
+class = "wrong effect (library)"
+killed_by = ["Check"]
+runs = ["selftest_accall_code_off"]
+
+# The library: CallsNeedCode = FALSE lets calls reach accounts that do not exist.
+[[mutant]]
+id = "lib_code_off_any_receiver"
+file = "NearAsync.tla"
+library = true
+find = "ELSE AcctExists(r.to) /\\ ~UninitUniversal(r.to) /\\ (~CallsNeedCode \\/ HasCode(r.to))"
+replace = "ELSE r.to \\notin deleted /\\ (~CallsNeedCode \\/ HasCode(r.to))"
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_code_off_missing"]

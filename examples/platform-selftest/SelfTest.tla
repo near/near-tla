@@ -198,11 +198,18 @@ H(r) ==
              c1 == IF a.key = "" THEN c0 ELSE WithAcctKeys(c0, <<AddKeyAct(a.key, PermOf(a.key))>>)
              c  == IF a.rto = "" THEN c1 ELSE WithDeleteTo(c1, a.rto) IN
          [O |-> Outcome({c}, {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
-    [] r.m = "init" ->      \* the new account's init: adds a.amt bytes, returns 7
-         [O |-> OStor(Outcome({}, {}, RVal(7), 0, 0), a.amt), s |-> {Sn(r, "init", 1)}]
+    [] r.m = "init" ->      \* the new account's init: adds a.amt bytes, returns 7; records its
+                            \* attached deposit ("idep")
+         [O |-> OStor(Outcome({}, {}, RVal(7), 0, 0), a.amt), s |-> {Sn(r, "init", 1), Sn(r, "idep", r.dep)}]
     [] r.m = "closecall" -> \* [FunctionCall(last), DeleteAccount(u)] on a.to (c itself, or not)
          [O |-> Outcome({WithDeleteTo(Rcpt(nid, r.tx, a.to, r.to, "last", G("", "", "", a.amt, a.cd, "", ""), 0, r.to, 0), U)},
                         {}, RVal(0), 0, 1), s |-> {}]
+    [] r.m = "closeprom" -> \* [FunctionCall(lastp), DeleteAccount(u)] on c itself, then d.cb
+         [O |-> Outcome({WithDeleteTo(Rcpt(nid, r.tx, r.to, r.to, "lastp", G0, 0, r.to, nid + 1), U)},
+                        {Rcpt(nid + 1, r.tx, D, r.to, "cb", G0, 0, r.to, 0)}, RVal(0), 0, 2), s |-> {}]
+    [] r.m = "lastp" ->     \* returns a promise: a Transfer of 1 to u, wired to r.cb (tail.cb := r.cb)
+         [O |-> Outcome({Rcpt(nid, r.tx, U, r.to, XFER, G0, 1, r.to, r.cb)}, {}, RProm, 1, 1),
+          s |-> {Sn(r, "lastp", 1)}]
     [] r.m = "last" ->      \* sends a.amt to u and adds a.cd bytes, before the delete
          [O |-> OStor(Outcome(IF a.amt > 0 THEN {Rcpt(nid, r.tx, U, r.to, XFER, G0, a.amt, r.to, 0)} ELSE {},
                               {}, RVal(0), a.amt, IF a.amt > 0 THEN 1 ELSE 0), a.cd),
@@ -598,6 +605,10 @@ Script(s) ==
     [] s = "accall_not_parent"-> << Tx(D, U, "mkinit", G("", "", SB, 0, 0, "", ""), 0) >>
     [] s = "accall_bytes"     -> << Tx(C, U, "mkinit", G("", "", SB, 1, 0, "", "k0"), 0) >>
     [] s = "accall_lackstate" -> << Tx(C, U, "mkinit", G("", "", SB, 0, 1000, "", ""), 0) >>
+    [] s = "accall_prom"      -> << Tx(C, U, "closeprom", G0, 0) >>
+    [] s = "code_off_missing" -> << Tx(GH, U, "foo", G0, 1),                              \* missing
+                                    Tx(C, U, "send", G("", "", UA, 2, 0, "", ""), 0),
+                                    Tx(UA, U, "foo", G0, 1) >>                            \* uninitialised
     [] s = "accall_del_stor"  -> << Tx(C, U, "closecall", G("", "", C, 4, 5000, "", ""), 0) >>
     \* Without UniversalOn (protocol < 87) 0u1 is a named top-level id.
     [] s = "universal_off"    -> << Ac(UA, W, TRUE, 2, "", <<AddK("k0")>>),             \* w creates it
@@ -1046,6 +1057,8 @@ Expect(s) ==
          \* has the deposit and the key; the callback sees init's value.  actions.rs:202-208
          created = {SB} /\ near[SB] = 2 /\ near[C] = 3 /\ keys[SB] = ("k0" :> FullPerm)
          /\ S1("init", 1) \in seen /\ S1("num", 7) \in seen
+         \* init's attached deposit is its own, 0, not the Transfer's 2.  function_call.rs:273
+         /\ S1("idep", 0) \in seen
     [] s = "accall_exists" ->     \* AccountAlreadyExists comes first: init does not run
          \* actions.rs:822-828
          near[SB] = 1 /\ near[C] = 4 /\ S2("fail", 0) \in seen /\ <<2, SB, "init">> \notin ran
@@ -1065,6 +1078,14 @@ Expect(s) ==
     [] s = "accall_lackstate" ->  \* 100 + 1000 bytes on 0 balance: LackBalanceForState, all reverted.
          \* lib.rs:1008-1031
          created = {} /\ stor[SB] = 0 /\ near[C] = 5 /\ S1("fail", 0) \in seen
+    [] s = "accall_prom" ->       \* [FunctionCall(lastp), DeleteAccount(u)]: lastp returns a
+         \* promise; the receipt succeeds, its Transfer child runs, and d.cb gets the delete's
+         \* empty bytes, not the promise's result.  lib.rs:507-514, :1146-1189
+         deleted = {C} /\ near[U] = 15 /\ near[D] = 0 /\ S1("lastp", 1) \in seen /\ S1("empty", 0) \in seen
+    [] s = "code_off_missing" ->  \* CallsNeedCode = FALSE: a missing receiver still fails the call
+         \* (AccountDoesNotExist), as does an uninitialised universal one.  actions.rs:874-887
+         near[U] = 10 /\ near[UA] = 2 /\ GH \notin created /\ <<1, GH, "foo">> \notin ran
+         /\ <<3, UA, "foo">> \notin ran
     [] s = "accall_del_stor" ->   \* the call adds 5000 bytes and leaves c 1 NEAR (2000 bytes'
          \* worth), but the storage check is skipped for an account the receipt deletes.
          \* lib.rs:1008-1031, the skip at :1010

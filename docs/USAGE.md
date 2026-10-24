@@ -337,7 +337,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | definition | default | override when |
 |---|---|---|
 | `Contracts` | `Accounts` | some accounts have no code: a function call to an account outside `Contracts` fails |
-| `CallsNeedCode` | `TRUE` | never, unless you are keeping an older model's behaviour (calls run whatever the receiver) |
+| `CallsNeedCode` | `TRUE` | never, unless you are keeping an older model's behaviour (calls run whatever code the receiver has; a missing receiver still fails them) |
 | `AcctKind` | every account `"named"` | an account is NEAR-implicit, eth-implicit, deterministic or universal; toy ids cannot match the real patterns, so you state the kind. `AcctKinds(eth, nearImp)` builds the common case |
 | `UniversalOn` | `TRUE` (protocol 87+) | you model the rules before protocol 87, where a universal id is named and a Transfer to an absent one fails: `FALSE`. It is independent of `NearFees.FeeProtocol`, which selects fees only ([VERSIONING](VERSIONING.md#what-feeprotocol-does-and-does-not-change)) |
 | `TrackSigner` | `TRUE` | the model never reads the signer: `FALSE` saves states. Do not read the signer with `FALSE`: with `PlatformInit` (`txsig` starts empty) that is a TLC error, but with an `Init` that pre-sizes `txsig` it silently returns the initial value |
@@ -430,7 +430,7 @@ Rcpt(id, tx, to, fr, m, a, dep, rto, cb)
 | `to`, `fr` | receiver and predecessor |
 | `m` | the method name, or a built-in kind: `XFER`, `STAKE`, `ADDK`, `DELK` (`REFND` is the system's) |
 | `a` | the arguments: any record, but use one shape for all receipts in a model (with the token modules, `TA0`-based: `[TA0 EXCEPT !.amt = x]` or `CxArgs(v)`) |
-| `dep` | the attached deposit |
+| `dep` | the attached deposit (of the call; a factory batch's Transfer is in `ac.xfer`, section 16) |
 | `rto` | the refund target for a failed deposit (normally the predecessor) |
 | `cb` | the id of the callback waiting on this receipt's result, or 0 |
 
@@ -1097,7 +1097,7 @@ Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 | `DeleteAcctRcpt(id, tx, acct, a, b, cb)` | `[DeleteAccount(b)]` on `acct`, sent by `acct` itself |
 | `WithDeleteTo(r, b)` | appends `DeleteAccount(b)` to an ACCOUNT receipt |
 | `NearKeys.WithAcctKeys(r, acts)` | adds key actions (`AddKeyAct`, `DelKeyAct`) after the Transfer, e.g. the new account's first key |
-| `WithCreate(r)` | puts `[CreateAccount, Transfer(r.dep)]` before the call of a call receipt `r` (the factory batch, A8) |
+| `WithCreate(r)` | puts `[CreateAccount, Transfer(r.dep)]` before the call of a call receipt `r` (the factory batch, A8); the call's own deposit becomes 0 (set `r.dep` afterwards for one) |
 | `WithDeleteTo(r, b)` on a call receipt | puts `DeleteAccount(b)` after its call (sent by the account itself, or after a CreateAccount) |
 
 In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee

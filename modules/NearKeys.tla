@@ -357,7 +357,7 @@ SignedDelegate(s, k, n, mbh, c) ==
 \* The relayer rl's first receipt: to the user, predecessor rl, the inner
 \* deposit attached (paid by rl at submission; refunded to rl if this
 \* receipt fails).  Action-only: it never runs out of gas.
-DelegRcpt(id, tx, rl, sd) == Rcpt(id, tx, sd.snd, rl, DELEG, sd, sd.inner.dep, rl, 0)
+DelegRcpt(id, tx, rl, sd) == Rcpt(id, tx, sd.snd, rl, DELEG, sd, DepTotal(sd.inner), rl, 0)
 \* The relayer's transaction, signed with its key k.  A function-call key
 \* cannot sign it: it is not a function call (IsCall is FALSE;
 \* runtime/runtime/src/verifier.rs:213-222).

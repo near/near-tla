@@ -146,6 +146,13 @@ Each entry ends with its migration.
   `deleted` to the list; conjoin `PlatformInitAccounts` (`created = {} /\ burnt = 0 /\
   deleted = {}`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
   hand-written `vars`, use `platformVars` or add `deleted`.
+- **`CallsNeedCode = FALSE` no longer lets a call reach a missing account** (nor an
+  uninitialised universal one): `CallTargetOK` requires `AcctExists` and not
+  `UninitUniversal` whatever the switch says, as nearcore does (`AccountDoesNotExist`,
+  `AccountNotInitialized`, `actions.rs:874-887`); the switch now turns off the code check
+  only. Every example run kept its verdict and its generated, distinct and depth counts (all
+  130 runs compared at one worker on this change alone); new run `selftest_code_off_missing`.
+  Migration: add every account a model calls to `Exists` (or have the model create it).
 - **`RemD` and `NoOrphans` cover several inputs per receipt** (`InIds`): a joint callback
   consumes all its inputs, a yield every resume addressed to it, and a pending yield is never
   an orphan. Results for receipts without the new fields are unchanged. Migration: none,
@@ -231,8 +238,10 @@ Each entry ends with its migration.
   them before the handler's outcome counts. `Contracts` (accounts with code) is
   now an overridable `NearAsync` definition, default `Accounts`, so `NearKeys` no
   longer declares it as a CONSTANT; a cfg `Contracts = {...}` or
-  `Contracts <- Def` still sets it. Migration: `CallsNeedCode <- FALSE` restores
-  the old behaviour; otherwise add called accounts to `Exists`. Check this: with
+  `Contracts <- Def` still sets it. Migration: `CallsNeedCode <- FALSE` switches
+  the code check off (a missing receiver still fails: the "`CallsNeedCode = FALSE`
+  no longer lets a call reach a missing account" entry above); add called accounts to
+  `Exists`. Check this: with
   `CallsNeedCode` TRUE and an `Exists` that omits the contracts a model calls,
   every call to them fails, and safety invariants can then pass vacuously.
 - **`NearKeys.FailNoCode(r)` is `IsCall(r) /\ ~HasCode(r.to) /\ FailP(r, FALSE)`**:
@@ -379,7 +388,10 @@ Each entry ends with its migration.
 
 - **Account actions in a call receipt** (SEMANTICS A8; docs/USAGE.md section 16). A call
   receipt can carry the `ac` field (`HasAc`, `AcCall`): `WithCreate(r)` puts
-  `[CreateAccount, Transfer(r.dep)]` before its call (a factory's batch on the new account),
+  `[CreateAccount, Transfer(r.dep)]` before its call (a factory's batch on the new account;
+  the Transfer goes to `ac.xfer` and the call's own deposit `r.dep` becomes 0, what nearcore
+  gives the call, `function_call.rs:273`; `DepTotal` is the receipt's NEAR, used for credit,
+  refunds, signing and `InflightDeposits`),
   `WithDeleteTo(r, b)` now also accepts a call receipt (a DeleteAccount after its call; a
   second one is an Assert), and `NearKeys.WithAcctKeys` adds key actions. `Exec` runs it:
   `Verdict` has a new first branch for the account actions' checks (`AcCallErr`, the delete's
@@ -388,7 +400,7 @@ Each entry ends with its migration.
   (`AcAffordable`) starts a new account at 0 balance and 100 bytes and skips the storage half
   after a delete, and `Commit` (`CommitAc`) applies the account actions with the call (payout
   after the call's children; after a DeleteAccount the callback gets empty bytes, and a
-  returned promise is an Assert). With key actions: `NearKeys.ExecK` / `OkK` (plain `Exec`
+  returned promise's children are kept, unforwarded). With key actions: `NearKeys.ExecK` / `OkK` (plain `Exec`
   asserts). `gf` adds `AcctActsFee` (`AcctFee` without the receipt base) to the call's fee.
   `KeyCanSign` refuses a function-call key for such a receipt. Receipts without `ac` are
   unchanged: every example run kept its verdict and its generated, distinct and depth counts
@@ -396,7 +408,9 @@ Each entry ends with its migration.
   `selftest_accall_code_off` and `selftest_accall_storage` (11 scenarios, and a fee check in
   `acct_fee`); new example `account-lifecycle/factory` (`factory_cb_refunds` passes;
   `factory_no_reserve`, `factory_assumes_created` and `factory_not_parent` must fail; with
-  witnesses and mutants). DeployContract is still not modelled (N-deploy, updated): a
+  witnesses and mutants); `selftest_accall_prom` (a promise-returning call before a
+  DeleteAccount), init's attached deposit in `accall_init`, and three library mutants in
+  `platform-selftest`. Sim: `promise_call_then_delete`, `batch_call_sees_own_deposit`. DeployContract is still not modelled (N-deploy, updated): a
   factory's `init` finds code only with `CallsNeedCode <- FALSE`.
 - **Instant receipts** (SEMANTICS S5; docs/USAGE.md section 16). A lone DeleteAccount
   (`IsInstantShape`) that a receipt creates, in its outcome's ready set, as a joint callback

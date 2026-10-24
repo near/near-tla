@@ -679,6 +679,65 @@ fn call_then_delete_result() {
     assert!(!exists(&sim, x));
 }
 
+/// A8: a call that returns a promise, followed by the account's
+/// DeleteAccount. The receipt succeeds: the call's child receipt is kept
+/// and runs, and the receipt's result is the delete's empty bytes, not the
+/// promise (lib.rs:507-514). The wrap probe's `near_withdraw` returns a
+/// Transfer promise to its predecessor, here the account itself, so the
+/// Transfer then finds it deleted and fails.
+#[test]
+fn promise_call_then_delete() {
+    let (wrap, _) = probe_wasm("wrap");
+    let mut sim = world();
+    let x = "w.alice.near";
+    create(&mut sim, ALICE, x, near(10), "w1", Some(&wrap)).assert_success();
+    sim.call(ALICE, x, "new").transact().assert_success();
+    sim.call(x, x, "near_deposit").deposit(near(1)).transact().assert_success();
+    let o = sim
+        .call(x, x, "near_withdraw")
+        .args_json(json!({ "amount": "1000" }))
+        .deposit(Balance::from_yoctonear(1))
+        .action(del(ALICE))
+        .transact();
+    let kids: Vec<_> = o.receipts.iter().filter(|r| r.executor_id.as_str() == x && r.method_names.is_empty() && r.refund.is_none()).collect();
+    println!(
+        "[near_withdraw (returns a promise), DeleteAccount]: {}, value {:?}, account exists {}; the Transfer child: {:?}",
+        err(&o),
+        o.value().map(|v| String::from_utf8_lossy(v).into_owned()),
+        exists(&sim, x),
+        kids.iter().map(|r| rerr(r)).collect::<Vec<_>>()
+    );
+    assert!(o.failure().is_none(), "{o}");
+    assert_eq!(o.value(), Some(&b""[..]), "the delete's empty result, not the promise's");
+    assert!(!exists(&sim, x));
+    assert_eq!(kids.len(), 1, "the returned promise's receipt is kept and runs: {o}");
+    assert!(rerr(kids[0]).contains("AccountDoesNotExist"), "{o}");
+}
+
+/// A8: in the factory batch `[CreateAccount, Transfer, DeployContract,
+/// FunctionCall]` the call's attached deposit is its own, not the
+/// Transfer's (function_call.rs:273). The wrap probe's `near_deposit`
+/// requires a positive attached deposit.
+#[test]
+fn batch_call_sees_own_deposit() {
+    let (wrap, _) = probe_wasm("wrap");
+    let mut sim = world();
+    let x = "w.alice.near";
+    let batch = |sim: &mut Sim, d: Balance| {
+        sim.tx(ALICE, x).create_account().transfer(near(5)).deploy(wrap.clone()).call("new").call("near_deposit").deposit(d).transact()
+    };
+    let o = batch(&mut sim, Balance::ZERO);
+    println!("[CreateAccount, Transfer(5 NEAR), Deploy, new, near_deposit (deposit 0)]: {}", err(&o));
+    assert!(err(&o).contains("Requires positive attached deposit"), "{o}");
+    assert!(!exists(&sim, x), "the batch is atomic");
+    let o = batch(&mut sim, near(1));
+    o.assert_success();
+    let b: String = sim.view(x, "ft_balance_of", json!({ "account_id": ALICE })).json();
+    let b: u128 = b.parse().unwrap();
+    println!("the same with deposit 1 NEAR: alice holds {b} yocto of wrap; x has {} yocto", yocto(sim.balance(x)));
+    assert!(b > 0 && b < near(1).as_yoctonear(), "credited 1 NEAR less the storage minimum, not 5 NEAR");
+}
+
 /// p's `chain` on `x`: kid `q.mark("k")`, callback `x.mark("cb")`.
 fn chain_tx<'a>(sim: &'a mut Sim, x: &str) -> Tx<'a> {
     let kids =

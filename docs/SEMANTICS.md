@@ -692,7 +692,8 @@ Each rule has four fields:
 - **Model:** `Exec` fails a function call whose receiver is missing or has no code before the
   handler's outcome counts (`CallTargetOK`, `HasCode`); the accounts with code are the
   overridable definition `Contracts` (default `Accounts`). `CallsNeedCode <- FALSE` turns the
-  rule off for older models. `NearKeys.FailNoCode` and `ExecNoCode` are the same rule as an
+  code half of the rule off for older models; a missing, deleted or uninitialised receiver
+  still fails the call. `NearKeys.FailNoCode` and `ExecNoCode` are the same rule as an
   explicit step.
 - **Validated:** nearcore reading. <!-- conformance --> No flow calls an account without code,
   so the sim does not check this rule.
@@ -809,23 +810,33 @@ Each rule has four fields:
   all of it and the deposit goes back to the predecessor, the factory. The storage check runs
   once, after all actions, and is skipped if the receipt deleted the account. The receipt's
   result is its **last action's**: after a `DeleteAccount` that is empty bytes, whatever the
-  call returned; a returned promise is then not the result either.
+  call returned; a returned promise is then not the result either (its receipt is still
+  created and runs, but the receipt's callback gets the empty bytes, not the promise's
+  result). The call's attached deposit is its own (often 0), not the batch's Transfer.
 - **nearcore:** `runtime/runtime/src/lib.rs:946-1005` (the actions in order, the loop stops at
   the first failure, `:1001-1003`), `:507-513` (`ActionResult::merge` keeps the last action's
   result), `:1172-1175` (a result other than a value or a promise gives the callback empty
   bytes), `:1245` (`ReturnData::None` is `SuccessValue([])`), `:1008-1031` (the storage check,
   skipped at `:1010`); `runtime/runtime/src/actions.rs:202-208` (the new account has no code);
-  `runtime/runtime/src/verifier.rs:213-217` (a function-call key signs one FunctionCall only).
+  `runtime/runtime/src/verifier.rs:213-217` (a function-call key signs one FunctionCall only);
+  `runtime/runtime/src/function_call.rs:273` (the call's attached deposit is the
+  FunctionCall's own); `lib.rs:1146-1189` (output receivers are forwarded only to a returned
+  promise that is the result).
 - **Model:** `WithCreate(r)` puts a CreateAccount (and, if `r.dep > 0`, a Transfer of `r.dep`)
   before the call of a call receipt `r`; `WithDeleteTo(r, b)` puts a DeleteAccount after it;
   `NearKeys.WithAcctKeys` adds key actions. Such a receipt has the `ac` field (`HasAc`,
   `AcCall`) and is run by `Exec` (with key actions by `NearKeys.ExecK`, read with `OkK`; plain
-  `Exec` asserts on key actions). `r.dep` is the batch's whole deposit, credited at once; a
-  handler that reads it sees the Transfer's amount. `Verdict` gets a first branch: the
+  `Exec` asserts on key actions). `WithCreate` moves `r.dep` into the Transfer (`ac.xfer`) and
+  sets the call's own deposit `r.dep` to 0, which is what a handler reading `r.dep` sees; set
+  `r.dep` after `WithCreate` for a call deposit as well. The receipt carries both
+  (`DepTotal`): credited at once, refunded together on failure, paid by the signer of a
+  transaction, counted by `NearConserved`. `Verdict` gets a first branch: the
   account actions' checks (`AcCallErr`, which is `AcctErr` with the call's and the keys' bytes
   for the delete's large-state check) fail the receipt before anything else; then
   `CallTargetOK` on the account after the create (no code: the call fails unless
-  `CallsNeedCode <- FALSE`, also when the id was deleted before); then the usual order. This
+  `CallsNeedCode <- FALSE`, also when the id was deleted before); then the usual order.
+  Without a create, `CallTargetOK` fails a call to a missing, deleted or uninitialised
+  receiver whatever `CallsNeedCode` says. This
   branch is deterministic, so it never yields "either", and `Ok` / `Committed` read the commit
   as before (a delete's payout is not one of the call's children). `Affordable`
   (`AcAffordable`): a new account starts at 0 balance and 100 bytes, plus the keys' and the
@@ -833,13 +844,19 @@ Each rule has four fields:
   `Commit` (`CommitAc`) applies the call's effects and the account actions' together: the new
   account joins `created` with the deposit and bytes, a deleted one joins `deleted` with its
   payout as a `REFND` receipt after the call's children, and the callback gets empty bytes
-  after a DeleteAccount (a call that returns a promise there is an Assert). `gf`: the call's
+  after a DeleteAccount; a call that returns a promise there keeps its children, and a child
+  it wired to `r.cb` (`tail.cb := r.cb`) gets `cb` 0 instead (the callback already has its
+  empty bytes). `gf`: the call's
   fee (`GasCall`, the receipt base included) plus the account actions' send and exec fees
   (`AcctActsFee`, and the key actions'); a calibrated burn for such a flow must leave those
   out. A function-call key cannot sign a transaction with account actions (`KeyCanSign`).
   A `[FunctionCall, DeleteAccount]` receipt is not instant (S5).
 - **Validated:** sim (`conformance/tests/lifecycle.rs`, `call_then_delete_result`: `[get,
-  DeleteAccount]` returns empty bytes where `get` alone returns the value);
+  DeleteAccount]` returns empty bytes where `get` alone returns the value;
+  `promise_call_then_delete`: `[near_withdraw, DeleteAccount]`, whose call returns a Transfer
+  promise, succeeds with empty bytes and the Transfer still runs;
+  `batch_call_sees_own_deposit`: `near_deposit` after `[CreateAccount, Transfer(5 NEAR),
+  DeployContract]` with deposit 0 panics "Requires positive attached deposit");
   `examples/platform-selftest` (`selftest_accall`, `selftest_accall_code_off`,
   `selftest_accall_storage`, and `acct_fee` in `selftest_lifecycle_gas`);
   `examples/account-lifecycle/factory`.

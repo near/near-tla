@@ -545,8 +545,13 @@ DataOfLen(r, ok, v, sz, len) ==
 DataOfSz(r, ok, v, sz) == DataOfLen(r, ok, v, sz, 0)
 DataOf(r, ok, v) == DataOfSz(r, ok, v, 0)
 
+\* The NEAR a receipt carries: its deposit r.dep plus, for a call receipt
+\* with a CreateAccount (WithCreate), the Transfer before its call (ac.xfer),
+\* which is not the call's attached deposit (function_call.rs:273).
+XferOf(r)   == IF "ac" \in DOMAIN r /\ "xfer" \in DOMAIN r.ac THEN r.ac.xfer ELSE 0
+DepTotal(r) == r.dep + XferOf(r)
 Sum(S) == LET F[T \in SUBSET S] == IF T = {} THEN 0
-                                   ELSE LET x == CHOOSE y \in T : TRUE IN x.dep + F[T \ {x}]
+                                   ELSE LET x == CHOOSE y \in T : TRUE IN DepTotal(x) + F[T \ {x}]
           IN F[S]
 
 \* Ids are unique, so Sum over a set of receipts is well defined.
@@ -563,15 +568,16 @@ AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
 HasCode(a) == /\ AcctExists(a)
               /\ a \in Contracts
               /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
-\* A deleted receiver fails the call even with CallsNeedCode = FALSE
-\* (AccountDoesNotExist, actions.rs:874-879).  A call in the same receipt
+\* A missing or deleted receiver fails the call even with CallsNeedCode =
+\* FALSE (AccountDoesNotExist, actions.rs:874-879), as does an uninitialised
+\* universal one (AccountNotInitialized, :883-887).  A call in the same receipt
 \* as a CreateAccount (HasAc, the factory batch) sees the new account,
 \* which has no code (actions.rs:202-208): it fails unless CallsNeedCode is
 \* FALSE, also when the id was deleted before.
 CallTargetOK(r) ==
     \/ ~IsCall(r)
     \/ IF "ac" \in DOMAIN r /\ r.ac.mk THEN ~CallsNeedCode
-       ELSE r.to \notin deleted /\ (~CallsNeedCode \/ HasCode(r.to))
+       ELSE AcctExists(r.to) /\ ~UninitUniversal(r.to) /\ (~CallsNeedCode \/ HasCode(r.to))
 
 \* The transaction signer, inherited by every receipt of the transaction.
 SignerOf(t)  == txsig[t]               \* [a |-> account, k |-> key id]
@@ -815,7 +821,7 @@ AcctErr(r, kb, kok) ==
     ELSE IF r.ac.mk /\ IsImplicit(a) THEN "OnlyImplicitAccountCreationAllowed"
     ELSE IF r.ac.mk /\ ParentOf(a) = NoParent /\ r.fr # TopCreator THEN "CreateAccountOnlyByRegistrar"
     ELSE IF r.ac.mk /\ ParentOf(a) # NoParent /\ ParentOf(a) # r.fr THEN "CreateAccountNotAllowed"
-    ELSE IF (r.dep > 0 \/ ka # <<>> \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
+    ELSE IF (DepTotal(r) > 0 \/ ka # <<>> \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
     ELSE IF (ka # <<>> \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
     ELSE IF (ka # <<>> \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
     ELSE IF ka # <<>> /\ ~kok THEN "AddKeyAlreadyExists or DeleteKeyDoesNotExist"
@@ -827,15 +833,18 @@ AcctErr(r, kb, kok) ==
 \* batch [CreateAccount, Transfer, key actions?, FunctionCall(init)] on the
 \* new account, or [FunctionCall, DeleteAccount(b)] on the account itself).
 \* WithCreate(r) puts a CreateAccount (and, if r.dep > 0, a Transfer of
-\* r.dep) before r's call; WithDeleteTo(r, b) puts a DeleteAccount after it;
+\* r.dep, moved to ac.xfer: the call's own deposit becomes 0, and a handler
+\* reading r.dep sees that, function_call.rs:273; sim lifecycle.rs
+\* batch_call_sees_own_deposit) before r's call; set r.dep after WithCreate
+\* for a call deposit too.  WithDeleteTo(r, b) puts a DeleteAccount after it;
 \* NearKeys.WithAcctKeys adds key actions before it.  Exec runs such a
 \* receipt: its account actions as in an ACCOUNT receipt (AcCallErr, the
 \* first Verdict branch), the call on the account they leave (CallTargetOK:
 \* a new account has no code), the storage check after all of them, skipped
 \* when the account is deleted (AcAffordable), and on commit their effects
-\* with the call's (CommitAc).  r.dep is the batch's deposit, credited at
-\* once (in nearcore the Transfer runs before the call; the end state is
-\* the same).  gf: the call's fee (GasCall) plus the account actions' send
+\* with the call's (CommitAc).  The Transfer and the call's deposit are
+\* credited at once (DepTotal; in nearcore the Transfer runs before the
+\* call; the end state is the same) and refunded together on failure.  gf: the call's fee (GasCall) plus the account actions' send
 \* and exec fees (AcctActsFee), the receipt base being in the call's fee.
 HasAc(r)  == "ac" \in DOMAIN r
 AcCall(r) == HasAc(r) /\ IsCall(r)
@@ -845,7 +854,7 @@ AcCall(r) == HasAc(r) /\ IsCall(r)
 AcCallErr(r, O) == AcctErr(r, StorDelta(O), TRUE)
 \* The receiver's balance and bytes after the receipt (a new account starts
 \* at 0 and 100 bytes).
-AcBal(r, O)   == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep - O.out
+AcBal(r, O)   == (IF r.ac.mk THEN 0 ELSE near[r.to]) + DepTotal(r) - O.out
 AcBytes(r, O) ==
     LET b == (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + StorDelta(O) IN
     IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
@@ -858,8 +867,8 @@ AcAffordable(r, O) ==
        ELSE AcBal(r, O) + LockedOf(r.to) >= StorageFloor[r.to]
 WithCreate(r) ==
     IF ~IsCall(r) \/ HasAc(r) THEN Assert(FALSE, <<"WithCreate needs a call receipt without account actions", r.id>>)
-    ELSE [ac |-> [mk |-> TRUE, bnf |-> "", ka |-> <<>>]]
-         @@ [r EXCEPT !.gf = @ + AcctActsFee(r.fr, r.to, TRUE, r.dep, "")]
+    ELSE [ac |-> [mk |-> TRUE, bnf |-> "", ka |-> <<>>, xfer |-> r.dep]]
+         @@ [r EXCEPT !.dep = 0, !.gf = @ + AcctActsFee(r.fr, r.to, TRUE, r.dep, "")]
 ----------------------------------------------------------------------------
 (* Affordability                                                          *)
 Affordable(r, O) ==
@@ -1090,19 +1099,21 @@ Label == IF fails > 0 THEN "forced" ELSE IF oog # {} THEN "caller-gas" ELSE "no-
 \* DeleteAccount last, the receipt's result is that action's, empty bytes,
 \* whatever the call returned (ActionResult::merge keeps the last action's
 \* result, lib.rs:507-513; ReturnData::None gives the callback empty bytes,
-\* :1172-1175, and the status SuccessValue([]), :1245), so
-\* a call that returns a promise there is a modelling error (an Assert).
+\* :1172-1175, and the status SuccessValue([]), :1245).  A call that
+\* returns a promise there keeps its children, but the promise is not the
+\* result: the receipt's output receivers are not forwarded to it
+\* (lib.rs:1146-1189), so a child the handler wired to r.cb (tail.cb :=
+\* r.cb) gets cb 0 (Unfwd).  Sim: lifecycle.rs promise_call_then_delete.
 CommitAc(r, O) ==
     LET a == r.to  mk == r.ac.mk  b == r.ac.bnf  bal == AcBal(r, O)
-        pay == b # "" /\ bal > 0 IN
+        pay == b # "" /\ bal > 0
+        Unfwd(c) == IF b # "" /\ r.cb # 0 /\ c.cb = r.cb THEN [c EXCEPT !.cb = 0] ELSE c IN
     /\ Assert(~mk \/ near[a] = 0, <<"CreateAccount of an account whose near is not 0", a, near[a]>>)
     /\ Assert(r.ac.ka = <<>> \/ "kf" \in DOMAIN O,
               <<"call receipt with key actions run with Exec; run it with NearKeys' ExecK", r.id>>)
-    /\ Assert(b = "" \/ O.ret.k # "prom",
-              <<"a call followed by DeleteAccount returns a promise; the receipt's result is the delete's (empty)", r.id>>)
-    /\ rq'   = RemR(r) \cup {InstantTag(c) : c \in Give(r, O, O.ready)}
+    /\ rq'   = RemR(r) \cup {InstantTag(Unfwd(c)) : c \in Give(r, O, O.ready)}
                      \cup (IF pay THEN {Rcpt(nid + O.ids, r.tx, b, "system", REFND, r.a, bal, b, 0)} ELSE {})
-    /\ post' = RemP(r) \cup {InstantTagP(c) : c \in Give(r, O, O.post)}
+    /\ post' = RemP(r) \cup {InstantTagP(Unfwd(c)) : c \in Give(r, O, O.post)}
     /\ data' = RemD(r) \cup (IF b # "" THEN DataOf(r, TRUE, EMPTY)
                             ELSE IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
                      \cup ResumeData(r, O)
@@ -1130,8 +1141,8 @@ Commit(r, O) ==
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
 FailL(r, lbl) ==
-    /\ rq'   = RemR(r) \cup (IF r.dep > 0
-                             THEN {Rcpt(nid, r.tx, r.rto, "system", REFND, r.a, r.dep, r.rto, 0)}
+    /\ rq'   = RemR(r) \cup (IF DepTotal(r) > 0
+                             THEN {Rcpt(nid, r.tx, r.rto, "system", REFND, r.a, DepTotal(r), r.rto, 0)}
                              ELSE {})
     /\ post' = RemP(r)
     /\ data' = RemD(r) \cup DataOf(r, FALSE, 0)
@@ -1354,8 +1365,8 @@ BlockTs == TsOf(blk)
 \* disable its step.
 CanSubmit(r, a) ==
     /\ a \notin deleted
-    /\ near[a] >= r.dep
-    /\ IF StoragePerByte THEN StorageCovers(near[a] - r.dep + LockedOf(a), stor[a]) ELSE TRUE
+    /\ near[a] >= DepTotal(r)
+    /\ IF StoragePerByte THEN StorageCovers(near[a] - DepTotal(r) + LockedOf(a), stor[a]) ELSE TRUE
 
 \* Submit a transaction signed by account a with key id k: its first receipt
 \* (prepaid gas in r.g, see WithGas).  The signer pays the deposit now.  The
@@ -1364,7 +1375,7 @@ SubmitAs(r, a, k) ==
     /\ ~InstantPending
     /\ CanSubmit(r, a)
     /\ rq'    = rq \cup {[r EXCEPT !.loc = (a = r.to)]}
-    /\ near'  = [near EXCEPT ![a] = @ - r.dep]
+    /\ near'  = [near EXCEPT ![a] = @ - DepTotal(r)]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
     /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted>>
