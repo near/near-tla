@@ -310,6 +310,10 @@ Each entry ends with its migration.
   JSONL atomically and the provenance last, and `--from-data` checks the data against
   its provenance. The checker's self-tests (`conformance/scripts/test_conform.py`) run
   in CI.
+  Every provenance field is required (`{}` does not pass), repeated model reports of a
+  point must agree in every field, the TLC log is read once, and `calibrate` publishes
+  each sweep/provenance pair under a per-flow lock with unique temp files, hashing the
+  bytes it writes.
 
 ### Changed
 

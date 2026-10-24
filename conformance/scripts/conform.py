@@ -11,13 +11,17 @@ Model (TLC logs tla/build/<flow>.log of ProbeConf) vs sim
 Refund receipts are left out on both sides.
 
 A flow passes only if
-  - TLC finished without error;
-  - the sweep is bound to its provenance: the .meta.json names the current
-    flows file and the flow's declared grid, and its point count and
-    sha256 are the JSONL's;
+  - TLC finished without error (the log is read once: completion and
+    reports come from the same bytes);
+  - the sweep is bound to its provenance: the .meta.json is a JSON object
+    with every field of META_FIELDS, it names the current flows file and
+    the flow's declared grid, and its point count and sha256 are the
+    JSONL's (a missing field fails: `{}` binds nothing);
   - the sweep holds every point of the flow's declared grid exactly once
     (an empty or truncated sweep fails);
-  - the model has every grid point and none outside it;
+  - the model has every grid point and none outside it, and reports one
+    outcome per point (two reports of a point that differ in any field,
+    receiver, method or transaction included, fail);
   - every status vector is equal, the edges are identical, and at every
     point the receipts pair up by label and status with attached gas
     within --tol (default 5 Ggas).
@@ -29,7 +33,7 @@ import collections, hashlib, json, math, os, sys, tomllib
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 from mkconf import grid_points  # noqa: E402
-from tlcparse import reports  # noqa: E402
+from tlcparse import parse  # noqa: E402
 
 TOL = 5
 TOKENS = {"ft_probe", "wnear_probe"}  # model names of the token accounts
@@ -37,6 +41,8 @@ FLOWS = os.path.join(HERE, "flows", "probes.toml")
 DATA = os.path.join(HERE, "data", "probes")
 BUILD = os.path.join(HERE, "tla", "build")
 MISSING = "<no model point>"
+# The .meta.json fields conform.py checks; a meta without any of them fails.
+META_FIELDS = ("flows_sha256", "grid", "points", "jsonl_sha256")
 
 
 def sim_records(v, names):
@@ -67,28 +73,32 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
     with open(jp, "rb") as f:
         raw = f.read()
     want = grid_points(gname)
+    m = None
     if not os.path.exists(mp):
         problems.append("no provenance (.meta.json) beside the sweep (re-run calibrate)")
-        m = {}
     else:
         try:
             with open(mp) as f:
                 m = json.load(f)
         except ValueError as e:
             problems.append(f"unreadable .meta.json ({e})")
-            m = {}
-    if m:
-        if m.get("flows_sha256") != flows_sha:
-            problems.append("sweep is from another flows/probes.toml (re-run calibrate)")
-        if m.get("grid") != gname:
-            problems.append(f"sweep is on grid {m.get('grid')!r}, the flow declares {gname!r}")
-        if "jsonl_sha256" not in m or "points" not in m:
-            problems.append(".meta.json lacks jsonl_sha256 or points (an older sweep: re-run calibrate)")
         else:
-            if m["jsonl_sha256"] != hashlib.sha256(raw).hexdigest():
-                problems.append("JSONL sha256 differs from its .meta.json (re-run calibrate)")
-            if m["points"] != len(want):
-                problems.append(f".meta.json says {m['points']} points, the grid has {len(want)}")
+            if not isinstance(m, dict):
+                problems.append(f".meta.json is not a JSON object ({type(m).__name__})")
+                m = None
+    if m is not None:
+        # Every field is required and checked: no field, no pass.
+        lacks = [k for k in META_FIELDS if k not in m]
+        if lacks:
+            problems.append(f".meta.json lacks {', '.join(lacks)} (re-run calibrate)")
+        if "flows_sha256" in m and m["flows_sha256"] != flows_sha:
+            problems.append("sweep is from another flows/probes.toml (re-run calibrate)")
+        if "grid" in m and m["grid"] != gname:
+            problems.append(f"sweep is on grid {m['grid']!r}, the flow declares {gname!r}")
+        if "jsonl_sha256" in m and m["jsonl_sha256"] != hashlib.sha256(raw).hexdigest():
+            problems.append("JSONL sha256 differs from its .meta.json (re-run calibrate)")
+        if "points" in m and m["points"] != len(want):
+            problems.append(f".meta.json says {m['points']!r} points, the grid has {len(want)}")
     out, dup, bad = {}, set(), 0
     lines = raw.splitlines()
     for line in lines:
@@ -106,8 +116,8 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
         out[pp] = recs
     if not lines:
         problems.append("empty sweep")
-    if m.get("points") is not None and m.get("points") != len(lines):
-        problems.append(f"JSONL has {len(lines)} lines, .meta.json says {m['points']}")
+    if m is not None and "points" in m and m["points"] != len(lines):
+        problems.append(f"JSONL has {len(lines)} lines, .meta.json says {m['points']!r}")
     if bad:
         problems.append(f"{bad} JSONL lines unreadable, of another flow or off the Ggas grid")
     if dup:
@@ -178,10 +188,9 @@ def joint(mrecs, srecs):
     return equal, worst
 
 
-def tlc_ok(log):
-    with open(log) as f:
-        t = f.read()
-    return "Model checking completed. No error has been found" in t and "Error:" not in t
+def tlc_ok(text):
+    """Whether a TLC log's text records a run that finished without error."""
+    return "Model checking completed. No error has been found" in text and "Error:" not in text
 
 
 def empty_row(flow, problem):
@@ -199,11 +208,17 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
     log = os.path.join(build_dir, f"{flow}.log")
     res = dict(flow=flow, n=0, stat_ok=0, gas_ok=0, worst=0, receipts=0, mism=[], medges=[], sedges=[], missing=0,
                problems=[])
-    if not tlc_ok(log):
+    # One read of the log: the completion check and the reports come from
+    # the same bytes, so a log rewritten meanwhile can't mix two runs.
+    with open(log) as f:
+        text = f.read()
+    if not tlc_ok(text):
         res["problems"].append("TLC did not finish without error")
     sim, sweep_problems = load_sweep(flow, gname, data_dir, flows_sha, names)
     res["problems"] += sweep_problems
-    model = reports(log)
+    model, nondet = parse(text)
+    if nondet:
+        res["problems"].append(f"the model reports more than one outcome at {len(nondet)} points (nondeterministic)")
     grid = grid_points(gname)
     if set(model) - grid:
         res["problems"].append(f"{len(set(model) - grid)} model points outside the grid")

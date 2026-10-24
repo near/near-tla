@@ -134,11 +134,16 @@ python3 scripts/conform.py                # per-flow comparison, summary table, 
 
 A flow passes `conform.py` only if:
 
-- TLC finished without error;
-- the sweep's `.meta.json` names the current `flows/probes.toml` and the flow's declared grid,
-  and its `points` and `jsonl_sha256` are those of the JSONL beside it;
+- TLC finished without error (the log is read once, so the completion check and the reports
+  come from the same run);
+- the sweep's `.meta.json` is a JSON object with all of `flows_sha256`, `grid`, `points` and
+  `jsonl_sha256` (a missing field fails, so `{}` binds nothing); it names the current
+  `flows/probes.toml` and the flow's declared grid, and its `points` and `jsonl_sha256` are those
+  of the JSONL beside it;
 - the sweep holds every point of that grid exactly once (an empty or truncated sweep fails);
-- the model has every grid point and none outside it;
+- the model has every grid point and none outside it, and one outcome per point: TLC may print a
+  point more than once, and two reports of it that differ in any field (receiver, method,
+  transaction, id, status, gas) fail the flow;
 - every status vector is equal and the edges are identical;
 - at every point the receipts pair up one to one by label and status with attached gas within
   `--tol` (5 Ggas). Status and gas are compared together, so two receipts of one method whose
@@ -269,9 +274,12 @@ Gas is in Ggas unless a field is named `tgas`. Deposits are yocto strings.
 `data/<spec stem>/<flow>.jsonl` holds one line per grid point, and `<flow>.meta.json` beside
 it the sweep's provenance (sim rev, nearcore tag and rev, protocol, every wasm's sha256, the
 flows file and its sha256, the grid and its point count) and the JSONL's own sha256
-(`jsonl_sha256`). A sweep deletes the old `.meta.json` first, writes the JSONL whole once the
-grid has run (to `<flow>.jsonl.tmp`, then a rename), and writes the new `.meta.json` last, so an
-interrupted sweep never leaves a `.meta.json` that vouches for other data:
+(`jsonl_sha256`). Once the grid has run, a sweep publishes the pair under an exclusive lock on
+`<flow>.lock` (beside it; kept): it deletes the old `.meta.json`, writes the JSONL whole (to a temp
+file unique to the write, then a rename), and writes the new `.meta.json` last, with the sha256 of
+the bytes it wrote. So an interrupted sweep never leaves a `.meta.json` that vouches for other
+data, and two concurrent sweeps of a flow leave one sweep's pair, not one's provenance on the
+other's data. `--from-data` reads the pair under a shared lock:
 
 ```
 { "flow": str, "gas": prepaid (gas units), "tx_ok": bool, "receipts": [receipt, ...] }

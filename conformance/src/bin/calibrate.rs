@@ -17,15 +17,18 @@
 //! every merged key's largest burn was seen at the top of a grid.
 //! `--allow-partial` writes it anyway, with the failures in its header.
 //! Each sweep's JSONL has a `<flow>.meta.json` beside it (provenance, and
-//! the JSONL's sha256 and point count). A sweep removes the old meta
-//! first, writes the JSONL whole (temp file, rename), then the new meta,
-//! so an interrupted sweep leaves no meta that vouches for its data.
+//! the JSONL's sha256 and point count). Once its grid has run, a sweep
+//! publishes the pair under an exclusive lock on `<flow>.lock`: it removes
+//! the old meta, writes the JSONL whole (unique temp file, rename), then
+//! the new meta, whose sha256 is that of the bytes it wrote. So an
+//! interrupted sweep leaves no meta that vouches for other data, and two
+//! concurrent sweeps of a flow leave one sweep's pair, not a mix.
 //! `--from-data` refuses data whose provenance differs from the current
 //! wasm, flows file, sim or grid, or whose JSONL does not match its meta's
 //! sha256, point count and grid, unless `--force-data` (also recorded).
 use near_tla_conformance::calib::{self, Burns, SplitReport, Table};
 use near_tla_conformance::spec::{self, Resolved};
-use near_tla_conformance::{Provenance, edges, provenance, sha256_hex, sweep, write_atomic};
+use near_tla_conformance::{Provenance, edges, jsonl, lock_beside, provenance, sha256_hex, sweep, write_atomic};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
@@ -81,6 +84,50 @@ fn bind(meta: &Value, jsonl: &[u8]) -> Value {
     let mut m = meta.clone();
     m["jsonl_sha256"] = json!(sha256_hex(jsonl));
     m
+}
+
+/// Publishes a sweep of the grid `g` as the pair `path` (JSONL) and its
+/// meta (`want` bound to the JSONL bytes): under the flow's exclusive lock,
+/// removes the old meta, writes the JSONL, then the meta. The sha256 is of
+/// the bytes written, never of the file reread, and the lock keeps another
+/// publisher of the flow out until the pair is whole. Returns the meta.
+fn publish(path: &Path, want: &Value, lines: &[Value], g: &[u64]) -> Value {
+    publish_with(path, want, lines, g, &|| {})
+}
+
+/// `publish`, calling `between` after the JSONL is written and before the
+/// meta is (a test's hook into that window).
+fn publish_with(path: &Path, want: &Value, lines: &[Value], g: &[u64], between: &dyn Fn()) -> Value {
+    let bytes = jsonl(lines).into_bytes();
+    let m = bind(want, &bytes);
+    let bad = data_mismatch(&m, &bytes, lines, g);
+    assert!(bad.is_empty(), "{}: sweep does not match its grid: {}", path.display(), bad.join("; "));
+    let mp = meta_path(path);
+    let _lock = lock_beside(path, true).unwrap_or_else(|e| panic!("{}: lock: {e}", path.display()));
+    // The old meta goes first: until the new one is written, the JSONL has
+    // no provenance and no reader accepts it.
+    match std::fs::remove_file(&mp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("{}: {e}", mp.display()),
+        _ => {}
+    }
+    write_atomic(path, &bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    between();
+    let text = serde_json::to_string_pretty(&m).unwrap() + "\n";
+    write_atomic(&mp, text.as_bytes()).unwrap_or_else(|e| panic!("{}: {e}", mp.display()));
+    m
+}
+
+/// A stored sweep: its meta (`Null` if absent or unreadable) and its JSONL
+/// bytes, read together under the flow's shared lock, so no publisher can
+/// replace one between the two reads.
+fn read_stored(path: &Path) -> (Value, Vec<u8>) {
+    let _lock = lock_beside(path, false).unwrap_or_else(|e| panic!("{}: lock: {e}", path.display()));
+    let got: Value = std::fs::read_to_string(meta_path(path))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null);
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    (got, bytes)
 }
 
 /// What is wrong with a stored sweep against its meta: the JSONL's sha256
@@ -168,10 +215,7 @@ fn main() {
         let want = meta(&prov, &wasms, &flows_name, &flows_sha, &gname, g.len());
         let lines: Vec<Value> = if from_data {
             let mp = meta_path(&path);
-            let got: Value = std::fs::read_to_string(&mp)
-                .ok()
-                .and_then(|t| serde_json::from_str(&t).ok())
-                .unwrap_or(Value::Null);
+            let (got, bytes) = read_stored(&path);
             let diff: Vec<String> = want
                 .as_object()
                 .unwrap()
@@ -188,7 +232,6 @@ fn main() {
                 eprintln!("warning: {msg}");
                 data_warn.push(msg);
             }
-            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             let lines: Vec<Value> = bytes
                 .as_slice()
                 .lines()
@@ -209,18 +252,8 @@ fn main() {
             let w = res.flow_world(&base, flow);
             let tx = flow.tx.clone();
             let t0 = std::time::Instant::now();
-            // The old meta goes first: until the new one is written, the
-            // JSONL has no provenance and no reader accepts it.
-            let mp = meta_path(&path);
-            match std::fs::remove_file(&mp) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("{}: {e}", mp.display()),
-                _ => {}
-            }
-            let lines = sweep(&flow.name, &w, &g, &|sim, gas| spec::run(sim, &tx, Some(gas)), Some(&path));
-            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert!(data_mismatch(&bind(&want, &bytes), &bytes, &lines, &g).is_empty(), "{}: sweep does not match its grid", flow.name);
-            let m = serde_json::to_string_pretty(&bind(&want, &bytes)).unwrap() + "\n";
-            write_atomic(&mp, m.as_bytes()).unwrap_or_else(|e| panic!("{}: {e}", mp.display()));
+            let lines = sweep(&flow.name, &w, &g, &|sim, gas| spec::run(sim, &tx, Some(gas)), None);
+            publish(&path, &want, &lines, &g);
             eprintln!("{}: {} points in {:.1}s", flow.name, g.len(), t0.elapsed().as_secs_f64());
             lines
         };
@@ -485,6 +518,49 @@ mod tests {
         let lines: Vec<Value> = g.iter().map(|&x| json!({"flow": "f", "gas": x})).collect();
         let bytes = near_tla_conformance::jsonl(&lines).into_bytes();
         (lines, bytes)
+    }
+
+    /// Two sweeps of one flow published concurrently: B publishes while A
+    /// is between its JSONL and its meta. The pair left must be one
+    /// sweep's: the meta's provenance is that of the sweep whose bytes are
+    /// on disk, and its sha256 and points bind them.
+    #[test]
+    fn concurrent_publish_leaves_one_sweeps_pair() {
+        use std::sync::mpsc;
+        let dir = std::env::temp_dir().join(format!("near-tla-calib-{}-pub", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("f.jsonl");
+        let g = [1, 2, 3];
+        let sweep_of = |who: &str| -> (Value, Vec<Value>) {
+            let lines = g.iter().map(|&x| json!({"flow": "f", "gas": x, "by": who})).collect();
+            (json!({"points": 3, "flows_sha256": who}), lines)
+        };
+        let (want_a, lines_a) = sweep_of("A");
+        let (want_b, lines_b) = sweep_of("B");
+        std::thread::scope(|s| {
+            let b_thread = std::cell::RefCell::new(None);
+            publish_with(&path, &want_a, &lines_a, &g, &|| {
+                // B runs now; wait until it has published, or until it is
+                // plainly held back (by the lock).
+                let (tx, rx) = mpsc::channel();
+                let (path, want_b, lines_b, g) = (&path, &want_b, &lines_b, &g);
+                *b_thread.borrow_mut() = Some(s.spawn(move || {
+                    publish(path, want_b, lines_b, g);
+                    let _ = tx.send(());
+                }));
+                let _ = rx.recv_timeout(std::time::Duration::from_millis(500));
+            });
+            b_thread.into_inner().unwrap().join().unwrap();
+        });
+        let (meta, bytes) = read_stored(&path);
+        let lines: Vec<Value> = bytes.as_slice().lines().map(|l| serde_json::from_str(&l.unwrap()).unwrap()).collect();
+        assert!(data_mismatch(&meta, &bytes, &lines, &g).is_empty(), "meta not bound to the JSONL: {meta}");
+        let data_by = lines[0]["by"].as_str().unwrap();
+        assert_eq!(meta["flows_sha256"], json!(data_by), "provenance of one sweep, data of the other");
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["f.jsonl", "f.lock", "f.meta.json"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

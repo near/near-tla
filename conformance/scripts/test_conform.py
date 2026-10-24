@@ -13,10 +13,12 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import conform  # noqa: E402
+import tlcparse  # noqa: E402
 from mkconf import grid_points  # noqa: E402
 
 FLOWS = """\
@@ -41,8 +43,8 @@ def sim_line(pp, recs, flow="f"):
     return json.dumps(dict(flow=flow, gas=pp * 10**9, tx_ok=True, receipts=rs)) + "\n"
 
 
-def model_report(pp, recs):
-    body = ", ".join(f'[to |-> "q", m |-> "work", st |-> "{s}", tx |-> 1, id |-> {i + 1}, g |-> {g}]'
+def model_report(pp, recs, to="q", m="work", tx=1):
+    body = ", ".join(f'[to |-> "{to}", m |-> "{m}", st |-> "{s}", tx |-> {tx}, id |-> {i + 1}, g |-> {g}]'
                      for i, (s, g) in enumerate(recs))
     return f'<< "CONF", {pp}, {{{body}}} >>\n'
 
@@ -68,14 +70,18 @@ class Conform(unittest.TestCase):
 
     def write_sim(self, text, meta=None, **over):
         """The sweep `text`, and a meta bound to it (fields in `over`
-        replace the bound ones; meta=False writes none)."""
+        replace the bound ones; meta=False writes none; any other `meta`,
+        `{}` included, is written as given)."""
         with open(os.path.join(self.data, "f.jsonl"), "w") as f:
             f.write(text)
         if meta is False:
             return
-        m = meta or dict(flows_file="probes.toml", flows_sha256=self.flows_sha, grid="1:1.2:0.1", points=len(GRID),
-                         jsonl_sha256=hashlib.sha256(text.encode()).hexdigest())
-        m.update(over)
+        if meta is None:
+            m = dict(flows_file="probes.toml", flows_sha256=self.flows_sha, grid="1:1.2:0.1", points=len(GRID),
+                     jsonl_sha256=hashlib.sha256(text.encode()).hexdigest())
+            m.update(over)
+        else:
+            m = meta
         with open(os.path.join(self.data, "f.meta.json"), "w") as f:
             json.dump(m, f)
 
@@ -248,6 +254,105 @@ class Conform(unittest.TestCase):
         # swept on another grid than the flow declares
         self.write_sim(text, grid="smoke")
         self.assertProblem(self.run_compare(), "on grid 'smoke'")
+
+    def test_empty_meta_fails(self):
+        # A complete, matching sweep whose meta is `{}`: nothing binds it.
+        self.good()
+        self.write_sim(read(os.path.join(self.data, "f.jsonl")), meta={})
+        self.assertEqual(json.loads(read(os.path.join(self.data, "f.meta.json"))), {})
+        res = self.run_compare()
+        self.assertProblem(res, ".meta.json lacks flows_sha256, grid, points, jsonl_sha256")
+        self.assertEqual(self.run_main(), 1)
+
+    def test_meta_missing_any_field_fails(self):
+        self.good()
+        text = read(os.path.join(self.data, "f.jsonl"))
+        for k in conform.META_FIELDS:
+            with self.subTest(field=k):
+                self.write_sim(text)
+                m = json.loads(read(os.path.join(self.data, "f.meta.json")))
+                del m[k]
+                self.write_sim(text, meta=m)
+                self.assertProblem(self.run_compare(), f".meta.json lacks {k}")
+                self.assertEqual(self.run_main(), 1)
+
+    def test_meta_not_an_object_fails(self):
+        self.good()
+        text = read(os.path.join(self.data, "f.jsonl"))
+        for meta in ([], None, "x", 3):
+            with self.subTest(meta=meta):
+                self.write_sim(text, meta=False)
+                with open(os.path.join(self.data, "f.meta.json"), "w") as f:
+                    json.dump(meta, f)
+                self.assertProblem(self.run_compare(), "not a JSON object")
+                self.assertEqual(self.run_main(), 1)
+
+    def test_repeated_reports_differing_in_any_field_fail(self):
+        # Two reports of one point, equal in (id, status, gas): the earlier
+        # disagrees with the sim, the later agrees. Neither may be dropped.
+        recs = [("ok", 10000), ("oog", 20000)]
+        for field, other in (("to", dict(to="p")), ("m", dict(m="rest")), ("tx", dict(tx=2))):
+            with self.subTest(field=field):
+                self.good()
+                with open(os.path.join(self.build, "f.log"), "w") as f:
+                    f.write(model_report(1000, recs, **other))
+                    for pp in GRID:
+                        f.write(model_report(pp, recs))
+                    f.write(OK_LOG)
+                res = self.run_compare()
+                self.assertProblem(res, "more than one outcome at 1 points")
+                self.assertEqual(self.run_main(), 1)
+
+    def test_repeated_equal_reports_pass(self):
+        # The same outcome reported twice (two behaviours reaching it) is fine.
+        self.good()
+        recs = [("ok", 10000), ("oog", 20000)]
+        with open(os.path.join(self.build, "f.log"), "a") as f:
+            # the same records, printed in another order
+            f.write(model_report(1100, recs).replace(
+                '[to |-> "q", m |-> "work", st |-> "ok", tx |-> 1, id |-> 1, g |-> 10000], '
+                '[to |-> "q", m |-> "work", st |-> "oog", tx |-> 1, id |-> 2, g |-> 20000]',
+                '[to |-> "q", m |-> "work", st |-> "oog", tx |-> 1, id |-> 2, g |-> 20000], '
+                '[to |-> "q", m |-> "work", st |-> "ok", tx |-> 1, id |-> 1, g |-> 10000]'))
+        self.assertEqual(self.run_compare()["problems"], [])
+
+    def test_parse_reports(self):
+        recs = [("ok", 1), ("oog", 2)]
+        out, nondet = tlcparse.parse(model_report(5, recs) + model_report(5, recs, to="p") + model_report(6, recs))
+        self.assertEqual(sorted(out), [5, 6])
+        self.assertEqual(nondet, {5: 2})
+        self.assertEqual(out[6][0], dict(to="q", m="work", st="ok", tx=1, id=1, g=1))
+
+    def test_tlc_log_is_read_once(self):
+        # The log is rewritten between reads: the first snapshot is a
+        # finished run whose report disagrees with the sim, the second an
+        # unfinished run that agrees. The comparison must use one snapshot.
+        recs = [("ok", 10000), ("oog", 20000)]
+        self.good()
+        log = os.path.join(self.build, "f.log")
+        first = "".join(model_report(pp, [("ok", 99999), ("oog", 20000)]) for pp in GRID) + OK_LOG
+        second = "".join(model_report(pp, recs) for pp in GRID) + "Starting... (still running)\n"
+        real_open, opens = open, []
+
+        def regenerating_open(path, *a, **k):
+            if os.path.abspath(path) == log:
+                opens.append(path)
+                if len(opens) == 2:
+                    with real_open(log, "w") as f:
+                        f.write(second)
+            return real_open(path, *a, **k)
+
+        for run, want in ((self.run_compare, None), (self.run_main, 1)):
+            with open(log, "w") as f:
+                f.write(first)
+            opens.clear()
+            with mock.patch("builtins.open", regenerating_open):
+                got = run()
+            if want is None:
+                self.assertEqual(got["problems"], ["attached gas not paired within 5 Ggas by label and status at 3 points"])
+            else:
+                self.assertEqual(got, want)
+            self.assertEqual(len(opens), 1)
 
     def test_failed_tlc_run_fails(self):
         self.good()

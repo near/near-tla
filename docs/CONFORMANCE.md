@@ -148,11 +148,12 @@ A measured number is only meaningful with what it was measured on.
   flows file and its sha256, the grid, and the exact `calibrate` command line (home directory
   written as `~`). `calibrate` writes this header itself; `modules/CalibStd.tla` shows it.
 - **Every sweep records** the same facts in `data/<spec>/<flow>.meta.json`, with the sweep's
-  point count and sha256. `calibrate` removes the old `.meta.json` before it sweeps and writes
-  the new one only after the JSONL is complete, so an interrupted sweep has no provenance.
-  `--from-data` and `conform.py` refuse a sweep whose provenance differs from the current setup
-  or does not match the data; `--force-data` uses it anyway and writes the difference into the
-  table's header. Prefer a fresh sweep.
+  point count and sha256. `calibrate` publishes the pair under a per-flow lock: it removes the
+  old `.meta.json`, writes the JSONL whole, then the new `.meta.json` with the sha256 of the
+  bytes it wrote. An interrupted sweep has no provenance, and concurrent sweeps of a flow leave
+  one sweep's pair. `--from-data` and `conform.py` refuse a sweep whose provenance is missing
+  (any field), differs from the current setup or does not match the data; `--force-data` uses it
+  anyway and writes the difference into the table's header. Prefer a fresh sweep.
 - **A table describes one wasm build.** Burns depend on the contract's code and state, so a
   table measured on a probe or a test build does not describe a deployed contract. Recalibrate
   for the build you deploy, and pin its hash.

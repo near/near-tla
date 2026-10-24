@@ -173,21 +173,41 @@ pub mod grid {
     }
 }
 
-/// Writes `bytes` to `path` atomically: to `<path>.tmp` beside it, then a
-/// rename, so a reader sees the old file or the new one, never a prefix.
+/// Writes `bytes` to `path` atomically: to a temp file beside it, unique to
+/// this call (`<path>.<pid>.<n>.tmp`), then a rename, so a reader sees the
+/// old file or the new one, never a prefix, and two writers never share a
+/// temp file (the last rename wins, whole).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    {
-        let mut f = std::fs::File::create(&tmp)?;
+    let res = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, path)
+    res
+}
+
+/// An advisory lock on `<path without extension>.lock` (created if need
+/// be, never removed), held until the returned file is dropped: exclusive
+/// to publish a sweep's JSONL and meta as one pair, shared to read them.
+pub fn lock_beside(path: &Path, exclusive: bool) -> std::io::Result<std::fs::File> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.with_extension("lock"))?;
+    if exclusive { f.lock()? } else { f.lock_shared()? }
+    Ok(f)
 }
 
 /// Runs `tx` on a clone of `base` at every gas of `grid`, and returns one
@@ -264,14 +284,43 @@ pub fn edges(lines: &[Value]) -> Vec<(f64, String)> {
 mod tests {
     use super::*;
 
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn write_atomic_replaces_whole_and_leaves_no_temp() {
-        let dir = std::env::temp_dir().join(format!("near-tla-conf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("near-tla-conf-{}-wa", std::process::id()));
         let p = dir.join("x.jsonl");
         write_atomic(&p, b"old\n").unwrap();
         write_atomic(&p, b"new 1\nnew 2\n").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"new 1\nnew 2\n");
-        assert!(!dir.join("x.jsonl.tmp").exists());
+        assert_eq!(names(&dir), ["x.jsonl"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Writers of one path never share a temp file: every write succeeds,
+    /// and the file is always one writer's bytes, whole.
+    #[test]
+    fn write_atomic_concurrent_writers() {
+        let dir = std::env::temp_dir().join(format!("near-tla-conf-{}-wac", std::process::id()));
+        let p = dir.join("x.jsonl");
+        let body = |t: usize| format!("{t}\n").repeat(20_000).into_bytes();
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let (p, b) = (&p, body(t));
+                s.spawn(move || {
+                    for _ in 0..50 {
+                        write_atomic(p, &b).unwrap();
+                    }
+                });
+            }
+        });
+        let got = std::fs::read(&p).unwrap();
+        assert!((0..8).any(|t| got == body(t)), "file is no writer's bytes whole");
+        assert_eq!(names(&dir), ["x.jsonl"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
