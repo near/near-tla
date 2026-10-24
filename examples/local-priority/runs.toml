@@ -1,0 +1,40 @@
+# Local-receipt priority (switch ON vs OFF).  See Rotator.tla.
+#
+#   python3 tools/run.py examples/local-priority
+
+spec = "Rotator"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["NoStaleKeyAct"]
+tags = ["semantics:local-priority"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"g"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+KeyAccts = '{"g"}'
+Contracts = '{"g"}'
+G = '"g"'
+LocalOn = "TRUE"
+
+[[run]]
+name = "local_on"
+expect = "pass"
+
+[[run]]
+name = "local_off"
+expect = "violation"
+invariant = "NoStaleKeyAct"
+[run.constants]
+LocalOn = "FALSE"

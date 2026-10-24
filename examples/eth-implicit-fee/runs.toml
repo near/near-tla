@@ -1,0 +1,57 @@
+# Transfer fee to an eth-implicit receiver (gas mode, NearFees at FeeProtocol).  See Forwarder.tla.
+#
+#   python3 tools/run.py examples/eth-implicit-fee
+
+spec = "Forwarder"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Delivered", "Created", "Sane"]
+tags = ["semantics:eth-implicit-fee"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"p"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "PGasCall"
+GasBurn = "PGasBurn"
+LogOn = "FALSE"
+AcctKind = "PKinds"
+U = '"u"'
+P = '"p"'
+R = '"r"'
+To = '"0xe"'
+Amt = "2"
+Wrong = "FALSE"
+
+[[run]]
+name = "eth_fee_ok"
+expect = "pass"
+
+[[run]]
+name = "eth_fee_named_budget"
+expect = "violation"
+invariant = "Delivered"
+[run.constants]
+Wrong = "TRUE"
+
+[[run]]
+name = "eth_fee_named_rcv"
+expect = "pass"
+[run.constants]
+Wrong = "TRUE"
+To = '"bob"'
+
+# The eth-implicit receiver does not exist yet: the Transfer creates it.
+[[run]]
+name = "eth_fee_creates"
+expect = "pass"
+[run.constants]
+Exists = '{"u", "p", "r", "bob"}'

@@ -1,0 +1,49 @@
+# Unused-gas split by weight (gas mode, illustrative table).  See Splitter.tla.
+#
+#   python3 tools/run.py examples/weight-split
+
+spec = "Splitter"
+workers = 2
+library = "../../modules"
+budget_s = 60
+tags = ["semantics:weight-split"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"s"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "PGasCall"
+GasBurn = "PGasBurn"
+LogOn = "FALSE"
+U = '"u"'
+S = '"s"'
+W = '"w"'
+Prepaid = "10001"
+Wts = "<<1, 1, 2>>"
+
+[[run]]
+name = "weight_split_ok"
+expect = "pass"
+invariants = ["SplitExact", "CallbackDone"]
+
+[[run]]
+name = "weight_split_cb_zero"
+expect = "violation"
+invariant = "CallbackDone"
+invariants = ["SplitExact", "CallbackDone"]
+[run.constants]
+Wts = "<<1, 1, 0>>"
+
+[[run]]
+name = "weight_split_w0"
+expect = "pass"
+invariants = ["SplitExact", "NothingDistributed"]
+[run.constants]
+Wts = "<<0, 0, 0>>"

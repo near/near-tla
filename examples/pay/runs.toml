@@ -1,0 +1,130 @@
+# Pay: a contract C pays out of an internal balance through ft_transfer_call and
+# reconciles in its callback on_paid. See the comments in Pay.tla.
+#
+#   python3 tools/run.py examples/pay
+#
+# Books   C's internal balance matches its FT balance once nothing is in flight.
+# Honored a settled pay was refunded what the receiver asked back, capped at amt (NEP-141).
+# Sane    native NEAR conserved, token supply = sum of balances, balance domains.
+
+spec = "Pay"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Books", "Honored", "Sane"]
+
+# Shared constants; each run overrides a few. Values are TLA+ expression text.
+[constants]
+Accounts = "Accts"
+StakingAcct = '"c"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+TokenAccts = '{"ft"}'
+WNearAccts = "{}"
+TokHolders = "PTokHolders"
+TokStorageMin = "PTokMin"
+TokDev = "PTokDev"
+TokCallReserve = "PTokReserve"
+U = '"u"'
+C = '"c"'
+FT = '"ft"'
+RX = '"rx"'
+MaxTx = "2"
+Amts = "{1, 2}"
+InitC = "2"
+InitRx = "1"
+RxResps = '{"keep", "return", "over", "mal", "panic"}'
+RxReg = "TRUE"
+Dev = "{}"
+GasMenu = "{0}"
+
+# Standard FT, two pay transactions, every receiver behaviour.
+[[run]]
+name = "pay_std"
+expect = "pass"
+tags = ["tokens:nep141", "semantics:callback-result"]
+
+# The receiver is not registered on FT: ft_transfer_call panics, on_paid sees Failed
+# and credits the full amount back.
+[[run]]
+name = "pay_unreg"
+expect = "pass"
+tags = ["tokens:nep145", "semantics:callback-result"]
+[run.constants]
+RxReg = "FALSE"
+
+# A token whose resolver ignores the receiver's answer: when the receiver returns
+# everything, the resolver leaves it with the receiver.
+[[run]]
+name = "pay_ignore"
+expect = "violation"
+invariant = "Honored"
+tags = ["tokens:deviation"]
+[run.constants]
+Dev = '{"resolveIgnoresResult"}'
+
+# A token whose resolver does not cap the refund at amt: the receiver (which holds 1)
+# answers amt + 1, and the resolver pulls one of its own tokens into C.
+[[run]]
+name = "pay_nocap"
+expect = "violation"
+invariant = "Books"
+tags = ["tokens:deviation"]
+[run.constants]
+Dev = '{"resolveNoCap"}'
+
+# One forced failure of on_paid: the tokens come back to C but ib is never credited.
+[[run]]
+name = "pay_forced"
+expect = "violation"
+invariant = "Books"
+tags = ["semantics:callback-failure"]
+[run.constants]
+MayFail = '{"on_paid"}'
+MaxFails = "1"
+
+# Gas mode with the illustrative table, one transaction, prepaid 39.0-42.0 Tgas in
+# 0.1 steps plus 300 Tgas. pay needs 2.0 burn + 2 x 0.9 fees + 35 + 1 static = 39.8 Tgas;
+# from there on_paid can run out of gas, so the first violation is at 39.8 Tgas.
+[[run]]
+name = "pay_gas"
+expect = "violation"
+invariant = "Books"
+# One worker keeps the breadth-first search order (and so the reported trace) deterministic.
+workers = 1
+expect_output = 'gas \|-> 39800\]>>'
+tags = ["gas:out-of-gas", "semantics:callback-failure"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PGasCall"
+GasBurn = "PGasBurn"
+GasMenu = "PayMenu"
+MaxTx = "1"
+Amts = "{1}"
+
+# Same, with the print-only WinBooks: the leftover gas is split 1:1 between
+# ft_transfer_call and on_paid; on_paid gets 1 + left/2 and burns 1.5, so it runs out
+# for left < 1.0 Tgas, i.e. prepaid 39.8-40.7 Tgas.
+[[run]]
+name = "pay_gas_win"
+expect = "pass"
+invariants = ["WinBooks"]
+expect_window = "39800-40700"
+tags = ["gas:window"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PGasCall"
+GasBurn = "PGasBurn"
+GasMenu = "PayMenu"
+MaxTx = "1"
+Amts = "{1}"

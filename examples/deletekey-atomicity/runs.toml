@@ -1,0 +1,41 @@
+# [DeleteKey, FunctionCall] in one receipt is atomic.  See Revoker.tla.
+#
+#   python3 tools/run.py examples/deletekey-atomicity
+
+spec = "Revoker"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["OwnerKeyKept", "Counted"]
+tags = ["semantics:deletekey-atomicity"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"a"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+KeyAccts = '{"a"}'
+Contracts = '{"a"}'
+A = '"a"'
+MaxTx = "2"
+Wrong = "FALSE"
+
+[[run]]
+name = "delkey_bundled"
+expect = "pass"
+
+[[run]]
+name = "delkey_split"
+expect = "violation"
+invariant = "Counted"
+[run.constants]
+Wrong = "TRUE"

@@ -1,0 +1,52 @@
+# Callbacks always run and see Failed; a failing callback reverts only itself.  See Relay.tla.
+#
+#   python3 tools/run.py examples/callback-after-failure
+
+spec = "Relay"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["AddStays", "Books"]
+tags = ["semantics:callback-after-failure"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"r"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+U = '"u"'
+R = '"r"'
+C = '"c"'
+MaxTx = "2"
+Ns = "{1, 2}"
+CResps = '{"add", "panic"}'
+Wrong = "FALSE"
+
+[[run]]
+name = "cb_sees_failed"
+expect = "pass"
+
+[[run]]
+name = "cb_assumes_success"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+Wrong = "TRUE"
+
+[[run]]
+name = "cb_self_fails"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+CResps = '{"add"}'
+MayFail = '{"on_added"}'
+MaxFails = "1"

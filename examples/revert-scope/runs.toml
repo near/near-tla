@@ -1,0 +1,43 @@
+# Revert scope of a failed receipt.  See Vault.tla.
+#
+#   python3 tools/run.py examples/revert-scope
+
+spec = "Vault"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Books", "EscrowBacked", "Sane"]
+tags = ["semantics:revert-scope"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+U = '"u"'
+V = '"v"'
+E = '"e"'
+MaxTx = "2"
+Deps = "{1, 2}"
+EResps = '{"accept", "panic"}'
+Wrong = "FALSE"
+
+[[run]]
+name = "revert_scope_ok"
+expect = "pass"
+
+[[run]]
+name = "revert_scope_whole_tx"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+Wrong = "TRUE"

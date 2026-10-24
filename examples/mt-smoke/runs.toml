@@ -1,0 +1,51 @@
+# MtSmoke: U mt_transfer_calls 1 of "t1" to an arbitrary receiver RX (which already
+# holds 1); the resolver refunds what RX asks back, capped at the amount (standard)
+# or not ("resolveNoCap"). See MtSmoke.tla.
+#
+#   python3 tools/run.py examples/mt-smoke
+
+spec = "MtSmoke"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Conserved", "Honored"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+MtAccts = '{"mt"}'
+MtIds = '{"t1"}'
+MtHolders = "PMtHolders"
+MtDev = "PMtDev"
+MtCallReserve = "PMtReserve"
+U = '"u"'
+MT = '"mt"'
+RX = '"rx"'
+RxResps = '{"keep", "return", "over", "mal", "empty", "panic"}'
+MDev = "{}"
+
+[[run]]
+name = "mt_std"
+expect = "pass"
+tags = ["tokens:nep245"]
+
+# Uncapped resolver: RX answers amt + 1 and U gets back more than it sent.
+[[run]]
+name = "mt_nocap"
+expect = "violation"
+invariant = "Honored"
+tags = ["tokens:nep245", "tokens:deviation"]
+[run.constants]
+MDev = '{"resolveNoCap"}'

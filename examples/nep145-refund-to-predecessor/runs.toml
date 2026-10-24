@@ -1,0 +1,50 @@
+# NEP-145 storage_deposit refunds the excess to the predecessor.  See Signup.tla.
+#
+#   python3 tools/run.py examples/nep145-refund-to-predecessor
+
+spec = "Signup"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["UserMadeWhole", "RKeepsNothing", "Sane"]
+tags = ["semantics:nep145-refund-to-predecessor"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"r"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = '{"storage_deposit"}'
+MaxFails = "1"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+TokenAccts = '{"ft"}'
+WNearAccts = "{}"
+TokHolders = "PTokHolders"
+TokStorageMin = "PTokMin"
+TokDev = "PTokDev"
+TokCallReserve = "PTokReserve"
+U = '"u"'
+R = '"r"'
+FT = '"ft"'
+Extra = "2"
+InitU = "5"
+InitR = "3"
+Wrong = "FALSE"
+
+[[run]]
+name = "sd_refund_predecessor"
+expect = "pass"
+
+[[run]]
+name = "sd_refund_assumes_account"
+expect = "violation"
+invariant = "UserMadeWhole"
+[run.constants]
+Wrong = "TRUE"

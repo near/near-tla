@@ -1,0 +1,53 @@
+# NEP-141 resolver refund cap.  See RefundCap.tla.
+#
+#   python3 tools/run.py examples/nep141-refund-cap
+
+spec = "RefundCap"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["RefundCapped", "Sane"]
+tags = ["semantics:nep141-refund-cap"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+TokenAccts = '{"ft"}'
+WNearAccts = "{}"
+TokHolders = "PTokHolders"
+TokStorageMin = "PTokMin"
+TokDev = "PTokDev"
+TokCallReserve = "PTokReserve"
+U = '"u"'
+X = '"x"'
+Y = '"y"'
+FT = '"ft"'
+MaxTx = "3"
+Amts = "{1, 2}"
+InitU = "2"
+InitX = "1"
+XResps = '{"keep", "return", "over", "mal", "panic"}'
+Dev = "{}"
+
+[[run]]
+name = "refund_cap_std"
+expect = "pass"
+
+[[run]]
+name = "refund_cap_nocap"
+expect = "violation"
+invariant = "RefundCapped"
+[run.constants]
+Dev = '{"resolveNoCap"}'

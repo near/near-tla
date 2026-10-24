@@ -1,0 +1,41 @@
+# The signer is inherited by children and callbacks.  See Payer.tla.
+#
+#   python3 tools/run.py examples/signer-propagation
+
+spec = "Payer"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["CallbackSigner", "Credited"]
+tags = ["semantics:signer-propagation"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"p"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+Users = '{"u1", "u2"}'
+P = '"p"'
+E = '"e"'
+MaxTx = "2"
+Wrong = "FALSE"
+
+[[run]]
+name = "signer_credited"
+expect = "pass"
+
+[[run]]
+name = "signer_uses_predecessor"
+expect = "violation"
+invariant = "Credited"
+[run.constants]
+Wrong = "TRUE"
