@@ -20,8 +20,8 @@ the runtime allows.
 - **Gas semantics and fees are checked per receipt against nearcore**, through
   near-contract-sim, which runs nearcore's own `Runtime::apply`. Probe contracts are swept over
   a grid of prepaid gas, and every receipt's status, attached gas and failure edge is compared
-  with the model: **TBD-conformance flows × TBD-conformance prepaid points, TBD-conformance
-  split mismatches**. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md).
+  with the model: **58 flows × 1313 prepaid points, all matching; 76,662 child gas splits, 0
+  mismatches**. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md).
 - **What is not modelled** is listed, item by item, with what each omission could hide:
   [Not modelled](docs/SEMANTICS.md#not-modelled).
 - **Over- versus under-approximations.** Most omissions are over-approximations: the model

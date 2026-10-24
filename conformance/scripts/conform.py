@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(HERE, "scripts"))
 from tlcparse import reports  # noqa: E402
 
 TOL = 5
-TOKENS = {"ft", "wrap"}
+TOKENS = {"ft_probe", "wnear_probe"}  # model names of the token accounts
 FLOWS = os.path.join(HERE, "flows", "probes.toml")
 MISSING = "<no model point>"
 
@@ -162,13 +162,21 @@ def main():
     raw = open(FLOWS, "rb").read()
     flows_sha = hashlib.sha256(raw).hexdigest()
     spec = tomllib.loads(raw.decode())
-    flows = args or [f["name"] for f in spec["flow"]]
+    known = [f["name"] for f in spec["flow"]]
+    flows = args or known
     rows = []
     for f in flows:
-        if not os.path.exists(os.path.join(HERE, "tla", "build", f"{f}.log")):
+        problem = None
+        if f not in known:
+            problem = "no such flow in flows/probes.toml"
+        elif not os.path.exists(os.path.join(HERE, "data", "probes", f"{f}.jsonl")):
+            problem = f"no sim data data/probes/{f}.jsonl (run calibrate first: README.md, Running)"
+        elif not os.path.exists(os.path.join(HERE, "tla", "build", f"{f}.log")):
+            problem = f"no TLC log tla/build/{f}.log (run scripts/mkconf.py and scripts/tlc.sh first)"
+        if problem:
             rows.append(dict(flow=f, n=0, stat_ok=0, gas_ok=0, worst=0, receipts=0, mism=[], medges=[], sedges=[],
-                             missing=0, problems=["no TLC log"]))
-            print(f"== {f}: no TLC log")
+                             missing=0, problems=[problem]))
+            print(f"\n== {f}: FAIL: {problem}")
             continue
         c = compare(f, spec, tol, subset, flows_sha)
         rows.append(c)
@@ -191,6 +199,11 @@ def main():
         print(f"| {c['flow']} | {c['n']} | {c['missing']} | {c['receipts']} | {c['stat_ok']} | {c['gas_ok']} | {c['worst']} | "
               f"{', '.join(f'{pp/1000:.1f}' for pp, _ in c['medges'])} | {', '.join(f'{pp/1000:.1f}' for pp, _ in c['sedges'])} | "
               f"{'pass' if not c['problems'] else 'FAIL'} |")
+    edge_bad = sum(1 for c in rows if [a for a, _ in c["medges"]] != [a for a, _ in c["sedges"]])
+    print(f"\ntotals: {len(rows)} flows, {sum(c['n'] for c in rows)} points, {sum(c['receipts'] for c in rows)} sim receipts; "
+          f"status mismatches at {sum(c['n'] - c['stat_ok'] for c in rows)} points; edges differ in {edge_bad} flows; "
+          f"gas over {tol} Ggas at {sum(c['n'] - c['gas_ok'] for c in rows)} points; "
+          f"{sum(c['missing'] for c in rows)} model points missing")
     bad = [c["flow"] for c in rows if c["problems"]]
     if bad:
         print(f"\nconform: {len(bad)} of {len(rows)} flows FAIL: {' '.join(bad)}", file=sys.stderr)

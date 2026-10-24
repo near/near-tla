@@ -28,6 +28,34 @@ pub struct Spec {
     /// Where a key's burn size comes from (default: the flow's `size`).
     #[serde(default, rename = "size")]
     pub sizes: Vec<SizeSrc>,
+    /// Burn paths read from each receipt's logs, for a call whose path a
+    /// flow does not fix (a resolver refunds at some grid points only).
+    #[serde(default, rename = "path_rule")]
+    pub path_rules: Vec<PathRule>,
+}
+
+/// A receipt of `call` (`"<receiver>.<method>"`, one method) whose logs
+/// contain `log` takes the path `path`, otherwise `else`; its burn key is
+/// suffixed `/<path>`. A flow's own `path` for that call wins.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PathRule {
+    pub call: String,
+    pub log: String,
+    pub path: String,
+    #[serde(rename = "else")]
+    pub otherwise: String,
+}
+
+impl PathRule {
+    /// The path of a receipt with call key `ck` and these logs, if the rule
+    /// applies to it.
+    pub fn path_of<'a>(&self, ck: &str, logs: impl IntoIterator<Item = &'a str>) -> Option<&str> {
+        if ck != self.call {
+            return None;
+        }
+        Some(if logs.into_iter().any(|l| l.contains(&self.log)) { &self.path } else { &self.otherwise })
+    }
 }
 
 /// `key` is `"<receiver>.<method>"`; `from` is `"arg:<field>"` (a numeric

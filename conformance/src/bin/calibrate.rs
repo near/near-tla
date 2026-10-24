@@ -7,7 +7,7 @@
 //!             [--data DIR] [--from-data [--force-data]]
 //!             [--merge-accts a,..] [--accts a,..]
 //!             [--tla OUT.tla [--module NAME] [--prefix P] [--params a,..]
-//!              [--group acct:Prefix]... [--note TEXT]... [--notes FILE]
+//!              [--group acct:Prefix[:param]]... [--note TEXT]... [--notes FILE]
 //!              [--allow-partial]] [--batch-actions]
 //!
 //! A table is written only if every check passed: every function-call
@@ -31,7 +31,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: calibrate --flows FILE [--wasm PATH] [--flow NAME]... [--grid standard|smoke|lo:hi:step]\n\
          \x20                [--data DIR] [--from-data [--force-data]] [--merge-accts a,b] [--accts a,b]\n\
-         \x20                [--tla OUT.tla [--module NAME] [--prefix P] [--params a,b] [--group acct:Prefix]...\n\
+         \x20                [--tla OUT.tla [--module NAME] [--prefix P] [--params a,b] [--group acct:Prefix[:param]]...\n\
          \x20                 [--note TEXT]... [--notes FILE] [--allow-partial]] [--batch-actions]"
     );
     std::process::exit(2)
@@ -325,12 +325,15 @@ fn main() {
         tables.push(Table { prefix: prefix.clone(), params: params.clone(), rows: rows.clone(), calls: calls.clone() });
     }
     for g in &groups {
-        let (acct, pre) = g.split_once(':').unwrap_or_else(|| usage());
+        // acct:Prefix[:param]: the table's parameter is `param` (default acct).
+        let mut it = g.splitn(3, ':');
+        let (Some(acct), Some(pre)) = (it.next(), it.next()) else { usage() };
+        let param = it.next().unwrap_or(acct);
         tables.push(Table {
             prefix: pre.to_owned(),
-            params: vec![acct.to_owned()],
-            rows: rows.iter().filter(|r| r.acct == acct).cloned().collect(),
-            calls: calls.iter().filter(|c| c.0 == acct).cloned().collect(),
+            params: vec![param.to_owned()],
+            rows: rows.iter().filter(|r| r.acct == acct).map(|r| calib::BurnRow { acct: param.to_owned(), ..r.clone() }).collect(),
+            calls: calls.iter().filter(|c| c.0 == acct).map(|c| (param.to_owned(), c.1.clone(), c.2.clone(), c.3, c.4.clone())).collect(),
         });
     }
     let mut data_lines = vec![format!("flows: {flows_name} sha256 {flows_sha}")];

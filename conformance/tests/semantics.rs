@@ -1,6 +1,8 @@
 //! Receipt semantics the library encodes, observed in the sim on the probe
 //! contract: local-receipt priority, signer propagation and the atomicity
-//! of a `[DeleteKey, FunctionCall]` receipt (docs/SEMANTICS.md S1, K1, M1).
+//! of a `[DeleteKey, FunctionCall]` receipt (docs/SEMANTICS.md: "Local
+//! receipts first", "Signer and signer public key propagate", "Multi-action
+//! receipts are atomic").
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
 use near_contract_sim::{AccessKey, TxOutcome};
@@ -9,8 +11,8 @@ use serde_json::{Value, json};
 
 const ALICE: &str = "alice.near";
 const BOB: &str = "bob.near";
-const P: &str = "p.near";
-const Q: &str = "q.near";
+const P: &str = "p-probe.near";
+const Q: &str = "q-probe.near";
 
 fn world() -> Sim {
     let (wasm, _) = probe_wasm("probe");

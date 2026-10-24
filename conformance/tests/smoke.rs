@@ -21,10 +21,10 @@ const FLOWS: &[&str] = &[
     "send_named_missing_cb",
     "ft_call_return",
     "ft_call_panic",
-    "wrap_call",
-    "wrap_call_return",
-    "wrap_withdraw",
-    "wrap_batch_DSC",
+    "wnear_call",
+    "wnear_call_return",
+    "wnear_withdraw",
+    "wnear_batch_DSC",
     "ft_batch_C",
 ];
 
@@ -58,20 +58,23 @@ fn smoke_grid_split_and_burns() {
     assert!(split.errors.is_empty() && burns.errors.is_empty(), "{:?} {:?}", split.errors, burns.errors);
     assert_eq!(split.skipped_parents + split.unchecked, 0);
     assert!(split.multi_children > 0, "multi-call children checked per action");
-    let (rows, _) = calib::burn_rows(&burns, &["ft".into(), "wrap".into()]);
+    let (rows, _) = calib::burn_rows(&burns, &["ft_probe".into(), "wnear_probe".into()]);
     let burn = |acct: &str, key: &str| rows.iter().find(|r| r.acct == acct && r.key == key).map(|r| r.base);
     // As in modules/CalibStd.tla (burns rounded up to whole Ggas).
-    // (1584 is the largest over all six ft_call flows; these two give 1583)
-    assert!(matches!(burn("ft", "ft_transfer_call"), Some(1583..=1584)));
-    assert_eq!(burn("ft", "ft_resolve_transfer"), Some(856));
-    assert_eq!(burn("ft", "batch/C"), Some(1587));
-    assert_eq!(burn("wrap", "ft_transfer_call"), Some(1585));
-    assert_eq!(burn("wrap", "ft_resolve_transfer"), Some(863));
-    assert_eq!(burn("wrap", "near_withdraw"), Some(579));
-    assert_eq!(burn("wrap", "batch/DSC"), Some(2729));
+    // (1592 is the largest over all six ft_call flows; these two may give 1591)
+    assert!(matches!(burn("ft_probe", "ft_transfer_call"), Some(1591..=1592)));
+    assert_eq!(burn("ft_probe", "ft_resolve_transfer"), Some(859));
+    assert_eq!(burn("ft_probe", "batch/C"), Some(1599));
+    assert_eq!(burn("wnear_probe", "ft_transfer_call"), Some(1593));
+    assert_eq!(burn("wnear_probe", "ft_resolve_transfer"), Some(867));
+    assert_eq!(burn("wnear_probe", "near_withdraw"), Some(579));
+    assert_eq!(burn("wnear_probe", "batch/DSC"), Some(2742));
+    // path keys from the resolver's logs: it refunds (return) or not (keep)
+    assert_eq!(burn("ft_probe", "ft_resolve_transfer/refund"), Some(859));
+    assert_eq!(burn("wnear_probe", "ft_resolve_transfer/norefund"), Some(419));
     // the per-action check's inferred burn of the batch's last action
-    let last = split.per_action.iter().find(|x| x.0 == "wrap_batch_DSC").map(|x| x.2.round() as u64);
-    assert_eq!(last, Some(1546));
+    let last = split.per_action.iter().find(|x| x.0 == "wnear_batch_DSC").map(|x| x.2.round() as u64);
+    assert_eq!(last, Some(1558));
 }
 
 /// Action-only children with AddKey, CreateAccount and DeleteAccount
@@ -107,5 +110,5 @@ fn window_edges() {
     // ft_transfer_call: fails below burn + 2 child fees + the resolver's
     // 5 Tgas; the receiver runs out of gas below 8.8.
     assert_eq!(edge_points(&res, &base, "ft_call_return", 80, 92), [8.0, 8.4, 8.8]);
-    assert_eq!(edge_points(&res, &base, "wrap_batch_DSC", 430, 440), [43.0, 43.6]);
+    assert_eq!(edge_points(&res, &base, "wnear_batch_DSC", 430, 440), [43.0, 43.6]);
 }

@@ -20,7 +20,8 @@
 (*   ft_on_transfer  NEP-141 receiver; msg keep / return / over / panic / *)
 (*           burn20000 (burns 20 Tgas, keeps) / big2000 (2 KB, not a      *)
 (*           number)                                                      *)
-(* The tokens "ft" and "wrap" are the library's standard FT and wNEAR.     *)
+(* The tokens "ft_probe" and "wnear_probe" are the library's standard FT  *)
+(* and wNEAR.  Token batches use the library's per-call accounting.       *)
 (* Every receipt's burn key and size, and every child's exec fee, come    *)
 (* from the calibration (CalibProbes.tla).                                *)
 (***************************************************************************)
@@ -35,38 +36,29 @@ confVars == <<pp, sent>>
 vars == <<platformVars, tk, confVars>>
 
 ProbeAccts == {"p", "q"}
-Accts == {"alice", "dave", "p", "q", "ft", "wrap", "nobody", "nimp", "nimp_new", "eth", "eth_new"}
+Toks == {"ft_probe", "wnear_probe"}
+Accts == {"alice", "dave", "p", "q", "nobody", "nimp", "nimp_new", "eth", "eth_new"} \cup Toks
 Missing == {"nobody", "nimp_new", "eth_new"}
 ConfExists == Accts \ Missing
 ConfKinds == AcctKinds({"eth", "eth_new"}, {"nimp", "nimp_new"})
 ConfFloor == [a \in Accts |-> 0]
 Holders == {"alice", "dave", "p", "q"}
-ConfHolders == [t \in {"ft", "wrap"} |-> Holders]
-ConfStorageMin == [t \in {"ft", "wrap"} |-> 1]
-ConfDev == [t \in {"ft", "wrap"} |-> {}]
-ConfReserve == [t \in {"ft", "wrap"} |-> 0]
+ConfHolders == [t \in Toks |-> Holders]
+ConfStorageMin == [t \in Toks |-> 1]
+ConfDev == [t \in Toks |-> {}]
+ConfReserve == [t \in Toks |-> 0]
 
 \* Accounts with code (calls to any other account fail).
-ConfContracts == {"p", "q", "ft", "wrap"}
+ConfContracts == {"p", "q"} \cup Toks
 
-\* Per-call burns of a token batch (cfg: BatchPA <- ConfBatchPA, with
-\* TokBatchPerAction <- TRUE): the key "<acct>.batch/<shape>#<method>", the
-\* burn of that call at its place in the batch (CalibProbes, --batch-actions);
-\* the library's BatchPA keys each call by its standalone method.
-ConfBatchPA(r, a, n0, n1, n2, n3) ==
-    LET Act(m, lo, hi) == <<[gk |-> CallKey(r.to, BatchKey(a) \o "#" \o m), sz |-> 0, kids |-> lo..(hi - 1)]>> IN
-    (IF a.nd > 0 THEN Act("near_deposit", n0, n1) ELSE <<>>)
-    \o (IF a.sd > 0 THEN Act("storage_deposit", n1, n2) ELSE <<>>)
-    \o (IF a.xf # "" THEN Act(a.xf, n2, n3) ELSE <<>>)
-ConfTrue == TRUE
 
 \* Model units: 1 NEAR = 1000; the storage minimum is 1; 1 yocto is 1.
 \* As after the spec's setup: alice minted 1000000 FT and sent p 100000;
 \* alice deposited 10 NEAR of wNEAR, p 1 NEAR.
-Bal0(t) == [h \in Holders |-> CASE h = "alice" -> (IF t = "ft" THEN 900000 ELSE 10000)
-                               [] h = "p"     -> (IF t = "ft" THEN 100000 ELSE 1000)
+Bal0(t) == [h \in Holders |-> CASE h = "alice" -> (IF t = "ft_probe" THEN 900000 ELSE 10000)
+                               [] h = "p"     -> (IF t = "ft_probe" THEN 100000 ELSE 1000)
                                [] OTHER       -> 0]
-Reg0(t) == IF t = "ft" THEN {"alice", "q", "p"} ELSE {"alice", "q", "p"}
+Reg0(t) == {"alice", "q", "p"}
 
 ----------------------------------------------------------------------------
 (* Probe payloads (TokenCommon's cx slot): one record shape for all.       *)
@@ -115,7 +107,9 @@ HOnTransfer(r) ==
                [] msg = "burn20000" -> Outcome({}, {}, RVal(0), 0, 0)
                [] msg = "big2000"   -> Outcome({}, {}, RValSz(NONEMPTY, 2), 0, 0)
                [] OTHER             -> OErr(Outcome({}, {}, RVal(0), 0, 0), "receiver panicked")
-    IN OKey(O, r.to \o ".ft_on_transfer/" \o msg)
+        k == r.to \o ".ft_on_transfer/" \o msg
+    \* a panic's key is its burn up to the panic (out of gas before it: "oog")
+    IN IF O.err # "" THEN OPanicKey(O, k) ELSE OKey(O, k)
 
 Leaf(r, ret, sz) == OSz(OKey(Outcome({}, {}, ret, 0, 0), r.to \o "." \o r.m), sz)
 
@@ -146,7 +140,7 @@ Run ==
 
 Init ==
     /\ PlatformInit([a \in Accts |-> 1000000], {1})
-    /\ tk = [t \in {"ft", "wrap"} |-> Ledger(Bal0(t), Reg0(t))]
+    /\ tk = [t \in Toks |-> Ledger(Bal0(t), Reg0(t))]
     /\ pp \in Grid
     /\ sent = FALSE
 

@@ -353,6 +353,9 @@ pub struct Burns {
     pub fail_obs: BTreeMap<(String, String, String), Vec<Obs>>,
     /// Keys whose receipt never succeeded.
     pub never_ok: BTreeSet<String>,
+    /// (model account, method key, path) -> (largest burn over all ok
+    /// points, flows): for the path keys of merged accounts.
+    pub path_max: BTreeMap<(String, String, String), (u64, BTreeSet<String>, usize)>,
 }
 
 /// The children of a receipt, as a shape string: function calls by method
@@ -387,8 +390,8 @@ fn size_of(res: &Resolved, flow: &Flow, p: &Value) -> Result<u64, String> {
 
 /// Burn of every ok function-call receipt: `burnt - exec_fees - send fees
 /// of its action-only children` (the creator pays those children's send fees
-/// out of its gas, docs/SEMANTICS.md G4). The flow's calibration
-/// point is its largest grid gas.
+/// out of its gas: docs/SEMANTICS.md, "Who pays action send and exec
+/// fees"). The flow's calibration point is its largest grid gas.
 pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b: &mut Burns) {
     let top = lines.iter().map(|v| u(&v["gas"])).max().unwrap_or(0);
     for v in lines {
@@ -399,9 +402,17 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
             }
             let acct = res.name(s(&p["receiver"])).to_owned();
             let raw = methods(p).join("+");
-            let mkey = flow.keys.get(&raw).or_else(|| res.spec.world.keys.get(&raw)).cloned().unwrap_or(raw);
+            let mkey = flow.keys.get(&raw).or_else(|| res.spec.world.keys.get(&raw)).cloned().unwrap_or_else(|| raw.clone());
             let ck = call_key(p);
-            let path = if !flow.path.is_empty() && (flow.path_for.is_empty() || flow.path_for.contains(&ck)) { flow.path.clone() } else { String::new() };
+            let path = if !flow.path.is_empty() && (flow.path_for.is_empty() || flow.path_for.contains(&ck)) {
+                flow.path.clone()
+            } else if mkey == raw {
+                // (not for a receipt the spec renames, e.g. a one-call token batch)
+                let logs: Vec<&str> = p["logs"].as_array().map(|a| a.iter().map(s).collect()).unwrap_or_default();
+                res.spec.path_rules.iter().find_map(|r| r.path_of(&ck, logs.iter().copied())).unwrap_or("").to_owned()
+            } else {
+                String::new()
+            };
             let size = match size_of(res, flow, p) {
                 Ok(z) => z,
                 Err(e) => {
@@ -442,6 +453,12 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
             let e = b.spread.entry(key.clone()).or_insert((u64::MAX, 0));
             e.0 = e.0.min(burn);
             e.1 = e.1.max(burn);
+            if !path.is_empty() {
+                let e = b.path_max.entry((acct.clone(), mkey.clone(), path.clone())).or_default();
+                e.0 = e.0.max(burn);
+                e.1.insert(flow.name.clone());
+                e.2 += 1;
+            }
             if u(&v["gas"]) == top {
                 b.obs.entry(key).or_default().push(Obs { flow: flow.name.clone(), path, size, burn, failure: false });
             }
@@ -493,7 +510,10 @@ fn fit(obs: &[Obs]) -> (f64, f64, f64) {
 }
 
 /// With `merge`, accounts listed there get one key per method (the
-/// largest burn over shapes and paths), for models whose key is fixed.
+/// largest burn over shapes and paths), for models whose key is fixed,
+/// and one key `method/path` per path (flow `path` or `path_rule`): the
+/// largest burn of that path at any grid point. A model looks up the path
+/// key first and falls back to the method key.
 ///
 /// Returns the rows and, for merged keys, warnings where the largest burn
 /// was only seen below the top of the grid (a path the calibration point
@@ -560,6 +580,31 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
             n: os.len(),
             flows: flows.into_iter().collect(),
             spread,
+        });
+    }
+    for ((a, m, path), (max, flows, n)) in &b.path_max {
+        if !merge.contains(a) {
+            continue;
+        }
+        if let Some(r) = rows.iter().find(|r| &r.acct == a && &r.key == m) {
+            if r.per != 0 {
+                warn.push(format!("{a}.{m}/{path}: the method's burn depends on a size; path keys are constant"));
+                continue;
+            }
+        }
+        rows.push(BurnRow {
+            acct: a.clone(),
+            key: format!("{m}/{path}"),
+            shape: String::new(),
+            base: max.div_ceil(GGAS),
+            base_exact: *max as f64,
+            failure: false,
+            per: 0,
+            per_exact: 0.0,
+            max_resid_gas: 0.0,
+            n: *n,
+            flows: flows.iter().cloned().collect(),
+            spread: (*max, *max),
         });
     }
     for ((a, m, sh), obs) in &all {

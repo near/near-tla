@@ -1,21 +1,22 @@
 # Action-only children the calibrator must price: a receipt's burn excludes
 # the send fees of its action-only children, which its creator pays out of
-# its gas (docs/SEMANTICS.md G4). Run by tests/smoke.rs; `calibrate --flows
-# flows/actions.toml` prints the fee check. AddKey's fee depends on the
+# its gas (docs/SEMANTICS.md, "Who pays action send and exec fees"). Run
+# by tests/smoke.rs; `calibrate --flows flows/actions.toml` prints the fee
+# check. AddKey's fee depends on the
 # key's permission and method names, which the outcome does not record: the
 # calibrator solves it from the exec fee the child prepaid (a full-access
 # key, or a function-call key with n bytes of method names) and prices the
 # send fee from the same fee-table entries.
 
 [world]
-names = { "alice.near" = "alice", "p.near" = "p" }
+names = { "alice.near" = "alice", "p-probe.near" = "p" }
 
 [[account]]
 id = "alice.near"
 near = 1000
 
 [[contract]]
-id = "p.near"
+id = "p-probe.near"
 wasm = "../probes/res/probe.wasm"
 source = "conformance/probes/probe (near-sdk 5.29.1)"
 near = 100
@@ -24,22 +25,22 @@ near = 100
 name = "keys_full"
 about = "p.keys_self: [AddKey(full access), DeleteKey] to itself"
 grid = "smoke"
-tx = { signer = "alice.near", receiver = "p.near", method = "keys_self", args = '{"pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp"}' }
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "keys_self", args = '{"pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp"}' }
 
 [[flow]]
 name = "keys_fc"
 about = "p.keys_self: [AddKey(function call), DeleteKey] to itself"
 grid = "smoke"
-tx = { signer = "alice.near", receiver = "p.near", method = "keys_self", args = '{"pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "fc": true}' }
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "keys_self", args = '{"pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "fc": true}' }
 
 [[flow]]
 name = "spawn"
-about = "p.spawn: [CreateAccount, Transfer, AddKey] to s.p.near"
+about = "p.spawn: [CreateAccount, Transfer, AddKey] to s.p-probe.near"
 grid = "smoke"
-tx = { signer = "alice.near", receiver = "p.near", method = "spawn", args = '{"name": "s", "pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "yocto": "1000000000000000000000000"}' }
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "spawn", args = '{"name": "s", "pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "yocto": "1000000000000000000000000"}' }
 
 [[flow]]
 name = "spawn_delete"
-about = "p.spawn: [CreateAccount, Transfer, AddKey, DeleteAccount] to s.p.near"
+about = "p.spawn: [CreateAccount, Transfer, AddKey, DeleteAccount] to s.p-probe.near"
 grid = "smoke"
-tx = { signer = "alice.near", receiver = "p.near", method = "spawn", args = '{"name": "s", "pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "yocto": "1000000000000000000000000", "delete": true}' }
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "spawn", args = '{"name": "s", "pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "yocto": "1000000000000000000000000", "delete": true}' }
