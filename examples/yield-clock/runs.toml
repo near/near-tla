@@ -1,0 +1,97 @@
+# Yield timeouts on the block clock (blk, BlockTick, YieldTicks, MaxBlk). See Deadline.tla.
+#
+#   python3 tools/run.py examples/yield-clock
+
+spec = "Deadline"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Books", "NoNegEscrow", "Settled", "Sane"]
+tags = ["semantics:yield-timeout"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"q"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+MaxTx = "3"
+Steps = '{"request", "answer"}'
+CancelAt = "0"
+Bug = '"none"'
+YieldTicks = "2"
+
+# Timed, without cancel: no timeout before its deadline, and the bound was never reached by a
+# pending deadline (3 requests x 2 ticks).  No handler's behaviour depends on blk here
+# (request only records it), so ticking only while a deadline is ahead is exact.
+[[run]]
+name = "yield_ok_timed"
+expect = "pass"
+invariants = ["Books", "NoNegEscrow", "Settled", "Sane", "NoEarlyTimeout", "ClockBoundOK"]
+[run.constants]
+MaxBlk = "6"
+TickAnytime = "FALSE"
+
+# A bound below a deadline: at blk = MaxBlk the yield may time out early (saturation).
+# ClockBoundOK reports it ...
+[[run]]
+name = "yield_saturation_flagged"
+expect = "violation"
+invariant = "ClockBoundOK"
+invariants = ["ClockBoundOK"]
+[run.constants]
+MaxBlk = "1"
+TickAnytime = "FALSE"
+
+# ... and the early timeout is visible.
+[[run]]
+name = "yield_saturated_early"
+expect = "violation"
+invariant = "NoEarlyTimeout"
+invariants = ["NoEarlyTimeout"]
+[run.constants]
+MaxBlk = "1"
+TickAnytime = "FALSE"
+
+# cancel reads blk, so blocks pass freely (TickAnytime, the default).
+[[run]]
+name = "cancel_guarded"
+expect = "pass"
+[run.constants]
+Steps = '{"request", "answer", "cancel"}'
+MaxBlk = "4"
+CancelAt = "3"
+
+# Timeouts fire late: the timeout's callback runs after the deadline and after U's cancel,
+# and refunds a second time.
+[[run]]
+name = "cancel_trusts_timeout"
+expect = "violation"
+invariant = "NoNegEscrow"
+[run.constants]
+Steps = '{"request", "answer", "cancel"}'
+MaxBlk = "4"
+CancelAt = "3"
+Bug = '"trusts_timeout"'
+
+# A callback can be delayed past the cancel height: cancel refunds a request that was
+# answered (O paid) while its callback is in flight.  TickAnytime <- FALSE hides this: with
+# one request the clock stops at its deadline (at + 2) while the answer is in flight, below
+# at + CancelAt.
+[[run]]
+name = "cancel_after_answer"
+expect = "violation"
+invariant = "NoNegEscrow"
+[run.constants]
+Steps = '{"request", "answer", "cancel"}'
+MaxBlk = "4"
+CancelAt = "3"
+Bug = '"after_answer"'

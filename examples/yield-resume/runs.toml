@@ -1,0 +1,50 @@
+# Yield/resume: resume returns TRUE until the callback runs; a timeout delivers Failed.
+# Untimed clock (the defaults): a yield may time out at any moment. See Oracle.tla.
+#
+#   python3 tools/run.py examples/yield-resume
+
+spec = "Oracle"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Books", "NoNegEscrow", "Settled", "Sane"]
+tags = ["semantics:yield-resume"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"q"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+MaxTx = "3"
+Steps = '{"request", "answer"}'
+Bug = '"none"'
+
+[[run]]
+name = "yield_ok"
+expect = "pass"
+
+# The timeout's Failed is taken for an answer: U's escrowed credit is never refunded.
+[[run]]
+name = "yield_nofail"
+expect = "violation"
+invariant = "Settled"
+[run.constants]
+MaxTx = "2"
+Bug = '"nofail"'
+
+# The double-resume trap: two answers before the callback runs both see TRUE, both pay.
+[[run]]
+name = "yield_double_resume"
+expect = "violation"
+invariant = "NoNegEscrow"
+[run.constants]
+Bug = '"double"'

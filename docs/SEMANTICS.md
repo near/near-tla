@@ -221,8 +221,9 @@ Each rule has four fields:
   returns `Err(PromiseError::TooLong)` when the result is longer than `max_len` bytes (strictly
   longer, so a result of exactly `max_len` bytes is read). `ResTooLong(res, max)` models that
   test with the smallest length the record allows (`ResMinBytes`): `len` when stated, else
-  `1000 × (sz − 1) + 1` for `sz ≥ 2`, else 0. So `sz = 1` alone never counts as too long; use
-  `RValLen` when a sub-KB bound matters. `NumOrChecked(res, max, dflt)` is `NumOr` after such a
+  `1000 × (sz − 1) + 1` for `sz ≥ 1` (so `sz = 1` is at least 1 byte), else 0. So `len = 0`,
+  `sz ≤ 1` counts as too long only for a bound of 0 bytes, and is assumed short for any positive
+  bound such as the resolver's 42; use `RValLen` when a sub-KB bound matters. `NumOrChecked(res, max, dflt)` is `NumOr` after such a
   read (a too-long result gives `dflt`); `max < 0` is an unbounded read.
 - **SDK source:** near-sdk 5.28.1 (the closest locally available version to the `~5.29.1` that
   near-contract-standards 5.29.1 requires; as read) `src/environment/env.rs:1833-1837`
@@ -244,6 +245,96 @@ Each rule has four fields:
 - **Validated:** nearcore reading. <!-- conformance --> `ft_transfer_call` and `near_withdraw`
   return promises in the flows, but only to the transaction, which the comparison does not
   see; no receipt waits on a forwarded result.
+
+### C6. Joint promises (`promise_and`)
+
+- **Rule:** `promise_and(p1, ..., pn).then(cb)` makes one callback receipt with one fresh data id
+  per input, and adds a data receiver to each input. The callback runs exactly once, when the
+  last input has arrived, in whatever order they arrive. It sees `n` results in `promise_and`
+  order (not arrival order); each is `Successful` or `Failed` on its own, so they mix freely. A
+  failed input (panic, out of gas) gives `Failed` at its position only. An input that returns a
+  promise forwards its position to the returned receipt (C5). If the creating receipt fails,
+  neither the inputs nor the callback exist (R4). A joint promise cannot be returned, have
+  actions appended or carry `refund_to`; `promise_and` without `.then` creates nothing.
+- **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:2486-2535` (`promise_and`, flattening
+  nested joint promises, the 128-input check at `:2522-2532`), `:2605-2654`
+  (`promise_batch_then` on a joint promise: one dependency per input), `:4583-4593`
+  (`promise_results_count`), `:4616-4646` (`promise_result`, `InvalidPromiseResultIndex` past
+  the end); `runtime/runtime/src/ext.rs:346-355` (one fresh data id per input);
+  `runtime/runtime/src/receipt_manager.rs:112-140` (a data receiver on each input);
+  `runtime/runtime/src/lib.rs:1646-1712` (the callback counts its missing inputs and runs at
+  once if none), `:1440-1530` (each arriving data receipt decrements the count; the last one
+  runs the callback), `:861-899` (results built in `input_data_ids` order, `None` is
+  `Failed`), `:1146-1189` (each input sends its own result).
+- **Model:** `AndThen(ks, c, d0)` wires the inputs `ks` to the fresh data ids `d0 ..
+  d0 + Len(ks) - 1` and returns the callback with the optional field `ins` (those ids, in
+  order). `Runnable` offers a joint callback once every id in `ins` has data
+  (`Arrived`), with `rs` = the results in order (`JointRes`). The handler reads them with
+  `NRes(r)` and `ResAt(r, i)` (1-based; an index past the end is an `Assert`). On a joint
+  callback `r.res` is not a result: it is `JointMark` (`ok = FALSE`, `v = JOINTRES`, not a
+  number), so a handler written for one input takes its `Failed` branch whatever the inputs
+  were, which the model's invariants then expose. `RemD` consumes all inputs; `NoOrphans`
+  checks each input. Gas: inputs and callback are ordinary children (`KidsCost`, `Give`,
+  `ZeroGasKid`); the per-input data-receipt base fee and the `promise_and` fees are in the
+  creator's calibrated burn, which therefore needs its own key per input count (G4).
+- **Validated:** nearcore reading. `examples/platform-selftest` checks the order with the
+  failing input first (`and_order`), a starved input (`and_starved_leg`) and a joint callback
+  with no gas (`and_zero_cb`).
+
+### C7. Yield and resume (NEP-519)
+
+- **Rule:** `promise_yield_create` makes a callback on the current account that waits on one
+  data id (the resume token). `promise_yield_resume(id, payload)` returns 1 and sends the
+  payload if the yield's callback has not run yet, whether or not another resume was already
+  sent; otherwise (the callback ran, by resume or by timeout, or the id is not this account's
+  yield) it returns 0 and sends nothing. The callback runs once, with the payload of the first
+  resume to arrive; later resumes are dropped. If no resume is sent, the yield times out:
+  from `yield_timeout_length_in_blocks` = 200 blocks after the creating block, a timeout
+  delivers `Failed`, and it is dropped if a resume was sent first. The timeout fires late,
+  never early. The callback's predecessor is the contract itself and its signer the yielding
+  transaction's. Its gas is a child's: static gas and a weighted share of the creator's
+  leftover; with 0 gas it fails the creator. A failing creator leaves no yield, a failing
+  resumer sends nothing. A yield can be returned (the caller's result is the callback's) or be
+  an input of a `.then` or `promise_and`. A resume in the same call that yielded works.
+- **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:4245-4327` (`promise_yield_create`:
+  receipt with one same-account dependency, weight, data id to a register), `:4330-4440`
+  (`promise_yield_create_with_id`: a caller-chosen id, `u64::MAX` on a duplicate, may carry a
+  deposit), `:4473-4518` (`promise_yield_resume`, the payload limit at `:4505-4510`);
+  `runtime/runtime/src/ext.rs:365-370` (the status is written at creation), `:375-385`
+  (duplicate check of the `_with_id` form), `:406-430` (`submit_promise_resume_data`: TRUE
+  while the yield receipt or its status exists for this account); `runtime/runtime/src/lib.rs:1549-1553`
+  (the `PromiseYield` receipt is stored), `:1554-1563` (a timeout resume is dropped after a
+  payload resume), `:1564-1615` (the first resume removes the yield and its status,
+  `:1572-1575`, and runs the callback), `:1616-1622` (later resumes are ignored),
+  `:3113-3221` (`resolve_promise_yield_timeouts`, `expires_at <= block_height` at `:3146`, an
+  early stop at the compute limit at `:3130-3132`), `:1151-1168` (a returned yield forwards
+  the caller's receivers); `runtime/runtime/src/function_call.rs:151-170` (the timeout is
+  enqueued only when the call succeeds, deadline = block height + 200), `:171-189` (signer and
+  predecessor); `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:274`
+  (200 blocks).
+- **Model:** `YieldRcpt(id, r, m, a, dep, cb)`, a receipt with the optional field `ydl` (the
+  height from which it may time out, `blk + YieldTicks`), placed in the outcome's `post`.
+  `OResume(O, y, v, n)` records a resume in the outcome (`rsm`); `Commit` adds
+  `ResumeData(r, O)`, one data receipt per resume of a yield of `r.to` that is pending in
+  `post` or created by the same outcome. `CanResume(r, y)` is the host's return value.
+  `Runnable` offers the yield with each resume in flight (the first to arrive wins), and with
+  `FailedRes` when `TimedOut`: no resume in flight and `blk >= ydl` (or `blk = MaxBlk`). The
+  timeout's trigger and its arrival are one step; that is exact, because a resume sent before
+  the timeout's `PromiseResume` arrives wins in nearcore too. `RemD` drops the extra resumes.
+  `PendingYields(a)` lists a's waiting yields. Gas: the yield callback is an ordinary child
+  (`KidsCost`, `Give`, `ZeroGasKid`); the `yield_create_*` fees and the receipt and data-receipt
+  base fees are in the creator's calibrated burn, the `yield_resume_*` fees in the resumer's
+  (`host.rs:4256-4310`, `:4481-4489`).
+- **Left to the handler:** `promise_yield_create_with_id`'s duplicate check (test
+  `PendingYields(r.to)` against a key the model keeps in the yield's args, and create nothing
+  on a duplicate) and its deposit (`YieldRcpt(.., dep, ..)` with `dep` in the outcome's `out`).
+- **Validated:** nearcore reading. `examples/platform-selftest` checks a second resume
+  (`resume_twice`), two resumes in the yielding call (`resume_same_call`), a timeout then a
+  resume (`timeout_then_resume`), a resume in flight at the deadline (`resume_beats_timeout`),
+  a resume by another account (`resume_other_acct`), a returned yield (`yield_returned`) and a
+  yield callback with no gas (`yield_zero_cb`). near-contract-sim's own tests cover the race at
+  the deadline (`tests/yields.rs:70-92` at its rev 29e9090); this repo has no conformance flow
+  for yields yet.
 
 ---
 
@@ -645,6 +736,29 @@ Each rule has four fields:
 - **Model:** `\E r \in Runnable : ...` (or `Schedulable`) in `Next`.
 - **Validated:** nearcore reading (as a description of what is over-approximated).
 
+### S3. Block clock
+
+- **Rule:** Every receipt in a chunk sees that block's height (`env::block_height()`) and
+  timestamp (`env::block_timestamp()`, nanoseconds); both only grow. A receipt created by a
+  receipt runs in a later block, except instant receipts. The epoch height is separate, set
+  by the epoch manager outside the runtime.
+- **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:827` (`block_index` returns
+  `block_height`), `:837` (`block_timestamp`), `:847` (`epoch_height`);
+  `runtime/runtime/src/lib.rs:1222-1234` (created receipts are instant or outgoing).
+- **Model:** the platform variable `blk`, advanced only by `BlockTick` (which a model adds to
+  `Next`), bounded by `MaxBlk` (default 0: no clock, `blk` stays 0). `BlockTs == TsOf(blk)`,
+  with `TsOf` an overridable strictly increasing function (default the identity). Any number
+  of receipts may run at one height, a callback even at its creator's height, and any number
+  of blocks may pass between two receipts (no latency bound). `TickAnytime` (default TRUE)
+  lets a block pass at any time; FALSE only while some yield's deadline is ahead, which is
+  exact only when no handler reads `blk` or `BlockTs`. At `blk = MaxBlk` every pending yield
+  may time out, so a deadline beyond the bound is still reachable; `ClockBoundOK` (an
+  invariant to add) fails when a pending yield's deadline exceeds `MaxBlk`, i.e. when a run
+  could rely on such an early timeout. With `TickAnytime = FALSE` and at most `k` yields per
+  behaviour, `MaxBlk >= k * YieldTicks` suffices. `BlockTick` is independent of `EpochTick`.
+- **Validated:** nearcore reading. `examples/yield-clock` shows `ClockBoundOK` and an early
+  timeout failing at a too small bound, and a bug that `TickAnytime = FALSE` hides.
+
 ---
 
 ## Staking and balance
@@ -901,10 +1015,12 @@ against the current module code; some may be fixed in the modules later.
   With it **ON**, it does not: see N-local-congested. A finding about latency bounds needs the
   real scheduler. Congestion can also reject new transactions, which the model treats as "not
   submitted".
-- **N-instant. Instant receipts.** A receipt holding a single `DeleteAccount` with no inputs,
-  and a `PromiseYield` receipt, run immediately after their creator in the same chunk
-  (`core/primitives/src/receipt.rs:467-491`, `runtime/runtime/src/lib.rs:1222-1224`,
-  `:2748-2775`). The model lets other receipts interleave.
+- **N-instant. Instant receipts.** A receipt holding a single `DeleteAccount` with no inputs
+  runs immediately after its creator in the same chunk (`core/primitives/src/receipt.rs:467-491`,
+  `runtime/runtime/src/lib.rs:1222-1224`, `:2748-2775`). The model lets other receipts
+  interleave. A `PromiseYield` receipt is instant too, but processing it only stores it
+  (`lib.rs:1549-1553`); the model puts the yield in `post` at its creator's commit, which is
+  the same.
 - **N-local-off.** With the local-priority switch (S1) off, a self-signed first receipt may run
   after receipts that nearcore, on an uncongested chunk, would run later. Such orders are
   reachable under congestion (S1), so a violation found this way is not a false positive unless
@@ -928,9 +1044,26 @@ against the current module code; some may be fixed in the modules later.
   parent, no explicit creation of implicit ids; `runtime/runtime/src/actions.rs:166-202`,
   `:822-839`) are not enforced. A model that puts accounts into existence by fiat allows
   creations nearcore refuses.
-- **N-time. Block and epoch timing.** There are no heights or timestamps; epochs are an
-  abstract tick. Contracts reading `block_timestamp` or `epoch_height` need their own
-  abstraction. A time-based guard modelled as free nondeterminism is an over-approximation.
+- **N-time. Block timing.** The block clock (S3) is a bounded counter: any number of receipts
+  may run at one height, a callback even at its creator's height (nearcore: at least one block
+  later), and any number of blocks may pass while a receipt is in flight. There is no latency
+  bound, so the model can show that a race exists (a resume against a timeout) but cannot
+  prove that a receipt sent within N blocks always arrives in time. Timestamps are `TsOf(blk)`,
+  one fixed increasing function; nearcore's step per block varies. Saturation at `MaxBlk`
+  lets pending yields time out early; `ClockBoundOK` reports it.
+- **N-epoch-clock. Epochs and blocks are independent.** `EpochTick` and `BlockTick` are
+  separate steps: an epoch may change without a block passing and the other way round (an
+  epoch is 43,200 blocks on mainnet). A staking model that also yields, and depends on how
+  many blocks an epoch lasts, should couple them in its own step (for example an epoch tick
+  allowed only when `blk` is at a multiple of an epoch length in ticks).
+- **N-timeout-order. Yield timeouts in any order.** nearcore pops the timeout queue in creation
+  order (`runtime/runtime/src/lib.rs:3129-3207`, entries ordered by `expires_at`); the model
+  lets pending yields past their deadline time out in any order. With the default untimed
+  clock a yield may time out right after it is created, which nearcore never does before 200
+  blocks; use the clock (S3) when "not before the deadline" matters.
+- **N-resume-order. Several resumes of one yield.** All resumes travel from the account to
+  itself through one outgoing buffer, so the first sent arrives first; the model lets any of
+  them win (as N-order).
 
 ### Under-approximations (unsound: they can hide bugs)
 
@@ -1006,7 +1139,10 @@ against the current module code; some may be fixed in the modules later.
 - **N-limits. Protocol limits.** At 88: 100 actions per receipt, 1024 promises per call, 128
   input dependencies, 4 MiB arguments and return data, 4 MiB receipt size, 256-byte method names
   (`core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:244-256`).
-  Also the per-receipt storage-proof limit (feature at 86, all actions at 87;
+  For joint promises: at most 128 inputs per callback
+  (`runtime/near-vm-runner/src/logic/host.rs:2522-2532`, `runtime/runtime/src/verifier.rs:742-754`)
+  and 1024 promises per function-call action, a joint promise counting as one
+  (`host.rs:610-622`). Also the per-receipt storage-proof limit (feature at 86, all actions at 87;
   `runtime/runtime/src/lib.rs:925-948`, `:987-999`). Exceeding any of them fails the receipt in
   nearcore; the model does not fail for them.
 - **N-one-yocto. `one_yocto_on_promise` (85+).** A contract with zero balance may attach
@@ -1017,20 +1153,26 @@ against the current module code; some may be fixed in the modules later.
 - **N-input-87. Promise-input size limit at 87.** At 87 a callback whose inputs exceed 4,194,944
   bytes fails without running (C4). Unless the model's sized results trigger this, it is
   missed. At 88 it cannot happen.
+- **N-yield-payload. Resume payload limit.** `promise_yield_resume` fails the resumer when the
+  payload exceeds `max_yield_payload_size`
+  (`runtime/near-vm-runner/src/logic/host.rs:4505-4510`); the yield then times out. The model
+  does not check it, so a resume nearcore rejects succeeds in the model. The value is 1024
+  (`.snap:275`); `core/parameters/res/runtime_configs/parameters.yaml:321` annotates it
+  `# kiB`, while the field is documented as a number of bytes (`core/parameters/src/vm.rs:197-198`)
+  and the check compares it with the payload length in bytes. A sim probe with 1024- and
+  1025-byte payloads will settle which. Until then, a handler with large payloads should
+  panic on an oversized one itself.
 - **N-delete-account. DeleteAccount details.** Large-state refusal, the staking check, gas-key
   burning and the beneficiary transfer (`runtime/runtime/src/actions.rs:330-410`, `:777-792`) are
   not modelled.
 
 ### Scope limits
 
-- **N-and. `promise_and` (joint promises).** Callbacks with several inputs
-  (`runtime/near-vm-runner/src/logic/host.rs:2486-2535`) are not modelled: one callback waits
-  on one result. The ordering and partial-failure combinations of joint inputs are unexplored.
-- **N-yield. Yield/resume** (`promise_yield_create` / `promise_yield_resume`,
-  `runtime/near-vm-runner/src/logic/host.rs:4245`, `:4473`; NEP-519). The timeout after
-  `yield_timeout_length_in_blocks` = 200 blocks resumes with `Failed`
-  (`runtime/runtime/src/lib.rs:3113`; `.snap:274`). This path is absent; a yield modelled as
-  a plain callback misses the timeout branch.
+- **N-multi-receiver. One receipt feeding several callbacks.** A receipt's `cb` is one id, so a
+  receipt that nearcore gives several output data receivers cannot be expressed:
+  `promise_and([p, p])`, or `p.then(A)` together with `promise_and([p, q]).then(B)`. nearcore
+  sends `p`'s result to each receiver (`runtime/runtime/src/receipt_manager.rs:118-124`,
+  `runtime/runtime/src/lib.rs:1146-1189`). A contract using either pattern cannot be modelled.
 - **N-delegate. Delegate actions / meta-transactions** (NEP-366;
   `runtime/runtime/src/actions.rs:453`). With a relayer, the signer is the relayer and the
   predecessor is the delegating user. Contracts that use `signer_account_id` for authorisation

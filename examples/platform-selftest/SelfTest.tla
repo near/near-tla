@@ -2,7 +2,8 @@
 (***************************************************************************)
 (* Library self-test: small deterministic scenarios, each a fixed script   *)
 (* of transactions run one after another (the next is submitted once the   *)
-(* previous one has settled).  Expect(s) is the end state nearcore         *)
+(* previous one has settled; a yield waiting for a resume or a block may   *)
+(* stay pending).  Expect(s) is the end state nearcore                     *)
 (* produces for scenario s; Check holds once the script is done.  The      *)
 (* runs set deadlock = true and stutter only when a script is done, so a   *)
 (* receipt left stuck is reported as a deadlock.                           *)
@@ -56,6 +57,8 @@ Keys0 == [a \in {C, D} |-> IF a = C THEN [k \in {"k0", "k1", "k2"} |-> PermOf(k)
 GC(st, wt, fee) == [st |-> st, wt |-> wt, fee |-> fee]
 GB(b) == [base |-> b, per |-> 0]
 SGasCall == ("work" :> GC(<<0>>, <<1>>, 0)) @@ ("ft_on_transfer" :> GC(<<>>, <<>>, 100))
+            @@ ("jcb" :> GC(<<1000>>, <<1>>, 0)) @@ ("ycb" :> GC(<<500>>, <<1>>, 0))
+            @@ ("dcb" :> GC(<<1000>>, <<1>>, 0)) @@ ("reqr" :> GC(<<0>>, <<1>>, 0))
 SGasCallRes == ("ft.ft_resolve_transfer" :> GC(<<5000>>, <<0>>, 100)) @@ SGasCall
 SGasBurn ==
        ("spawn0" :> GB(500)) @@ ("work" :> GB(300)) @@ ("boom" :> GB(100)) @@ ("c.boom" :> GB(5000))
@@ -67,6 +70,9 @@ SGasBurn ==
     @@ ("ft.batch/DC" :> GB(1500)) @@ ("spawnx" :> GB(500)) @@ ("cb" :> GB(0)) @@ ("probe" :> GB(0))
     @@ ("c.boomk" :> GB(1000)) @@ ("c.multi/p" :> GB(2000)) @@ ("c.multi/pbig" :> GB(3500))
     @@ ("c.multi/phuge" :> GB(4500)) @@ ("c.multi2/1" :> GB(1000)) @@ ("c.multi2/2" :> GB(1000))
+    @@ ("j" :> GB(500)) @@ ("jcb" :> GB(0)) @@ ("req" :> GB(400)) @@ ("req2" :> GB(400))
+    @@ ("reqr" :> GB(400)) @@ ("callreq" :> GB(300)) @@ ("ans" :> GB(100)) @@ ("ycb" :> GB(0))
+    @@ ("dcb" :> GB(0))
 \* Path-specific burn keys (falling back to the method key when absent).
 SGasPath ==
        ("ft.storage_deposit/new" :> GB(3000)) @@ ("ft.storage_deposit" :> GB(500))
@@ -173,6 +179,39 @@ H(r) ==
          THEN [O |-> Outcome({Rcpt(nid, r.tx, C, r.to, "unreg", TA0, 0, r.to, r.cb)}, {}, RProm, 0, 1),
                s |-> {}]
          ELSE [O |-> Out0, s |-> {Sn(r, "onT", GasOf(r))}]
+    [] r.m = "j" ->         \* promise_and(d.work(fail), d.work(ok)).then(self.jcb); legs static
+                            \* 2 Tgas, weight 0.  a.k: "zero" jcb with no gas; "starve" both legs
+                            \* ok, leg 2 with static 200 Ggas (below its burn)
+         LET Leg(id, w, st) == WithCall(Rcpt(id, r.tx, D, r.to, "work", G("", w, "", 0, 0, "", ""), 0, r.to, 0),
+                                        <<st>>, <<0>>)
+             cb0 == Rcpt(nid + 2, r.tx, r.to, r.to, "jcb", G0, 0, r.to, r.cb)
+             j == AndThen(<<Leg(nid, IF a.k = "" THEN "fail" ELSE "ok", 2000),
+                            Leg(nid + 1, "ok", IF a.k = "starve" THEN 200 ELSE 2000)>>,
+                          IF a.k = "zero" THEN WithCall(cb0, <<0>>, <<0>>) ELSE cb0, nid + 3)
+         IN [O |-> Outcome({j.kids[1], j.kids[2]}, {j.cb}, RVal(0), 0, 5), s |-> {}]
+    [] r.m = "jcb" ->       \* the joint callback: count, results in order, r.res, gas
+         [O |-> Out0,
+          s |-> {Sn(r, "nres", NRes(r)), Sn(r, "res:" \o ResTag(r.res), 0),
+                 Sn(r, "r1:" \o ResTag(ResAt(r, 1)), NumOr(ResAt(r, 1), 0)),
+                 Sn(r, "r2:" \o ResTag(ResAt(r, 2)), NumOr(ResAt(r, 2), 0)), Sn(r, "jgas", GasOf(r))}]
+    [] r.m = "req" ->       \* yield self.ycb (a.k = "zero": with no gas)
+         LET y0 == YieldRcpt(nid, r, "ycb", G0, 0, 0) IN
+         [O |-> Outcome({}, {IF a.k = "zero" THEN WithCall(y0, <<0>>, <<0>>) ELSE y0}, RVal(0), 0, 1),
+          s |-> {Sn(r, "y", nid)}]
+    [] r.m = "req2" ->      \* yield self.ycb and resume it twice in the same call (5, then 6)
+         [O |-> OResume(OResume(Outcome({}, {YieldRcpt(nid, r, "ycb", G0, 0, 0)}, RVal(0), 0, 1),
+                                nid, 5, 0), nid, 6, 0), s |-> {}]
+    [] r.m = "reqr" ->      \* yield self.ycb and return it
+         [O |-> Outcome({}, {YieldRcpt(nid, r, "ycb", G0, 0, r.cb)}, RProm, 0, 1), s |-> {}]
+    [] r.m = "callreq" ->   \* c.reqr().then(self.dcb)
+         [O |-> Outcome({Rcpt(nid, r.tx, C, r.to, "reqr", G0, 0, r.to, nid + 1)},
+                        {Rcpt(nid + 1, r.tx, r.to, r.to, "dcb", G0, 0, r.to, r.cb)}, RVal(0), 0, 2), s |-> {}]
+    [] r.m = "dcb" -> [O |-> Out0, s |-> {Sn(r, "dcb:" \o ResTag(r.res), NumOr(r.res, 0))}]
+    [] r.m = "ans" ->       \* promise_yield_resume(a.amt, a.cd); n = its return value
+         [O |-> OResume(Out0, a.amt, a.cd, 0), s |-> {Sn(r, "ans", IF CanResume(r, a.amt) THEN 1 ELSE 0)}]
+    [] r.m = "ycb" ->       \* the yield callback: returns the payload; panics on a timeout
+         [O |-> IF IsFailed(r.res) THEN OErr(Out0, "timed out") ELSE Outcome({}, {}, RVal(r.res.v), 0, 0),
+          s |-> {Sn(r, "ycb", NumOr(r.res, 0)), Sn(r, "ygas", GasOf(r))}]
     [] OTHER -> [O |-> Out0, s |-> {}]
 
 RunC(r) ==
@@ -208,6 +247,8 @@ Tx(to, fr, m, a, dep)       == T(to, fr, m, a, dep, 0, "", <<>>)
 TxG(to, fr, m, a, dep, gas) == T(to, fr, m, a, dep, gas, "", <<>>)
 TxK(to, fr, m, dep, key)    == T(to, fr, m, G0, dep, 0, key, <<>>)
 Tick == Tx(V, V, "tick", G0, 0)   \* an epoch transition (EpochTick), not a transaction
+BTick == Tx(C, C, "btick", G0, 0) \* one block (BlockTick), not a transaction
+Ans(to, y, v) == TxG(to, to, "ans", G("", "", "", y, v, "", ""), 0, 10000)   \* resume y with v
 Amt(n) == G("", "", "", n, 0, "", "")
 
 Script(s) ==
@@ -305,6 +346,17 @@ Script(s) ==
     [] s = "unregister_force" -> << Tx(FT, U, "storage_unregister", SuArgs(FALSE), 1),
                                     Tx(FT, U, "storage_unregister", SuArgs(TRUE), 1) >>
     [] s = "resolver_burn"    -> << Tx(FT, C, "ft_transfer_call", FtArgs(D, 3, "chain"), 1) >>
+    \* v0.2 scenarios.  Yield ids are receipt ids, deterministic here: tx 1's yield is 2.
+    [] s = "and_order"        -> << TxG(C, U, "j", G0, 0, 10000) >>
+    [] s = "and_zero_cb"      -> << TxG(C, U, "j", G("zero", "", "", 0, 0, "", ""), 0, 10000) >>
+    [] s = "and_starved_leg"  -> << TxG(C, U, "j", G("starve", "", "", 0, 0, "", ""), 0, 10000) >>
+    [] s = "resume_twice"     -> << TxG(C, U, "req", G0, 0, 10000), Ans(C, 2, 5), Ans(C, 2, 6) >>
+    [] s = "resume_same_call" -> << TxG(C, U, "req2", G0, 0, 10000) >>
+    [] s = "timeout_then_resume" -> << TxG(C, U, "req", G0, 0, 10000), BTick, Ans(C, 2, 5) >>
+    [] s = "resume_beats_timeout" -> << TxG(C, U, "req", G0, 0, 10000), Ans(C, 2, 5), BTick >>
+    [] s = "resume_other_acct" -> << TxG(C, U, "req", G0, 0, 10000), Ans(D, 2, 5), BTick >>
+    [] s = "yield_returned"   -> << TxG(D, U, "callreq", G0, 0, 20000), Ans(C, 4, 5) >>
+    [] s = "yield_zero_cb"    -> << TxG(C, U, "req", G("zero", "", "", 0, 0, "", ""), 0, 10000) >>
 
 Near0(s) == [a \in Accts |-> CASE a \in {U, W, V, FT} ->
                                   (IF s \in {"floor_locked", "liquid_negative"} /\ a = V THEN 4 ELSE 10)
@@ -322,18 +374,27 @@ MkTx(e, id, t) ==
        ELSE WithGas(r1, e.gas)
 CanSign(a, k, r) == (a \in KeyAccts) => KeyCanSign(a, k, r)
 
+\* A yield is pending and nothing can run except yield callbacks that have a
+\* resume payload (a parked yield, or receipts waiting on one, may remain).
+Parked == rq = {} /\ (\E p \in post : IsYield(p)) /\ \A x \in Runnable : IsYield(x) /\ x.res.ok
+\* The next transaction may go once the previous one has settled, or once it
+\* is Parked (so that a second resume can race the first one's callback).
+\* Without yields this is Idle.
+Quiet == Idle \/ Parked
+
 Send ==
-    /\ Idle
+    /\ Quiet
     /\ ntx < Len(Script(scn))
     /\ LET e == Script(scn)[ntx + 1]  r == MkTx(e, nid, ntx + 1) IN
        IF e.m = "tick" THEN EpochTick /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
+       ELSE IF e.m = "btick" THEN BlockTick /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF e.key = "" THEN Submit(r) /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF CanSign(e.fr, e.key, r) THEN SubmitSigned(r, e.fr, e.key) /\ acc' = Append(acc, TRUE)
        ELSE acc' = Append(acc, FALSE) /\ UNCHANGED <<platformVars, keyVars>>
     /\ ntx' = ntx + 1
     /\ UNCHANGED <<tk, scn, ran, seen>>
 
-Done == ntx = Len(Script(scn)) /\ Idle
+Done == ntx = Len(Script(scn)) /\ (Idle \/ (Parked /\ Runnable = {}))
 
 Init ==
     /\ scn \in Scns
@@ -348,6 +409,7 @@ Spec == Init /\ [][Next]_vars
 ----------------------------------------------------------------------------
 (* Expected end states                                                     *)
 L == tk[FT]
+GV(g) == IF GasMode = "gas" THEN g ELSE 0
 S1(tag, n) == [tx |-> 1, tag |-> tag, n |-> n]
 S2(tag, n) == [tx |-> 2, tag |-> tag, n |-> n]
 S(t, tag, n) == [tx |-> t, tag |-> tag, n |-> n]
@@ -488,6 +550,47 @@ Expect(s) ==
          U \notin L.reg /\ L.bal[U] = 0 /\ L.sup = 3 /\ near[U] = 12 /\ near[FT] = 8
     [] s = "resolver_burn" ->     \* sender unregistered meanwhile: the refund is burnt
          L.sup = 5 /\ C \notin L.reg /\ L.bal[C] = 0 /\ L.bal[D] = 0 /\ near[C] = 6 /\ near[FT] = 9
+
+    \* v0.2.  GV(g): the gas value in gas mode, 0 in fault mode (GasOf of an ungassed receipt).
+    [] s = "and_order" ->         \* one callback, results in promise_and order whatever the
+         \* arrival order, Failed and Successful mixed, r.res is JointMark; the callback's
+         \* gas is its static 1000 + the leftover 10000 - 500 - 2 x 2000 - 1000
+         \* lib.rs:861-899, :1646-1712; receipt_manager.rs:679-721
+         seen = {S1("work", GV(2000)), S1("nres", 2), S1("res:fail", 0), S1("r1:fail", 0),
+                 S1("r2:num", 1), S1("jgas", GV(5500))}
+    [] s = "and_zero_cb" ->       \* a joint callback with 0 gas fails its creator
+         \* action_validation.rs:350-351, applied at lib.rs:968-978
+         seen = {} /\ post = {} /\ oog = {}
+    [] s = "and_starved_leg" ->   \* one input out of gas: Failed at its position only
+         \* lib.rs:1172-1176; static 1000 + 10000 - 500 - 2000 - 200 - 1000
+         seen = {S1("work", 2000), S1("nres", 2), S1("res:fail", 0), S1("r1:num", 1),
+                 S1("r2:fail", 0), S1("jgas", 7300)} /\ oog = {<<1, "work">>}
+    [] s = "resume_twice" ->      \* resume returns 1 until the callback runs; the callback
+         \* runs once, with the first resume to arrive; a later one returns 0
+         \* ext.rs:406-430, lib.rs:1616-1622.  Gas: static 500 + 10000 - 400 - 500
+         /\ \E v \in {5, 6} : S1("ycb", v) \in seen
+         /\ S2("ans", 1) \in seen
+         /\ (S(3, "ans", 0) \in seen => S1("ycb", 5) \in seen)
+         /\ Cardinality({x \in seen : x.tag = "ycb"}) = 1
+         /\ S1("ygas", GV(9600)) \in seen
+    [] s = "resume_same_call" ->  \* yield and two resumes in one call: one wins
+         \* ext.rs:365-370, :406-430
+         \E v \in {5, 6} : seen = {S1("ycb", v), S1("ygas", GV(9600))}
+    [] s = "timeout_then_resume" -> \* past the deadline the callback gets Failed (it panics,
+         \* reverting only itself); a resume after it returns 0.  lib.rs:3113-3221, ext.rs:406-430
+         seen = {S1("y", 2), S(3, "ans", 0)} /\ post = {}
+    [] s = "resume_beats_timeout" -> \* a resume in flight at the deadline still wins
+         \* lib.rs:1555-1563
+         S1("ycb", 5) \in seen
+    [] s = "resume_other_acct" -> \* only the yielding account can resume
+         \* ext.rs:410-417 (keyed by the current account)
+         S2("ans", 0) \in seen /\ post = {} /\ ~\E x \in seen : x.tag = "ycb"
+    [] s = "yield_returned" ->    \* a returned yield: the caller's callback gets the yield
+         \* callback's value.  lib.rs:1152-1168
+         S1("dcb:num", 5) \in seen
+    [] s = "yield_zero_cb" ->     \* a yield callback with 0 gas fails its creator
+         \* verifier.rs:711-717, action_validation.rs:350-351
+         seen = {} /\ post = {}
 
 Check == Done => Expect(scn)
 NoNegDeposit == \A x \in rq \cup post : x.dep >= 0

@@ -1,0 +1,59 @@
+# Joint callbacks: one result per input, in promise_and order; inputs fail independently.
+# See Pair.tla.
+#
+#   python3 tools/run.py examples/joint-promise
+
+spec = "Pair"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Books", "Sane"]
+tags = ["semantics:joint-results"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"s"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+MaxTx = "2"
+Bug = '"none"'
+TakeOk = "BOOLEAN"
+
+[[run]]
+name = "joint_ok"
+expect = "pass"
+
+# Reads only the first result: one leg fails, the other succeeds, both or neither refunded.
+[[run]]
+name = "joint_first_only"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+Bug = '"first"'
+
+# All-or-nothing assumption: one leg fails, both refunded although one took its credit.
+[[run]]
+name = "joint_any_fail"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+Bug = '"any"'
+
+# A single-input handler on a joint callback: r.res is JointMark (Failed), so it refunds
+# both legs although both succeeded (take() never panics in this run).
+[[run]]
+name = "joint_reads_res"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+Bug = '"res"'
+TakeOk = "{TRUE}"

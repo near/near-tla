@@ -20,6 +20,20 @@ near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 
 Each entry ends with its migration.
 
+- **New platform variable `blk` in `NearAsync`** (the block height, advanced only by the new
+  `BlockTick`; it stays 0 unless a model sets `MaxBlk > 0`). It is in `platformVars`, and
+  `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialise it, so models that
+  use those and write `UNCHANGED platformVars` need no change (every example is such a
+  model). A step that lists platform variables one by one in `UNCHANGED` must add `blk`
+  (in the library: `NearKeys.ExecKeyAct`), and a hand-written `Init` must set it. State
+  counts of models without yields or a clock are unchanged. Migration: write
+  `UNCHANGED platformVars` or add `blk` to the list; conjoin `PlatformInitClock`
+  (`blk = 0`) to a hand-written `Init` that does not use `PlatformInitExtra`.
+- **`RemD` and `NoOrphans` cover several inputs per receipt** (`InIds`): a joint callback
+  consumes all its inputs, a yield every resume addressed to it, and a pending yield is never
+  an orphan. Results for receipts without the new fields are unchanged. Migration: none,
+  unless a model hand-wired several data receipts to one callback; use `AndThen` instead.
+
 - **New platform variables `txsig` and `created` in `NearAsync`** (the transaction
   signer per tx id, and accounts created at run time by an implicit-account
   Transfer). A model must initialise them, and any step that lists platform
@@ -205,7 +219,11 @@ Each entry ends with its migration.
   `PerAction`, `ActGas`, `ActBurn`, `ActKids`, `ActNeed`, `ActOf`, `PanicOOG`,
   `GasListsOK`, `EntriesOf`, `Alloc`, `ZeroGasKid`, `NoOrphans`, `OPanicKey`,
   `OPanicAt`, `HasPanicKey`, `PanicBurn`, `PanicAct`, `PAOK`, `PoolCheck`,
-  `PooledGasOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
+  `PooledGasOK`; for v0.2: `blk` (a variable), `MaxBlk`, `YieldTicks`, `TickAnytime`,
+  `TsOf`, `IsJoint`, `IsYield`, `InIds`, `DRes`, `Arrived`, `JointRes`, `JOINTRES`,
+  `JointMark`, `FailedRes`, `TimedOut`, `NRes`, `ResAt`, `AndThen`, `YieldRcpt`,
+  `CanResume`, `PendingYields`, `OResume`, `Rsm`, `ResumeData`, `BlockTick`, `BlockTs`,
+  `PlatformInitClock`, `ClockBoundOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
   `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
   `FtMaxResultLen`, `ResolveUnusedLim`, `ResolveRefundLim`, `TokResolveMaxLen`,
   `ResolveMaxLen`,
@@ -219,6 +237,34 @@ Each entry ends with its migration.
   re-check verdicts that depended on them.
 
 ### Added
+
+- **Joint promises** (`promise_and(..).then(..)`, SEMANTICS C6): `AndThen(ks, c, d0)` wires
+  input receipts to fresh data ids and returns the callback with the optional field `ins`.
+  The callback runs once, after all inputs, in any arrival order; `NRes(r)` and `ResAt(r, i)`
+  read its results in `promise_and` order, each Successful or Failed on its own. On a joint
+  callback `r.res` is `JointMark` (`ok = FALSE`, `v = JOINTRES`), so a single-input handler
+  takes its Failed branch instead of silently reading one result. `ResAt` past the last
+  result is an `Assert`.
+- **Yield/resume** (NEP-519, SEMANTICS C7): `YieldRcpt(id, r, m, a, dep, cb)` (optional field
+  `ydl`), `OResume(O, y, v, n)` (outcome field `rsm`), `CanResume(r, y)` (the host's return
+  value: TRUE for every resume until the callback runs), `PendingYields(a)`, `Rsm`,
+  `ResumeData`. The callback runs with the first resume to arrive or times out with
+  `Failed`; a resume in flight beats the timeout; extra resumes are dropped; only the
+  yielding account can resume. `promise_yield_create_with_id`'s duplicate check and deposit
+  are the handler's. Not checked: the payload limit (N-yield-payload).
+- **Block clock** (SEMANTICS S3): the variable `blk`, `BlockTick`, `BlockTs`, and the
+  overridable `MaxBlk` (default 0: no clock, every pending yield may time out at any moment),
+  `YieldTicks`, `TickAnytime` (default TRUE; FALSE ticks only while a yield's deadline is
+  ahead) and `TsOf`. `ClockBoundOK` reports a pending deadline past `MaxBlk`.
+  `PlatformInitClock`. `BlockTick` is independent of `EpochTick`.
+- Examples `joint-promise` (`Pair`), `yield-resume` (`Oracle`, the double-resume trap) and
+  `yield-clock` (`Deadline`: early timeouts at a too small bound, `cancel_trusts_timeout`,
+  `cancel_after_answer`), with must-pass and must-fail runs.
+- `examples/platform-selftest`: `selftest_async` and `selftest_async_gas`, 10 scenarios for
+  joint callbacks (result order, a starved input, a callback with no gas) and yields (a second
+  resume, two resumes in the yielding call, timeout then resume, a resume in flight at the
+  deadline, another account's resume, a returned yield, a yield callback with no gas). The
+  script item `BTick` is one block.
 
 - `NearFees.tla`: action fees in Ggas per protocol version (84-88), with
   `FeeProtocol` as the single default. `NearAsync` uses it through the named
@@ -287,7 +333,7 @@ Each entry ends with its migration.
   `UniversalOn <- FALSE` gives the rule before 87 (`actions.rs:918-924`).
 - `NoOrphans` (no callback waits on nothing, no data without a waiting
   callback) and `ExecNoCode(r)`.
-- `examples/platform-selftest`: 49 deterministic scenarios (receipts, results,
+- `examples/platform-selftest`: 49 deterministic scenarios (plus the 10 v0.2 scenarios above; receipts, results,
   accounts, refunds, staking, storage, keys, tokens, gas) with their expected
   nearcore end state. `NearConserved` is now checked in every example except
   `mt-smoke`, and `GasBounded` in the gas-mode examples (`pay`, `weight-split`,
@@ -333,3 +379,6 @@ Each entry ends with its migration.
   OFF is the conservative setting (the `local_off` order is reachable under
   congestion, `lib.rs:2513-2520`).
 - Comments now state semantics with nearcore citations (`path:line @ b7b4737`).
+- `ResMinBytes`: a result with `len = 0` and `sz = 1` is at least 1 byte (it was
+  0), so `ResTooLong(res, 0)` is TRUE for it. Only a bound below 1 byte sees the
+  difference; with any positive bound (the resolver's 42) `sz <= 1` stays short.

@@ -32,6 +32,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [11. Local-receipt priority](#11-local-receipt-priority)
 - [12. Fault mode and gas mode](#12-fault-mode-and-gas-mode)
 - [13. The forced-fault switch and labels](#13-the-forced-fault-switch-and-labels)
+- [14. Joint callbacks, yield/resume and the block clock](#14-joint-callbacks-yieldresume-and-the-block-clock)
 - [Calibrating](#calibrating)
 - [Replaying a counterexample in the sim](#replaying-a-counterexample-in-the-sim)
 - [The runner: `runs.toml`](#the-runner-runstoml)
@@ -319,6 +320,9 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TokOnTransferStatic`, `TokOnTransferWeight` | -1 per token (the shape's default) | the token gives `ft_on_transfer` a different static or weight |
 | `TokResolveStatic` | 5000 Ggas per token | the token's resolver has a different static gas |
 | `TokResolveMaxLen` | 42 bytes per token (`FtMaxResultLen`) | the token is near-contract-standards 5.23.0 or older (3.x/4.x) and reads the receiver's result unbounded: -1. With 42, a longer result counts as all unused ([T2](SEMANTICS.md#t2-ft_resolve_transfer)) |
+| `MaxBlk` | `0` (no clock) | the model uses the block clock: the bound on `blk` ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)) |
+| `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
+| `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`.
@@ -354,7 +358,7 @@ Initialise every platform variable with one helper:
 |---|---|
 | `PlatformInit(near0, txIds)` | `near0`: `[Accounts -> Nat]`; `txIds`: the transaction ids (the domain of the `paid` ghost) |
 | `PlatformInitStaked(near0, locked0, txIds)` | the same, with `locked0` already staked on `StakingAcct` |
-| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt` (= `PlatformInitSigner /\ PlatformInitAccounts`) |
+| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `blk` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock`) |
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
@@ -543,6 +547,10 @@ A callback sees `r.res = [ok, v, sz]`:
 
 `NumOr(r.res, d)` is the common "parse a U128, else fall back to `d`" pattern: it returns
 `r.res.v` for a number and `d` for anything else, Failed included.
+
+A joint callback (`promise_and`) has several results: read them with `NRes(r)` and
+`ResAt(r, i)`, not `r.res` ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)).
+`ResAt` also works on an ordinary callback (`ResAt(r, 1) = r.res`).
 
 Decide explicitly what your contract does for each case, as the real code does. A callback
 that treats "not a number" as success, or Failed as "nothing happened", is where the bugs are.
@@ -792,6 +800,70 @@ Every counterexample carries a label (`Label`):
 
 Put the label in your printed output when you triage. `LogOn = TRUE` keeps a per-receipt log
 in `rlog` (`[tx, id, m, to, st, g]`), which is what conformance runs compare.
+
+## 14. Joint callbacks, yield/resume and the block clock
+
+The rules are [C6](SEMANTICS.md#c6-joint-promises-promise_and),
+[C7](SEMANTICS.md#c7-yield-and-resume-nep-519) and [S3](SEMANTICS.md#s3-block-clock). Worked
+examples: [`joint-promise`](../examples/joint-promise/), [`yield-resume`](../examples/yield-resume/),
+[`yield-clock`](../examples/yield-clock/).
+
+**Joint callbacks.** `AndThen(ks, c, d0)` builds `promise_and(ks).then(c)`: it wires the input
+receipts `ks` to `Len(ks)` fresh data ids starting at `d0` and returns `[kids, cb]`. Count the
+data ids in `O.ids` as well as the receipts. Put the callback in `post`, never in `ready`:
+
+```tla
+\* split(): promise_and(a.take(), b.take()).then(self.on_both); r.cb: returned to our caller
+LET j == AndThen(<<Rcpt(nid, r.tx, A, r.to, "take", args, 0, r.to, 0),
+                   Rcpt(nid + 1, r.tx, B, r.to, "take", args, 0, r.to, 0)>>,
+                 Rcpt(nid + 2, r.tx, r.to, r.to, "on_both", args, 0, r.to, r.cb), nid + 3)
+IN Outcome({j.kids[1], j.kids[2]}, {j.cb}, RProm, 0, 5)    \* 3 receipts + 2 data ids
+
+\* on_both: one result per input, in promise_and order, each Failed or not on its own
+LET failed == {i \in 1..NRes(r) : IsFailed(ResAt(r, i))} IN ...
+```
+
+On a joint callback `r.res` is `JointMark` (`ok = FALSE`, `v = JOINTRES`), not the first
+result: a handler written for one input sees `Failed` every time, so the bug shows in your
+invariants instead of passing silently. A receipt cannot feed two callbacks (`cb` is one id), so
+`promise_and([p, p])` and `p` used by two `.then`s are out of scope.
+
+**Yield and resume.** `YieldRcpt(nid, r, m, args, 0, cb)` is `promise_yield_create` on `r`'s
+account; put it in `post`. Its id is the resume token. Pass `cb = r.cb` and `RProm` to return
+it. A resume is `OResume(O, y, v, n)` (payload value `v`, `n` KB); the host's return value is
+`CanResume(r, y)`, which is TRUE for **every** resume until the callback runs, not only the
+first. The callback sees `r.res.v = v`, or `Failed` on a timeout.
+
+```tla
+\* request(): yield on_answer and return it
+Outcome({}, {YieldRcpt(nid, r, "on_answer", Arg(nid), 0, r.cb)}, RProm, 0, 1)
+\* answer(y): resume; pay once, guarded by your own state, not by CanResume alone
+[O |-> OResume(Out0, y, 7, 0), pay |-> CanResume(r, y) /\ reqs[y] = "open"]
+```
+
+`promise_yield_create_with_id` is the same receipt; its duplicate check (test
+`PendingYields(r.to)` against the id your model keeps) and its deposit (`dep`, also in `out`)
+are the handler's job. The payload limit is not checked ([N-yield-payload](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
+
+**The block clock.** Without it (`MaxBlk = 0`) every pending yield may time out at any
+moment, which is sound. To model "not before the deadline", set `MaxBlk` and `YieldTicks` and
+add the step to `Next`:
+
+```tla
+Next == Send \/ Run \/ (BlockTick /\ UNCHANGED mine)
+```
+
+A handler reads the height as `blk` and the timestamp as `BlockTs` (`TsOf(blk)`; `TsOf` takes
+an argument, so the runner cannot override it: compute your own function of `blk` instead).
+Add `ClockBoundOK` to the invariants: it fails if a pending yield's deadline passed `MaxBlk`,
+where yields may time out early. With `TickAnytime <- FALSE` and at most `k` yields per
+behaviour, `MaxBlk = k * YieldTicks` is enough. Keep `TickAnytime` TRUE whenever a handler reads
+`blk` or `BlockTs`: with FALSE the clock stops when no yield is pending, which can hide a bug
+(`cancel_after_answer` in `yield-clock` passes with it). `BlockTick` and `EpochTick` are
+independent.
+
+TLC errors on comparing values of different types inside one set (a number with a string, a
+tuple with a number). If your ghosts store results or receipts, keep each field one type.
 
 ## Calibrating
 
@@ -1047,7 +1119,8 @@ All examples are toy contracts written for this repo.
   - gas-mode runs: the out-of-gas edge, a print-only window, and the same window on the
     measured `CalibStd` table.
 - **`examples/platform-selftest`**: deterministic scenarios with known nearcore outcomes. They
-  cover receipts, results, accounts, refunds, staking, storage, keys, gas and tokens. It checks
+  cover receipts, results, accounts, refunds, staking, storage, keys, gas, tokens, joint
+  callbacks and yields. It checks
   the library, and it is a catalogue of how to drive each operator.
 - **The semantic examples**, each a must-pass and a must-fail pair for one rule:
 
@@ -1063,3 +1136,6 @@ All examples are toy contracts written for this repo.
   | `nep141-refund-cap` | the NEP-141 resolver caps the refund at the amount |
   | `nep145-refund-to-predecessor` | `storage_deposit` refunds the excess to the predecessor |
   | `mt-smoke` | NEP-245 transfer and resolve |
+  | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
+  | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
+  | `yield-clock` | timeouts fire late, never early; the clock bound and `TickAnytime` |

@@ -158,3 +158,30 @@ GasMode = '"gas"'
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
 Scns = '{"assert_empty_gs"}'
+
+# v0.2: joint callbacks, yield/resume and the block clock.  A yield times out only after a
+# scripted block ("btick": MaxBlk 2, YieldTicks 1), so the scenarios are deterministic where
+# nearcore is.
+[[run]]
+name = "selftest_async"
+expect = "pass"
+[run.constants]
+MaxBlk = "2"
+YieldTicks = "1"
+Scns = '''{"and_order", "resume_twice", "resume_same_call", "timeout_then_resume",
+          "resume_beats_timeout", "resume_other_acct", "yield_returned"}'''
+
+# The same in gas mode, plus gas-only scenarios: a joint or yield callback with 0 gas fails
+# its creator; a starved input is Failed at its position only.
+[[run]]
+name = "selftest_async_gas"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+MaxBlk = "2"
+YieldTicks = "1"
+Scns = '''{"and_order", "and_zero_cb", "and_starved_leg", "resume_twice", "resume_same_call",
+          "timeout_then_resume", "resume_beats_timeout", "resume_other_acct", "yield_returned",
+          "yield_zero_cb"}'''

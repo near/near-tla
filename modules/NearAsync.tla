@@ -20,8 +20,12 @@
 (*    A waiting callback gets a Failed data receipt (lib.rs:1172-1176).    *)
 (*  - Callbacks always run: a postponed receipt runs when its input data   *)
 (*    arrives, Successful or Failed (lib.rs:1449-1493, :1708; a missing    *)
-(*    value is PromiseResult::Failed, lib.rs:895).  This module models one *)
-(*    input data dependency per callback.                                  *)
+(*    value is PromiseResult::Failed, lib.rs:895).                         *)
+(*  - Joint callbacks (promise_and(..).then, AndThen) wait on several      *)
+(*    inputs and see their results in promise_and order (lib.rs:861-899).  *)
+(*  - Yields (promise_yield_create, YieldRcpt) wait on one resume          *)
+(*    (OResume) or time out with Failed (lib.rs:1554-1622, :3113-3221);    *)
+(*    the block height blk is advanced by BlockTick.                       *)
 (*  - Data receipts are separate in-flight objects: anything may           *)
 (*    interleave between a receipt's commit and its callback.              *)
 (*  - Returning a promise forwards the caller's output receivers to the    *)
@@ -95,9 +99,9 @@
 (*                                                                         *)
 (* Not modelled: congestion (a local receipt that does not fit the chunk's *)
 (* compute limit is delayed, lib.rs:2513-2521), instant receipts           *)
-(* (core/primitives/src/receipt.rs:468-485), DeleteAccount, yield/resume,  *)
-(* gas price and gas refunds in NEAR, DeployContract (code is static, see  *)
-(* Contracts).                                                             *)
+(* (core/primitives/src/receipt.rs:468-485), DeleteAccount, gas price and  *)
+(* gas refunds in NEAR, DeployContract (code is static, see Contracts),    *)
+(* one receipt feeding several callbacks (cb is one id).                   *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
@@ -124,8 +128,8 @@ CONSTANTS
 
 VARIABLES
     rq,        \* set of ready (non-postponed) action receipts
-    post,      \* set of postponed callback receipts (each waits on exactly one data id)
-    data,      \* set of in-flight data receipts [to, ok, v, sz, tx]
+    post,      \* set of postponed callback receipts (each waits on InIds; a yield also on its timeout)
+    data,      \* set of in-flight data receipts [to, ok, v, sz, len, tx]
     near,      \* [Accounts -> Nat] liquid balance
     locked,    \* locked balance of StakingAcct
     proposal,  \* latest stake proposal of StakingAcct
@@ -138,14 +142,16 @@ VARIABLES
     rlog,      \* ghost: per-receipt outcomes (only if LogOn)
     txsig,     \* [tx -> [a |-> signer account, k |-> signer key id]], set by Submit
     created,   \* accounts created at run time (implicit-account Transfer)
-    burnt      \* ghost: NEAR burnt by refunds to missing accounts
+    burnt,     \* ghost: NEAR burnt by refunds to missing accounts
+    blk        \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "The variable txsig was not initialized" means PlatformInitExtra (or its
-\* parts PlatformInitSigner / PlatformInitAccounts) is missing.
+\* parts PlatformInitSigner / PlatformInitAccounts / PlatformInitClock) is
+\* missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created, burnt>>
+                  txsig, created, burnt, blk>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
@@ -206,6 +212,25 @@ IsImplicit(a) ==
 \* Key id used by Submit(r), which carries no key information.
 DefaultKey == "default"
 
+\* Block clock and yield timeouts.  blk is env::block_height(), advanced only
+\* by BlockTick, which a model adds to its Next.
+\* MaxBlk: bound on blk; 0 = no clock (blk stays 0).
+\* YieldTicks: a yield's timeout in ticks.  nearcore: the creating receipt's
+\* block height + yield_timeout_length_in_blocks (200 at protocol 88,
+\* runtime/runtime/src/function_call.rs:160-170;
+\* core/parameters/res/runtime_configs/parameters.yaml:320).
+\* With the defaults every pending yield may time out at any moment.
+\* TickAnytime: TRUE lets BlockTick run whenever blk < MaxBlk.  FALSE only
+\* while some yield's deadline is ahead: fewer states, but exact only for a
+\* model whose handlers never read blk or BlockTs.
+\* TsOf(h): env::block_timestamp() at height h, in model units; any strictly
+\* increasing function (nearcore timestamps increase per block, not by a
+\* fixed step).
+MaxBlk      == 0
+YieldTicks  == 0
+TickAnytime == TRUE
+TsOf(h)     == h
+
 ----------------------------------------------------------------------------
 (* Promise results.  A callback sees r.res = [ok, v, sz, len]:             *)
 (*   ok = FALSE           Failed                                           *)
@@ -237,11 +262,12 @@ NumOr(res, dflt) == IF IsNum(res) THEN res.v ELSE dflt
 \* (read_register_bounded: `len > max_len`; near-sdk 5.28.1
 \* src/environment/env.rs:129-137, :1833-1837, as read).  ResMinBytes is the
 \* smallest byte length the record allows: len when stated, else what sz
-\* implies (n KB, rounded up, is more than 1000 * (n - 1) bytes; sz = 1 alone
-\* never counts as long).  max < 0 means an unbounded read.
+\* implies (n KB, rounded up, is at least 1000 * (n - 1) + 1 bytes, so
+\* sz = 1 is at least 1 byte; sz = 0 says nothing).  max < 0 means an
+\* unbounded read.
 ResMinBytes(res) ==
     IF "len" \in DOMAIN res /\ res.len > 0 THEN res.len
-    ELSE IF res.sz > 1 THEN 1000 * (res.sz - 1) + 1
+    ELSE IF res.sz > 0 THEN 1000 * (res.sz - 1) + 1
     ELSE 0
 ResTooLong(res, max) == res.ok /\ max >= 0 /\ ResMinBytes(res) > max
 \* NumOr after a bounded read: a too-long result counts as unparsable.
@@ -302,19 +328,96 @@ WithCall(r, s, w) == [r EXCEPT !.gs = s, !.gw = w]
 WithFee(r, f)    == [r EXCEPT !.gf = f]
 WithGas(r, p)    == [r EXCEPT !.g = <<p>>]       \* a transaction's first receipt: prepaid gas
 
+\* Joint promise: promise_and(ks).then(c).  ks: the input receipts in
+\* promise_and order (built with any cb); c: the callback; d0: the first of
+\* Len(ks) fresh ids, used as the data ids.  Returns the inputs wired to the
+\* data ids (kids) and the callback waiting on them (cb).  nearcore makes one
+\* callback receipt with one fresh data id per input and adds a data receiver
+\* to each input (runtime/near-vm-runner/src/logic/host.rs:2486-2535
+\* promise_and, :2605-2654 promise_batch_then; runtime/runtime/src/ext.rs:346-355;
+\* runtime/runtime/src/receipt_manager.rs:112-140).  The handler puts the
+\* kids in ready (or post) and the callback in post, and counts the Len(ks)
+\* data ids in O.ids besides the receipt ids.
+AndThen(ks, c, d0) ==
+    [kids |-> [i \in DOMAIN ks |-> [ks[i] EXCEPT !.cb = d0 + i - 1]],
+     cb   |-> [ins |-> [i \in DOMAIN ks |-> d0 + i - 1]] @@ c]
+
 RECURSIVE SumSeq(_)
 SumSeq(s) == IF s = <<>> THEN 0 ELSE Head(s) + SumSeq(Tail(s))
 GasOf(r)   == SumSeq(r.g)                                 \* attached gas, all function calls
 LastGas(r) == IF r.g = <<>> THEN 0 ELSE r.g[Len(r.g)]     \* env::prepaid_gas() of the last call
 
-\* Receipts that can run now: ready ones, and postponed ones whose data arrived.
+\* Receipt kinds.  Two optional fields, absent on every receipt built by Rcpt
+\* alone:
+\*   ins  a joint callback, promise_and(..).then(..): the data ids it waits on,
+\*        in promise_and order (AndThen).  A postponed receipt without ins
+\*        waits on the one data id equal to its own id.
+\*   ydl  a yield callback, promise_yield_create (YieldRcpt): the height from
+\*        which it may time out.
+IsJoint(p) == "ins" \in DOMAIN p
+IsYield(p) == "ydl" \in DOMAIN p
+\* The data ids a postponed receipt waits on.
+InIds(p)   == IF IsJoint(p) THEN {p.ins[i] : i \in DOMAIN p.ins} ELSE {p.id}
+\* A data receipt as the promise result it becomes.
+DRes(d)    == [ok |-> d.ok, v |-> d.v, sz |-> d.sz, len |-> d.len]
+
+\* A joint callback runs once, when the last of its inputs has arrived, in
+\* whatever order they arrive (runtime/runtime/src/lib.rs:1646-1712 counts the
+\* missing inputs; :1440-1530 runs the receipt when the count reaches 0).  Its
+\* results are in input_data_ids order, which is promise_and order, and each
+\* is Successful or Failed on its own (lib.rs:861-899).
+Arrived(p)  == \A x \in InIds(p) : \E d \in data : d.to = x
+JointRes(p) == [i \in DOMAIN p.ins |-> DRes(CHOOSE d \in data : d.to = p.ins[i])]
+\* r.res of a joint callback: not a result.  Its ok = FALSE and v = JOINTRES
+\* (not a number), so a handler written for one input that reads r.res takes
+\* its Failed branch whatever the inputs were.  Read NRes / ResAt instead.
+JOINTRES  == -5
+JointMark == [ok |-> FALSE, v |-> JOINTRES, sz |-> 0, len |-> 0]
+
+\* A yield callback runs with the first resume to arrive (one Runnable
+\* variant per resume in flight; later ones are dropped,
+\* runtime/runtime/src/lib.rs:1616-1622), or times out with Failed
+\* (lib.rs:861-899).  The timeout fires in the first chunk whose height
+\* reaches the deadline, or later (lib.rs:3113-3221, the test at :3146), and
+\* its PromiseResume(None) is dropped if a resume was sent first
+\* (lib.rs:1555-1563).  The model merges the timeout and its arrival into
+\* one step, allowed while no resume is in flight: exact, since a resume sent
+\* before the timeout's PromiseResume arrives wins in both.  At blk = MaxBlk
+\* every pending yield may time out (so a deadline past the bound stays
+\* reachable; ClockBoundOK reports it).
+FailedRes   == [ok |-> FALSE, v |-> 0, sz |-> 0, len |-> 0]
+TimedOut(p) == /\ IsYield(p)
+               /\ ~\E d \in data : d.to = p.id
+               /\ (blk >= p.ydl \/ blk >= MaxBlk)
+
+\* Receipts that can run now: ready ones; postponed ones whose data arrived
+\* (a yield with its resume payload); joint callbacks whose inputs all
+\* arrived, with rs = their results in order and res = JointMark; timed-out
+\* yields, with Failed.  (No data is ever addressed to a joint callback's own
+\* id: its data ids are fresh.)
 Runnable ==
     rq \cup { [pd[1] EXCEPT !.res = [ok |-> pd[2].ok, v |-> pd[2].v, sz |-> pd[2].sz, len |-> pd[2].len]] :
                 pd \in {xy \in post \X data : xy[2].to = xy[1].id} }
+       \cup { [[rs |-> JointRes(p)] @@ p EXCEPT !.res = JointMark] :
+                p \in {q \in post : IsJoint(q) /\ Arrived(q)} }
+       \cup { [p EXCEPT !.res = FailedRes] : p \in {q \in post : TimedOut(q)} }
+
+\* The promise results as the handler sees them: promise_results_count()
+\* (runtime/near-vm-runner/src/logic/host.rs:4583-4593) and promise_result(i - 1)
+\* (host.rs:4616-4646), 1-based.  An index past the end is an Assert (nearcore:
+\* InvalidPromiseResultIndex, a host error that fails the receipt).
+NRes(r) == IF IsJoint(r) THEN Len(r.ins) ELSE IF NoResults(r.res) THEN 0 ELSE 1
+ResAt(r, i) ==
+    IF i \notin 1..NRes(r)
+    THEN Assert(FALSE, <<"promise result index out of range", r.m, i, NRes(r)>>)
+    ELSE IF IsJoint(r) THEN r.rs[i] ELSE r.res
 
 RemR(r) == {x \in rq   : x.id # r.id}
 RemP(r) == {x \in post : x.id # r.id}
-RemD(r) == {d \in data : d.to # r.id}
+\* A receipt consumes every data receipt addressed to it: all inputs of a
+\* joint callback; every resume of a yield (the ones after the first are
+\* dropped by nearcore, runtime/runtime/src/lib.rs:1616-1622).
+RemD(r) == {d \in data : d.to \notin InIds(r)}
 
 DataOfLen(r, ok, v, sz, len) ==
     IF r.cb = 0 THEN {} ELSE {[to |-> r.cb, ok |-> ok, v |-> v, sz |-> sz, len |-> len, tx |-> r.tx]}
@@ -343,6 +446,29 @@ CallTargetOK(r) == ~CallsNeedCode \/ ~IsCall(r) \/ HasCode(r.to)
 SignerOf(t)  == txsig[t]               \* [a |-> account, k |-> key id]
 Signer(r)    == txsig[r.tx].a          \* env::signer_account_id()
 SignerKey(r) == txsig[r.tx].k          \* env::signer_account_pk()
+
+\* Yield: promise_yield_create on r's account
+\* (runtime/near-vm-runner/src/logic/host.rs:4245-4327).  The callback's
+\* receiver and predecessor are r.to, its signer r's (function_call.rs:171-189);
+\* its gas is a child's (static and weight from GasCall or WithCall, a share
+\* of the leftover, 0 gas fails the creator).  It goes in the outcome's post
+\* (never ready); its id is the resume token.  dep: 0, or the deposit of
+\* promise_yield_create_with_id (host.rs:4330-4440); cb: 0, or r.cb when the
+\* handler returns the yield (the caller's result is then the callback's,
+\* lib.rs:1152-1166).  A yield created by a failing receipt does not exist
+\* (function_call.rs:151-170 enqueues the timeout only on success).
+YieldRcpt(id, r, m, a, dep, cb) ==
+    [ydl |-> blk + YieldTicks] @@ Rcpt(id, r.tx, r.to, r.to, m, a, dep, r.to, cb)
+\* promise_yield_resume's return value for yield y, called by receipt r: TRUE
+\* iff y is a yield of r's account whose callback has not run, resumed or not
+\* (runtime/runtime/src/ext.rs:406-430; the status is removed when the
+\* callback runs, lib.rs:1572-1575, so a callback cannot resume itself).  A
+\* yield created in the same call is not in post yet: the handler knows it
+\* is pending (the resume succeeds, ext.rs:365-370).
+CanResume(r, y) == \E p \in post : p.id = y /\ p.id # r.id /\ IsYield(p) /\ p.to = r.to
+\* Ids of account a's yields still waiting (e.g. for the duplicate check of
+\* promise_yield_create_with_id, ext.rs:375-385, which the handler models).
+PendingYields(a) == {p.id : p \in {q \in post : IsYield(q) /\ q.to = a}}
 
 ----------------------------------------------------------------------------
 (* Outcome record a contract handler returns:                              *)
@@ -387,6 +513,19 @@ OSz(O, n)  == [O EXCEPT !.sz = n]
 \* O.sz).  List in O only the children created before the panic.
 OPanicKey(O, k)   == [pk |-> k] @@ O
 OPanicAt(O, i, k) == [pk |-> k, pi |-> i] @@ O
+\* Resumes (optional outcome field rsm): promise_yield_resume(y, payload)
+\* with payload value v of n KB.  Several are allowed, also of one yield.
+OResume(O, y, v, n) ==
+    IF "rsm" \in DOMAIN O THEN [O EXCEPT !.rsm = @ \cup {[y |-> y, v |-> v, sz |-> n]}]
+    ELSE [rsm |-> {[y |-> y, v |-> v, sz |-> n]}] @@ O
+Rsm(O) == IF "rsm" \in DOMAIN O THEN O.rsm ELSE {}
+\* The PromiseResume data a committed outcome sends: one per resume of a
+\* yield of r's account that is pending, in post or created by this same
+\* outcome; a resume of anything else sends nothing (ext.rs:406-430).  A
+\* failing resumer sends nothing.
+ResumeData(r, O) ==
+    { [to |-> e.y, ok |-> TRUE, v |-> e.v, sz |-> e.sz, len |-> 0, tx |-> r.tx] :
+        e \in {x \in Rsm(O) : \E p \in RemP(r) \cup O.post : p.id = x.y /\ IsYield(p) /\ p.to = r.to} }
 
 \* Balances after the receipt.  The receiver cannot spend more than it has
 \* (BalanceExceeded inside the call), and liquid + locked must cover its
@@ -552,10 +691,11 @@ Commit(r, O) ==
     /\ rq'   = RemR(r) \cup Give(r, O, O.ready)
     /\ post' = RemP(r) \cup Give(r, O, O.post)
     /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
+                     \cup ResumeData(r, O)
     /\ near' = [near EXCEPT ![r.to] = @ + r.dep - O.out]
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk>>
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
@@ -569,7 +709,7 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk>>
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -604,7 +744,7 @@ ExecTransfer(r) ==
     /\ paid' = [paid EXCEPT ![r.tx][r.to] = @ + r.dep]
     /\ rlog' = LogR(r, "ok")
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
-    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt>>
+    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk>>
 
 \* A refund to a missing account fails and its amount is burnt
 \* (lib.rs:1046-1054); refunds never create accounts (actions.rs:930-933).
@@ -614,7 +754,7 @@ RefundBurn(r) ==
     /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
     /\ burnt' = burnt + r.dep
     /\ rlog'  = LogR(r, "fail")
-    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
@@ -648,7 +788,7 @@ ExecStake(r) ==
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
 ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
@@ -671,7 +811,21 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk>>
+
+\* Block clock: one block passes (the model adds BlockTick /\ UNCHANGED of its
+\* own variables to Next).  Every receipt that runs at one value of blk sees
+\* that height (env::block_height(), runtime/near-vm-runner/src/logic/host.rs:827;
+\* env::block_timestamp() is BlockTs, :837).  Heights only grow.  With
+\* TickAnytime = FALSE a block passes only while some yield's deadline is
+\* ahead.  Independent of EpochTick (env::epoch_height(), :847).
+BlockTick ==
+    /\ blk < MaxBlk
+    /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
+    /\ blk' = blk + 1
+    /\ UNCHANGED <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog,
+                   rlog, txsig, created, burnt>>
+BlockTs == TsOf(blk)
 
 ----------------------------------------------------------------------------
 (* Transactions                                                            *)
@@ -685,7 +839,7 @@ SubmitAs(r, a, k) ==
     /\ near'  = [near EXCEPT ![a] = @ - r.dep]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt>>
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
@@ -721,15 +875,17 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ nid = 1 /\ fails = 0 /\ minted = 0
     /\ paid = [t \in txIds |-> [a \in Accounts |-> 0]]
     /\ oog = {} /\ rlog = {}
-    /\ txsig = <<>> /\ created = {} /\ burnt = 0
+    /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ blk = 0
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
-\* Only the variables added in 0.1.0, for models that initialise the others
-\* themselves.  The parts compose: a model with its own txsig initialiser
-\* (e.g. a pre-sized function) conjoins PlatformInitAccounts alone.
+\* Only the variables added in 0.1.0 and 0.2, for models that initialise the
+\* others themselves.  The parts compose: a model with its own txsig
+\* initialiser (e.g. a pre-sized function) conjoins PlatformInitAccounts and
+\* PlatformInitClock alone.
 PlatformInitSigner   == txsig = <<>>
 PlatformInitAccounts == created = {} /\ burnt = 0
-PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts
+PlatformInitClock    == blk = 0
+PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock
 
 ----------------------------------------------------------------------------
 (* Platform sanity                                                         *)
@@ -741,12 +897,20 @@ NearConserved(total0) ==
     IN F[Accounts] + locked + InflightDeposits = total0 + minted - burnt
 
 \* No orphans: every postponed callback still has its data in flight or a
-\* pending receipt that will deliver it, and every data receipt has a
-\* waiting callback.  Receipts nobody can run show up as a deadlock when a
-\* run sets deadlock = true (with a terminal stutter step once idle).
+\* pending receipt that will deliver it (for each input of a joint
+\* callback; a pending yield waits on a resume or its timeout), and every
+\* data receipt has a waiting callback.  Receipts nobody can run show up as
+\* a deadlock when a run sets deadlock = true (with a terminal stutter step
+\* once idle).
 NoOrphans ==
-    /\ \A p \in post : (\E d \in data : d.to = p.id) \/ (\E x \in rq \cup post : x.cb = p.id)
-    /\ \A d \in data : \E p \in post : p.id = d.to
+    /\ \A p \in post : \/ IsYield(p)
+                      \/ \A i \in InIds(p) : (\E d \in data : d.to = i) \/ (\E x \in rq \cup post : x.cb = i)
+    /\ \A d \in data : \E p \in post : d.to \in InIds(p)
+
+\* No pending yield's deadline lies past the clock bound.  When this fails,
+\* some yield could time out before its deadline (at blk = MaxBlk, see
+\* TimedOut): raise MaxBlk.  Trivially TRUE without a clock.
+ClockBoundOK == MaxBlk = 0 \/ \A p \in post : IsYield(p) => p.ydl <= MaxBlk
 
 \* No receipt in flight holds more gas than its transaction's prepaid gas
 \* (the split never creates gas).

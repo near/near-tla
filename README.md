@@ -78,7 +78,7 @@ outside this repo, and the runner still finds the library.
 
 | module | what it provides |
 |---|---|
-| `NearAsync` | the platform: receipts, callbacks and promise results, revert scope, deposit refunds, Transfer and Stake, account kinds and implicit creation, calls to code-less accounts, signer propagation, local receipts, and gas as a bounded quantity (fault mode or gas mode) |
+| `NearAsync` | the platform: receipts, callbacks and promise results, joint callbacks (`promise_and`), yield/resume with its timeout, a block clock, revert scope, deposit refunds, Transfer and Stake, account kinds and implicit creation, calls to code-less accounts, signer propagation, local receipts, and gas as a bounded quantity (fault mode or gas mode) |
 | `NearKeys` | access keys: full-access and function-call permissions, signed submission, AddKey/DeleteKey receipts, key actions bundled atomically with a call |
 | `NearFees` | NEAR's action and receipt fees in Ggas, per protocol version 84-88 (pure definitions) |
 | `TokenCommon` | the shared token argument record, selectable non-standard behaviours, resolver arithmetic, an arbitrary receiver |
@@ -113,10 +113,13 @@ to move to a new protocol version.
 
 ## Roadmap
 
+### Done (v0.2, unreleased)
+
+- `promise_and`: callbacks that join several promise results (SEMANTICS C6).
+- Yield/resume (NEP-519), with an abstract block clock for the timeout (C7, S3).
+
 ### Planned (v0.2)
 
-- `promise_and`: callbacks that join several promise results.
-- Yield/resume, with an abstract block clock for the timeout.
 - Delegate actions (NEP-366), where the signer is the relayer.
 - Opt-in per-sender-receiver ordering, to cut false counterexamples.
 - Per-byte storage staking instead of a fixed floor.

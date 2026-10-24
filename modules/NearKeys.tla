@@ -109,7 +109,7 @@ ExecKeyAct(r, k, p) ==
                /\ keys' = IF r.m = DELK THEN KeysWithout(r.to, k) ELSE KeysWith(r.to, k, p)
                /\ rlog' = LogR(r, "ok")
                /\ UNCHANGED <<locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created,
-                              burnt, sigpaid>>
+                              burnt, blk, sigpaid>>
           ELSE FailP(r, FALSE) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
