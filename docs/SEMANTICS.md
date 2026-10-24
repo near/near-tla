@@ -1313,8 +1313,9 @@ Each rule has four fields:
   to the oldest") and `:509-514` (shuffle per block, then each proof in order),
   `runtime/runtime/src/congestion_control.rs:292-325` (`forward_or_buffer_receipt`, S4).
 - **Model:** `\E r \in Runnable : ...` (or `Schedulable`) in `Next`.
-- **Validated:** nearcore reading. The per-pair part is observed in the sim (S4), and local
-  before delayed before incoming in a full chunk (S1, `local_receipt_delayed_when_chunk_full`).
+- **Validated:** nearcore reading. The per-pair part is observed in the sim (S4), and, in a full
+  chunk, the delayed receipts running before local ones that overflowed it (S1,
+  `local_receipt_delayed_when_chunk_full`).
   The rest is not sim-testable: the sim has one shard, so no proofs from several source
   shards, and it misses no chunks.
 
