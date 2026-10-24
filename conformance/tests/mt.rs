@@ -143,6 +143,47 @@ fn mt_transfer_requirements() {
     let o = batch_call(&mut sim, ALICE, &["t1"], &[1], "keep", 1).gas(Gas::from_teragas(30)).transact();
     println!("mt_batch_transfer_call at 30 Tgas: {:?}", o.failure());
     o.assert_success();
+    let o = sim
+        .call(ALICE, MT, "mt_transfer_call")
+        .args_json(json!({ "receiver_id": RX, "token_id": "t1", "amount": "1", "msg": "keep" }))
+        .deposit(Balance::from_yoctonear(1))
+        .gas(Gas::from_teragas(30))
+        .transact();
+    println!("mt_transfer_call at 30 Tgas: {:?}", o.failure());
+    o.assert_success();
+    assert_eq!(bal(&sim, RX, "t1"), 2, "both 30 Tgas calls delivered");
+}
+
+/// T5, what near-sdk-contract-tools 4.0.0 does not check (N-mt): a zero
+/// amount is skipped, not refused (core :796, :758-760), and nothing
+/// compares the sender with the receiver. `transfer_unchecked` (core
+/// :745-789) reads both balances before writing either, so a transfer to
+/// oneself writes the receiver's `balance + amount` last: the sender's
+/// balance grows by the amount.
+#[test]
+fn mt_zero_and_self_transfers() {
+    let mut sim = world();
+    let one = |sim: &mut Sim, to: &str, amount: u128| {
+        sim.call(ALICE, MT, "mt_transfer")
+            .args_json(json!({ "receiver_id": to, "token_id": "t1", "amount": amount.to_string() }))
+            .deposit(Balance::from_yoctonear(1))
+            .transact()
+    };
+    let o = one(&mut sim, BOB, 0);
+    println!("mt_transfer of 0 to bob: {:?}; bob {:?}", o.failure(), bals(&sim, BOB));
+    o.assert_success();
+    assert_eq!(bals(&sim, BOB), [0, 0, 0]);
+    let o = batch(&mut sim, ALICE, BOB, &["t1", "t2"], &[5, 0], 1).transact();
+    println!("batch t1:5, t2:0 to bob: {:?}; bob {:?}", o.failure(), bals(&sim, BOB));
+    o.assert_success();
+    assert_eq!(bals(&sim, BOB), [5, 0, 0]);
+    let o = one(&mut sim, ALICE, 10);
+    println!("mt_transfer of 10 to alice herself: {:?}; alice {:?}", o.failure(), bals(&sim, ALICE));
+    o.assert_success();
+    assert_eq!(bal(&sim, ALICE, "t1"), SUPPLY - 5 + 10, "the self-transfer credits the amount");
+    let o = one(&mut sim, ALICE, SUPPLY + 6);
+    println!("mt_transfer of more than alice holds to herself: {}", err(&o));
+    assert!(err(&o).contains("Balance of the sender is insufficient"), "{o}");
 }
 
 /// T5, `mt_[batch_]transfer_call`'s receipts and gas (core :264-287): the
@@ -154,7 +195,11 @@ fn mt_transfer_requirements() {
 /// amounts used.
 #[test]
 fn mt_transfer_call_receipts() {
-    for ids in [vec!["t1"], vec!["t1", "t2"], vec!["t1", "t2", "t3"]] {
+    // At the default 300 Tgas prepaid, (mt_on_transfer, mt_resolve_transfer)
+    // in whole Ggas, for 1, 2 and 3 ids: each id costs the call about 0.4
+    // Tgas of burn, which comes out of the leftover both calls share.
+    let attached = [(265_023, 31_502), (264_644, 31_464), (264_265, 31_426)];
+    for (ids, want) in [vec!["t1"], vec!["t1", "t2"], vec!["t1", "t2", "t3"]].into_iter().zip(attached) {
         let mut sim = world();
         let amounts: Vec<u128> = (1..=ids.len() as u128).map(|i| 10 * i).collect();
         let o = batch_call(&mut sim, ALICE, &ids, &amounts, "keep", 1).transact();
@@ -171,6 +216,7 @@ fn mt_transfer_call_receipts() {
         // (and the few gas of the floor's remainder, as the last weighted call).
         let d = (res - five) * 10 - on;
         assert!((0..=1000).contains(&d), "weights 10 and 1, static 5 Tgas: {on} vs {res}");
+        assert_eq!(((on / 1_000_000_000) as u64, (res / 1_000_000_000) as u64), want, "attached gas, Ggas");
         assert_eq!(o.json::<Vec<String>>(), strs(&amounts), "all used");
         assert_eq!(bal(&sim, RX, "t1"), 10);
     }
@@ -277,6 +323,25 @@ fn mt_resolve_transfer_rules() {
     println!("bob holding t1:5, t1:3 and t1:4, result Failed: returns {:?}; bob {:?}", o.json::<Vec<String>>(), bals(&sim, BOB));
     assert_eq!(o.json::<Vec<String>>(), ["0", "2"]);
     assert_eq!(bal(&sim, BOB, "t1"), 0);
+
+    // token_ids and amounts of different lengths (a direct call; the
+    // transfer methods refuse them): the answer's length is compared with
+    // amounts' (core :552-553), and the ids, the bounded answers and the
+    // amounts are zipped, so the shortest decides how many entries are
+    // refunded and returned (core :585-589).
+    let zip: Vec<(&[&str], &[u128], PromiseResult, &[u128], [u128; 2])> = vec![
+        (&["t1", "t2"], &[50], vec(&[20]), &[30], [80, 100]),
+        (&["t1"], &[50, 30], vec(&[20, 10]), &[30], [80, 100]),
+        (&["t1"], &[50, 30], vec(&[20]), &[0], [50, 100]),
+    ];
+    for (ids, amounts, result, used, bob) in zip {
+        let mut sim = base.clone();
+        let o = resolve(&mut sim, BOB, ids, amounts, result);
+        let got: Vec<String> = o.json();
+        println!("ids {ids:?}, amounts {amounts:?}: returns {got:?}; bob {:?}", bals(&sim, BOB));
+        assert_eq!(got, strs(used));
+        assert_eq!(bals(&sim, BOB), [bob[0], bob[1], 0]);
+    }
 
     // Only the token may call it.
     let o = sim

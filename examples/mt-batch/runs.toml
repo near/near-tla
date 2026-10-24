@@ -43,6 +43,7 @@ RxStart = '[i \in {"t1", "t2"} |-> IF i = "t1" THEN 1 ELSE 0]'
 RxVecs = 'MtAnswers(2, 0..3)'
 RxResps = '{"mal", "empty", "panic"}'
 SpendId = '"t2"'
+SpendTo = '"k"'
 MDev = "{}"
 GasMenu = "{0}"
 
@@ -100,6 +101,59 @@ MtGasShape = "PMtShape"
 GasMenu = "{29900, 30000}"
 RxVecs = '{<<0, 0>>, <<1, 2>>, <<3, 0>>, <<0>>}'
 
+# Amounts of 64 and more: the receiver's and the resolver's vectors encode entries up to
+# 1023 for two ids (MtVecCode); RX holds 100 of t1 to start, so the cap binds on t2 only.
+[[run]]
+name = "mt_batch_big"
+expect = "pass"
+tags = ["tokens:nep245"]
+[run.constants]
+Amts = '<<100, 20>>'
+U0 = "100"
+RxStart = '[i \in {"t1", "t2"} |-> IF i = "t1" THEN 100 ELSE 0]'
+RxVecs = '{<<100, 20>>, <<0, 0>>, <<70, 25>>, <<0, 300>>, <<100>>, <<1, 2, 3>>}'
+
+# near-sdk-contract-tools 4.0.0's zero amounts: the t1 entry of 0 moves nothing and the
+# call goes through (with the default MtDev it panics, and nothing moves either).
+[[run]]
+name = "mt_batch_zero_skipped"
+expect = "pass"
+tags = ["tokens:nep245"]
+[run.constants]
+Amts = '<<0, 2>>'
+MDev = '{"zeroAmountSkipped"}'
+
+# near-sdk-contract-tools 4.0.0's transfer to oneself: RX's mt_transfer to RX adds the
+# amount to RX's balance, so the id's supply grows. With the default MtDev it is refused.
+[[run]]
+name = "mt_batch_self_credits"
+expect = "violation"
+invariant = "Conserved"
+invariants = ["Conserved"]
+tags = ["tokens:nep245", "tokens:deviation"]
+[run.constants]
+SpendTo = '"rx"'
+MDev = '{"selfTransferCredits"}'
+
+[[run]]
+name = "mt_batch_self_refused"
+expect = "pass"
+tags = ["tokens:nep245"]
+[run.constants]
+SpendTo = '"rx"'
+
+# The batch resolver called directly with token_ids and amounts of unequal lengths, and
+# vector codes with large entries: fixed cases in the initial state (MtResolverCases.tla).
+[[run]]
+name = "mt_resolver_cases"
+expect = "pass"
+spec = "MtResolverCases"
+next = "Stay"
+invariants = ["ResolverCases", "VecCodes"]
+tags = ["tokens:nep245"]
+[run.constants]
+RxStart = '[i \in {"t1", "t2"} |-> IF i = "t1" THEN 10 ELSE 0]'
+
 # ---- anti-vacuity: python3 tools/run.py examples/mt-batch --anti-vacuity ----
 # Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
 
@@ -149,6 +203,18 @@ id = "cap_binds_settled"
 expr = '~(Settled /\ \E j \in 1..2 : gRxAt[Tids[j]] < gUnused[j])'
 runs = ["mt_batch_std"]
 
+# Large amounts: a refund of an entry above 63 reaches U.
+[[witness]]
+id = "big_refund_settles"
+expr = '~(Settled /\ ~NoResolve /\ mtk[MT].bal[U]["t1"] > U0 - 100 + 63)'
+runs = ["mt_batch_big"]
+
+# Zero amounts skipped: the call with a 0 entry reaches the resolver.
+[[witness]]
+id = "zero_entry_resolves"
+expr = '~(Settled /\ ~NoResolve)'
+runs = ["mt_batch_zero_skipped"]
+
 # Gas mode: the floor refuses 29.9 Tgas, and a call at 30 Tgas reaches the resolver.
 [[witness]]
 id = "gas_floor_refuses"
@@ -173,8 +239,8 @@ class = "dropped .then"
 id = "per_id_reads_first_entry"
 file = "Nep245.tla"
 library = true
-find = 'IF vec.ok /\ Len(vec.v) = n THEN [r.res EXCEPT !.v = vec.v[i]]'
-replace = 'IF vec.ok /\ Len(vec.v) = n THEN [r.res EXCEPT !.v = vec.v[1]]'
+find = 'IF vec.ok /\ Len(vec.v) = m THEN [r.res EXCEPT !.v = vec.v[i]]'
+replace = 'IF vec.ok /\ Len(vec.v) = m THEN [r.res EXCEPT !.v = vec.v[1]]'
 class = "inverted result check"
 
 # A longer answer read as if it had the right length.
@@ -182,8 +248,8 @@ class = "inverted result check"
 id = "wrong_length_accepted"
 file = "Nep245.tla"
 library = true
-find = 'IF vec.ok /\ Len(vec.v) = n THEN'
-replace = 'IF vec.ok /\ Len(vec.v) >= n THEN'
+find = 'IF vec.ok /\ Len(vec.v) = m THEN'
+replace = 'IF vec.ok /\ Len(vec.v) >= m THEN'
 class = "removed precondition"
 
 # A Failed or malformed answer counted as all used.
@@ -216,7 +282,7 @@ class = "removed precondition"
 id = "refund_stays_with_receiver"
 file = "Nep245.tla"
 library = true
-find = 'IN [L |-> [L EXCEPT !.bal[a.rc][id] = @ - refund, !.bal[a.s][id] = @ + refund],'
+find = 'IN [L |-> MtMove(L, a.rc, a.s, id, refund, MtDev[r.to]),'
 replace = 'IN [L |-> L,'
 class = "wrong refund account"
 
@@ -229,3 +295,24 @@ find = 'LastGas(r) < MtMinCallGas[r.to]'
 replace = 'LastGas(r) < MtMinCallGas[r.to] - 100'
 class = "off-by-one guard"
 runs = ["mt_batch_gas_std"]
+
+# The vector code at a fixed 6 bits per entry (the earlier base 64): an entry of 100
+# decodes wrong.
+[[mutant]]
+id = "vec_code_fixed_bits"
+file = "Nep245.tla"
+library = true
+find = 'LET k == MtVecBits(MtVecMax(s), 1) IN'
+replace = 'LET k == 6 IN'
+class = "wrong argument"
+runs = ["mt_batch_big"]
+
+# The answer's length compared with token_ids' instead of amounts'.
+[[mutant]]
+id = "length_vs_token_ids"
+file = "Nep245.tla"
+library = true
+find = 'IF vec.ok /\ Len(vec.v) = m THEN'
+replace = 'IF vec.ok /\ Len(vec.v) = Len(a.tids) THEN'
+class = "wrong argument"
+runs = ["mt_resolver_cases"]

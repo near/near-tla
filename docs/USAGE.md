@@ -686,7 +686,10 @@ What the callback sees:
 
 See [Tokens](SEMANTICS.md#tokens) for each method's rules. `TokDev` selects non-standard
 behaviours per token: `resolveIgnoresResult`, `resolveNoCap`, `retBytes`,
-`sdRefundToAccount` and `autoRegister`.
+`sdRefundToAccount` and `autoRegister`. `MtDev` does the same for a NEP-245 token, and also
+takes `zeroAmountSkipped` and `selfTransferCredits`: near-sdk-contract-tools 4.0.0 skips a
+zero amount and lets a transfer to oneself raise one's balance, where the model panics on
+both by default ([N-mt](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
 
 ## 9. Receiving tokens
 
@@ -705,7 +708,9 @@ The receiver returns a `Vec<U128>`, one unused amount per id: return `MtRet(<<u1
 The resolver refunds, per id, `min(unused_i, amount_i)` capped by your balance of that id; a
 panic, a malformed result or a vector of another length refunds everything. It returns the
 used amounts as a vector; `MtVecOf(r.res)` decodes it (`.ok`, `.v`), since a vector travels
-as one integer (`["v"]` is the number `v`). The arbitrary receiver is
+as one integer (`["v"]` is the number `v`). The code fits TLC's integers when the length
+times the bits of the largest entry is at most 21: two entries up to 1023, three up to 127;
+beyond that `MtVecCode` stops TLC with an Assert. The arbitrary receiver is
 `MtRecvOutcome(r.a.amts, resp)` for `resp \in MtRecvResps`, or `MtRecvVecOutcome(vec)` for
 any vector, for instance every `vec \in MtAnswers(Len(r.a.amts), 0..3)` (lengths n - 1 to
 n + 1, so wrong lengths and over-amount answers too), as `RunRx` in
@@ -1824,7 +1829,7 @@ All examples are toy contracts written for this repo.
   | `nep141-refund-cap` | the NEP-141 resolver caps the refund at the amount |
   | `nep145-refund-to-predecessor` | `storage_deposit` refunds the excess to the predecessor |
   | `mt-smoke` | NEP-245 transfer and resolve |
-  | `mt-batch` | a NEP-245 batch transfer_call to an arbitrary receiver: per id, the resolver refunds min(unused, amount) capped by the receiver's balance; a resolver that ignores the answer, or one that does not cap it at the amount, gives the sender back the wrong amount; a gas-mode run on `CalibStdMt` with the 30 Tgas floor |
+  | `mt-batch` | a NEP-245 batch transfer_call to an arbitrary receiver: per id, the resolver refunds min(unused, amount) capped by the receiver's balance; a resolver that ignores the answer, or one that does not cap it at the amount, gives the sender back the wrong amount; a gas-mode run on `CalibStdMt` with the 30 Tgas floor; amounts above 63; near-sdk-contract-tools' zero amounts and transfers to oneself (`MtDev`); fixed resolver cases with unequal `token_ids` and `amounts` |
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |

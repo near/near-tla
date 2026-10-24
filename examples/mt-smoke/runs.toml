@@ -129,6 +129,6 @@ equivalent = "the cap never binds here (witness receiver_short_at_resolve never 
 id = "refund_stays_with_receiver"
 file = "Nep245.tla"
 library = true
-find = 'L1 == [L EXCEPT !.bal[a.rc][a.tid] = @ - refund, !.bal[a.s][a.tid] = @ + refund]'
+find = 'L1 == MtMove(L, a.rc, a.s, a.tid, refund, MtDev[r.to])'
 replace = 'L1 == L'
 class = "wrong refund account"

@@ -12,12 +12,14 @@
 (* mt_batch_transfer_call(receiver_id, token_ids, amounts, msg)  the same  *)
 (*   with the vectors (mt_on_transfer gets token_ids and amounts as given).*)
 (* mt_resolve_transfer (private), NEP-245 :304-361: the receiver's result  *)
-(*   is a Vec<U128> with one entry per id.  Failed, unparsable, or of     *)
-(*   another length -> every id unused (unused_i = amount_i); else        *)
-(*   unused_i = min(v_i, amount_i).  Per id, in order:                     *)
+(*   is a Vec<U128> with one entry per amount.  Failed, unparsable, or of  *)
+(*   a length other than Len(amounts) -> every id unused (unused_i =       *)
+(*   amount_i); else unused_i = min(v_i, amount_i).  Per entry, in order,  *)
+(*   for the first min(Len(token_ids), Len(amounts)) entries (the SDK     *)
+(*   zips them; the transfer methods never pass unequal lengths):          *)
 (*   refund_i = min(unused_i, the receiver's balance of id_i as it stands, *)
 (*   after the refunds of earlier entries) back to the sender; returns    *)
-(*   [amount_i - refund_i].                                                *)
+(*   [amount_i - refund_i] for those entries.                              *)
 (* Source: near-sdk-contract-tools 4.0.0, the only NEP-245 implementation  *)
 (* read ("core" = src/standard/nep245/mod.rs, "macros" = the -macros       *)
 (* crate's src/standard/nep245/mod.rs): the methods macros :71-209, the    *)
@@ -27,16 +29,20 @@
 (* (the length check :552-564, the per-id cap :566-596, one balance per    *)
 (* id shared by repeated entries :573-593).                                *)
 (* Panics the model adds for every transfer, as NEP-141 does (T1):         *)
-(* sender = receiver, amount 0 (contract-tools checks neither: it skips a *)
-(* zero amount, core :796; docs/SEMANTICS.md T5).                          *)
+(* sender = receiver, amount 0.  contract-tools checks neither (core       *)
+(* :745-822): it skips a zero amount, and a transfer to oneself adds the   *)
+(* amount to one's balance.  MtDev "zeroAmountSkipped" and                 *)
+(* "selfTransferCredits" select those (TokenCommon; docs/SEMANTICS.md T5). *)
 (*                                                                         *)
 (* Result encoding.  mt_on_transfer and mt_resolve_transfer return a       *)
 (* Vec<U128>; the platform's values are integers, so a vector travels as   *)
 (* one (MtVecCode): a one-element ["v"] is the number v (what the single-  *)
 (* id resolver reads), any other length a code <= -1000 that MtVecOf       *)
-(* decodes; EMPTY, MAL, NONEMPTY are not vectors.  Entries of a coded      *)
-(* vector are below MtVecB (64), its length below 8.  MtRet(vec) is a      *)
-(* receiver's return value.                                                *)
+(* decodes; EMPTY, MAL, NONEMPTY are not vectors.  A code packs the        *)
+(* entries at k bits each, k the fewest bits that hold the largest entry,  *)
+(* so it fits TLC's integers when Len * k <= 21: two entries up to 1023,   *)
+(* three up to 127, seven up to 7 (a larger vector is an Assert, not a     *)
+(* wrong value).  MtRet(vec) is a receiver's return value.                 *)
 (*                                                                         *)
 (* Gas (gas mode), per token t, MtGasShape[t] (overridable definition):    *)
 (*  "reserve" (default; recalled, not read): mt_on_transfer gets static    *)
@@ -76,22 +82,26 @@ VARIABLE mtk        \* [MtAccts -> [bal |-> [MtHolders[a] -> [MtIds -> Nat]]]]
 
 ----------------------------------------------------------------------------
 (* Vec<U128> results as integers (see the header).                         *)
-MtVecB == 64
-RECURSIVE MtVecNum(_)
-MtVecNum(s) == IF s = <<>> THEN 0 ELSE Head(s) + MtVecB * MtVecNum(Tail(s))
+\* Code = -(1000 + Len + 16 * (k + 32 * num)), num the entries at k bits
+\* each (entry i at bit k * (i - 1)), Len < 16, 1 <= k < 32.
+RECURSIVE MtVecBits(_, _), MtVecNum(_, _)
+MtVecBits(m, k) == IF 2 ^ k > m THEN k ELSE MtVecBits(m, k + 1)
+MtVecNum(s, k) == IF s = <<>> THEN 0 ELSE Head(s) + (2 ^ k) * MtVecNum(Tail(s), k)
+MtVecMax(s) == IF s = <<>> THEN 0 ELSE CHOOSE x \in {s[i] : i \in DOMAIN s} : \A i \in DOMAIN s : s[i] <= x
 MtVecCode(s) ==
     IF \E i \in DOMAIN s : s[i] < 0 THEN Assert(FALSE, <<"MtVecCode: a negative entry", s>>)
     ELSE IF Len(s) = 1 THEN s[1]
-    ELSE IF Len(s) >= 8 \/ \E i \in DOMAIN s : s[i] >= MtVecB
-         THEN Assert(FALSE, <<"MtVecCode: length 8 or more, or an entry outside 0..63", s>>)
-    ELSE -(1000 + Len(s) + 8 * MtVecNum(s))
+    ELSE IF MtVecMax(s) >= 2 ^ 21 THEN Assert(FALSE, <<"MtVecCode: an entry of 2^21 or more", s>>)
+    ELSE LET k == MtVecBits(MtVecMax(s), 1) IN
+         IF Len(s) * k > 21 THEN Assert(FALSE, <<"MtVecCode: Len * bits per entry over 21", s>>)
+         ELSE -(1000 + Len(s) + 16 * (k + 32 * MtVecNum(s, k)))
 \* The result as a vector: [ok |-> FALSE] when it is Failed or not a vector.
 MtVecOf(res) ==
     IF ~res.ok THEN [ok |-> FALSE, v |-> <<>>]
     ELSE IF res.v >= 0 THEN [ok |-> TRUE, v |-> <<res.v>>]
     ELSE IF res.v <= -1000
-         THEN LET c == -res.v - 1000  n == c % 8  x == c \div 8 IN
-              [ok |-> TRUE, v |-> [i \in 1..n |-> (x \div (MtVecB ^ (i - 1))) % MtVecB]]
+         THEN LET c == -res.v - 1000  n == c % 16  y == c \div 16  k == y % 32  x == y \div 32 IN
+              [ok |-> TRUE, v |-> [i \in 1..n |-> (x \div (2 ^ (k * (i - 1)))) % (2 ^ k)]]
     ELSE [ok |-> FALSE, v |-> <<>>]
 MtRet(s) == RVal(MtVecCode(s))
 \* Vectors of length n - 1, n and n + 1 with entries in V: every
@@ -145,15 +155,23 @@ MGasFloor(acc, r) ==
 \* The burn key "<t>.<m>/<p>" when GasBurn has it, else "<t>.<m>".
 MtPathKey(r, m, p) == IF CallKey(r.to, m \o "/" \o p) \in DOMAIN GasBurn THEN m \o "/" \o p ELSE m
 
+\* x of id moved from s to rc on ledger L.  s = rc: nothing, or with
+\* "selfTransferCredits" what contract-tools writes, the balance read
+\* before the debit plus x (core :763-786).
+MtMove(L, s, rc, id, x, dev) ==
+    IF s # rc THEN [L EXCEPT !.bal[s][id] = @ - x, !.bal[rc][id] = @ + x]
+    ELSE IF "selfTransferCredits" \in dev THEN [L EXCEPT !.bal[s][id] = @ + x]
+    ELSE L
+
 MtXferAct(acc, r, s, rc, tid, amt) ==
-    LET L == acc.L IN
+    LET L == acc.L  dev == MtDev[r.to] IN
     IF ~MLive(acc) THEN acc
-    ELSE IF s = rc THEN MAE(acc, "Sender and receiver should be different")
-    ELSE IF amt = 0 THEN MAE(acc, "zero amount")
+    ELSE IF s = rc /\ "selfTransferCredits" \notin dev THEN MAE(acc, "Sender and receiver should be different")
+    ELSE IF amt = 0 THEN IF "zeroAmountSkipped" \in dev THEN acc ELSE MAE(acc, "zero amount")
     ELSE IF s \notin DOMAIN L.bal \/ rc \notin DOMAIN L.bal
          THEN Assert(FALSE, <<"MT transfer outside MtHolders", r.to, s, rc>>)
     ELSE IF L.bal[s][tid] < amt THEN MAE(acc, "insufficient balance")
-    ELSE [acc EXCEPT !.L = [L EXCEPT !.bal[s][tid] = @ - amt, !.bal[rc][tid] = @ + amt],
+    ELSE [acc EXCEPT !.L = MtMove(L, s, rc, tid, amt, dev),
                      !.ev.s = s, !.ev.rc = rc, !.ev.tid = tid, !.ev.moved = @ + amt,
                      !.ev.tids = @ \o <<tid>>, !.ev.moves = @ \o <<amt>>]
 
@@ -201,7 +219,7 @@ MtBatchTransferCallAct(acc, r) ==
 MtResolveAct(acc, r) ==
     LET a == r.a  L == acc.L
         refund == ResolveRefund(r.res, a.amt, L.bal[a.rc][a.tid], MtDev[r.to])
-        L1 == [L EXCEPT !.bal[a.rc][a.tid] = @ - refund, !.bal[a.s][a.tid] = @ + refund]
+        L1 == MtMove(L, a.rc, a.s, a.tid, refund, MtDev[r.to])
     IN IF ~MLive(acc) THEN acc
        ELSE IF r.fr # r.to THEN MAE(acc, "Method mt_resolve_transfer is private")
        ELSE [acc EXCEPT !.L = L1, !.ret = RVal(TMax(a.amt - refund, 0)),
@@ -209,26 +227,27 @@ MtResolveAct(acc, r) ==
                         !.ev.tids = <<a.tid>>, !.ev.refunds = <<refund>>, !.sz = 1,
                         !.key = MtPathKey(r, "mt_resolve_transfer", IF refund > 0 THEN "refund" ELSE "norefund")]
 
-\* The resolver of a batch: per id, the shared arithmetic on that id's
+\* The resolver of a batch: per entry, the shared arithmetic on that
 \* entry of the result (ResolveRefund on the number v_i, or on Failed when
-\* the result is not a vector of Len(tids) entries), against the
-\* receiver's balance as earlier entries left it (core :552-596).
+\* the result is not a vector of Len(amts) entries, core :552-564),
+\* against the receiver's balance as earlier entries left it (:566-596),
+\* for the first min(Len(tids), Len(amts)) entries (the zip, :585-589).
 MtBatchResolveAct(acc, r) ==
-    LET a == r.a  n == Len(a.tids)  vec == MtVecOf(r.res)
-        Res(i) == IF vec.ok /\ Len(vec.v) = n THEN [r.res EXCEPT !.v = vec.v[i]] ELSE [r.res EXCEPT !.ok = FALSE]
+    LET a == r.a  m == Len(a.amts)  n == TMin(Len(a.tids), m)  vec == MtVecOf(r.res)
+        Res(i) == IF vec.ok /\ Len(vec.v) = m THEN [r.res EXCEPT !.v = vec.v[i]] ELSE [r.res EXCEPT !.ok = FALSE]
         \* F[i]: [L, refunds] after entries 1..i
         F[i \in 0..n] ==
             IF i = 0 THEN [L |-> acc.L, rf |-> <<>>]
             ELSE LET L == F[i - 1].L  id == a.tids[i]
                      refund == ResolveRefund(Res(i), a.amts[i], L.bal[a.rc][id], MtDev[r.to])
-                 IN [L |-> [L EXCEPT !.bal[a.rc][id] = @ - refund, !.bal[a.s][id] = @ + refund],
+                 IN [L |-> MtMove(L, a.rc, a.s, id, refund, MtDev[r.to]),
                      rf |-> F[i - 1].rf \o <<refund>>]
         used == [i \in 1..n |-> TMax(a.amts[i] - F[n].rf[i], 0)]
     IN IF ~MLive(acc) THEN acc
        ELSE IF r.fr # r.to THEN MAE(acc, "Method mt_resolve_transfer is private")
        ELSE [acc EXCEPT !.L = F[n].L, !.ret = RVal(MtVecCode(used)),
-                        !.ev.s = a.s, !.ev.rc = a.rc, !.ev.tids = a.tids, !.ev.refunds = F[n].rf,
-                        !.sz = n,
+                        !.ev.s = a.s, !.ev.rc = a.rc, !.ev.tids = SubSeq(a.tids, 1, n), !.ev.refunds = F[n].rf,
+                        !.sz = Len(a.tids),
                         !.key = MtPathKey(r, "mt_resolve_transfer",
                                           IF \E i \in 1..n : F[n].rf[i] > 0 THEN "refund" ELSE "norefund")]
 

@@ -74,10 +74,17 @@ BatchArgs(nd, sd, sdAcct, xf, rc, amt, msg) ==
 (*                         predecessor                                     *)
 (*  "autoRegister"         transfers to an unregistered receiver succeed   *)
 (*                         and register it for free (no NEP-145 check)     *)
+(*  "zeroAmountSkipped"    NEP-245 (MtDev): an entry of amount 0 moves     *)
+(*                         nothing and does not panic                      *)
+(*  "selfTransferCredits"  NEP-245 (MtDev): no sender = receiver check; a  *)
+(*                         transfer to oneself adds the amount to one's    *)
+(*                         balance (both read before either is written)    *)
+(* near-sdk-contract-tools 4.0.0 behaves as MtDev = {"zeroAmountSkipped",  *)
+(* "selfTransferCredits"} (docs/SEMANTICS.md T5, N-mt).                    *)
 (* "Unregistered receiver" as a *scenario* (standard token, receiver not   *)
 (* registered) is the initial registration set, a plain parameter.         *)
 Deviations == {"retBytes", "resolveIgnoresResult", "resolveNoCap",
-               "sdRefundToAccount", "autoRegister"}
+               "sdRefundToAccount", "autoRegister", "zeroAmountSkipped", "selfTransferCredits"}
 
 ----------------------------------------------------------------------------
 (* Resolver arithmetic (NEP-141 ft_resolve_transfer, NEP-245               *)

@@ -449,6 +449,25 @@ them. A model that lists platform variables one by one must add each.
   No run in the repo was affected. Migration: add an invariant, or set
   `allow_no_invariants = "<why>"` on the run.
 
+- **NEP-245 argument records and resolver burn keys.** `TokenCommon.TA0` has two more
+  fields, `tids` and `amts`, and `MtArgs`, `MtOnArgs` and `MtResArgs` set them to vectors of
+  one, so every token argument record has them. A model that builds argument records by
+  hand in the old shape (`[s |-> ..., rc |-> ..., tid |-> ..., amt |-> ..., msg |-> ...]`)
+  and compares them with the library's, or keeps both shapes in one set, now gets
+  inequality or a TLC comparison error. Separately, `mt_resolve_transfer` now looks up
+  `"<t>.mt_resolve_transfer/refund"` and `"/norefund"` in `GasBurn` before the method key and
+  burns with size = the number of ids (1 for a single-id call): a custom table that already
+  has keys of those names, or a per-size slope on `"<t>.mt_resolve_transfer"`, now selects
+  them and changes that receipt's burn. Migration: build records from `TA0` (`[TA0 EXCEPT
+  ...]`) or the `*Args` constructors, or add `tids |-> <<>>, amts |-> <<>>` (`<<tid>>`,
+  `<<amt>>` for an NEP-245 record); rename such burn keys, or give them the burn you mean.
+  Every repo model and table keeps its state counts and verdicts.
+- **`Nep245`'s vector codes changed** (`MtVecCode`, `MtVecOf`). A vector of length other
+  than 1 now packs its entries at the fewest bits that hold the largest (it was base 64, and
+  any entry of 64 or more stopped TLC, even for a valid call such as amounts 100 and 20), so
+  the integer a given vector encodes to differs. Migration: compare vectors through
+  `MtVecOf(res).v` or build them with `MtRet(vec)`, never by a literal code.
+
 ### Added
 
 - **NEP-245 batches and the per-id resolver** (SEMANTICS T5, N-mt; `examples/mt-batch`):
@@ -457,8 +476,13 @@ them. A model that lists platform variables one by one must add each.
   `mt_resolve_transfer` on a batch applies the resolver arithmetic per id: a result that is
   Failed, not a `Vec<U128>` or of another length leaves every id unused, else `unused_i =
   min(v_i, amount_i)`, and `refund_i = min(unused_i, the receiver's balance of id_i)`, entries
-  of one id sharing that balance. Vectors travel as one integer (`MtVecCode`, `MtVecOf`,
-  `MtRet`; `["v"]` is the number `v`). An arbitrary receiver answers any label of
+  of one id sharing that balance; the result's length is compared with `amounts`', and
+  `token_ids` and `amounts` of different lengths (a direct resolver call) are zipped, as
+  the SDK does (`mt_resolver_cases`). Vectors travel as one integer (`MtVecCode`, `MtVecOf`, `MtRet`; `["v"]` is
+  the number `v`; length × bits per entry ≤ 21, so two entries up to 1023). New `MtDev`
+  behaviours `"zeroAmountSkipped"` and `"selfTransferCredits"` follow near-sdk-contract-tools
+  4.0.0, which skips a zero amount and lets a transfer to oneself raise one's balance; by
+  default the model still panics on both. An arbitrary receiver answers any label of
   `MtRecvResps` (`MtRecvOutcome`) or any vector (`MtRecvVecOutcome`, `MtAnswers(n, V)`:
   wrong lengths and over-amount entries included). The semantics are near-sdk-contract-tools
   4.0.0's, the only NEP-245 implementation read. New per-token gas shape `MtGasShape[t] =
@@ -1052,14 +1076,8 @@ them. A model that lists platform variables one by one must add each.
   (`limit_fan_1024`: 2 s to 9 s).
 - `examples/limits`: the `log` shape builds its N logs with the new `OLogs` instead of a
   recursion once per log, which also overflowed the CI runner's stack (`limit_log_101`).
-- `TokenCommon.TA0` has two more fields, `tids` and `amts` (NEP-245 vectors; `<<>>` for
-  every other token receipt). `MtArgs`, `MtOnArgs` and `MtResArgs` set them to vectors of
-  one. A model that compares whole argument records with hand-built ones must add the
-  fields; state counts do not change. `Nep245`'s outcome event `ev` has fields `tids`,
-  `moves` and `refunds` (per entry). The resolver burns with size 1 for a single-id call
-  (the number of ids) and uses the burn keys `"<t>.mt_resolve_transfer/refund"` /
-  `"/norefund"` when `GasBurn` has them; without such keys and with a per-size slope of 0,
-  as in every table so far, nothing changes.
+- `Nep245`'s outcome event `ev` has fields `tids`, `moves` and `refunds` (per entry). For
+  the `TA0` fields and the resolver's burn keys see Breaking.
 - Docs: SEMANTICS N-order and N-resume-order were wrong. nearcore keeps no per-pair order at
   protocol 88: a new receipt bypasses the link's outgoing buffer whenever it fits
   (`congestion_control.rs:292-325`, `:451`), and missed chunks reverse the order across heights

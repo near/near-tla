@@ -2002,18 +2002,23 @@ is available locally.
     `mt_batch_transfer_call`) needs exactly 1 yocto.
   - A batch takes `token_ids` and `amounts`; vectors of different lengths panic. It moves
     each id in order, in one receipt: a short balance on any entry panics and nothing moves.
-    The same id may appear twice.
+    The same id may appear twice. Nothing refuses a zero amount or a transfer to oneself: an
+    entry of 0 moves nothing, and a transfer to oneself adds the amount to one's balance
+    (`transfer_unchecked` reads both balances, then writes the debited one and then the
+    credited one, which is the same slot).
   - The `_call` methods call `receiver.mt_on_transfer(sender_id, previous_owner_ids,
     token_ids, amounts, msg)`, then `.then(self.mt_resolve_transfer(sender_id, receiver_id,
     token_ids, amounts))`, and return the resolver's promise (C5). A single-id call passes
     vectors of one.
   - `mt_resolve_transfer` is private. It reads the receiver's result **unbounded** (no
     byte limit, unlike T2) as a `Vec<U128>`. A Failed result, one that does not parse as
-    a `Vec<U128>`, or one whose length differs from the number of ids leaves every id
-    unused (`unused_i = amount_i`). Otherwise `unused_i = min(v_i, amount_i)`. For each
-    entry in order, `refund_i = min(unused_i, the receiver's balance of id_i)` moves back
-    to the sender, the balance taken as the earlier entries' refunds left it (so two
-    entries of one id share it). It returns `[amount_i - refund_i]`.
+    a `Vec<U128>`, or one whose length differs from `amounts`' leaves every id unused
+    (`unused_i = amount_i`). Otherwise `unused_i = min(v_i, amount_i)`. For each entry in
+    order, `refund_i = min(unused_i, the receiver's balance of id_i)` moves back to the
+    sender, the balance taken as the earlier entries' refunds left it (so two entries of one
+    id share it). It returns `[amount_i - refund_i]`. It does not check that `token_ids`
+    and `amounts` have equal lengths (the transfer methods do): it zips them, so only the
+    first `min(len(token_ids), len(amounts))` entries are refunded and returned.
   - Gas (near-sdk-contract-tools 4.0.0): the `_call` methods panic below 30 Tgas prepaid
     (`GAS_FOR_MT_TRANSFER_CALL`), before the deposit check. `mt_on_transfer` gets static 0
     and weight 10; the resolver gets static 5 Tgas (`GAS_FOR_MT_RESOLVE_TRANSFER`) and
@@ -2028,10 +2033,14 @@ is available locally.
 - **Model:** `Nep245`; arguments `MtArgs` / `MtBatchArgs` (`TokenCommon`, fields `tids` and
   `amts`).
   - The batch resolver is `MtBatchResolveAct`, which applies `ResolveRefund` to each
-    entry. The single-id resolver is unchanged (`ResolveRefund` on the result).
+    entry, zipped as above (fixed cases with unequal lengths: `examples/mt-batch`,
+    `mt_resolver_cases`). The single-id resolver is unchanged (`ResolveRefund` on the
+    result).
   - A `Vec<U128>` result travels as one integer (`MtVecCode` / `MtVecOf`; `MtRet(vec)`):
     `["v"]` is the number `v`, so the single-id resolver reads it as before; any other
-    length is a code that is not a number.
+    length is a negative code that packs the entries at the fewest bits that hold the
+    largest. TLC's integers bound it: length × bits ≤ 21 (two entries up to 1023, three up
+    to 127). A larger vector stops TLC with an Assert, never a wrong value.
   - The arbitrary receiver is `MtRecvOutcome(amts, resp)` for `resp \in MtRecvResps` (keep,
     return, over, short, long, mal, nonempty, empty, panic) or `MtRecvVecOutcome(vec)` for
     any vector. `MtAnswers(n, V)` is every vector of length n - 1 to n + 1 with entries in
@@ -2044,9 +2053,9 @@ is available locally.
   - Burn keys are `"<t>.<method>"`. The batch methods and the resolver burn with size =
     the number of ids, and the resolver uses `/refund` or `/norefund` when `GasBurn` has
     them.
-  - The model also panics on sender = receiver and on a zero amount, as T1 does.
-    near-sdk-contract-tools 4.0.0 checks neither (a zero amount is skipped, core `:796`);
-    see N-mt.
+  - By default the model panics on sender = receiver and on a zero amount, as T1 does.
+    `MtDev[t]` with `"zeroAmountSkipped"` and `"selfTransferCredits"` gives
+    near-sdk-contract-tools 4.0.0's behaviour instead (`MtMove`); see N-mt.
   - No approvals, no storage management, no views.
 - **Validated:**
   - NEP text and near-sdk-contract-tools 4.0.0 source read.
@@ -2056,11 +2065,15 @@ is available locally.
       unequal lengths refused for both batch methods; a batch moving two ids, and one id
       twice; a short balance on the second id failing the batch with nothing moved; the
       30 Tgas floor of both `_call` methods (29.9 refused, before the deposit check; 30
-      accepted).
+      accepted and delivered, for each).
+    - `mt_zero_and_self_transfers`: an `mt_transfer` of 0 and a batch entry of 0 succeed
+      and move nothing; an `mt_transfer` of 10 to oneself succeeds and raises one's balance
+      by 10; one of more than one holds fails.
     - `mt_transfer_call_receipts`: for 1, 2 and 3 ids, `mt_on_transfer` and then the
       resolver; their attached gas splits the leftover 10 : 1 with the resolver's 5 Tgas
-      static; the call returns the amounts used. A single-id call gets the same receipts
-      and a vector of one.
+      static; at 300 Tgas prepaid they get exactly 265,023 / 31,502, 264,644 / 31,464 and
+      264,265 / 31,426 Ggas (whole Ggas); the call returns the amounts used. A single-id
+      call gets the same receipts and a vector of one.
     - `mt_batch_transfer_call_answers`: end to end on two ids, for each receiver answer
       (keep, return, over, an exact vector, short, long, malformed, empty, panic), the
       returned vector and both sides' balances.
@@ -2068,7 +2081,9 @@ is available locally.
       as in T2). The per-id arithmetic with an over-amount entry; all unused for Failed, a
       vector one short or one long, an empty vector, a bare number, bytes that are not JSON,
       and no bytes; the refund capped at the receiver's balance per id; two entries of one
-      id sharing that balance; the caller check.
+      id sharing that balance; unequal `token_ids` and `amounts` (2 ids and 1 amount, 1 id
+      and 2 amounts, answers of either length), refunded and returned for the shorter; the
+      caller check.
   - These tests check the implementation against this rule, not the model's encoding;
     `examples/mt-batch` checks the encoding.
   - <!-- conformance --> sim, flows (the set `mt`, 19 flows; `Nep245` with
@@ -2500,9 +2515,12 @@ against the current module code; some may be fixed in the modules later.
   code counts its `CodeLen` (A9), a global contract its identifier (A10).
 - **N-mt. NEP-245 implementations.** The rules of T5 are near-sdk-contract-tools 4.0.0's;
   another NEP-245 token may bound its result read, check lengths differently, or use other
-  gas. Two of the model's panics are not in that implementation: sender = receiver and a
-  zero amount (inherited from NEP-141, T1). near-sdk-contract-tools 4.0.0 accepts both, so
-  the model leaves out paths a token built on it allows. Approvals (NEP-245's approval
+  gas. By default the model keeps two panics that implementation does not have: sender =
+  receiver and a zero amount (inherited from NEP-141, T1). A model of a token built on it
+  that leaves `MtDev` empty misses those paths, among them a transfer to oneself that
+  raises one's balance; `MtDev[t] = {"zeroAmountSkipped", "selfTransferCredits"}` includes
+  them (`examples/mt-batch`: `mt_batch_zero_skipped`, `mt_batch_self_credits`). The
+  default stays, so existing models keep their state spaces. Approvals (NEP-245's approval
   management) are not modelled.
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
