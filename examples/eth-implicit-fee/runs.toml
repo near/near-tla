@@ -6,7 +6,7 @@ spec = "Forwarder"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Delivered", "Created", "Sane"]
+invariants = ["Delivered", "Created", "Sane", "FeesPinned"]
 tags = ["semantics:eth-implicit-fee"]
 
 [constants]

@@ -28,19 +28,25 @@
 (*    returned receipt (lib.rs:1152-1168); the contract wires              *)
 (*    `tail.cb := r.cb`.                                                   *)
 (*  - The transaction signer is inherited by every receipt of the tree     *)
-(*    (runtime/runtime/src/function_call.rs:172-173) and exposed to the    *)
+(*    (runtime/runtime/src/function_call.rs:172-174) and exposed to the    *)
 (*    contract next to the predecessor (function_call.rs:259-262).         *)
 (*  - Local receipts: a transaction whose signer is its receiver produces  *)
 (*    a local receipt, executed in the same chunk before delayed and       *)
 (*    incoming receipts (lib.rs:2316-2324, :2800-2821).  Receipts created  *)
-(*    by a receipt (self-calls included) are outgoing and run in a later  *)
+(*    by a receipt (self-calls included) are outgoing and run in a later   *)
 (*    chunk (lib.rs:1222-1234).  See LocalPriorityOK.                      *)
 (*  - Account types (named / NEAR-implicit / eth-implicit): a Transfer to  *)
 (*    a missing implicit account creates it; to a missing named account it *)
 (*    fails and refunds (runtime/runtime/src/actions.rs:842-850,           *)
-(*    :929-949, :221-290).  Refunds never create accounts (:931-933).      *)
+(*    :929-946, :221-290).  Refunds never create accounts (:930-933); a    *)
+(*    refund to a missing account is burnt (lib.rs:1046-1054, `burnt`).    *)
+(*  - A function call to a missing account, or to one without code (see    *)
+(*    Contracts), fails before any code runs (actions.rs:874-887;          *)
+(*    function_call.rs:309-312).                                           *)
 (*  - Native NEAR: liquid per account, plus locked / proposal for one      *)
-(*    staking account.  Stake failures follow actions.rs:58-109.           *)
+(*    staking account.  Stake failures follow actions.rs:58-109; only the  *)
+(*    account itself may stake (actions.rs:755-801).  The storage check    *)
+(*    after a receipt uses liquid + locked (verifier.rs:48-79).            *)
 (*                                                                         *)
 (* Gas.  The constant GasMode selects:                                     *)
 (*  "fault"  gas is abstract: only the forced-fault switch (MayFail /      *)
@@ -73,6 +79,14 @@
 (*      gets floor(U*w/W), the last one also gets the remainder; W = 0     *)
 (*      distributes nothing (runtime/runtime/src/receipt_manager.rs:414,   *)
 (*      :679-721).                                                         *)
+(*    * a receipt with several function-call actions may give per-action   *)
+(*      accounting in the outcome (`pa`): each action's leftover is split  *)
+(*      over the children it created (function_call.rs:61, :343-345);      *)
+(*      without `pa` the whole receipt is one action.                      *)
+(*    * a created function call left with 0 gas fails the creating receipt *)
+(*      (action_validation.rs:350-351, applied at lib.rs:968-978).         *)
+(*    * a panic is labelled out-of-gas when the burn before it exceeds     *)
+(*      the attached gas (gas_counter.rs:155-174, :205-213).               *)
 (*    * action-only receipts never run out of gas.                         *)
 (*  The forced switch is kept in both modes: a receipt whose method is in  *)
 (*  MayFail may fail, at most MaxFails times; counted in `fails`.  A real  *)
@@ -81,9 +95,8 @@
 (* Not modelled: congestion (a local receipt that does not fit the chunk's *)
 (* compute limit is delayed, lib.rs:2513-2521), instant receipts           *)
 (* (core/primitives/src/receipt.rs:468-485), DeleteAccount, yield/resume,  *)
-(* gas price and gas refunds in NEAR, deterministic and universal account  *)
-(* types, a refund to a missing account (burnt, lib.rs:1047-1054; here it *)
-(* stays pending).                                                         *)
+(* gas price and gas refunds in NEAR, DeployContract (code is static, see  *)
+(* Contracts).                                                             *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
@@ -123,34 +136,66 @@ VARIABLES
     oog,       \* ghost: set of <<tx, method>> that ran out of their real gas
     rlog,      \* ghost: per-receipt outcomes (only if LogOn)
     txsig,     \* [tx -> [a |-> signer account, k |-> signer key id]], set by Submit
-    created    \* accounts created at run time (implicit-account Transfer)
+    created,   \* accounts created at run time (implicit-account Transfer)
+    burnt      \* ghost: NEAR burnt by refunds to missing accounts
+\* Every platform variable must be initialised: use PlatformInit /
+\* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
+\* "The variable txsig was not initialized" means PlatformInitExtra (or its
+\* parts PlatformInitSigner / PlatformInitAccounts) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created>>
+                  txsig, created, burnt>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
 (* (or a [run.constants] entry); the defaults keep the behaviour of models *)
 (* that do not mention them.                                               *)
 
-\* Account type by id pattern: "named", "near_implicit" (64 hex chars) or
-\* "eth_implicit" ("0x" + 40 hex chars).  Toy ids cannot match the real
-\* patterns, so the model states the type.  Default: every account is named.
+\* Accounts with deployed code.  A function call to an account outside this
+\* set, or to a missing account, fails.  Default: every account has code.
+Contracts == Accounts
+
+\* TRUE: a function call fails unless its receiver exists and has code
+\* (actions.rs:874-879 AccountDoesNotExist; function_call.rs:309-312
+\* CodeDoesNotExist).  FALSE: calls run whatever the receiver (older models).
+CallsNeedCode == TRUE
+
+\* TRUE: Submit records the transaction's signer in txsig (needed by SignerOf,
+\* Signer, SignerKey and NearKeys).  Settled transactions keep their entry, so
+\* a model that never reads the signer pays for it in states (up to about 17%
+\* in measured models); TrackSigner <- FALSE leaves txsig unchanged.  Reading
+\* the signer with FALSE is a TLC error, not a wrong value.
+TrackSigner == TRUE
+
+\* TRUE: a refund to a missing account is burnt (lib.rs:1046-1054).  FALSE:
+\* it stays pending (older models).
+BurnLostRefunds == TRUE
+
+\* Account type by id pattern: "named", "near_implicit" (64 hex chars),
+\* "eth_implicit" ("0x" + 40 hex chars), "deterministic" ("0s" + 40 hex) or
+\* "universal" ("0u" + 52 base32).  Toy ids cannot match the real patterns,
+\* so the model states the type.  Default: every account is named.
 AcctKind == [a \in Accounts |-> "named"]
 \* Helper for overrides: AcctKind <- MyKinds, MyKinds == AcctKinds({"0xe"}, {}).
 AcctKinds(eth, nearImp) ==
     [a \in Accounts |-> IF a \in eth THEN "eth_implicit"
                         ELSE IF a \in nearImp THEN "near_implicit" ELSE "named"]
 KindOf(a) == IF a \in DOMAIN AcctKind THEN AcctKind[a] ELSE "named"
-\* Kinds a Transfer may create (NearFees.RcvKinds also has "deterministic"
-\* and "universal"; they are created by a lone Transfer too, actions.rs:929-949).
-IsImplicit(a) == KindOf(a) # "named"
+\* Kinds a Transfer may create (actions.rs:929-946): NEAR-implicit,
+\* eth-implicit and deterministic accounts when the Transfer is the receipt's
+\* only action; universal accounts (from protocol 87) also inside a batch.
+\* A refund never creates an account.  The model's Transfer receipts are
+\* single-action, so all of them qualify.
+UniversalOn == NearFeeTable!UniversalAccountsOn(NearFeeTable!FeeProtocol)
+IsImplicit(a) ==
+    \/ KindOf(a) \in {"near_implicit", "eth_implicit", "deterministic"}
+    \/ KindOf(a) = "universal" /\ UniversalOn
 
 \* Key id used by Submit(r), which carries no key information.
 DefaultKey == "default"
 
 ----------------------------------------------------------------------------
-(* Promise results.  A callback sees r.res = [ok, v, sz]:                   *)
+(* Promise results.  A callback sees r.res = [ok, v, sz]:                  *)
 (*   ok = FALSE           Failed                                           *)
 (*   v >= 0               Successful, a well-formed JSON number            *)
 (*   v = EMPTY            Successful, empty bytes (Transfer, `()` return)  *)
@@ -178,17 +223,22 @@ NumOr(res, dflt) == IF IsNum(res) THEN res.v ELSE dflt
 XFER  == "XFER"     \* Transfer action (may carry a callback)
 REFND == "REFUND"   \* system refund receipt
 STAKE == "STAKE"    \* Stake action on StakingAcct; a.x1 = amount
+ADDK  == "ADDKEY"   \* AddKey action (executed by NearKeys)
+DELK  == "DELKEY"   \* DeleteKey action (executed by NearKeys)
 IsBuiltin(r) == r.m \in {XFER, REFND, STAKE}
+IsKeyRcpt(r) == r.m \in {ADDK, DELK}
+\* A function-call receipt (the rest).
+IsCall(r)    == ~IsBuiltin(r) /\ ~IsKeyRcpt(r)
 
 ----------------------------------------------------------------------------
 (* Receipt records.  All receipts have the same fields.                    *)
-(*   id tx to fr m a dep rto cb   id, transaction, receiver, predecessor,   *)
+(*   id tx to fr m a dep rto cb   id, transaction, receiver, predecessor,  *)
 (*                                method, args, deposit, refund account,   *)
 (*                                callback id waiting on the output (0: none)*)
-(*   res                          promise result (callbacks), else NoRes    *)
-(*   gs gw g gf                   gas: static / weight / attached per call, *)
-(*                                and the creator-side fee                  *)
-(*   loc                          a local receipt (set by Submit)           *)
+(*   res                          promise result (callbacks), else NoRes   *)
+(*   gs gw g gf                   gas: static / weight / attached per call,*)
+(*                                and the creator-side fee                 *)
+(*   loc                          a local receipt (set by Submit)          *)
 NoGas == [st |-> <<>>, wt |-> <<>>, fee |-> 0]
 \* "acct.method" overrides "method", so two contracts can differ for a shared method name.
 CallKey(to, m) == to \o "." \o m
@@ -251,6 +301,14 @@ InflightDeposits == Sum(rq) + Sum(post)
 
 \* Account existence: initial accounts and accounts created at run time.
 AcctExists(a) == a \in Exists \/ a \in created
+\* Can a function call on a run?  An account created by a Transfer has no
+\* code, except an eth-implicit one, which gets a protocol-defined global
+\* contract (actions.rs:221-290); a universal one is also uninitialised
+\* (actions.rs:880-887, AccountNotInitialized).
+HasCode(a) == /\ AcctExists(a)
+              /\ a \in Contracts
+              /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
+CallTargetOK(r) == ~CallsNeedCode \/ ~IsCall(r) \/ HasCode(r.to)
 
 \* The transaction signer, inherited by every receipt of the transaction.
 SignerOf(t)  == txsig[t]               \* [a |-> account, k |-> key id]
@@ -258,14 +316,19 @@ Signer(r)    == txsig[r.tx].a          \* env::signer_account_id()
 SignerKey(r) == txsig[r.tx].k          \* env::signer_account_pk()
 
 ----------------------------------------------------------------------------
-(* Outcome record a contract handler returns:                             *)
-(*   ready : set of new ready receipts                                    *)
-(*   post  : set of new postponed callbacks                               *)
+(* Outcome record a contract handler returns:                              *)
+(*   ready : set of new ready receipts                                     *)
+(*   post  : set of new postponed callbacks                                *)
 (*   ret   : [k |-> "val"|"prom", v |-> value, sz |-> size in KB]          *)
-(*   out   : sum of deposits attached to new receipts (debited from r.to) *)
-(*   ids   : number of fresh ids consumed                                 *)
-(*   err   : "" or the panic message                                      *)
-(*   gk    : burn key ("" = r.m); sz : size for the burn (KB)             *)
+(*   out   : sum of deposits attached to new receipts (debited from r.to)  *)
+(*   ids   : number of fresh ids consumed                                  *)
+(*   err   : "" or the panic message                                       *)
+(*   gk    : burn key ("" = r.m); sz : size for the burn (KB)              *)
+(* Optional field, for a receipt with several function-call actions:       *)
+(*   pa    : one record per action, in order:                              *)
+(*           [gk |-> burn key, sz |-> size, kids |-> ids of the children   *)
+(*            that action created]                                         *)
+(*           With pa, gas is checked and split per action (see GasOK).     *)
 RVal(v)       == [k |-> "val", v |-> v, sz |-> 0]
 RValSz(v, n)  == [k |-> "val", v |-> v, sz |-> n]
 RProm         == [k |-> "prom", v |-> 0, sz |-> 0]
@@ -280,9 +343,16 @@ OErr(O, e) == IF O.err = "" THEN [O EXCEPT !.err = e] ELSE O
 OKey(O, k) == [O EXCEPT !.gk = k]
 OSz(O, n)  == [O EXCEPT !.sz = n]
 
-\* Storage staking: the receiver's liquid balance after the receipt must
-\* cover its storage (lib.rs:1008-1023, LackBalanceForState).
-Affordable(r, O) == near[r.to] + r.dep - O.out >= StorageFloor[r.to]
+\* Balances after the receipt.  The receiver cannot spend more than it has
+\* (BalanceExceeded inside the call), and liquid + locked must cover its
+\* storage (lib.rs:1008-1023, check_storage_stake at verifier.rs:48-79;
+\* LackBalanceForState).  StorageFloor[a] is the required amount; give 0 for
+\* an account under the zero-balance storage threshold, which is exempt
+\* (verifier.rs:75-77).
+LockedOf(a) == IF a = StakingAcct THEN locked ELSE 0
+Affordable(r, O) ==
+    /\ near[r.to] + r.dep - O.out >= 0
+    /\ near[r.to] + r.dep - O.out + LockedOf(r.to) >= StorageFloor[r.to]
 
 ----------------------------------------------------------------------------
 (* Need, verdict and the unused-gas split                                  *)
@@ -299,33 +369,92 @@ KidsCost(S) == IF S = {} THEN 0
                ELSE LET c == CHOOSE y \in S : TRUE IN c.gf + SumSeq(c.gs) + KidsCost(S \ {c})
 
 Need(r, O) == Burn(r, O) + KidsCost(Kids(O))
-GasOK(r, O) == GasMode # "gas" \/ GasOf(r) >= Need(r, O)
 
-\* "ok" | "fail" (panic / balance) | "oog" (ran out of its real gas)
-Verdict(r, O) ==
-    IF O.err # "" \/ ~Affordable(r, O) THEN "fail"
-    ELSE IF ~GasOK(r, O) THEN "oog"
-    ELSE "ok"
+\* Per-action accounting.  Each function-call action runs with its own gas and
+\* its own promise manager (function_call.rs:61); its children share only
+\* that action's leftover (function_call.rs:343-345); the leftover of other
+\* actions is refunded (lib.rs:1311-1315).  Used when the outcome has pa
+\* with more than one action; otherwise the receipt is one action.
+PerAction(r, O) == GasMode = "gas" /\ "pa" \in DOMAIN O /\ Len(O.pa) > 1
+ActGas(r, k) == IF k \in DOMAIN r.g THEN r.g[k] ELSE 0
+ActBurn(O, k) ==
+    LET key == O.pa[k].gk IN
+    IF key \in DOMAIN GasBurn THEN GasBurn[key].base + GasBurn[key].per * O.pa[k].sz
+    ELSE Assert(FALSE, <<"no GasBurn entry for", key>>)
+ActKids(O, k) == {c \in Kids(O) : c.id \in O.pa[k].kids}
+ActNeed(O, k) == ActBurn(O, k) + KidsCost(ActKids(O, k))
+ActOf(O, c) ==
+    IF \E k \in DOMAIN O.pa : c.id \in O.pa[k].kids
+    THEN CHOOSE k \in DOMAIN O.pa : c.id \in O.pa[k].kids
+    ELSE Assert(FALSE, <<"child not attributed to an action in pa", c.id>>)
 
-\* Weighted function-call actions of the children: <<id, action index, weight>>.
-Entries(O) == UNION { { <<c.id, k, c.gw[k]>> : k \in {j \in DOMAIN c.gw : c.gw[j] > 0} } : c \in Kids(O) }
+GasOK(r, O) ==
+    \/ GasMode # "gas"
+    \/ IF PerAction(r, O) THEN \A k \in DOMAIN O.pa : ActGas(r, k) >= ActNeed(O, k)
+       ELSE GasOf(r) >= Need(r, O)
+
+\* A panicking receipt that could not reach its panic ran out of gas first
+\* (gas_counter.rs:155-174, :205-213 GasExceeded).  Checked only when the
+\* panic path has a burn key.
+PanicOOG(r, O) ==
+    /\ GasMode = "gas"
+    /\ IF PerAction(r, O)
+       THEN \E k \in DOMAIN O.pa : O.pa[k].gk \in DOMAIN GasBurn /\ ActGas(r, k) < ActBurn(O, k)
+       ELSE BurnKey(r, O) \in DOMAIN GasBurn /\ GasOf(r) < Burn(r, O)
+
+\* Weighted function-call actions of a set of children: <<id, action index, weight>>.
+GasListsOK(c) ==
+    IF Len(c.gs) = Len(c.gw) THEN TRUE
+    ELSE Assert(FALSE, <<"static and weight lists differ in length", c.m, c.id>>)
+EntriesOf(S) ==
+    UNION { IF GasListsOK(c) THEN { <<c.id, k, c.gw[k]>> : k \in {j \in DOMAIN c.gw : c.gw[j] > 0} } ELSE {}
+            : c \in S }
+Entries(O) == EntriesOf(Kids(O))
 RECURSIVE WSum(_), FloorSum(_, _, _)
 WSum(E) == IF E = {} THEN 0 ELSE LET e == CHOOSE y \in E : TRUE IN e[3] + WSum(E \ {e})
 FloorSum(E, U, W) == IF E = {} THEN 0
                      ELSE LET e == CHOOSE y \in E : TRUE IN (U * e[3]) \div W + FloorSum(E \ {e}, U, W)
-\* The last weighted action in creation order (ids are allocated in creation order).
+\* The last weighted action.  The model orders by (receipt id, action index);
+\* nearcore by the order of the host calls that set the weights
+\* (receipt_manager.rs:414).  They agree when receipts are created in id
+\* order and their actions appended in order, as near-sdk promise chains do.
 LastE(E) == CHOOSE e \in E : \A f \in E : f[1] < e[1] \/ (f[1] = e[1] /\ f[2] <= e[2])
 Share(e, U, E) ==
     LET W == WSum(E) IN
     IF e = LastE(E) THEN U - FloorSum(E \ {e}, U, W) ELSE (U * e[3]) \div W
 
 Assign(c, U, E) ==
-    [c EXCEPT !.g = [k \in DOMAIN c.gs |->
+    IF ~GasListsOK(c) THEN c
+    ELSE [c EXCEPT !.g = [k \in DOMAIN c.gs |->
                         c.gs[k] + (IF c.gw[k] > 0 /\ U > 0 THEN Share(<<c.id, k, c.gw[k]>>, U, E) ELSE 0)]]
 
+\* A child with its attached gas, after the split.
+Alloc(r, O, c) ==
+    IF PerAction(r, O)
+    THEN LET k == ActOf(O, c) IN Assign(c, ActGas(r, k) - ActNeed(O, k), EntriesOf(ActKids(O, k)))
+    ELSE Assign(c, GasOf(r) - Need(r, O), Entries(O))
+
 Give(r, O, S) ==
-    IF GasMode # "gas" THEN S
-    ELSE LET U == GasOf(r) - Need(r, O)  E == Entries(O) IN {Assign(c, U, E) : c \in S}
+    IF GasMode # "gas" THEN S ELSE {Alloc(r, O, c) : c \in S}
+
+\* A function-call child left with 0 gas (static 0 and no share) fails the
+\* creating receipt: new receipts are validated after the action
+\* (lib.rs:968-978; action_validation.rs:350-351, FunctionCallZeroAttachedGas).
+ZeroGasKid(r, O) ==
+    /\ GasMode = "gas"
+    /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs : Alloc(r, O, c).g[k] = 0
+
+\* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas).
+\* Order: the receiver check comes first (the call never starts); a panic
+\* the gas could not reach is "oog"; new-receipt validation and the storage
+\* check run after the call.
+Verdict(r, O) ==
+    IF ~CallTargetOK(r) THEN "fail"
+    ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "oog" ELSE "fail")
+    ELSE IF ~GasOK(r, O) THEN "oog"
+    ELSE IF ZeroGasKid(r, O) THEN "fail"
+    ELSE IF ~Affordable(r, O) THEN "fail"
+    ELSE "ok"
 
 \* Outcome log (conformance).  st: "ok" | "fail" | "oog" | "forced"
 LogR(r, st) ==
@@ -345,7 +474,7 @@ Commit(r, O) ==
     /\ near' = [near EXCEPT ![r.to] = @ + r.dep - O.out]
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt>>
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
@@ -359,7 +488,7 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt>>
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -380,8 +509,9 @@ ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailP(r, TRUE)
 \* Transfer / refund: credit the receiver; result data (empty bytes) to the
 \* callback if any.  A Transfer to a missing implicit account creates it
 \* (actions.rs:221-290).  Eth-implicit creation attaches a protocol-defined
-\* global contract and NEAR-implicit creation adds a full-access key; neither
-\* is modelled beyond existence (model code and keys of such accounts yourself).
+\* global contract (HasCode stays TRUE); the other created kinds have no code,
+\* so calls to them fail.  NEAR-implicit creation adds a full-access key, which
+\* is not modelled (model the keys of such accounts yourself).
 ExecTransfer(r) ==
     /\ r.m \in {XFER, REFND}
     /\ \/ AcctExists(r.to)
@@ -393,41 +523,59 @@ ExecTransfer(r) ==
     /\ paid' = [paid EXCEPT ![r.tx][r.to] = @ + r.dep]
     /\ rlog' = LogR(r, "ok")
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
-    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig>>
+    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt>>
+
+\* A refund to a missing account fails and its amount is burnt
+\* (lib.rs:1046-1054); refunds never create accounts (actions.rs:930-933).
+RefundBurn(r) ==
+    /\ rq'    = RemR(r)
+    /\ post'  = RemP(r)
+    /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
+    /\ burnt' = burnt + r.dep
+    /\ rlog'  = LogR(r, "fail")
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
-\* sees Failed.
+\* sees Failed.  A refund to a missing account is burnt.
 ExecTransferFail(r) ==
-    /\ r.m = XFER
     /\ ~AcctExists(r.to)
-    /\ ~IsImplicit(r.to)
-    /\ FailP(r, FALSE)
+    /\ \/ r.m = XFER /\ ~IsImplicit(r.to) /\ FailP(r, FALSE)
+       \/ r.m = REFND /\ BurnLostRefunds /\ RefundBurn(r)
 
-\* Stake action on StakingAcct (actions.rs:58-109).
+\* Stake action (actions.rs:58-109): the actor must be the account itself
+\* (actions.rs:755-801, ActorNoPermission); then TriesToStake (liquid below
+\* the increment), TriesToUnstake, InsufficientStake.  Storage is checked
+\* after the receipt with liquid + locked, which staking does not change.
 StakeFails(amt) ==
     LET inc == IF amt > locked THEN amt - locked ELSE 0 IN
-    \/ near[StakingAcct] - inc < StorageFloor[StakingAcct]   \* TriesToStake / LackBalanceForState
+    \/ near[StakingAcct] < inc                                \* TriesToStake
     \/ (locked = 0 /\ amt = 0)                               \* TriesToUnstake
     \/ (amt > 0 /\ amt < MinStake)                           \* InsufficientStake
 
 ExecStake(r) ==
     /\ r.m = STAKE
+    /\ Assert(r.to = StakingAcct, <<"Stake receipt for an account other than StakingAcct", r.to>>)
     /\ LET amt == r.a.x1
            inc == IF amt > locked THEN amt - locked ELSE 0 IN
-       IF StakeFails(amt)
+       IF r.fr # r.to \/ StakeFails(amt)
        THEN FailP(r, FALSE)
        ELSE /\ rq'   = RemR(r)
             /\ post' = RemP(r)
-            /\ data' = RemD(r) \cup DataOf(r, TRUE, 0)
+            /\ data' = RemD(r) \cup DataOf(r, TRUE, EMPTY)      \* no return value: empty bytes (lib.rs:1172-1176)
             /\ near' = [near EXCEPT ![StakingAcct] = @ - inc]
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
 ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
+
+\* A function call whose receiver is missing or has no code fails before
+\* any contract code runs.  Exec does this already (Verdict); this step lets
+\* a dispatcher handle such receipts without calling a handler.
+ExecNoCode(r) == IsCall(r) /\ ~CallTargetOK(r) /\ FailP(r, FALSE)
 
 \* Epoch transition: rewards go to locked; a decreased proposal releases the
 \* difference to liquid.  Scaled: the release happens on the next tick
@@ -442,7 +590,7 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt>>
 
 ----------------------------------------------------------------------------
 (* Transactions                                                            *)
@@ -455,22 +603,25 @@ SubmitAs(r, a, k) ==
     /\ rq'    = rq \cup {[r EXCEPT !.loc = (a = r.to)]}
     /\ near'  = [near EXCEPT ![a] = @ - r.dep]
     /\ nid'   = nid + 1
-    /\ txsig' = (r.tx :> [a |-> a, k |-> k]) @@ txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created>>
+    /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
 
-\* Local-receipt priority (lib.rs:2800-2821): a pending local receipt on an
+\* Local-receipt priority (lib.rs:2799-2821): a pending local receipt on an
 \* account runs before any other receipt on that account.  Only a
 \* transaction's first receipt is local; later self-calls are not
-\* (lib.rs:1222-1234).  Assumes no congestion (lib.rs:2513-2521).
+\* (lib.rs:1222-1234).
+\* ON assumes no congestion: a local receipt that does not fit the chunk's
+\* compute limit is delayed behind already-delayed receipts
+\* (lib.rs:2513-2520), and then other receipts on the account can run
+\* first.  OFF (not conjoining it) is the conservative setting: every
+\* causally enabled order, including those reachable under congestion.
 \* nearcore's order is chunk-wide (all local receipts first, for every
-\* account); this rule only orders receipts of the same account.  That is
-\* exact for per-account state; ghosts that relate several accounts may see
-\* orders nearcore does not produce.
+\* account); this rule only orders receipts of the same account, which
+\* allows more orders than nearcore does.
 \* Opt-in: conjoin LocalPriorityOK(r) to the receipt step, or draw r from Schedulable.
-\* A model that does not conjoin it explores every causally enabled order.
 LocalPriorityOK(r) == ~r.loc => ~\E y \in rq : y.loc /\ y.to = r.to
 Schedulable == {r \in Runnable : LocalPriorityOK(r)}
 
@@ -489,21 +640,32 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ nid = 1 /\ fails = 0 /\ minted = 0
     /\ paid = [t \in txIds |-> [a \in Accounts |-> 0]]
     /\ oog = {} /\ rlog = {}
-    /\ txsig = <<>> /\ created = {}
+    /\ txsig = <<>> /\ created = {} /\ burnt = 0
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
 \* Only the variables added in 0.1.0, for models that initialise the others
-\* themselves.
-PlatformInitExtra == txsig = <<>> /\ created = {}
+\* themselves.  The parts compose: a model with its own txsig initialiser
+\* (e.g. a pre-sized function) conjoins PlatformInitAccounts alone.
+PlatformInitSigner   == txsig = <<>>
+PlatformInitAccounts == created = {} /\ burnt = 0
+PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts
 
 ----------------------------------------------------------------------------
 (* Platform sanity                                                         *)
 
-\* NEAR is conserved modulo rewards.
+\* NEAR is conserved modulo rewards and burnt refunds.
 NearConserved(total0) ==
     LET F[S \in SUBSET Accounts] == IF S = {} THEN 0
                                     ELSE LET a == CHOOSE y \in S : TRUE IN near[a] + F[S \ {a}]
-    IN F[Accounts] + locked + InflightDeposits = total0 + minted
+    IN F[Accounts] + locked + InflightDeposits = total0 + minted - burnt
+
+\* No orphans: every postponed callback still has its data in flight or a
+\* pending receipt that will deliver it, and every data receipt has a
+\* waiting callback.  Receipts nobody can run show up as a deadlock when a
+\* run sets deadlock = true (with a terminal stutter step once idle).
+NoOrphans ==
+    /\ \A p \in post : (\E d \in data : d.to = p.id) \/ (\E x \in rq \cup post : x.cb = p.id)
+    /\ \A d \in data : \E p \in post : p.id = d.to
 
 \* No receipt in flight holds more gas than its transaction's prepaid gas
 \* (the split never creates gas).

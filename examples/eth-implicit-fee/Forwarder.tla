@@ -14,8 +14,11 @@
 (* stated with AcctKind <- PKinds.  To already exists, except in run      *)
 (* eth_fee_creates, where the Transfer creates it (Created holds).         *)
 (*                                                                         *)
-(* Correct P: budgets Burn(forward) + XferFee(R, To), the receiver-type    *)
-(* dependent fee.                                                          *)
+(* Correct P: budgets Burn(forward) + the receiver-type dependent fee,     *)
+(* pinned here as literals at protocol 88: 8146 Ggas for an eth-implicit   *)
+(* receiver, 446 Ggas for a named one (Transfer send + exec plus the       *)
+(* receipt base fee; eth-implicit adds create_account and add_key).        *)
+(* FeesPinned checks the library's fee table against them.                 *)
 (* Wrong P (Wrong = TRUE): budgets the named-account fee.  For an          *)
 (* eth-implicit To, R.forward runs out of gas, the deposit returns to P    *)
 (* and To is never paid: Delivered fails (run eth_fee_named_budget).  The  *)
@@ -36,8 +39,9 @@ ForwardBurn == 1000
 PGasCall == "forward" :> [st |-> <<0>>, wt |-> <<0>>, fee |-> 300]
 PGasBurn == ("pay" :> [base |-> 2000, per |-> 0]) @@ ("forward" :> [base |-> ForwardBurn, per |-> 0])
 
-Budget == ForwardBurn + (IF Wrong THEN NearFeeTable!TransferFeeTotal(FALSE, "named")
-                         ELSE XferFee(R, To))
+EthFee   == 8146      \* Ggas, Transfer to an eth-implicit account, protocol 88
+NamedFee == 446       \* Ggas, Transfer to a named account, protocol 88
+Budget == ForwardBurn + (IF Wrong \/ KindOf(To) # "eth_implicit" THEN NamedFee ELSE EthFee)
 
 Start == /\ ~sent
          /\ Submit(WithGas(Rcpt(nid, 1, P, U, "pay", [n |-> 0], 0, U, 0), 300000))
@@ -60,6 +64,8 @@ Next == Start \/ Run
 Spec == Init /\ [][Next]_vars
 
 Delivered == (sent /\ Idle) => near[To] = Amt
-Sane == NearConserved(InitP)
+Sane == NearConserved(InitP) /\ GasBounded(LAMBDA t : 300000)
 Created == (sent /\ Idle /\ To \notin Exists) => To \in created
+FeesPinned == /\ XferFee(R, "0xe") = EthFee
+              /\ XferFee(R, "bob") = NamedFee
 =============================================================================

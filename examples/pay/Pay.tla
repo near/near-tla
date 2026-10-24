@@ -31,7 +31,7 @@ PFloor      == [a \in Accts |-> 0]
 PTokHolders == [a \in {FT} |-> {U, C, RX}]
 PTokMin     == [a \in {FT} |-> 1]
 PTokDev     == [a \in {FT} |-> Dev]
-PTokReserve == [a \in {FT} |-> 30000]          \* gas mode: GAS_FOR_FT_TRANSFER_CALL = 30 Tgas
+PTokReserve == [a \in {FT} |-> 30000]          \* used only with TokFtGasShape "reserve" (3.x)
 NoGasTable  == [x \in {} |-> 0]
 PayMenu     == {t * 100 : t \in 390..420} \cup {300000}   \* 39.0-42.0 Tgas in 0.1 steps, and 300
 
@@ -53,6 +53,21 @@ PGasBurn ==
     @@ ("ft.ft_transfer_call"    :> [base |-> 1600, per |-> 0])
     @@ ("ft.ft_resolve_transfer" :> [base |-> 800,  per |-> 0])
     @@ ("rx.ft_on_transfer"      :> [base |-> 200,  per |-> 0])
+
+\* The same with the token side from CalibStd (measured near-contract-standards
+\* 5.29.1 FT): C's own entries stay illustrative, the token's burns and the
+\* resolver's static / weight / fee come from StdFtGasBurn / StdFtGasCall.
+Std == INSTANCE CalibStd
+PStdGasCall ==
+       ("ft.ft_transfer_call"    :> GC(<<35000>>, <<1>>, 900))
+    @@ ("on_paid"                :> GC(<<1000>>, <<1>>, 900))
+    @@ ("ft_on_transfer"         :> GC(<<>>, <<>>, 900))
+    @@ Std!StdFtGasCall(FT)
+PStdGasBurn ==
+       ("pay"                    :> [base |-> 2000, per |-> 0])
+    @@ ("on_paid"                :> [base |-> 1500, per |-> 0])
+    @@ ("rx.ft_on_transfer"      :> [base |-> 200,  per |-> 0])
+    @@ Std!StdFtGasBurn(FT)
 
 (* ---- contract C ------------------------------------------------------- *)
 \* A handler returns <<outcome, new ib>>.
@@ -126,7 +141,7 @@ Spec == Init /\ [][Next]_vars
 Books == Idle => ib = tk[FT].bal[C]
 \* A settled pay was refunded what RX asked back (capped at amt; NEP-141).
 Honored == \A t \in 1..ntx : (TxSettled(t) /\ gT[t].done) => gT[t].refund = TMin(gT[t].req, gT[t].amt)
-Sane == NearConserved(0) /\ TokSupplyOK /\ TokTypeOK
+Sane == NearConserved(0) /\ TokSupplyOK /\ TokTypeOK /\ GasBounded(LAMBDA t : gT[t].gas)
 \* print-only: every settled tx whose books broke, with its prepaid gas (TLC keeps going)
 WinBooks == (Idle /\ ib # tk[FT].bal[C]) => PrintT(<<"WIN", "Books", gT[ntx].gas, oog>>)
 =============================================================================

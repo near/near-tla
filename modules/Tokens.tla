@@ -16,7 +16,8 @@
 (*                                                                         *)
 (* Methods: ft_transfer, ft_transfer_call, ft_resolve_transfer,            *)
 (* ft_balance_of, ft_total_supply, storage_deposit, storage_balance_of,    *)
-(* near_deposit / near_withdraw (on WNearAccts), and "batch":              *)
+(* storage_unregister, near_deposit / near_withdraw (on WNearAccts), and   *)
+(* "batch":                                                                *)
 (* [near_deposit?, storage_deposit?, ft_transfer|ft_transfer_call?] in one *)
 (* atomic receipt (args BatchArgs).  Each action of a batch carries its    *)
 (* own deposit (nd, sd, TokYocto); a receipt whose total deposit differs   *)
@@ -25,12 +26,27 @@
 (*                                                                         *)
 (* Gas burn keys (GasBurn, gas mode): "<acct>.<method>", and for a batch   *)
 (* "<acct>.batch/<shape>" with shape = [D][S](T|C) for the actions present.*)
+(* A batch is accounted as one action by default: its attached gas is one  *)
+(* pool for all its function calls.  nearcore gives each function call     *)
+(* its own gas, and an action's leftover goes only to the children that    *)
+(* action created (function_call.rs:61, :343-345).  Set                    *)
+(* TokBatchPerAction <- TRUE for that: the outcome then carries pa, the    *)
+(* burn keys are the per-method ones, and the creator must give the batch  *)
+(* receipt one gas entry per action (WithCall / r.g of matching length).   *)
 (***************************************************************************)
 EXTENDS WNear
 
 BatchKey(a) ==
     "batch/" \o (IF a.nd > 0 THEN "D" ELSE "") \o (IF a.sd > 0 THEN "S" ELSE "")
              \o (CASE a.xf = "ft_transfer" -> "T" [] a.xf = "ft_transfer_call" -> "C" [] OTHER -> "")
+
+\* Per-action records of a batch: burn key and the ids of the children each
+\* action created (ids n0..n1-1 for the first, and so on).
+BatchPA(r, a, n0, n1, n2, n3) ==
+    LET Act(m, lo, hi) == <<[gk |-> CallKey(r.to, m), sz |-> 0, kids |-> lo..(hi - 1)]>> IN
+    (IF a.nd > 0 THEN Act("near_deposit", n0, n1) ELSE <<>>)
+    \o (IF a.sd > 0 THEN Act("storage_deposit", n1, n2) ELSE <<>>)
+    \o (IF a.xf # "" THEN Act(a.xf, n2, n3) ELSE <<>>)
 
 BatchAct(acc, r, ch) ==
     LET a  == r.a
@@ -40,10 +56,13 @@ BatchAct(acc, r, ch) ==
                 [] a.xf = "ft_transfer_call" -> FtTransferCallAct(a2, r, a.rc, a.amt, a.msg)
                 [] OTHER                     -> a2
         dep == a.nd + a.sd + (IF a.xf # "" THEN TokYocto ELSE 0)
-    IN IF r.dep # dep THEN AE([acc EXCEPT !.key = BatchKey(a)],
-                              "Requires attached deposit of exactly 1 yoctoNEAR")
-       ELSE IF a.nd > 0 /\ r.to \notin WNearAccts THEN AE([a3 EXCEPT !.key = BatchKey(a)], "method not found")
-       ELSE [a3 EXCEPT !.key = BatchKey(a)]
+        bad == IF a.xf # "" /\ TokYocto > 0
+               THEN "Requires attached deposit of exactly 1 yoctoNEAR"
+               ELSE "batch: attached deposit differs from the actions' deposits (near_deposit + storage_deposit)"
+        a4 == [a3 EXCEPT !.key = BatchKey(a), !.pa = BatchPA(r, a, acc.n, a1.n, a2.n, a3.n)]
+    IN IF r.dep # dep THEN AE([acc EXCEPT !.key = BatchKey(a)], bad)
+       ELSE IF a.nd > 0 /\ r.to \notin WNearAccts THEN AE(a4, "method not found")
+       ELSE a4
 
 TokHandle(r, ch) ==
     LET acc == TAcc0(r)  a == r.a IN
@@ -55,12 +74,13 @@ TokHandle(r, ch) ==
         [] r.m = "ft_total_supply"     -> FtTotalSupplyAct(acc, r)
         [] r.m = "storage_deposit"     -> SdAct(acc, r, a.rc, r.dep)
         [] r.m = "storage_balance_of"  -> SbAct(acc, r, a.rc)
+        [] r.m = "storage_unregister"  -> SuAct(YoctoAct(acc, r.dep), r, a.force)
         [] r.m = "near_deposit"  /\ r.to \in WNearAccts -> NearDepositAct(acc, r, r.dep)
         [] r.m = "near_withdraw" /\ r.to \in WNearAccts -> NearWithdrawAct(YoctoAct(acc, r.dep), r, a.amt)
         [] r.m = "batch"               -> BatchAct(acc, r, ch)
         [] OTHER                       -> AE(acc, "method not found"))
 
-IsTokRcpt(r) == r.to \in TokenAccts /\ ~IsBuiltin(r) /\ r.m \notin {"ADDKEY", "DELKEY"}
+IsTokRcpt(r) == r.to \in TokenAccts /\ IsCall(r)
 
 TokChoices(r) ==
     IF /\ r.to \in TokenAccts

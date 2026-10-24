@@ -123,11 +123,12 @@ Each rule has four fields:
   (`runtime/near-vm-runner/src/logic/host.rs:2660-2694`) and visible to contracts as
   `refund_to_account_id` (`runtime/runtime/src/function_call.rs:263`). A refund never creates an
   account: `runtime/runtime/src/actions.rs:929-933`. A failed refund is burnt:
-  `runtime/runtime/src/lib.rs:1046-1053`.
+  `runtime/runtime/src/lib.rs:1046-1054`.
 - **Model:** the refund target field `rto` (default the predecessor) and a refund receipt
-  (`REFND`, predecessor `"system"`) executed by `ExecTransfer`. `ExecTransfer` needs the
-  receiver to exist for a refund, so a refund to an absent account has no step: it stays in
-  flight instead of being burnt (see N-refund-stuck).
+  (`REFND`, predecessor `"system"`) executed by `ExecTransfer`. A refund to an absent account
+  is burnt by `ExecTransferFail` (`RefundBurn`): it is consumed, its callback (if any) sees
+  Failed, and the amount goes to the ghost `burnt`, which `NearConserved` subtracts.
+  `BurnLostRefunds <- FALSE` restores the older behaviour (the refund stays in flight).
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ---
@@ -170,7 +171,7 @@ Each rule has four fields:
   (`promise_results_count`).
 - **Model:** `r.res = [ok, v, sz]` with `v` a number, `EMPTY`, `MAL` or `NONEMPTY`, built by
   `RVal`; helpers `IsNum`, `IsEmpty`, `IsFailed`, `NumOr`. No results: `NoRes` with
-  `NoRes.v = NOPR`, and `IsNum(NoRes) = FALSE` (D4).
+  `NoRes.v = NOPR`, and `IsNum(NoRes) = FALSE`.
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ### C4. Result size
@@ -187,7 +188,7 @@ Each rule has four fields:
   `ReceiptPromiseInputSizeLimit` at 87, `core/primitives-core/src/version.rs:636`), `:916-924`
   (the receipt fails without running its actions); `core/parameters/res/runtime_configs/87.yaml`
   and `88.yaml` (limit set, then lifted).
-- **Model:** a size field on data receipts and `r.res.sz` (D3), **in KB** (see [Units](#units)):
+- **Model:** a size field on data receipts and `r.res.sz`, **in KB** (see [Units](#units)):
   `RVal(v)` has size 0 and `RValSz(v, n)` carries `n` KB (also `DataOfSz`, `RetSz`, `OSz`).
   Handlers may use `r.res.sz` as the burn size. Fee: `NearFees!DataBytesFee(sir, bytes)`, which
   takes **bytes**.
@@ -218,7 +219,7 @@ Each rule has four fields:
   attached to this function-call action.
 - **nearcore:** `runtime/runtime/src/function_call.rs:274` (`prepaid_gas: function_call.gas`);
   `runtime/near-vm-runner/src/logic/gas_counter.rs:126-150` (`deduct_gas`: fails with
-  `GasExceeded` when `burnt + promises_gas > prepaid_gas`);
+  `GasExceeded` when `burnt + promises_gas > prepaid_gas`), `:205-213`;
   `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:243`,
   `core/parameters/res/runtime_configs/83.yaml:8`.
 - **Model:** `WithGas(r, p)` on the first receipt (`Submit(WithGas(...))`); `LastGas(r)` is
@@ -231,11 +232,20 @@ Each rule has four fields:
   once. The child's send fee is burnt and its exec fee prepaid at the same moment. If the
   reservation does not fit, the creating call fails right there (`GasExceeded`), so neither it
   nor any child commits (R4). This is the safe case: nothing is half-created.
+
+  A call that panics after burning less than its gas fails with the panic; one that would run
+  out of gas before reaching the panic fails with `GasExceeded`. A function-call child that
+  ends up with 0 attached gas (static 0 and no share of the leftover) fails the **creating**
+  receipt: new receipts are validated after the call (`FunctionCallZeroAttachedGas`).
 - **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:3578` (`prepay_gas(gas)` in
   `promise_batch_action_function_call_weight`), `:3564-3577` (base and per-byte fees first);
-  `runtime/near-vm-runner/src/logic/gas_counter.rs:126-150`.
+  `runtime/near-vm-runner/src/logic/gas_counter.rs:126-150`, `:155-174`, `:205-213`;
+  `runtime/runtime/src/action_validation.rs:350-351` (zero gas), applied at
+  `runtime/runtime/src/lib.rs:968-978`.
 - **Model:** `Need = Burn(r, O) + Σ_children (c.gf + Σ c.gs)` (`KidsCost`); `GasOK(r, O)` is
-  `Need ≤ Σ r.g`. Otherwise the verdict is `"oog"` and `FailOOG` applies.
+  `Need ≤ Σ r.g`. Otherwise the verdict is `"oog"` and `FailOOG` applies. A failing outcome
+  (`err`) whose burn key exceeds the attached gas is labelled `"oog"` (`PanicOOG`; only the
+  label differs). `ZeroGasKid` fails the creator when a child call gets 0 gas.
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ### G3. Weight and the leftover split (`distribute_gas`)
@@ -253,7 +263,13 @@ Each rule has four fields:
   (child id, action index) order. That matches host-call order whenever a handler builds each
   child completely before creating the next; a handler that interleaves appends across
   promises can see the remainder (at most `n − 1` gas units for `n` weighted actions, far below
-  1 Ggas) go to a different action. Per-call defaults are `GasCall[key] = [st, wt, fee]`
+  1 Ggas) go to a different action. **Per action:** each function-call action of a receipt has
+  its own gas and its own promise manager, so only that action's leftover is split, over the
+  children it created (`runtime/runtime/src/function_call.rs:61`, `:343-345`; the rest is
+  refunded, `runtime/runtime/src/lib.rs:1311-1315`). An outcome with `pa` (one
+  `[gk, sz, kids]` record per action) gets this per-action check and split (`PerAction`,
+  `ActNeed`, `Alloc`); without `pa` a receipt is one action. Per-call defaults are
+  `GasCall[key] = [st, wt, fee]`
   (`CallKey`/`CallDef2` look up `"acct.method"`, then `"method"`), overridden by `WithCall`,
   `WithStatic`, `WithWeight` and `WithFee`.
 - **Validated:** nearcore reading. <!-- conformance -->
@@ -275,7 +291,7 @@ Each rule has four fields:
   `sender_is_receiver = receiver_id == signer_id`), `:86-224` (`total_send_fees`).
 - **Model:** fee values in `modules/NearFees.tla` (`ReceiptFee`, `SendFee`, `ExecFee`,
   `ActionFee`, `TransferFeeTotal`, `DataDepFee`, `DataBytesFee`, per-byte operators).
-  Accounting (D6): function-call children have `c.gf` = their prepaid exec fee, and their send
+  Accounting: function-call children have `c.gf` = their prepaid exec fee, and their send
   fee sits inside the creator's calibrated burn. Action-only children (Transfer, AddKey,
   DeleteKey, Stake, ...) have `c.gf` = send + exec of the whole single-action receipt, receipt
   base included, so one burn key works for named and implicit receivers. `NearAsync` reads the
@@ -291,7 +307,7 @@ Each rule has four fields:
   The gas burnt up to the failure stays burnt. The rest of the prepaid gas, `prepaid −
   gas_burnt` (not `gas_used`), is refunded to the signer.
 - **nearcore:** `runtime/runtime/src/function_call.rs:100-138` (the abort becomes the action
-  error); `runtime/runtime/src/lib.rs:535-541`, `:1304-1310` (failure refunds against
+  error); `runtime/runtime/src/lib.rs:535-541`, `:1304-1316` (failure refunds against
   `gas_burnt`, success against `gas_used`).
 - **Model:** `FailOOG`, with the `oog` ghost recording `<<tx, method>>`.
 - **Validated:** nearcore reading. <!-- conformance -->
@@ -330,7 +346,8 @@ Each rule has four fields:
   `:360-368`).
 - **Model:** `NearFees.RcvKinds` = `{"named", "near_implicit", "eth_implicit",
   "deterministic", "universal"}`. `AcctKinds`, `AcctKind`/`KindOf` and `IsImplicit` assign kinds
-  to model accounts.
+  to model accounts; `IsImplicit` covers NEAR-implicit, eth-implicit, deterministic and (when
+  `UniversalOn`, 87+) universal.
 - **Validated:** nearcore reading. The fee-by-pattern rule: <!-- conformance -->
 
 ### A3. Implicit-account creation on Transfer
@@ -362,10 +379,12 @@ Each rule has four fields:
   (`action_transfer_or_implicit_account_creation`), `:1057-1058` (`created_new_account`),
   `:1361-1397` (account creation charge), `core/parameters/res/runtime_configs/85.yaml`
   (`account_creation_charge`).
-- **Model:** `ExecTransfer` creates a missing implicit receiver (D7) as an ordinary existing
-  account; it does not check the "only action" condition (built-in Transfer receipts hold one
-  action) and does not model the universal uninitialised state (N-universal) or the charge
-  (N-gas-money).
+- **Model:** `ExecTransfer` creates a missing implicit receiver as an existing account (in
+  `created`); it does not check the "only action" condition (built-in Transfer receipts hold one
+  action). A created account has no code (`HasCode`) unless it is eth-implicit, so calls to a
+  created NEAR-implicit, deterministic or universal account fail; the NEAR-implicit key, the
+  rest of the universal uninitialised state (N-universal) and the charge (N-gas-money) are not
+  modelled.
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ### A4. Transfer to a missing named account fails and refunds
@@ -383,8 +402,13 @@ Each rule has four fields:
   `CompilationError(CodeDoesNotExist)`. Like any failure, the receipt reverts and refunds (R4,
   R5). A FunctionCall to an absent account fails earlier with `AccountDoesNotExist` (A1).
 - **nearcore:** `runtime/runtime/src/function_call.rs:309-312` (`VMOutcome::nop_outcome` with
-  `CodeDoesNotExist`); `runtime/runtime/src/actions.rs:862-891`.
-- **Model:** `NearKeys.FailNoCode`.
+  `CodeDoesNotExist`); `runtime/runtime/src/actions.rs:874-887` (`AccountDoesNotExist`,
+  `AccountNotInitialized`).
+- **Model:** `Exec` fails a function call whose receiver is missing or has no code before the
+  handler's outcome counts (`CallTargetOK`, `HasCode`); the accounts with code are the
+  overridable definition `Contracts` (default `Accounts`). `CallsNeedCode <- FALSE` turns the
+  rule off for older models. `NearKeys.FailNoCode` and `ExecNoCode` are the same rule as an
+  explicit step.
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ---
@@ -403,12 +427,13 @@ Each rule has four fields:
   refund's receiver (the original signer) as signer, with the original signer key, so that it
   can top up that key's allowance. Neither runs contract code, so no contract can observe the
   difference.
-- **nearcore:** `runtime/runtime/src/function_call.rs:172-173` (copied into every child receipt),
+- **nearcore:** `runtime/runtime/src/function_call.rs:172-174` (copied into every child receipt),
   `:258-260` (exposed in `VMContext`), `:262` (predecessor); refunds:
   `core/primitives/src/receipt.rs:496-509` (`new_balance_refund`), `:518-536`
   (`new_gas_refund`).
 - **Model:** `SignerOf(tx)` / `Signer(r)` / `SignerKey(r)`, set by `Submit` / `SubmitAs(r, a, k)`
-  (D1). `Submit(r)` with no key info uses signer = `r.fr` and `DefaultKey`. `Signer(r)` is
+  `Submit(r)` with no key info uses signer = `r.fr` and `DefaultKey`. `TrackSigner <- FALSE`
+  stops recording it, for models that never read the signer (smaller state space). `Signer(r)` is
   per transaction, so on a `REFND` receipt it returns the transaction's signer, not
   `"system"`. That is harmless because refunds run no contract code; do not use `Signer(r)` of a
   refund in an invariant.
@@ -430,9 +455,12 @@ Each rule has four fields:
   `:282-301` (`check_and_compute_new_allowance`), `:365-394` (call order in
   `verify_and_charge_tx_ephemeral`), `:177-194` (`AccessKeyNotFound`; bootstrap at `:184-186`),
   `:200-202` (`is_bootstrap`); `runtime/runtime/src/actions.rs:133-157` (`try_refund_allowance`).
-- **Model:** `NearKeys`: `KeyAllows`, `SubmitSigned`, `Perm`, `FullPerm`. It checks receiver,
-  method and zero deposit for function-call keys. It does **not** check the one-action rule
-  (N-fckey-one-action) or allowances (N-allowance). There is no bootstrap path.
+- **Model:** `NearKeys`: `KeyAllows`, `KeyCanSign`, `SubmitSigned`, `Perm`, `FullPerm`. For a
+  function-call key it checks the receiver, the method (an empty list allows every method,
+  `verifier.rs:238`), zero deposit, and that the transaction is a single function call (no
+  Transfer, Stake or key action, no multi-call receipt). It does not check allowances
+  (N-allowance) or key actions a model bundles into a call receipt (N-fckey-one-action). There
+  is no bootstrap path.
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ### K3. AddKey and DeleteKey
@@ -442,7 +470,7 @@ Each rule has four fields:
   promise to itself; after a `CreateAccount` in the same receipt, the new account is the actor.
   AddKey of a key that already exists fails (`AddKeyAlreadyExists`). DeleteKey of a key that does
   not exist fails (`DeleteKeyDoesNotExist`). Either failure fails **the whole receipt** (M1).
-- **nearcore:** `runtime/runtime/src/actions.rs:755-800` (`check_actor_permissions`), `:202`
+- **nearcore:** `runtime/runtime/src/actions.rs:755-801` (`check_actor_permissions`), `:202`
   (CreateAccount sets the actor); `runtime/runtime/src/access_keys.rs:157-164` (AddKey exists),
   `:83-89` (DeleteKey absent).
 - **Model:** `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct`, `KeyPresent`.
@@ -462,7 +490,8 @@ Each rule has four fields:
   `:1084-1087` (rollback), `:535-541`; survivors: `:1402-1415` (refunds), `:1171-1189` (data
   receipts are built after rollback from the error).
 - **Model:** `NearKeys`: `ExecWithKeys`, `KeyActsOK`, `WithKeyActs`. Token batches: `"batch"`
-  in the token modules is one atomic receipt (a deposit mismatch fails the receipt, D8).
+  in the token modules is one atomic receipt (a deposit mismatch fails the receipt); its gas
+  is one pool unless `TokBatchPerAction <- TRUE` (G3, N-batch-oog).
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ---
@@ -490,7 +519,7 @@ Each rule has four fields:
   timeouts `:2825`), `:2513-2521` (limit reached: push to delayed),
   `runtime/runtime/src/congestion_control.rs:864` (`queue.push_back`), `:1222-1230` of
   `lib.rs` (receipts created by a receipt: instant or outgoing).
-- **Model:** `LocalPriorityOK(r)` / `Schedulable` (D2), an opt-in operator the contract conjoins
+- **Model:** `LocalPriorityOK(r)` / `Schedulable`, an opt-in operator the contract conjoins
   (or it draws receipts from `Schedulable`). It forbids running a non-local receipt to account
   `a` while a local receipt to `a` is pending. It assumes the chunk is never full.
 - **Trade-off and recommended practice:**
@@ -498,9 +527,11 @@ Each rule has four fields:
     receiving chunk is at its compute or proof limit: nearcore then runs already-delayed
     receipts before the local one, and `LocalPriorityOK` forbids exactly that order (see
     N-local-congested). Use it to rule out orders that cannot happen on an idle shard.
-  - **Switch OFF** explores every causally enabled order. That over-approximates and can give
-    false positives, for example a stale-key ordering: a receipt running against an access key
-    that a self-signed key change would already have replaced on an idle shard.
+  - **Switch OFF** is the conservative setting: it explores every causally enabled order,
+    including the ones congestion makes reachable. A stale-key ordering (a receipt running
+    against an access key that a self-signed key change would already have replaced on an idle
+    shard) is one of them: it cannot happen on an idle shard, but it can when the local
+    receipt is delayed.
   - Run safety properties **with the switch OFF as well**. A violation that appears only with
     the switch OFF is real under congestion unless you can argue the receiving chunk cannot be
     at its limit; do not dismiss it without that argument.
@@ -521,18 +552,24 @@ Each rule has four fields:
 
 ### B1. Stake action failures
 
-- **Rule:** `Stake(amount, key)` on an account:
+- **Rule:** `Stake(amount, key)` on an account needs the actor to be the account itself (K3);
+  then it:
   - fails with `TriesToStake` if `amount − locked` exceeds the liquid balance;
   - fails with `TriesToUnstake` if nothing is locked and `amount = 0`;
   - fails with `InsufficientStake` if `0 < amount < minimum stake`.
 
   Otherwise it records a validator proposal. An increase moves the difference from liquid to
   locked immediately. A decrease (unstake) changes nothing now; the release comes from epoch
-  processing later. A failed Stake fails its receipt, which drops the proposal.
-- **nearcore:** `runtime/runtime/src/actions.rs:58-108` (`action_stake`);
+  processing later. A failed Stake fails its receipt, which drops the proposal. A successful
+  Stake receipt has no return value, so a callback sees empty bytes (C3). There is no storage
+  test inside the action; the receipt's storage check (B2) counts liquid + locked, which a
+  Stake does not change.
+- **nearcore:** `runtime/runtime/src/actions.rs:58-108` (`action_stake`; the checks at
+  `:66-100`), `:755-801` (actor); `runtime/runtime/src/lib.rs:1172-1176` (result);
   `runtime/runtime/src/lib.rs:1717` (`update_validator_accounts`, epoch-side release and
   rewards).
-- **Model:** `ExecStake`, `StakeFails`, `EpochTick`; constants `StakingAcct`, `MinStake`,
+- **Model:** `ExecStake` (actor check, then `StakeFails`; result `EMPTY`), `EpochTick`;
+  constants `StakingAcct`, `MinStake`,
   `MaxEpoch` and `MaxReward`.
 - **Validated:** nearcore reading. <!-- conformance --> The sim simplifies epochs (one validator,
   no minimum stake, flat rewards).
@@ -548,9 +585,9 @@ Each rule has four fields:
   (`check_storage_stake`: `amount + locked` at `:64-73`, the zero-balance exemption at `:77-79`),
   `:25` (`ZERO_BALANCE_ACCOUNT_STORAGE_LIMIT = 770`), `:88-90`, `:375-387`;
   `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:7`.
-- **Model:** the `StorageFloor` constant, a per-account floor on the **liquid** balance. Storage
-  usage is not tracked byte by byte, locked stake does not count toward it, and there is no
-  zero-balance exemption (see N-storage).
+- **Model:** the `StorageFloor` constant: what liquid + locked must cover after a function
+  call (`Affordable`; locked counts for `StakingAcct`, `LockedOf`). Storage usage is not tracked
+  byte by byte; give a zero-balance (exempt) account floor 0 (see N-storage).
 - **Validated:** nearcore reading.
 
 ---
@@ -558,7 +595,7 @@ Each rule has four fields:
 ## Tokens
 
 Sources: `neps/nep-0141.md` (fungible token core; `ft_resolve_transfer` requirements at
-`:292-330`), `neps/nep-0145.md` (storage management; interface at `:378-410`),
+`:292-330`), `neps/nep-0145.md` (storage management; interface at `:378-415`),
 `neps/nep-0245.md` (multi token; `mt_resolve_transfer` at `:304-330`), and NEP-297 (events, not
 modelled). The reference implementation is near-contract-standards, in
 `fungible_token/core_impl.rs`, `fungible_token/storage_impl.rs` and `fungible_token/macros.rs`.
@@ -592,7 +629,8 @@ locally.
   `promise_result_checked(0, MAX_RESULT_LENGTH)`, so an oversized result counts as all unused;
   5.23.0 uses `promise_result(0)`.
 - **Model:** `TokenCommon.ResolveRefund`, `NumOr`. The model's resolver accepts calls from the
-  token only.
+  token only. The burn path is reached when the sender calls `storage_unregister(force)`
+  between the transfer and the resolver (T4).
 - **Validated:** near-contract-standards source read (5.23.0-5.29.1). <!-- conformance -->
 
 ### T3. Gas behaviour of `ft_transfer_call` (version-dependent)
@@ -604,10 +642,13 @@ locally.
   - **Older versions** (recalled, not read): `ft_on_transfer` gets static = prepaid − a fixed
     reserve, with weight 0. The call panics when prepaid ≤ reserve. The resolver gets a fixed
     static gas.
-- **Model:** per-token configuration (D8): the reserve (`TokCallReserve`), the receiver's
-  static gas and weight, and the resolver's static gas and weight. **The default reproduces the
-  older reserve-based behaviour.** For a 5.x token, configure weight-based forwarding. The
-  measured values per version come from `conformance/` (`docs/CONFORMANCE.md`).
+- **Model:** per-token `TokFtGasShape[t]`: `"standard"` (the default, 5.x: `ft_on_transfer`
+  static 0 and weight 1, no reserve check, resolver static `TokResolveStatic[t]` = 5 Tgas and
+  weight 0) or `"reserve"` (older: static prepaid − `TokCallReserve[t]`, weight 0, prepaid ≤
+  reserve panics, resolver gas from `GasCall`). `TokOnTransferStatic[t]` /
+  `TokOnTransferWeight[t]` override the shape (-1 = its default); a `GasCall` entry for the
+  resolver wins in both shapes. `Nep245` keeps the reserve shape. The measured values per
+  version come from `conformance/` (`docs/CONFORMANCE.md`).
 - **Validated:** 5.x read; the older behaviour is recalled. <!-- conformance -->
 
 ### T4. NEP-145 `storage_deposit`
@@ -620,9 +661,16 @@ locally.
 
   The FT implementation ignores `registration_only` and has `min = max`. It returns a
   `StorageBalance` object.
-- **Sources:** NEP-145 `:378-410`; near-contract-standards 5.29.1
-  `fungible_token/storage_impl.rs:51-78`, `:81-111`.
-- **Model:** `Nep145`. Deviation `sdRefundToAccount` refunds to `account_id` instead.
+
+  `storage_unregister(force)` needs 1 yocto. An unregistered caller gets `false`. A registered
+  caller with a positive balance and no `force` panics. Otherwise the account is removed, its
+  balance burnt (total supply drops), `min + 1 yocto` transferred to it, and it gets `true`.
+  `storage_balance_of(account_id)` returns the `StorageBalance` or `null`.
+- **Sources:** NEP-145 `:378-415`; near-contract-standards 5.29.1
+  `fungible_token/storage_impl.rs:8-36` (`internal_storage_unregister`), `:51-78`, `:81-116`.
+- **Model:** `Nep145`: `SdAct`, `SuAct` (`SuArgs(force)`; both booleans are `NONEMPTY` bytes,
+  `ev.unreg` / `ev.unregBurnt` say what happened), `SbAct` (`Some` is the number `total` = min,
+  `null` is `NONEMPTY`). Deviation `sdRefundToAccount` refunds to `account_id` instead.
 - **Validated:** source read.
 
 ### T5. NEP-245 multi token
@@ -715,8 +763,9 @@ against the current module code; some may be fixed in the modules later.
   (`core/primitives/src/receipt.rs:467-491`, `runtime/runtime/src/lib.rs:1222-1224`,
   `:2748-2775`). The model lets other receipts interleave.
 - **N-local-off.** With the local-priority switch (S1) off, a self-signed first receipt may run
-  after receipts that nearcore, on an uncongested chunk, would run later. This yields false
-  positives such as the stale-key ordering (S1).
+  after receipts that nearcore, on an uncongested chunk, would run later. Such orders are
+  reachable under congestion (S1), so a violation found this way is not a false positive unless
+  the receiving chunk provably cannot be at its limit.
 - **N-local-per-account.** With the switch on, `LocalPriorityOK` orders local receipts first
   only per receiving account; nearcore's rule is chunk-wide. Other accounts' receipts may still
   overtake a pending local receipt in the model.
@@ -726,11 +775,11 @@ against the current module code; some may be fixed in the modules later.
   executions are a subset (nonce reuse, replay protection and gas-key nonces are not modelled).
 - **N-allowance. Access-key allowance.** Not tracked (K2). A transaction nearcore refuses for a
   short allowance is accepted by the model.
-- **N-fckey-one-action. Function-call keys and multi-action transactions.** nearcore refuses a
+- **N-fckey-one-action. Function-call keys and bundled key actions.** nearcore refuses a
   transaction signed by a function-call key unless it has exactly one action
-  (`runtime/runtime/src/verifier.rs:213-217`). `SubmitSigned` checks receiver, method and
-  deposit but not the action count, so the model accepts multi-action transactions nearcore
-  refuses.
+  (`runtime/runtime/src/verifier.rs:213-217`). `KeyCanSign` refuses Transfer, Stake, key
+  actions and multi-call receipts, but cannot see key actions a model bundles into a call
+  receipt with `WithKeyActs`; such a model must require a full-access key itself.
 - **N-create-account. CreateAccount restrictions.** There is no `CreateAccount` action in the
   modules. Its rules (a short top-level id only by one privileged account, a sub-account only by its
   parent, no explicit creation of implicit ids; `runtime/runtime/src/actions.rs:166-202`,
@@ -761,8 +810,11 @@ against the current module code; some may be fixed in the modules later.
   than it, are not trustworthy. Conformance compares gas at 0.1 Tgas resolution. The KB
   rounding of sizes ([Units](#units)) adds to this when sizes feed fees or burns.
 - **N-batch-oog. Per-action out-of-gas in batches.** nearcore checks each function-call action
-  against its own gas. The model checks the batch's total burn against its total gas. A batch
-  where one action is starved while another has slack fails in nearcore but not in the model.
+  against its own gas and splits only that action's leftover (G3). `NearAsync` does the same
+  for an outcome with `pa`; the token batch emits it with `TokBatchPerAction <- TRUE`. By default
+  (and with the whole-receipt `batch/<shape>` keys `CalibStd` measures) a batch is one pool: a
+  batch where one action is starved while another has slack fails in nearcore but not in the
+  model, and the leftover split can differ.
 - **N-burn. Trie and storage gas variation.** Burns are constants per (method, path), affine in
   one size variable at most, measured in one sim world. Real burns move with trie shape, key
   count, argument length and network (trie-node pricing). A real out-of-gas at a prepaid amount
@@ -776,9 +828,8 @@ against the current module code; some may be fixed in the modules later.
   failing receipt burnt. Gas-griefing amounts are not computed.
 - **N-storage. Storage staking details.** `storage_usage` is not tracked per byte, so a write
   that exceeds the balance's storage cover (`LackBalanceForState`, B2) appears only through the
-  floor you configure. The floor applies to the liquid balance only, so the model can fail where
-  nearcore, counting locked stake, passes; it has no zero-balance exemption. A contract that runs
-  out of storage stake mid-flow may fail in nearcore and not in the model.
+  floor you configure (liquid + locked must cover it; a zero-balance account takes floor 0). A
+  contract that runs out of storage stake mid-flow may fail in nearcore and not in the model.
 - **N-gas-money. Gas price and gas money.** Gas is a quantity, not NEAR. Purchase, the price
   floor (`min_gas_purchase_price`), price changes between blocks, the account-creation charge
   (A3) and burning are absent (`runtime/runtime/src/config.rs:481` `calculate_tx_cost`;
@@ -792,18 +843,16 @@ against the current module code; some may be fixed in the modules later.
   of the refund (A3). If the signer account no longer exists (deleted in flight), the gas refund
   cannot create it and is burnt (`runtime/runtime/src/lib.rs:1046-1053`). The model refunds no
   NEAR for gas, so signer-balance properties are not covered.
-- **N-refund-stuck. Refunds to an absent account.** In nearcore a deposit refund, or a
-  `DeleteAccount` beneficiary payment, to an absent account is burnt
-  (`runtime/runtime/src/lib.rs:1046-1053`, `runtime/runtime/src/actions.rs:382-386`). In the
-  model a `REFND` receipt to an absent account has no step (`ExecTransfer` requires the receiver
-  to exist), so it stays in flight forever. The burnt outcome is never reached, and the
-  transaction never becomes idle, so invariants guarded by "when idle" (`TxSettled`, `Idle`) are
-  never checked on that path.
+- **N-refund-stuck. Refunds to an absent account.** A deposit refund to an absent account is
+  burnt in nearcore (`runtime/runtime/src/lib.rs:1046-1054`) and in the model (R5). Only with
+  `BurnLostRefunds <- FALSE` does such a `REFND` stay in flight, and then invariants guarded by
+  "when idle" are never checked on that path. A `DeleteAccount` beneficiary payment
+  (`runtime/runtime/src/actions.rs:382-386`) is not modelled.
 - **N-universal. Universal accounts are created uninitialised.** nearcore creates a `0u`
   account from a Transfer without code, keys or data; every action but Transfer and its own state
   init then fails with `AccountNotInitialized` (`runtime/runtime/src/actions.rs:276-282`,
-  `:882-889`). The model creates it as an ordinary existing account, so calls that nearcore
-  fails can succeed in the model and that failure branch is missed.
+  `:880-887`). The model fails function calls to it (`HasCode`); other actions on it (key
+  actions, Stake) are not checked for initialisation.
 - **N-reward. Gas rewards.** Up to 86, a contract earned 30% of the gas its function calls
   burnt; 87 sets that to 0 (`core/parameters/res/runtime_configs/87.yaml:1-7`,
   `runtime/runtime/src/lib.rs:1108-1137`). At 84-86 a contract's balance grows in a way the model
@@ -864,6 +913,6 @@ against the current module code; some may be fixed in the modules later.
   (`runtime/runtime/src/lib.rs:535-541`), so a log is not proof of a committed write.
 - **N-views. View calls.** Views are pure reads outside receipts (`ProhibitedInView` for every
   promise host function). `ft_balance_of`/`ft_total_supply` are modelled as reads of the
-  ledger (D8).
+  ledger.
 - **N-resharding. Resharding and missing chunks.** The model assumes a fixed layout and a
   finalized history.

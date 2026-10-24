@@ -7,7 +7,7 @@
 (* mt_transfer_call(receiver_id, token_id, amount, msg)  1 yocto; moves,   *)
 (*   then receiver.mt_on_transfer(sender_id, [sender_id], [token_id],      *)
 (*   [amount], msg).then(self.mt_resolve_transfer(...)); returns that.     *)
-(* mt_resolve_transfer (private), NEP-245: per token,                       *)
+(* mt_resolve_transfer (private), NEP-245: per token,                      *)
 (*   unused = Failed / unparsable / wrong length -> amount ;               *)
 (*            ["v"] -> min(v, amount)                                      *)
 (*   refund = min(unused, receiver balance) back to the sender;            *)
@@ -17,7 +17,7 @@
 (* "resolveNoCap".  NEP-245 has no storage standard of its own; receivers  *)
 (* need no registration here.                                              *)
 (*                                                                         *)
-(* A contract that is itself a multi-token can use just the shared        *)
+(* A contract that is itself a multi-token can use just the shared         *)
 (* arithmetic ResolveRefund (TokenCommon) on its own ledger.               *)
 (***************************************************************************)
 EXTENDS TokenCommon
@@ -86,7 +86,7 @@ MtHandle(r) ==
         ids |-> f.n - nid, err |-> f.err, gk |-> CallKey(r.to, f.key), sz |-> 0,
         mtk |-> [mtk EXCEPT ![r.to] = f.L], ev |-> [f.ev EXCEPT !.m = r.m]]
 
-IsMtRcpt(r) == r.to \in MtAccts /\ ~IsBuiltin(r) /\ r.m \notin {"ADDKEY", "DELKEY"}
+IsMtRcpt(r) == r.to \in MtAccts /\ IsCall(r)
 
 MtStep(r, O) ==
     /\ Exec(r, O)

@@ -6,7 +6,7 @@ spec = "Relay"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["AddStays", "Books"]
+invariants = ["AddStays", "Books", "Sane"]
 tags = ["semantics:callback-after-failure"]
 
 [constants]

@@ -17,13 +17,14 @@
 (* The pair is about the platform assumption, not the contract:            *)
 (*  - local_on  (LocalOn = TRUE, the receipt step conjoins                 *)
 (*    LocalPriorityOK): act, once submitted, runs before the pending       *)
-(*    DeleteKey, so the invariant holds;                                   *)
+(*    DeleteKey, so the invariant holds.  ON assumes no congestion.        *)
 (*  - local_off (LocalOn = FALSE, any causally enabled order): TLC runs    *)
-(*    the DeleteKey between act's submission and its execution and         *)
-(*    reports a violation that cannot happen on chain (a false positive).  *)
-(* The rule assumes the chunk is not congested: a local receipt that does  *)
-(* not fit the compute limit is delayed (lib.rs:2513-2521), and then a     *)
-(* DeleteKey already in the delayed queue can run first.                   *)
+(*    the DeleteKey between act's submission and its execution.  OFF is    *)
+(*    the conservative setting, and this order is reachable on chain:      *)
+(*    under congestion a local receipt that does not fit the compute       *)
+(*    limit is delayed (lib.rs:2513-2520), and a DeleteKey already in the  *)
+(*    delayed queue runs first.                                            *)
+(* So the invariant holds only for an uncongested chunk.                   *)
 (***************************************************************************)
 EXTENDS NearKeys
 
@@ -72,4 +73,6 @@ Next == Revoke \/ Act \/ Run
 Spec == Init /\ [][Next]_vars
 
 NoStaleKeyAct == ~stale
+\* Library sanity: native NEAR conserved.
+Sane == NearConserved(0)
 =============================================================================

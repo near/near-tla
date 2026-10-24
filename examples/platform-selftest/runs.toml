@@ -1,0 +1,95 @@
+# Library self-test: deterministic scenarios with known nearcore outcomes. See SelfTest.tla.
+# Each run explores the scenarios in Scns (one per initial state); Check compares the end
+# state of each with Expect, Sane checks conservation, orphans, token supply and gas bounds.
+#
+#   python3 tools/run.py examples/platform-selftest
+
+spec = "SelfTest"
+workers = 2
+library = "../../modules"
+budget_s = 120
+invariants = ["Check", "Sane"]
+deadlock = true
+tags = ["selftest"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "2"
+StorageFloor = "SFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "SExists"
+Contracts = "SCode"
+AcctKind = "SKinds"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+TokYocto = "1"
+TokenAccts = '{"ft"}'
+WNearAccts = '{"ft"}'
+TokHolders = "STokHolders"
+TokStorageMin = "STokMin"
+TokDev = "STokDev"
+TokCallReserve = "STokReserve"
+KeyAccts = "SKeyAccts"
+
+# Receipts, results, accounts, refunds, staking, storage.
+[[run]]
+name = "selftest_platform"
+expect = "pass"
+[run.constants]
+Scns = '''{"revert_children", "waiter_failed", "cb_chain", "refund_to", "named_not_created",
+          "implicit_created", "universal", "refund_burnt", "no_code", "nopr_vs_zero", "transfer_empty",
+          "result_size", "stake_ok", "stake_actor", "stake_fails", "floor_locked"}'''
+
+# Access keys: AddKey / DeleteKey rules and what a function-call key may sign.
+[[run]]
+name = "selftest_keys"
+expect = "pass"
+[run.constants]
+Scns = '{"addkey_present", "delkey_absent", "keys_bundled", "key_other_acct", "fc_keys"}'
+
+# Token standards (near-contract-standards 5.29.1 defaults).
+[[run]]
+name = "selftest_tokens"
+expect = "pass"
+[run.constants]
+Scns = '''{"ft_rules", "storage", "wnear", "batch", "views", "resolve_private",
+          "unregister_force", "resolver_burn"}'''
+
+# Gas: zero-gas child, panic vs out of gas, per-action leftover, FT 5.x gas shape.
+[[run]]
+name = "selftest_gas"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"zero_gas_child", "panic_oog", "per_action", "ft_std_gas"}'
+
+# FT 3.x gas shape (TokFtGasShape "reserve").
+[[run]]
+name = "selftest_gas_reserve"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCallRes"
+GasBurn = "SGasBurn"
+TokFtGasShape = "ReserveShapes"
+Scns = '{"ft_reserve_gas"}'
+
+# Token batch accounted per action (TokBatchPerAction): near_deposit and ft_transfer_call
+# each have their own gas; only ft_transfer_call's leftover reaches ft_on_transfer.
+[[run]]
+name = "selftest_gas_batch"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+TokBatchPerAction = "TRUE"
+Scns = '{"batch_per_action"}'

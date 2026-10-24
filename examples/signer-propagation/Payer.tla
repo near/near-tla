@@ -71,4 +71,6 @@ Spec == Init /\ [][Next]_vars
 Credited == Idle => \A a \in Accts :
                       credit[a] = Cardinality({t \in 1..ntx : signedBy[t] = a})
 CallbackSigner == \A t \in TxIds : sawSigner[t] \in {"", signedBy[t]}
+\* Library sanity: native NEAR conserved.
+Sane == NearConserved(0)
 =============================================================================

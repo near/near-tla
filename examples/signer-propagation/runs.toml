@@ -6,7 +6,7 @@ spec = "Payer"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["CallbackSigner", "Credited"]
+invariants = ["CallbackSigner", "Credited", "Sane"]
 tags = ["semantics:signer-propagation"]
 
 [constants]

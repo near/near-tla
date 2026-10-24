@@ -6,7 +6,7 @@ spec = "Rotator"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["NoStaleKeyAct"]
+invariants = ["NoStaleKeyAct", "Sane"]
 tags = ["semantics:local-priority"]
 
 [constants]

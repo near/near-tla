@@ -31,19 +31,19 @@ Wts = "<<1, 1, 2>>"
 [[run]]
 name = "weight_split_ok"
 expect = "pass"
-invariants = ["SplitExact", "CallbackDone"]
+invariants = ["SplitExact", "CallbackDone", "Sane"]
 
 [[run]]
 name = "weight_split_cb_zero"
 expect = "violation"
 invariant = "CallbackDone"
-invariants = ["SplitExact", "CallbackDone"]
+invariants = ["SplitExact", "CallbackDone", "Sane"]
 [run.constants]
 Wts = "<<1, 1, 0>>"
 
 [[run]]
 name = "weight_split_w0"
 expect = "pass"
-invariants = ["SplitExact", "NothingDistributed"]
+invariants = ["SplitExact", "NothingDistributed", "Sane"]
 [run.constants]
 Wts = "<<0, 0, 0>>"

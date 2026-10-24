@@ -89,4 +89,7 @@ Spec == Init /\ [][Next]_vars
 SplitExact == \A m \in DOMAIN got : got[m] # -1 => got[m] = Expected(Idx(m))
 NothingDistributed == \A m \in DOMAIN got : got[m] # -1 => got[m] = St
 CallbackDone == (sent /\ Idle) => done
+\* Library sanity: native NEAR conserved; no receipt holds more gas than
+\* the transaction prepaid.
+Sane == NearConserved(0) /\ GasBounded(LAMBDA t : Prepaid)
 =============================================================================

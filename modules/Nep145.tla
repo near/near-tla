@@ -1,20 +1,31 @@
 ------------------------------- MODULE Nep145 -------------------------------
 (***************************************************************************)
-(* NEP-145 storage management for fungible-token contracts, and the token *)
+(* NEP-145 storage management for fungible-token contracts, and the token  *)
 (* ledger state the FT modules share.                                      *)
 (*                                                                         *)
 (* One ledger per token account a \in TokenAccts:                          *)
 (*   tk[a] = [bal |-> [TokHolders[a] -> Nat], reg |-> SUBSET, sup |-> Nat] *)
-(* The ledger is the token contract's state: it is committed only when    *)
+(* The ledger is the token contract's state: it is committed only when     *)
 (* the token's receipt succeeds (Exec / Verdict), like any contract.       *)
 (*                                                                         *)
-(* storage_deposit(account_id, registration_only)  (NEP-145; the          *)
+(* storage_deposit(account_id, registration_only)  (NEP-145; the           *)
 (* near-contract-standards FT implementation ignores registration_only):   *)
-(*   account already registered -> whole deposit refunded to predecessor  *)
+(*   account already registered -> whole deposit refunded to predecessor   *)
 (*   otherwise deposit < min     -> panic                                  *)
 (*   otherwise register; deposit - min refunded to predecessor             *)
 (*   returns StorageBalance JSON (NONEMPTY)                                *)
 (* Deviation "sdRefundToAccount": refunds go to account_id instead.        *)
+(* storage_balance_of(account_id): Some(StorageBalance) is encoded as the  *)
+(*   number `total` (= min), None (JSON null) as NONEMPTY.                 *)
+(* storage_unregister(force)  1 yocto (near-contract-standards 5.29.1,     *)
+(*   fungible_token/storage_impl.rs:8-36, :103-105):                       *)
+(*   predecessor not registered     -> returns false                       *)
+(*   balance > 0 and not force      -> panic                               *)
+(*   otherwise unregister, burn its balance (total supply decreases) and   *)
+(*   transfer min + 1 yocto to it (min + TokYocto: with TokYocto = 0 the   *)
+(*   yocto is not modelled); returns true.                                 *)
+(*   Both booleans are NONEMPTY bytes; ev.unreg / ev.unregBurnt say what   *)
+(*   happened.  The NEP-141 resolver's burn path needs this method.        *)
 (***************************************************************************)
 EXTENDS TokenCommon
 
@@ -23,10 +34,11 @@ CONSTANTS
     TokHolders,      \* [TokenAccts -> SUBSET accounts]: who can ever hold a balance there
     TokStorageMin,   \* [TokenAccts -> Nat]: storage_balance_bounds.min (= max)
     TokDev,          \* [TokenAccts -> SUBSET Deviations]: selected non-standard behaviour
-    TokCallReserve   \* [TokenAccts -> Nat]: gas mode only.  ft_transfer_call keeps this much
+    TokCallReserve   \* [TokenAccts -> Nat]: gas mode, "reserve" shape only (Nep141
+                     \* TokFtGasShape).  ft_transfer_call keeps this much
                      \* (GAS_FOR_FT_TRANSFER_CALL) and gives ft_on_transfer
                      \* static = prepaid - reserve; prepaid <= reserve panics.
-                     \* See Nep141 for the other per-token gas parameters.
+                     \* Unused in the default "standard" shape.
 
 VARIABLE tk
 
@@ -38,13 +50,13 @@ Ledger(b, reg) ==
              IN F[DOMAIN b]]
 
 ----------------------------------------------------------------------------
-(* Execution accumulator.  A token receipt is a sequence of actions (one, *)
-(* or several for a batch) folded over this record; the first error wins  *)
+(* Execution accumulator.  A token receipt is a sequence of actions (one,  *)
+(* or several for a batch) folded over this record; the first error wins   *)
 (* and the whole receipt fails (and reverts) as one.                       *)
 TEv0 == [m |-> "", s |-> "", rc |-> "", moved |-> 0, call |-> FALSE,
          refund |-> 0, credited |-> FALSE,
          stoKept |-> 0, stoRefund |-> 0, stoTo |-> "", stoAcct |-> "",
-         nd |-> 0, nw |-> 0]
+         nd |-> 0, nw |-> 0, unreg |-> "", unregBurnt |-> 0]
 \* ev is what the receipt did, for the calling model's per-tx ghosts:
 \*   s, rc, moved   tokens moved s -> rc by ft_transfer[_call]
 \*   call           a receiver call + resolver were created
@@ -53,8 +65,13 @@ TEv0 == [m |-> "", s |-> "", rc |-> "", moved |-> 0, call |-> FALSE,
 \*   stoKept, stoRefund, stoTo, stoAcct   storage_deposit: kept for a new
 \*                  registration of stoAcct / refunded natively to stoTo
 \*   nd, nw         near_deposit / near_withdraw amounts (WNear)
+\*   unreg, unregBurnt   storage_unregister: the account removed and the
+\*                  tokens burnt with it
 TAcc0(r) == [L |-> tk[r.to], n |-> nid, rd |-> {}, ps |-> {}, out |-> 0,
-             ret |-> RVal(EMPTY), err |-> "", ev |-> TEv0, key |-> r.m]
+             ret |-> RVal(EMPTY), err |-> "", ev |-> TEv0, key |-> r.m, pa |-> <<>>]
+
+\* Overridable: account a "batch" receipt per action (Tokens header).
+TokBatchPerAction == FALSE
 Live(acc) == acc.err = ""
 AE(acc, e) == IF acc.err = "" THEN [acc EXCEPT !.err = e] ELSE acc
 
@@ -72,6 +89,7 @@ YoctoAct(acc, dep) ==
 TokOut(r, acc) ==
     [ready |-> acc.rd, post |-> acc.ps, ret |-> acc.ret, out |-> acc.out,
      ids |-> acc.n - nid, err |-> acc.err, gk |-> CallKey(r.to, acc.key), sz |-> 0,
+     pa |-> IF TokBatchPerAction THEN acc.pa ELSE <<>>,
      tk |-> [tk EXCEPT ![r.to] = acc.L], ev |-> [acc.ev EXCEPT !.m = r.m]]
 
 ----------------------------------------------------------------------------
@@ -96,4 +114,17 @@ SdAct(acc, r, acct0, x) ==
 SbAct(acc, r, acct0) ==
     LET a == IF acct0 = "" THEN r.fr ELSE acct0 IN
     [acc EXCEPT !.ret = IF a \in acc.L.reg THEN RVal(TokStorageMin[r.to]) ELSE RVal(NONEMPTY)]
+
+\* storage_unregister(force) by the predecessor (storage_impl.rs:8-36).
+\* The 1-yocto check is the caller's (YoctoAct).
+SuAct(acc, r, force) ==
+    LET p == r.fr  L == acc.L  min == TokStorageMin[r.to] IN
+    IF ~Live(acc) THEN acc
+    ELSE IF p \notin L.reg THEN [acc EXCEPT !.ret = RVal(NONEMPTY)]       \* false
+    ELSE IF L.bal[p] > 0 /\ ~force
+         THEN AE(acc, "Can't unregister the account with the positive balance without force")
+    ELSE [TokRefund([acc EXCEPT !.L = [L EXCEPT !.reg = @ \ {p}, !.bal[p] = 0,
+                                               !.sup = @ - L.bal[p]]],
+                    r, p, min + TokYocto)
+            EXCEPT !.ret = RVal(NONEMPTY), !.ev.unreg = p, !.ev.unregBurnt = L.bal[p]]
 =============================================================================

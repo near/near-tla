@@ -6,7 +6,7 @@ spec = "Revoker"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["OwnerKeyKept", "Counted"]
+invariants = ["OwnerKeyKept", "Counted", "Sane"]
 tags = ["semantics:deletekey-atomicity"]
 
 [constants]

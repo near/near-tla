@@ -78,4 +78,6 @@ Spec == Init /\ [][Next]_vars
 Books == Idle => pending = 0 /\ bal + total = InitBal
 \* A committed add is never undone by what happens to its callback.
 AddStays == total = addsOk
+\* Library sanity: native NEAR conserved.
+Sane == NearConserved(0)
 =============================================================================

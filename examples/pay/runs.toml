@@ -96,6 +96,12 @@ MaxFails = "1"
 # Gas mode with the illustrative table, one transaction, prepaid 39.0-42.0 Tgas in
 # 0.1 steps plus 300 Tgas. pay needs 2.0 burn + 2 x 0.9 fees + 35 + 1 static = 39.8 Tgas;
 # from there on_paid can run out of gas, so the first violation is at 39.8 Tgas.
+# The token uses the default "standard" gas shape (near-contract-standards 5.x):
+# ft_transfer_call needs 1.6 burn + 0.9 (ft_on_transfer fee, static 0) + 0.9 + 5
+# (resolver) = 8.4 Tgas of its >= 35 and gives the rest to ft_on_transfer (weight 1).
+# Nothing on the token side runs out, so the window depends on pay / on_paid only;
+# with TokFtGasShape "reserve" (3.x: ft_on_transfer static = prepaid - 30 Tgas,
+# weight 0) it is the same.
 [[run]]
 name = "pay_gas"
 expect = "violation"
@@ -125,6 +131,26 @@ tags = ["gas:window"]
 GasMode = '"gas"'
 GasCall = "PGasCall"
 GasBurn = "PGasBurn"
+GasMenu = "PayMenu"
+MaxTx = "1"
+Amts = "{1}"
+
+# Same window with the token side measured (CalibStd, near-contract-standards 5.29.1).
+# The window is set by pay / on_paid alone (see pay_gas): on_paid gets 1 Tgas + half
+# of (prepaid - 39.8 Tgas) and burns 1.5. It holds as long as the token side fits in
+# ft_transfer_call's 35 Tgas: StdFt ft_transfer_call burn (1.587) + 0.9 + resolver
+# fee (0.888) + resolver static (5) = 8.4 Tgas, and the resolver burn (0.858) fits
+# in its 5 Tgas. A recalibration that moves burns by a few Ggas keeps 39800-40700.
+[[run]]
+name = "pay_gas_std"
+expect = "pass"
+invariants = ["WinBooks", "Sane"]
+expect_window = "39800-40700"
+tags = ["gas:window", "gas:calibrated"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PStdGasCall"
+GasBurn = "PStdGasBurn"
 GasMenu = "PayMenu"
 MaxTx = "1"
 Amts = "{1}"

@@ -21,9 +21,9 @@ TMin(a, b) == IF a < b THEN a ELSE b
 TMax(a, b) == IF a > b THEN a ELSE b
 
 ----------------------------------------------------------------------------
-(* Argument record.  Every token-standard receipt carries this shape, so  *)
-(* receipts compare cleanly; unused fields keep their defaults.  `msg` is *)
-(* always a string (the contract's own encoding of its message).          *)
+(* Argument record.  Every token-standard receipt carries this shape, so   *)
+(* receipts compare cleanly; unused fields keep their defaults.  `msg` is  *)
+(* always a string (the contract's own encoding of its message).           *)
 (*   rc     receiver_id / account_id                                       *)
 (*   s      sender_id (ft_on_transfer, resolvers)                          *)
 (*   amt    amount                                                         *)
@@ -31,16 +31,18 @@ TMax(a, b) == IF a > b THEN a ELSE b
 (*   tid    token_id (NEP-245)                                             *)
 (*   nd, sd, sdAcct, xf   batch only: near_deposit amount, storage_deposit *)
 (*          amount and account, last action "ft_transfer"|"ft_transfer_call"|"" *)
-(*   cx     a payload slot for the model's own receipts: <<>> or <<v>>, so  *)
+(*   force  storage_unregister(force)                                      *)
+(*   cx     a payload slot for the model's own receipts: <<>> or <<v>>, so *)
 (*          a contract's receipts share the TA0 shape with token receipts  *)
 TA0 == [rc |-> "", s |-> "", amt |-> 0, msg |-> "", tid |-> "",
-        nd |-> 0, sd |-> 0, sdAcct |-> "", xf |-> "", cx |-> <<>>]
+        nd |-> 0, sd |-> 0, sdAcct |-> "", xf |-> "", force |-> FALSE, cx |-> <<>>]
 CxArgs(v) == [TA0 EXCEPT !.cx = <<v>>]
 FtArgs(rc, amt, msg)       == [TA0 EXCEPT !.rc = rc, !.amt = amt, !.msg = msg]
 OnArgs(s, rc, amt, msg)    == [TA0 EXCEPT !.s = s, !.rc = rc, !.amt = amt, !.msg = msg]
 ResArgs(s, rc, amt)        == [TA0 EXCEPT !.s = s, !.rc = rc, !.amt = amt]
 SdArgs(acct)               == [TA0 EXCEPT !.rc = acct]          \* "" = predecessor
 NwArgs(amt)                == [TA0 EXCEPT !.amt = amt]
+SuArgs(force)              == [TA0 EXCEPT !.force = force]
 MtArgs(rc, tid, amt, msg)  == [TA0 EXCEPT !.rc = rc, !.tid = tid, !.amt = amt, !.msg = msg]
 MtOnArgs(s, rc, tid, amt, msg) == [TA0 EXCEPT !.s = s, !.rc = rc, !.tid = tid, !.amt = amt, !.msg = msg]
 MtResArgs(s, rc, tid, amt) == [TA0 EXCEPT !.s = s, !.rc = rc, !.tid = tid, !.amt = amt]
@@ -51,7 +53,7 @@ BatchArgs(nd, sd, sdAcct, xf, rc, amt, msg) ==
                 !.rc = rc, !.amt = amt, !.msg = msg]
 
 ----------------------------------------------------------------------------
-(* Non-standard behaviour, selectable per token account (TokDev[acct]).   *)
+(* Non-standard behaviour, selectable per token account (TokDev[acct]).    *)
 (*  "retBytes"             ft_transfer (and a batch ending in it) may      *)
 (*                         return non-empty bytes on success (chosen       *)
 (*                         nondeterministically per call: EMPTY|NONEMPTY)  *)
@@ -66,13 +68,13 @@ BatchArgs(nd, sd, sdAcct, xf, rc, amt, msg) ==
 (*  "autoRegister"         transfers to an unregistered receiver succeed   *)
 (*                         and register it for free (no NEP-145 check)     *)
 (* "Unregistered receiver" as a *scenario* (standard token, receiver not   *)
-(* registered) is the initial registration set, a plain parameter.        *)
+(* registered) is the initial registration set, a plain parameter.         *)
 Deviations == {"retBytes", "resolveIgnoresResult", "resolveNoCap",
                "sdRefundToAccount", "autoRegister"}
 
 ----------------------------------------------------------------------------
-(* Resolver arithmetic (NEP-141 ft_resolve_transfer, NEP-245             *)
-(* mt_resolve_transfer, one token id).  Standard:                         *)
+(* Resolver arithmetic (NEP-141 ft_resolve_transfer, NEP-245               *)
+(* mt_resolve_transfer, one token id).  Standard:                          *)
 (*   unused = Failed or unparsable -> amt ; U128 v -> min(v, amt)          *)
 (*   refund = min(unused, receiver's current balance)                      *)
 ResolveUnused(res, amt, dev) ==
@@ -84,7 +86,7 @@ ResolveRefund(res, amt, rcvBal, dev) ==
     IF u > 0 /\ rcvBal > 0 THEN TMin(rcvBal, u) ELSE 0
 
 ----------------------------------------------------------------------------
-(* An arbitrary receiver contract (environment actor).  resp:            *)
+(* An arbitrary receiver contract (environment actor).  resp:              *)
 (*   "keep" -> "0", "return" -> amt, "over" -> amt+1, "mal" -> MAL,        *)
 (*   "nonempty" -> NONEMPTY, "empty" -> EMPTY, "panic" -> fails.           *)
 RecvResps == {"keep", "return", "over", "mal", "nonempty", "empty", "panic"}
