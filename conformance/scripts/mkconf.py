@@ -29,6 +29,17 @@ def grid(g):
     return f"{{t * 100 : t \\in {{{lo} + i * {st} : i \\in 0..{(hi - lo) // st}}}}}"
 
 
+def grid_points(g):
+    """The points of `grid(g)` as a set of Ggas (the same grid as the
+    crate's `spec::parse_grid`; conform.py checks sweeps against it)."""
+    if g == "standard":
+        return {t * 100 for t in range(5, 1301)} | {t * 10000 for t in range(14, 31)}
+    if g == "smoke":
+        return {t * 2500 for t in range(2, 53)} | {300000}
+    lo, hi, st = (round(float(x) * 10) for x in g.split(":"))
+    return {(lo + i * st) * 100 for i in range((hi - lo) // st + 1)}
+
+
 def dep(d):
     """Deposit (yocto) in model units: 1 NEAR = 1000; 1 yocto, the storage
     minimum and other sub-milliNEAR amounts are 1."""

@@ -39,7 +39,7 @@ repo. Use plain `cargo`.
    `cargo test --release --test smoke` and `cargo test --release --test semantics`.
 3. **The full grid.** `cargo run --release --bin calibrate -- --flows flows/probes.toml` sweeps
    every probe flow over the standard grid, writes the sweeps to `data/` with their provenance
-   (`.meta.json`), and prints the calibration report.
+   (`.meta.json`, bound to the sweep by its sha256), and prints the calibration report.
 4. **The model side.**
    - `python3 scripts/mkconf.py` writes one TLC wrapper per flow (`tla/build/MC_<flow>.tla` and
      `.cfg`), on the library in `../modules/`;
@@ -65,7 +65,9 @@ For each flow (one transaction shape on the probe world) and each prepaid-gas po
   the JSONL sweep.
 - **Attached gas.** The gas each function-call child was given, which is where the static and
   weighted split shows. It must agree within the tolerance `conform.py --tol` (5 Ggas by
-  default), which covers the rounding of fees and burns to whole Ggas.
+  default), which covers the rounding of fees and burns to whole Ggas. Gas is compared together
+  with status: at each point, the receipts must pair up one to one by label and status with
+  their gas within tolerance, so a gas value cannot match a receipt of another status.
 - **Edges.** The prepaid values at which the vector of statuses changes. These are the window
   boundaries a gas-mode model predicts, so they must be identical, not just close.
 
@@ -74,8 +76,10 @@ declared statics and weights for every function-call child at every grid point, 
 unit, per action for multi-call receipts. A table is written only if it finds no mismatch.
 
 A flow passes only if TLC finished cleanly, the sweep's provenance names the current flows
-file, the model has every grid point, every status vector is equal, the edges are identical
-and every attached gas is within tolerance.
+file and the flow's grid and matches the sweep's sha256 and point count, the sweep holds every
+grid point exactly once, the model has every grid point and none outside it, every status
+vector is equal, the edges are identical and every attached gas is within tolerance. An empty,
+truncated or duplicated sweep fails.
 
 ## Results
 
@@ -143,9 +147,12 @@ A measured number is only meaningful with what it was measured on.
   crate and its version, the sim rev, the nearcore version and rev, the protocol version, the
   flows file and its sha256, the grid, and the exact `calibrate` command line (home directory
   written as `~`). `calibrate` writes this header itself; `modules/CalibStd.tla` shows it.
-- **Every sweep records** the same facts in `data/<spec>/<flow>.meta.json`. `--from-data`
-  refuses a sweep whose provenance differs from the current setup; `--force-data` uses it
-  anyway and writes the difference into the table's header. Prefer a fresh sweep.
+- **Every sweep records** the same facts in `data/<spec>/<flow>.meta.json`, with the sweep's
+  point count and sha256. `calibrate` removes the old `.meta.json` before it sweeps and writes
+  the new one only after the JSONL is complete, so an interrupted sweep has no provenance.
+  `--from-data` and `conform.py` refuse a sweep whose provenance differs from the current setup
+  or does not match the data; `--force-data` uses it anyway and writes the difference into the
+  table's header. Prefer a fresh sweep.
 - **A table describes one wasm build.** Burns depend on the contract's code and state, so a
   table measured on a probe or a test build does not describe a deployed contract. Recalibrate
   for the build you deploy, and pin its hash.
@@ -158,7 +165,8 @@ A measured number is only meaningful with what it was measured on.
 
 CI checks the TLA+ side only. It SANY-parses every module, every example spec and the
 conformance specs in `conformance/tla/` (`ProbeConf.tla`, `CalibProbes.tla`), and it runs every
-example's expectations. It neither runs TLC on the conformance flows nor builds the
+example's expectations. It also runs `conform.py`'s self-tests
+(`conformance/scripts/test_conform.py`), which use toy data. It neither runs TLC on the conformance flows nor builds the
 conformance crate, because near-contract-sim is a private git dependency and CI has no
 credentials for it. The calibrated tables are committed, so models and examples
 that use them run in CI without the sim.

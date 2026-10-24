@@ -173,9 +173,27 @@ pub mod grid {
     }
 }
 
-/// Runs `tx` on a clone of `base` at every gas of `grid`, writing one JSON
-/// line per point (`dump` plus `flow` and `gas`) to `out`. Returns the
-/// lines.
+/// Writes `bytes` to `path` atomically: to `<path>.tmp` beside it, then a
+/// rename, so a reader sees the old file or the new one, never a prefix.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+/// Runs `tx` on a clone of `base` at every gas of `grid`, and returns one
+/// JSON value per point (`dump` plus `flow` and `gas`). With `out`, it
+/// writes them as JSON lines to `out` once the whole grid has run
+/// (`write_atomic`): an interrupted sweep leaves the previous file whole.
 pub fn sweep(
     flow: &str,
     base: &Sim,
@@ -183,12 +201,6 @@ pub fn sweep(
     tx: &dyn Fn(&mut Sim, Gas) -> TxOutcome,
     out: Option<&Path>,
 ) -> Vec<Value> {
-    let mut f = out.map(|p| {
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        std::fs::File::create(p).unwrap()
-    });
     let mut lines = vec![];
     for &g in grid {
         let mut sim = base.clone();
@@ -196,12 +208,22 @@ pub fn sweep(
         let mut v = dump(&o);
         v["flow"] = json!(flow);
         v["gas"] = json!(g);
-        if let Some(f) = f.as_mut() {
-            writeln!(f, "{v}").unwrap();
-        }
         lines.push(v);
     }
+    if let Some(p) = out {
+        write_atomic(p, jsonl(&lines).as_bytes()).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    }
     lines
+}
+
+/// `lines` as JSON lines (one per value, each ending in a newline).
+pub fn jsonl(lines: &[Value]) -> String {
+    let mut s = String::new();
+    for v in lines {
+        s.push_str(&v.to_string());
+        s.push('\n');
+    }
+    s
 }
 
 /// The status vector of one point: each non-refund, non-conversion
@@ -236,4 +258,26 @@ pub fn edges(lines: &[Value]) -> Vec<(f64, String)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_replaces_whole_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("near-tla-conf-{}", std::process::id()));
+        let p = dir.join("x.jsonl");
+        write_atomic(&p, b"old\n").unwrap();
+        write_atomic(&p, b"new 1\nnew 2\n").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"new 1\nnew 2\n");
+        assert!(!dir.join("x.jsonl.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn jsonl_one_line_per_value() {
+        let s = jsonl(&[json!({"gas": 1}), json!({"gas": 2})]);
+        assert_eq!(s, "{\"gas\":1}\n{\"gas\":2}\n");
+    }
 }

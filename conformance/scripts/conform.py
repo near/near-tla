@@ -4,47 +4,119 @@
 Model (TLC logs tla/build/<flow>.log of ProbeConf) vs sim
 (data/probes/<flow>.jsonl), per receipt and per prepaid point:
   - status: ok / oog / failed, or not created;
-  - attached gas of every function-call receipt (Ggas, sim rounded);
+  - attached gas of every function-call receipt (Ggas, sim rounded),
+    compared jointly with the status: see `joint`;
   - edges: the grid points where the status vector changes, over the
     sim's whole grid (a point the model lacks is its own status).
 Refund receipts are left out on both sides.
 
-A flow passes only if TLC finished without error, the sim data was swept
-from the current flows file, the model has every grid point, every status
-vector is equal, the edges are identical and every attached gas is within
---tol (default 5 Ggas). Exits 1 if any flow fails. --subset compares only
-the points the model has (for a quick run on a coarser grid; reported as
-such, and still exits 1 on any other failure)."""
-import collections, hashlib, json, os, sys, tomllib
+A flow passes only if
+  - TLC finished without error;
+  - the sweep is bound to its provenance: the .meta.json names the current
+    flows file and the flow's declared grid, and its point count and
+    sha256 are the JSONL's;
+  - the sweep holds every point of the flow's declared grid exactly once
+    (an empty or truncated sweep fails);
+  - the model has every grid point and none outside it;
+  - every status vector is equal, the edges are identical, and at every
+    point the receipts pair up by label and status with attached gas
+    within --tol (default 5 Ggas).
+Exits 1 if any flow fails. --subset compares only the grid points the
+model has (for a quick run on a coarser grid; reported as such, and still
+exits 1 on any other failure)."""
+import collections, hashlib, json, math, os, sys, tomllib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
+from mkconf import grid_points  # noqa: E402
 from tlcparse import reports  # noqa: E402
 
 TOL = 5
 TOKENS = {"ft_probe", "wnear_probe"}  # model names of the token accounts
 FLOWS = os.path.join(HERE, "flows", "probes.toml")
+DATA = os.path.join(HERE, "data", "probes")
+BUILD = os.path.join(HERE, "tla", "build")
 MISSING = "<no model point>"
 
 
-def sim_points(flow, names):
-    out = {}
-    for line in open(os.path.join(HERE, "data", "probes", f"{flow}.jsonl")):
-        v = json.loads(line)
-        recs = []
-        for r in v["receipts"]:
-            if r["conversion"] or r["refund"]:
-                continue
-            to = names.get(r["receiver"], r["receiver"])
-            if r["methods"]:
-                label = f"{to}::{'+'.join(r['methods'])}"
-                g = round(r["attached"] / 1e9)
-            else:
-                label = f"{to}[{','.join(r['actions'])}]"
-                g = None
-            recs.append((label, r["status"], g))
-        out[v["gas"] // 10**9] = recs
-    return out
+def sim_records(v, names):
+    """(label, status, attached Ggas or None) of every non-refund receipt
+    of one sweep line."""
+    recs = []
+    for r in v["receipts"]:
+        if r["conversion"] or r["refund"]:
+            continue
+        to = names.get(r["receiver"], r["receiver"])
+        if r["methods"]:
+            label = f"{to}::{'+'.join(r['methods'])}"
+            g = round(r["attached"] / 1e9)
+        else:
+            label = f"{to}[{','.join(r['actions'])}]"
+            g = None
+        recs.append((label, r["status"], g))
+    return recs
+
+
+def load_sweep(flow, gname, data_dir, flows_sha, names):
+    """The sweep of `flow` as {prepaid Ggas: records}, and what is wrong
+    with it: its meta must be bound to it and it must hold the declared
+    grid `gname`, every point once."""
+    problems = []
+    jp = os.path.join(data_dir, f"{flow}.jsonl")
+    mp = os.path.join(data_dir, f"{flow}.meta.json")
+    with open(jp, "rb") as f:
+        raw = f.read()
+    want = grid_points(gname)
+    if not os.path.exists(mp):
+        problems.append("no provenance (.meta.json) beside the sweep (re-run calibrate)")
+        m = {}
+    else:
+        try:
+            with open(mp) as f:
+                m = json.load(f)
+        except ValueError as e:
+            problems.append(f"unreadable .meta.json ({e})")
+            m = {}
+    if m:
+        if m.get("flows_sha256") != flows_sha:
+            problems.append("sweep is from another flows/probes.toml (re-run calibrate)")
+        if m.get("grid") != gname:
+            problems.append(f"sweep is on grid {m.get('grid')!r}, the flow declares {gname!r}")
+        if "jsonl_sha256" not in m or "points" not in m:
+            problems.append(".meta.json lacks jsonl_sha256 or points (an older sweep: re-run calibrate)")
+        else:
+            if m["jsonl_sha256"] != hashlib.sha256(raw).hexdigest():
+                problems.append("JSONL sha256 differs from its .meta.json (re-run calibrate)")
+            if m["points"] != len(want):
+                problems.append(f".meta.json says {m['points']} points, the grid has {len(want)}")
+    out, dup, bad = {}, set(), 0
+    lines = raw.splitlines()
+    for line in lines:
+        try:
+            v = json.loads(line)
+            gas = v["gas"]
+            assert v["flow"] == flow and isinstance(gas, int) and gas % 10**9 == 0
+            recs = sim_records(v, names)
+        except (ValueError, KeyError, TypeError, AssertionError):
+            bad += 1
+            continue
+        pp = gas // 10**9
+        if pp in out:
+            dup.add(pp)
+        out[pp] = recs
+    if not lines:
+        problems.append("empty sweep")
+    if m.get("points") is not None and m.get("points") != len(lines):
+        problems.append(f"JSONL has {len(lines)} lines, .meta.json says {m['points']}")
+    if bad:
+        problems.append(f"{bad} JSONL lines unreadable, of another flow or off the Ggas grid")
+    if dup:
+        problems.append(f"{len(dup)} grid points more than once in the sweep")
+    if set(out) - want:
+        problems.append(f"{len(set(out) - want)} sweep points outside the grid")
+    if want - set(out):
+        problems.append(f"{len(want - set(out))} grid points missing in the sweep")
+    return out, problems
 
 
 def model_label(r, batch_methods):
@@ -60,44 +132,85 @@ def model_label(r, batch_methods):
 STAT = {"ok": "ok", "oog": "oog", "fail": "failed", "forced": "forced"}
 
 
+def model_records(recs, batch_methods):
+    out = []
+    for r in recs:
+        l = model_label(r, batch_methods)
+        if l:
+            out.append((l, STAT[r["st"]], r["g"] if r["m"] != "XFER" else None))
+    return out
+
+
 def sig(recs):
     c = collections.Counter((l, s) for l, s, _ in recs)
     return " ".join(f"{l}={s}" + (f"x{n}" if n > 1 else "") for (l, s), n in sorted(c.items()))
 
 
+def joint(mrecs, srecs):
+    """Pair model and sim receipts by (label, status), multiplicity kept,
+    and return (statuses equal, worst attached-gas difference of the best
+    pairing). A point's gas is within tolerance iff the statuses are equal
+    and worst <= tol.
+
+    Receipts of different (label, status) never pair, so the pairing splits
+    into one per group, and a group pairs only if both sides have as many
+    receipts in it (the status check). Within a group, pairing the sorted
+    gas values in order minimises the largest difference: for a1 <= a2 and
+    b1 <= b2, max(|a1-b1|, |a2-b2|) <= max(|a1-b2|, |a2-b1|), so uncrossing
+    two pairs never makes the largest difference worse, and some pairing
+    within tolerance exists iff the sorted one is within it. A receipt
+    without gas (action-only) pairs only with another without gas. If the
+    statuses differ, worst covers the groups of equal size only."""
+    M, S = collections.defaultdict(list), collections.defaultdict(list)
+    for l, s, g in mrecs:
+        M[(l, s)].append(g)
+    for l, s, g in srecs:
+        S[(l, s)].append(g)
+    equal = {k: len(v) for k, v in M.items()} == {k: len(v) for k, v in S.items()}
+    worst = 0
+    key = lambda g: (g is not None, g or 0)  # noqa: E731
+    for k in set(M) & set(S):
+        if len(M[k]) != len(S[k]):
+            continue
+        for a, b in zip(sorted(M[k], key=key), sorted(S[k], key=key)):
+            d = 0 if a is None and b is None else math.inf if a is None or b is None else abs(a - b)
+            worst = max(worst, d)
+    return equal, worst
+
+
 def tlc_ok(log):
-    t = open(log).read()
+    with open(log) as f:
+        t = f.read()
     return "Model checking completed. No error has been found" in t and "Error:" not in t
 
 
-def data_fresh(flow, flows_sha):
-    mp = os.path.join(HERE, "data", "probes", f"{flow}.meta.json")
-    if not os.path.exists(mp):
-        return "no provenance (.meta.json) beside the sweep"
-    m = json.load(open(mp))
-    if m.get("flows_sha256") != flows_sha:
-        return "sweep is from another flows/probes.toml (re-run calibrate)"
-    return None
+def empty_row(flow, problem):
+    return dict(flow=flow, n=0, stat_ok=0, gas_ok=0, worst=0, receipts=0, mism=[], medges=[], sedges=[], missing=0,
+                problems=[problem])
 
 
-def compare(flow, spec, tol, subset, flows_sha):
-    names = spec["world"]["names"]
+def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
+    names = spec["world"].get("names", {})
     fl = next(f for f in spec["flow"] if f["name"] == flow)
+    gname = fl.get("grid", "standard")
     bm = ""
     if fl["tx"]["method"] == "batch":
         bm = "+".join(c["method"] for c in json.loads(fl["tx"]["args"])["calls"])
-    log = os.path.join(HERE, "tla", "build", f"{flow}.log")
+    log = os.path.join(build_dir, f"{flow}.log")
     res = dict(flow=flow, n=0, stat_ok=0, gas_ok=0, worst=0, receipts=0, mism=[], medges=[], sedges=[], missing=0,
                problems=[])
     if not tlc_ok(log):
         res["problems"].append("TLC did not finish without error")
-    stale = data_fresh(flow, flows_sha)
-    if stale:
-        res["problems"].append(stale)
-    sim = sim_points(flow, names)
+    sim, sweep_problems = load_sweep(flow, gname, data_dir, flows_sha, names)
+    res["problems"] += sweep_problems
     model = reports(log)
+    grid = grid_points(gname)
+    if set(model) - grid:
+        res["problems"].append(f"{len(set(model) - grid)} model points outside the grid")
+    if not set(model) & grid:
+        res["problems"].append("the model has no grid point")
     pm = ps = None
-    for pp in sorted(sim):
+    for pp in sorted(grid & set(sim)):
         srecs = sim[pp]
         ss = sig(srecs)
         if pp not in model:
@@ -107,31 +220,17 @@ def compare(flow, spec, tol, subset, flows_sha):
             sm = MISSING
             mrecs = []
         else:
-            mrecs = []
-            for r in model[pp]:
-                l = model_label(r, bm)
-                if l:
-                    mrecs.append((l, STAT[r["st"]], r["g"] if r["m"] != "XFER" else None))
+            mrecs = model_records(model[pp], bm)
             sm = sig(mrecs)
         res["n"] += 1
         res["receipts"] += len(srecs)
-        if sm == ss:
+        equal, gd = joint(mrecs, srecs)
+        if equal and sm == ss:
             res["stat_ok"] += 1
         elif len(res["mism"]) < 6:
             res["mism"].append((pp, sm, ss))
-        M, S = collections.defaultdict(list), collections.defaultdict(list)
-        for l, _, g in mrecs:
-            if g is not None:
-                M[l].append(g)
-        for l, _, g in srecs:
-            if g is not None:
-                S[l].append(g)
-        gd = 0
-        for l in set(M) & set(S):
-            for a, b in zip(sorted(M[l]), sorted(S[l])):
-                gd = max(gd, abs(a - b))
         res["worst"] = max(res["worst"], gd)
-        res["gas_ok"] += gd <= tol and sm != MISSING
+        res["gas_ok"] += equal and gd <= tol and sm != MISSING
         if sm != pm:
             res["medges"].append((pp, sm))
             pm = sm
@@ -145,12 +244,13 @@ def compare(flow, spec, tol, subset, flows_sha):
     if [a for a, _ in res["medges"]] != [a for a, _ in res["sedges"]]:
         res["problems"].append("edges differ")
     if res["gas_ok"] < res["n"]:
-        res["problems"].append(f"attached gas off by more than {tol} Ggas at {res['n'] - res['gas_ok']} points")
+        res["problems"].append(f"attached gas not paired within {tol} Ggas by label and status at "
+                               f"{res['n'] - res['gas_ok']} points")
     return res
 
 
-def main():
-    args = sys.argv[1:]
+def main(argv=None, flows_path=FLOWS, data_dir=DATA, build_dir=BUILD):
+    args = list(sys.argv[1:] if argv is None else argv)
     tol, subset = TOL, False
     while args and args[0].startswith("--"):
         if args[0] == "--tol":
@@ -159,7 +259,8 @@ def main():
             subset, args = True, args[1:]
         else:
             sys.exit(__doc__)
-    raw = open(FLOWS, "rb").read()
+    with open(flows_path, "rb") as f:
+        raw = f.read()
     flows_sha = hashlib.sha256(raw).hexdigest()
     spec = tomllib.loads(raw.decode())
     known = [f["name"] for f in spec["flow"]]
@@ -169,16 +270,15 @@ def main():
         problem = None
         if f not in known:
             problem = "no such flow in flows/probes.toml"
-        elif not os.path.exists(os.path.join(HERE, "data", "probes", f"{f}.jsonl")):
+        elif not os.path.exists(os.path.join(data_dir, f"{f}.jsonl")):
             problem = f"no sim data data/probes/{f}.jsonl (run calibrate first: README.md, Running)"
-        elif not os.path.exists(os.path.join(HERE, "tla", "build", f"{f}.log")):
+        elif not os.path.exists(os.path.join(build_dir, f"{f}.log")):
             problem = f"no TLC log tla/build/{f}.log (run scripts/mkconf.py and scripts/tlc.sh first)"
         if problem:
-            rows.append(dict(flow=f, n=0, stat_ok=0, gas_ok=0, worst=0, receipts=0, mism=[], medges=[], sedges=[],
-                             missing=0, problems=[problem]))
+            rows.append(empty_row(f, problem))
             print(f"\n== {f}: FAIL: {problem}")
             continue
-        c = compare(f, spec, tol, subset, flows_sha)
+        c = compare(f, spec, tol, subset, flows_sha, data_dir, build_dir)
         rows.append(c)
         print(f"\n== {f}: {'PASS' if not c['problems'] else 'FAIL: ' + '; '.join(c['problems'])}")
         print(f"   {c['n']} points compared ({c['missing']} missing in the model{', skipped: --subset' if subset and c['missing'] else ''}), "
@@ -207,9 +307,10 @@ def main():
     bad = [c["flow"] for c in rows if c["problems"]]
     if bad:
         print(f"\nconform: {len(bad)} of {len(rows)} flows FAIL: {' '.join(bad)}", file=sys.stderr)
-        sys.exit(1)
+        return 1
     print(f"\nconform: all {len(rows)} flows pass{' (subset of the grid)' if subset else ''}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

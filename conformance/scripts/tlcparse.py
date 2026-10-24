@@ -6,7 +6,8 @@ FLD = re.compile(r'(\w+) \|-> ("[^"]*"|-?\d+)')
 
 
 def reports(log):
-    txt = " ".join(open(log).read().split())
+    with open(log) as f:
+        txt = " ".join(f.read().split())
     out = {}
     for m in re.finditer(r'<<\s*"CONF", (\d+), \{(.*?)\}\s*>>', txt):
         pp, body = int(m.group(1)), m.group(2)

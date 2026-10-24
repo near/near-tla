@@ -55,6 +55,9 @@ jobs:
       - name: Runner self-tests
         run: python3 -m unittest tools/test_run.py
 
+      - name: Conformance checker self-tests (no sim or data needed)
+        run: python3 -m unittest conformance/scripts/test_conform.py
+
       - name: Fetch tla2tools.jar
         run: |
           mkdir -p tools

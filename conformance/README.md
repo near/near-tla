@@ -55,6 +55,7 @@ once per point.
 | `scripts/mkconf.py` | writes `tla/build/MC_<flow>.tla/.cfg` for each flow |
 | `scripts/tlc.sh` | runs TLC on them (2 workers); exits nonzero if any run fails |
 | `scripts/conform.py` | compares model and sim per receipt and per edge; exits nonzero if any flow fails |
+| `scripts/test_conform.py` | `conform.py`'s self-tests on toy data (no sim, TLC or `data/`; CI runs them): `python3 -m unittest conformance/scripts/test_conform.py` from the repo root |
 | `data/`, `tla/build/` | sweeps (JSONL + `.meta.json` provenance) and TLC logs (not committed) |
 
 ## Setup
@@ -131,9 +132,20 @@ scripts/tlc.sh $(python3 -c 'import tomllib; print(" ".join(f["name"] for f in t
 python3 scripts/conform.py                # per-flow comparison, summary table, exit status
 ```
 
-A flow passes `conform.py` only if TLC finished without error, the sweep's `.meta.json` names the
-current `flows/probes.toml`, the model has every grid point, every status vector is equal, the
-edges are identical and every attached gas is within `--tol` (5 Ggas).
+A flow passes `conform.py` only if:
+
+- TLC finished without error;
+- the sweep's `.meta.json` names the current `flows/probes.toml` and the flow's declared grid,
+  and its `points` and `jsonl_sha256` are those of the JSONL beside it;
+- the sweep holds every point of that grid exactly once (an empty or truncated sweep fails);
+- the model has every grid point and none outside it;
+- every status vector is equal and the edges are identical;
+- at every point the receipts pair up one to one by label and status with attached gas within
+  `--tol` (5 Ggas). Status and gas are compared together, so two receipts of one method whose
+  statuses and gas are swapped between model and sim fail. Within a (label, status) group the
+  sorted gas values are paired in order, which minimises the largest difference. The model's
+  log (`rlog`) carries no parent, so receipts are matched by label, not by their place in the
+  receipt tree.
 
 The model runs on the library's defaults: token batches are accounted per call (each call of a
 batch keyed `<acct>.batch/<shape>#<method>`, the per-call keys above), token methods use their
@@ -151,7 +163,8 @@ merged key's largest burn is seen at the top then has less to go on.
 
 `--from-data` reuses the last sweep in `data/` (not committed). It refuses a sweep whose
 `.meta.json` differs from now in any of: sim rev, nearcore rev, protocol, wasm sha256s, flows
-file sha256, grid. `--force-data` uses it anyway and records the difference in the header. Drop
+file sha256, grid; or whose JSONL does not match its `.meta.json` (sha256, point count, the grid's
+points in order). `--force-data` uses it anyway and records the difference in the header. Drop
 `--from-data` to sweep afresh.
 
 ```sh
@@ -255,7 +268,10 @@ Gas is in Ggas unless a field is named `tgas`. Deposits are yocto strings.
 
 `data/<spec stem>/<flow>.jsonl` holds one line per grid point, and `<flow>.meta.json` beside
 it the sweep's provenance (sim rev, nearcore tag and rev, protocol, every wasm's sha256, the
-flows file and its sha256, the grid and its point count):
+flows file and its sha256, the grid and its point count) and the JSONL's own sha256
+(`jsonl_sha256`). A sweep deletes the old `.meta.json` first, writes the JSONL whole once the
+grid has run (to `<flow>.jsonl.tmp`, then a rename), and writes the new `.meta.json` last, so an
+interrupted sweep never leaves a `.meta.json` that vouches for other data:
 
 ```
 { "flow": str, "gas": prepaid (gas units), "tx_ok": bool, "receipts": [receipt, ...] }

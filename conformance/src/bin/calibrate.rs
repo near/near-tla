@@ -16,12 +16,16 @@
 //! every action-only child's fees were computed, every size read, and
 //! every merged key's largest burn was seen at the top of a grid.
 //! `--allow-partial` writes it anyway, with the failures in its header.
-//! Each sweep's JSONL has a `<flow>.meta.json` beside it (provenance);
+//! Each sweep's JSONL has a `<flow>.meta.json` beside it (provenance, and
+//! the JSONL's sha256 and point count). A sweep removes the old meta
+//! first, writes the JSONL whole (temp file, rename), then the new meta,
+//! so an interrupted sweep leaves no meta that vouches for its data.
 //! `--from-data` refuses data whose provenance differs from the current
-//! wasm, flows file, sim or grid unless `--force-data` (also recorded).
+//! wasm, flows file, sim or grid, or whose JSONL does not match its meta's
+//! sha256, point count and grid, unless `--force-data` (also recorded).
 use near_tla_conformance::calib::{self, Burns, SplitReport, Table};
 use near_tla_conformance::spec::{self, Resolved};
-use near_tla_conformance::{Provenance, edges, provenance, sha256_hex, sweep};
+use near_tla_conformance::{Provenance, edges, provenance, sha256_hex, sweep, write_atomic};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
@@ -52,7 +56,8 @@ fn command_line() -> String {
     out.join(" ")
 }
 
-/// The provenance a sweep's JSONL carries (its `.meta.json`).
+/// The provenance a sweep's JSONL carries (its `.meta.json`). The data's
+/// own `jsonl_sha256` is added after the sweep (`bind`).
 fn meta(prov: &Provenance, wasms: &[(String, String, String, String)], flows_name: &str, flows_sha: &str, grid: &str, points: usize) -> Value {
     json!({
         "sim_rev": prov.sim_rev,
@@ -69,6 +74,34 @@ fn meta(prov: &Provenance, wasms: &[(String, String, String, String)], flows_nam
 
 fn meta_path(jsonl: &Path) -> PathBuf {
     jsonl.with_extension("meta.json")
+}
+
+/// `meta` bound to the JSONL bytes it describes.
+fn bind(meta: &Value, jsonl: &[u8]) -> Value {
+    let mut m = meta.clone();
+    m["jsonl_sha256"] = json!(sha256_hex(jsonl));
+    m
+}
+
+/// What is wrong with a stored sweep against its meta: the JSONL's sha256
+/// and point count, and its points against the grid `g` (gas, in order).
+fn data_mismatch(meta: &Value, bytes: &[u8], lines: &[Value], g: &[u64]) -> Vec<String> {
+    let mut out = vec![];
+    let sha = sha256_hex(bytes);
+    match meta.get("jsonl_sha256").and_then(Value::as_str) {
+        None => out.push("meta has no jsonl_sha256 (an older sweep)".to_owned()),
+        Some(s) if s != sha => out.push(format!("JSONL sha256 {sha}, meta says {s}")),
+        _ => {}
+    }
+    if meta.get("points").and_then(Value::as_u64) != Some(lines.len() as u64) {
+        out.push(format!("JSONL has {} points, meta says {}", lines.len(), meta.get("points").unwrap_or(&Value::Null)));
+    }
+    let got: Vec<Option<u64>> = lines.iter().map(|v| v["gas"].as_u64()).collect();
+    let want: Vec<Option<u64>> = g.iter().copied().map(Some).collect();
+    if got != want {
+        out.push(format!("JSONL points are not the grid's {} (in order, each once)", g.len()));
+    }
+    out
 }
 
 fn main() {
@@ -155,16 +188,39 @@ fn main() {
                 eprintln!("warning: {msg}");
                 data_warn.push(msg);
             }
-            std::io::BufReader::new(std::fs::File::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let lines: Vec<Value> = bytes
+                .as_slice()
                 .lines()
                 .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
-                .collect()
+                .collect();
+            let bad = data_mismatch(&got, &bytes, &lines, &g);
+            if !bad.is_empty() {
+                let msg = format!("{}: data does not match its provenance: {}", flow.name, bad.join("; "));
+                if !force_data {
+                    eprintln!("{msg}\nre-sweep (drop --from-data), or pass --force-data to use it anyway");
+                    std::process::exit(1);
+                }
+                eprintln!("warning: {msg}");
+                data_warn.push(msg);
+            }
+            lines
         } else {
             let w = res.flow_world(&base, flow);
             let tx = flow.tx.clone();
             let t0 = std::time::Instant::now();
+            // The old meta goes first: until the new one is written, the
+            // JSONL has no provenance and no reader accepts it.
+            let mp = meta_path(&path);
+            match std::fs::remove_file(&mp) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("{}: {e}", mp.display()),
+                _ => {}
+            }
             let lines = sweep(&flow.name, &w, &g, &|sim, gas| spec::run(sim, &tx, Some(gas)), Some(&path));
-            std::fs::write(meta_path(&path), serde_json::to_string_pretty(&want).unwrap() + "\n").unwrap();
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert!(data_mismatch(&bind(&want, &bytes), &bytes, &lines, &g).is_empty(), "{}: sweep does not match its grid", flow.name);
+            let m = serde_json::to_string_pretty(&bind(&want, &bytes)).unwrap() + "\n";
+            write_atomic(&mp, m.as_bytes()).unwrap_or_else(|e| panic!("{}: {e}", mp.display()));
             eprintln!("{}: {} points in {:.1}s", flow.name, g.len(), t0.elapsed().as_secs_f64());
             lines
         };
@@ -419,4 +475,33 @@ fn per_action_rows(res: &Resolved, rows: &[calib::BurnRow], split: &SplitReport)
         }
     }
     (out, fail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn data(g: &[u64]) -> (Vec<Value>, Vec<u8>) {
+        let lines: Vec<Value> = g.iter().map(|&x| json!({"flow": "f", "gas": x})).collect();
+        let bytes = near_tla_conformance::jsonl(&lines).into_bytes();
+        (lines, bytes)
+    }
+
+    #[test]
+    fn data_mismatch_binds_meta_to_jsonl() {
+        let g = [1, 2, 3];
+        let (lines, bytes) = data(&g);
+        let meta = bind(&json!({"points": 3}), &bytes);
+        assert!(data_mismatch(&meta, &bytes, &lines, &g).is_empty());
+        // truncated after the meta was written
+        let (l2, b2) = data(&g[..2]);
+        assert_eq!(data_mismatch(&meta, &b2, &l2, &g).len(), 3);
+        // empty
+        assert_eq!(data_mismatch(&meta, b"", &[], &g).len(), 3);
+        // a meta from before jsonl_sha256
+        assert_eq!(data_mismatch(&json!({"points": 3}), &bytes, &lines, &g).len(), 1);
+        // duplicated point, meta bound to it
+        let (l3, b3) = data(&[1, 2, 2]);
+        assert_eq!(data_mismatch(&bind(&json!({"points": 3}), &b3), &b3, &l3, &g).len(), 1);
+    }
 }
