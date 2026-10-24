@@ -451,6 +451,21 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **NEP-245 batches and the per-id resolver** (SEMANTICS T5, N-mt; `examples/mt-batch`):
+  `Nep245` handles `mt_batch_transfer` and `mt_batch_transfer_call` (`MtBatchArgs(rc, tids,
+  amts, msg)`; unequal lengths panic; each id moves in order, atomically), and
+  `mt_resolve_transfer` on a batch applies the resolver arithmetic per id: a result that is
+  Failed, not a `Vec<U128>` or of another length leaves every id unused, else `unused_i =
+  min(v_i, amount_i)`, and `refund_i = min(unused_i, the receiver's balance of id_i)`, entries
+  of one id sharing that balance. Vectors travel as one integer (`MtVecCode`, `MtVecOf`,
+  `MtRet`; `["v"]` is the number `v`). An arbitrary receiver answers any label of
+  `MtRecvResps` (`MtRecvOutcome`) or any vector (`MtRecvVecOutcome`, `MtAnswers(n, V)`:
+  wrong lengths and over-amount entries included). The semantics are near-sdk-contract-tools
+  4.0.0's, the only NEP-245 implementation read. New per-token gas shape `MtGasShape[t] =
+  "tools"` for that implementation (a 30 Tgas floor, `mt_on_transfer` static 0 and weight
+  10, the resolver 5 Tgas and weight 1); the default stays `"reserve"`, so single-id models
+  are unchanged. New sim tests `conformance/tests/mt.rs` on a NEP-245 probe built from
+  near-sdk-contract-tools 4.0.0 (`conformance/probes/mt`, receiver `probes/mtrecv`).
 - **Access-key allowances** (SEMANTICS K2, N-allowance; `examples/session-key`), opt-in:
   `WithAllowance(perm, n)` gives a function-call key an allowance. `SubmitSigned` refuses a
   transaction that costs more (`AllowanceOK`; an allowance equal to the cost is enough, as
@@ -1026,6 +1041,14 @@ them. A model that lists platform variables one by one must add each.
   (`limit_fan_1024`: 2 s to 9 s).
 - `examples/limits`: the `log` shape builds its N logs with the new `OLogs` instead of a
   recursion once per log, which also overflowed the CI runner's stack (`limit_log_101`).
+- `TokenCommon.TA0` has two more fields, `tids` and `amts` (NEP-245 vectors; `<<>>` for
+  every other token receipt). `MtArgs`, `MtOnArgs` and `MtResArgs` set them to vectors of
+  one. A model that compares whole argument records with hand-built ones must add the
+  fields; state counts do not change. `Nep245`'s outcome event `ev` has fields `tids`,
+  `moves` and `refunds` (per entry). The resolver burns with size 1 for a single-id call
+  (the number of ids) and uses the burn keys `"<t>.mt_resolve_transfer/refund"` /
+  `"/norefund"` when `GasBurn` has them; without such keys and with a per-size slope of 0,
+  as in every table so far, nothing changes.
 - Docs: SEMANTICS N-order and N-resume-order were wrong. nearcore keeps no per-pair order at
   protocol 88: a new receipt bypasses the link's outgoing buffer whenever it fits
   (`congestion_control.rs:292-325`, `:451`), and missed chunks reverse the order across heights

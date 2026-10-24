@@ -1,0 +1,191 @@
+# MtBatch: U mt_batch_transfer_calls [t1: 1, t2: 2] to an arbitrary receiver RX, which
+# answers any vector of up to 3 entries with entries 0..3 (wrong lengths and amounts
+# above the amount sent included), a malformed or empty result, or panics; RX starts
+# with 1 of t1 and may spend 1 of t2 at any time, so the receiver-balance cap binds on
+# t2. See MtBatch.tla.
+#
+#   python3 tools/run.py examples/mt-batch --anti-vacuity
+
+spec = "MtBatch"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Conserved", "NoGain", "Honored", "Sane"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"u"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+MtAccts = '{"mt"}'
+MtIds = '{"t1", "t2"}'
+MtHolders = "PMtHolders"
+MtDev = "PMtDev"
+MtCallReserve = "PMtReserve"
+U = '"u"'
+MT = '"mt"'
+RX = '"rx"'
+K = '"k"'
+Tids = '<<"t1", "t2">>'
+Amts = '<<1, 2>>'
+U0 = "2"
+RxStart = '[i \in {"t1", "t2"} |-> IF i = "t1" THEN 1 ELSE 0]'
+RxVecs = 'MtAnswers(2, 0..3)'
+RxResps = '{"mal", "empty", "panic"}'
+SpendId = '"t2"'
+MDev = "{}"
+
+[[run]]
+name = "mt_batch_std"
+expect = "pass"
+tags = ["tokens:nep245"]
+
+# The cap at RX's balance binds: RX spent 1 of t2 before the resolver ran, so U does
+# not get back every token RX reported unused. (Honored, which caps, holds: mt_batch_std.)
+[[run]]
+name = "mt_batch_cap_binds"
+expect = "violation"
+invariant = "AllUnusedBack"
+invariants = ["AllUnusedBack"]
+tags = ["tokens:nep245"]
+
+# A resolver that ignores the receiver's per-id answer and refunds nothing.
+[[run]]
+name = "mt_batch_ignores_result"
+expect = "violation"
+invariant = "Honored"
+invariants = ["Honored"]
+tags = ["tokens:nep245", "tokens:deviation"]
+[run.constants]
+MDev = '{"resolveIgnoresResult"}'
+
+# A resolver that does not cap the unused amount at the amount sent: RX over-reports
+# unused on t1 (it holds 2 of it once the transfer lands) and U ends with more t1 than
+# it started with.
+[[run]]
+name = "mt_batch_nocap"
+expect = "violation"
+invariant = "NoGain"
+invariants = ["NoGain"]
+tags = ["tokens:nep245", "tokens:deviation"]
+[run.constants]
+MDev = '{"resolveNoCap"}'
+
+# ---- anti-vacuity: python3 tools/run.py examples/mt-batch --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Honored's antecedent: the transfer settles.
+[[witness]]
+id = "transfer_settles"
+expr = '~Settled'
+runs = ["mt_batch_std"]
+
+# The resolver's arms: Failed, a vector of the wrong length, not a vector, an entry
+# above its amount.
+[[witness]]
+id = "resolver_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ ~r.res.ok)'
+runs = ["mt_batch_std"]
+
+[[witness]]
+id = "resolver_sees_wrong_length"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ MtVecOf(r.res).ok /\ Len(MtVecOf(r.res).v) # 2)'
+runs = ["mt_batch_std"]
+
+[[witness]]
+id = "resolver_sees_not_a_vector"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ r.res.ok /\ ~MtVecOf(r.res).ok)'
+runs = ["mt_batch_std"]
+
+[[witness]]
+id = "resolver_sees_over_amount"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ MtVecOf(r.res).ok /\ Len(MtVecOf(r.res).v) = 2 /\ \E j \in 1..2 : MtVecOf(r.res).v[j] > Amts[j])'
+runs = ["mt_batch_std"]
+
+# Per id: t1 kept by RX while t2 comes back in full.
+[[witness]]
+id = "one_id_kept_one_refunded"
+expr = '~(Settled /\ mtk[MT].bal[U]["t1"] = U0 - 1 /\ mtk[MT].bal[U]["t2"] = U0)'
+runs = ["mt_batch_std"]
+
+# The receiver-balance cap: RX short of an amount when the resolver runs, and the cap
+# binding on a settled transfer.
+[[witness]]
+id = "receiver_short_at_resolve"
+expr = '~(\E r \in Runnable : r.m = "mt_resolve_transfer" /\ \E j \in 1..2 : mtk[MT].bal[RX][Tids[j]] < Amts[j])'
+runs = ["mt_batch_std"]
+
+[[witness]]
+id = "cap_binds_settled"
+expr = '~(Settled /\ \E j \in 1..2 : gRxAt[Tids[j]] < gUnused[j])'
+runs = ["mt_batch_std"]
+
+[[mutant]]
+id = "resolver_dropped"
+file = "Nep245.tla"
+library = true
+find = '!.ps = @ \cup {res}'
+replace = '!.ps = @'
+class = "dropped .then"
+
+# Every id read from the first entry of the answer.
+[[mutant]]
+id = "per_id_reads_first_entry"
+file = "Nep245.tla"
+library = true
+find = 'IF vec.ok /\ Len(vec.v) = n THEN [r.res EXCEPT !.v = vec.v[i]]'
+replace = 'IF vec.ok /\ Len(vec.v) = n THEN [r.res EXCEPT !.v = vec.v[1]]'
+class = "inverted result check"
+
+# A longer answer read as if it had the right length.
+[[mutant]]
+id = "wrong_length_accepted"
+file = "Nep245.tla"
+library = true
+find = 'IF vec.ok /\ Len(vec.v) = n THEN'
+replace = 'IF vec.ok /\ Len(vec.v) >= n THEN'
+class = "removed precondition"
+
+# A Failed or malformed answer counted as all used.
+[[mutant]]
+id = "failed_counts_as_used"
+file = "Nep245.tla"
+library = true
+find = 'ELSE [r.res EXCEPT !.ok = FALSE]'
+replace = 'ELSE [ok |-> TRUE, v |-> 0, sz |-> 0, len |-> 0]'
+class = "failure branch skips rollback"
+
+[[mutant]]
+id = "cap_off_by_one"
+file = "TokenCommon.tla"
+library = true
+find = 'ELSE TMin(NumOrChecked(res, max, amt), amt)'
+replace = 'ELSE TMin(NumOrChecked(res, max, amt), amt - 1)'
+class = "off-by-one guard"
+
+[[mutant]]
+id = "no_balance_cap"
+file = "TokenCommon.tla"
+library = true
+find = 'IF u > 0 /\ rcvBal > 0 THEN TMin(rcvBal, u) ELSE 0'
+replace = 'IF u > 0 THEN u ELSE 0'
+class = "removed precondition"
+
+# The batch refund stays with the receiver.
+[[mutant]]
+id = "refund_stays_with_receiver"
+file = "Nep245.tla"
+library = true
+find = 'IN [L |-> [L EXCEPT !.bal[a.rc][id] = @ - refund, !.bal[a.s][id] = @ + refund],'
+replace = 'IN [L |-> L,'
+class = "wrong refund account"

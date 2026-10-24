@@ -1860,8 +1860,10 @@ Sources: `neps/nep-0141.md` (fungible token core; `ft_resolve_transfer` requirem
 `neps/nep-0245.md` (multi token; `mt_resolve_transfer` at `:304-330`), and NEP-297 (events, not
 modelled). The reference implementation is near-contract-standards, in
 `fungible_token/core_impl.rs`, `fungible_token/storage_impl.rs` and `fungible_token/macros.rs`.
-near-contract-standards has no NEP-245 implementation, and no wNEAR source is available
-locally.
+near-contract-standards has no NEP-245 implementation; the one read is
+near-sdk-contract-tools 4.0.0 (`src/standard/nep245/mod.rs`, "core" below, and the
+near-sdk-contract-tools-macros 4.0.0 `src/standard/nep245/mod.rs`, "macros"). No wNEAR source
+is available locally.
 
 ### T1. NEP-141 `ft_transfer` / `ft_transfer_call`
 
@@ -1945,7 +1947,7 @@ locally.
   `"/norefund"` when not, each falling back to `"<t>.ft_resolve_transfer"`.
   `TokOnTransferStatic[t]` /
   `TokOnTransferWeight[t]` override the shape (-1 = its default); a `GasCall` entry for the
-  resolver wins in both shapes. `Nep245` keeps the reserve shape. The measured values per
+  resolver wins in both shapes. `Nep245` has its own shapes (T5). The measured values per
   version come from `conformance/` (`docs/CONFORMANCE.md`). The shape can change verdicts,
   not only gas windows: under `"standard"` `ft_on_transfer` takes the leftover gas, so an
   out-of-gas path of the reserve shape can disappear. Tokens built on
@@ -1995,17 +1997,80 @@ locally.
 
 ### T5. NEP-245 multi token
 
-- **Rule:** The same transfer, resolve and refund rules as T1/T2, per token id. Every transfer
-  needs 1 yocto.
-- **Sources:** NEP-245 `:88`, `:124`, `:164-179`, `:304-330`; for the result read,
-  near-sdk-contract-tools-macros 4.0.0 `src/standard/nep245/mod.rs:283-289`.
-- **Model:** `Nep245`. Single-id transfers only; no batch, no approvals, no storage management.
-  The resolver reads the receiver's result **unbounded** (`ResolveRefund`): unlike T2 there is
-  no byte limit, because the one NEP-245 implementation read (near-sdk-contract-tools 4.0.0)
-  uses `env::promise_result(0)`.
-- **Validated:** NEP text read; the result read: near-sdk-contract-tools 4.0.0 source read.
-  Other implementations may bound the read. Not sim-tested: the conformance crate has no
-  NEP-245 probe.
+- **Rule:** The same transfer, resolve and refund rules as T1/T2, per token id.
+  - Every transfer (`mt_transfer`, `mt_batch_transfer`, `mt_transfer_call`,
+    `mt_batch_transfer_call`) needs exactly 1 yocto.
+  - A batch takes `token_ids` and `amounts`; vectors of different lengths panic. It moves
+    each id in order, in one receipt: a short balance on any entry panics and nothing moves.
+    The same id may appear twice.
+  - The `_call` methods call `receiver.mt_on_transfer(sender_id, previous_owner_ids,
+    token_ids, amounts, msg)`, then `.then(self.mt_resolve_transfer(sender_id, receiver_id,
+    token_ids, amounts))`, and return the resolver's promise (C5). A single-id call passes
+    vectors of one.
+  - `mt_resolve_transfer` is private. It reads the receiver's result **unbounded** (no
+    byte limit, unlike T2) as a `Vec<U128>`. A Failed result, one that does not parse as
+    a `Vec<U128>`, or one whose length differs from the number of ids leaves every id
+    unused (`unused_i = amount_i`). Otherwise `unused_i = min(v_i, amount_i)`. For each
+    entry in order, `refund_i = min(unused_i, the receiver's balance of id_i)` moves back
+    to the sender, the balance taken as the earlier entries' refunds left it (so two
+    entries of one id share it). It returns `[amount_i - refund_i]`.
+  - Gas (near-sdk-contract-tools 4.0.0): the `_call` methods panic below 30 Tgas prepaid
+    (`GAS_FOR_MT_TRANSFER_CALL`), before the deposit check. `mt_on_transfer` gets static 0
+    and weight 10; the resolver gets static 5 Tgas (`GAS_FOR_MT_RESOLVE_TRANSFER`) and
+    weight 1. None of it depends on the number of ids.
+- **Sources:** NEP-245 `:88`, `:124-133`, `:164-179`, `:214-237`, `:304-361`, `:365-398`;
+  near-sdk-contract-tools-macros 4.0.0 `src/standard/nep245/mod.rs` (the deposit checks
+  `:84`, `:113`, `:151`, `:188`; the length checks `:116-126`, `:191-202`; the gas floor
+  `:146-149`, `:183-186`; the resolver `:272-299`, its read `:283-289`);
+  near-sdk-contract-tools 4.0.0 `src/standard/nep245/mod.rs` (the gas constants `:45-49`, the
+  call chain `:264-287`, `Nep245Transfer::new` `:110-142`, `transfer` `:791-822`,
+  `transfer_unchecked` `:745-789`, `resolve_transfer` `:544-602`).
+- **Model:** `Nep245`; arguments `MtArgs` / `MtBatchArgs` (`TokenCommon`, fields `tids` and
+  `amts`).
+  - The batch resolver is `MtBatchResolveAct`, which applies `ResolveRefund` to each
+    entry. The single-id resolver is unchanged (`ResolveRefund` on the result).
+  - A `Vec<U128>` result travels as one integer (`MtVecCode` / `MtVecOf`; `MtRet(vec)`):
+    `["v"]` is the number `v`, so the single-id resolver reads it as before; any other
+    length is a code that is not a number.
+  - The arbitrary receiver is `MtRecvOutcome(amts, resp)` for `resp \in MtRecvResps` (keep,
+    return, over, short, long, mal, nonempty, empty, panic) or `MtRecvVecOutcome(vec)` for
+    any vector. `MtAnswers(n, V)` is every vector of length n - 1 to n + 1 with entries in
+    `V`.
+  - Gas: per token `MtGasShape[t]` (an overridable definition). The default is
+    `"reserve"`, the earlier encoding: static prepaid − `MtCallReserve[t]`, weight 0, and
+    the resolver's gas from `GasCall`. `"tools"` is near-sdk-contract-tools 4.0.0:
+    `MtMinCallGas` (30 Tgas), `MtOnTransferWeight` (10), `MtResolveStatic` (5 Tgas),
+    `MtResolveWeight` (1); a `GasCall` entry for the resolver wins.
+  - Burn keys are `"<t>.<method>"`. The batch methods and the resolver burn with size =
+    the number of ids, and the resolver uses `/refund` or `/norefund` when `GasBurn` has
+    them.
+  - The model also panics on sender = receiver and on a zero amount, as T1 does.
+    near-sdk-contract-tools 4.0.0 checks neither (a zero amount is skipped, core `:796`);
+    see N-mt.
+  - No approvals, no storage management, no views.
+- **Validated:**
+  - NEP text and near-sdk-contract-tools 4.0.0 source read.
+  - For near-sdk-contract-tools 4.0.0, sim (`conformance/tests/mt.rs`, on the `mt` probe,
+    a plain `#[derive(Nep245)]` contract, and the `mtrecv` receiver):
+    - `mt_transfer_requirements`: 1 yocto on all four transfer methods (0 and 2 refused);
+      unequal lengths refused for both batch methods; a batch moving two ids, and one id
+      twice; a short balance on the second id failing the batch with nothing moved; the
+      30 Tgas floor of both `_call` methods (29.9 refused, before the deposit check; 30
+      accepted).
+    - `mt_transfer_call_receipts`: for 1, 2 and 3 ids, `mt_on_transfer` and then the
+      resolver; their attached gas splits the leftover 10 : 1 with the resolver's 5 Tgas
+      static; the call returns the amounts used. A single-id call gets the same receipts
+      and a vector of one.
+    - `mt_batch_transfer_call_answers`: end to end on two ids, for each receiver answer
+      (keep, return, over, an exact vector, short, long, malformed, empty, panic), the
+      returned vector and both sides' balances.
+    - `mt_resolve_transfer_rules`: the resolver on a chosen result (`Tx::promise_results`,
+      as in T2). The per-id arithmetic with an over-amount entry; all unused for Failed, a
+      vector one short or one long, an empty vector, a bare number, bytes that are not JSON,
+      and no bytes; the refund capped at the receiver's balance per id; two entries of one
+      id sharing that balance; the caller check.
+  - These tests check the implementation against this rule, not the model's encoding;
+    `examples/mt-batch` checks the encoding.
 
 ### T6. wNEAR
 
@@ -2421,6 +2486,12 @@ against the current module code; some may be fixed in the modules later.
   failure anyway. With `StoragePerByte`, `CodeSize` must state each contract's code bytes
   (counted in its `StorageInit`), or the deletes of large contracts fail falsely; deployed
   code counts its `CodeLen` (A9), a global contract its identifier (A10).
+- **N-mt. NEP-245 implementations.** The rules of T5 are near-sdk-contract-tools 4.0.0's;
+  another NEP-245 token may bound its result read, check lengths differently, or use other
+  gas. Two of the model's panics are not in that implementation: sender = receiver and a
+  zero amount (inherited from NEP-141, T1). near-sdk-contract-tools 4.0.0 accepts both, so
+  the model leaves out paths a token built on it allows. Approvals (NEP-245's approval
+  management) are not modelled.
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
   touched. A model whose accounts can be deleted and created again must reset them, with

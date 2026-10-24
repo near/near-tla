@@ -327,7 +327,8 @@ text (see [The runner](#the-runner-runstoml)).
 `NearKeys` adds `KeyAccts` (accounts whose keys are modelled). The token modules add
 `TokYocto` (1 to model the 1-yocto attachments, 0 to skip them), `TokenAccts`, `TokHolders`,
 `TokStorageMin`, `TokDev`, `TokCallReserve` and `WNearAccts`; `Nep245` adds `MtAccts`,
-`MtHolders`, `MtIds`, `MtDev` and `MtCallReserve`.
+`MtHolders`, `MtIds`, `MtDev` and `MtCallReserve` (and the overridable `MtGasShape`, see
+[section 9](#9-receiving-tokens)).
 
 ### Overridable definitions
 
@@ -657,7 +658,10 @@ Argument builders:
 - `NwArgs(amt)`: `near_withdraw`;
 - `BatchArgs(nd, sd, sdAcct, xf, rc, amt, msg)`: one atomic `"batch"` receipt of
   `near_deposit`, `storage_deposit` and a transfer;
-- `MtArgs(rc, tid, amt, msg)`: NEP-245.
+- `MtArgs(rc, tid, amt, msg)`: NEP-245 `mt_transfer` and `mt_transfer_call`;
+- `MtBatchArgs(rc, tids, amts, msg)`: NEP-245 `mt_batch_transfer` and
+  `mt_batch_transfer_call`, with `tids` and `amts` sequences of one length (a different
+  length panics, as the token does).
 
 Remember the 1-yocto deposits: `TokYocto` on `ft_transfer`, `ft_transfer_call`,
 `near_withdraw` and `storage_unregister`.
@@ -694,6 +698,25 @@ everything.
 
 For an account you do not control (any receiver), use the arbitrary receiver instead of a
 handler: `RecvOutcome(r.a.amt, resp)` for `resp \in RecvResps`, as `RunRx` in `Pay.tla` does.
+
+**NEP-245.** A multi token (`Nep245`) creates `mt_on_transfer` with the vectors `r.a.tids`
+and `r.a.amts` (a single-id call has vectors of one, and also sets `r.a.tid` and `r.a.amt`).
+The receiver returns a `Vec<U128>`, one unused amount per id: return `MtRet(<<u1, u2>>)`.
+The resolver refunds, per id, `min(unused_i, amount_i)` capped by your balance of that id; a
+panic, a malformed result or a vector of another length refunds everything. It returns the
+used amounts as a vector; `MtVecOf(r.res)` decodes it (`.ok`, `.v`), since a vector travels
+as one integer (`["v"]` is the number `v`). The arbitrary receiver is
+`MtRecvOutcome(r.a.amts, resp)` for `resp \in MtRecvResps`, or `MtRecvVecOutcome(vec)` for
+any vector, for instance every `vec \in MtAnswers(Len(r.a.amts), 0..3)` (lengths n - 1 to
+n + 1, so wrong lengths and over-amount answers too), as `RunRx` in
+`examples/mt-batch/MtBatch.tla` does. Write it as a disjunction of `Exec` steps, not as
+`\E O \in {...}`: TLC cannot put outcomes with different fields in one set.
+
+In gas mode, `MtGasShape[t]` selects the token's gas: `"reserve"` (the default; static
+prepaid − `MtCallReserve[t]`, weight 0) or `"tools"` (near-sdk-contract-tools 4.0.0: a
+30 Tgas floor, `mt_on_transfer` static 0 and weight 10, the resolver 5 Tgas and weight 1).
+Override it like `TokFtGasShape`, e.g. `MtGasShape = '[t \in {"mt"} |-> "tools"]'` in
+`runs.toml`. The batch methods and the resolver burn with size = the number of ids.
 
 In gas mode:
 
@@ -1790,6 +1813,7 @@ All examples are toy contracts written for this repo.
   | `nep141-refund-cap` | the NEP-141 resolver caps the refund at the amount |
   | `nep145-refund-to-predecessor` | `storage_deposit` refunds the excess to the predecessor |
   | `mt-smoke` | NEP-245 transfer and resolve |
+  | `mt-batch` | a NEP-245 batch transfer_call to an arbitrary receiver: per id, the resolver refunds min(unused, amount) capped by the receiver's balance; a resolver that ignores the answer, or one that does not cap it at the amount, gives the sender back the wrong amount |
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |

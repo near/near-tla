@@ -29,12 +29,14 @@ TMax(a, b) == IF a > b THEN a ELSE b
 (*   amt    amount                                                         *)
 (*   msg    msg                                                            *)
 (*   tid    token_id (NEP-245)                                             *)
+(*   tids, amts  token_ids and amounts (NEP-245): a batch call's vectors;  *)
+(*          a single-id call has <<tid>> and <<amt>>, a batch tid = ""     *)
 (*   nd, sd, sdAcct, xf   batch only: near_deposit amount, storage_deposit *)
 (*          amount and account, last action "ft_transfer"|"ft_transfer_call"|"" *)
 (*   force  storage_unregister(force)                                      *)
 (*   cx     a payload slot for the model's own receipts: <<>> or <<v>>, so *)
 (*          a contract's receipts share the TA0 shape with token receipts  *)
-TA0 == [rc |-> "", s |-> "", amt |-> 0, msg |-> "", tid |-> "",
+TA0 == [rc |-> "", s |-> "", amt |-> 0, msg |-> "", tid |-> "", tids |-> <<>>, amts |-> <<>>,
         nd |-> 0, sd |-> 0, sdAcct |-> "", xf |-> "", force |-> FALSE, cx |-> <<>>]
 CxArgs(v) == [TA0 EXCEPT !.cx = <<v>>]
 FtArgs(rc, amt, msg)       == [TA0 EXCEPT !.rc = rc, !.amt = amt, !.msg = msg]
@@ -43,9 +45,14 @@ ResArgs(s, rc, amt)        == [TA0 EXCEPT !.s = s, !.rc = rc, !.amt = amt]
 SdArgs(acct)               == [TA0 EXCEPT !.rc = acct]          \* "" = predecessor
 NwArgs(amt)                == [TA0 EXCEPT !.amt = amt]
 SuArgs(force)              == [TA0 EXCEPT !.force = force]
-MtArgs(rc, tid, amt, msg)  == [TA0 EXCEPT !.rc = rc, !.tid = tid, !.amt = amt, !.msg = msg]
-MtOnArgs(s, rc, tid, amt, msg) == [TA0 EXCEPT !.s = s, !.rc = rc, !.tid = tid, !.amt = amt, !.msg = msg]
-MtResArgs(s, rc, tid, amt) == [TA0 EXCEPT !.s = s, !.rc = rc, !.tid = tid, !.amt = amt]
+MtArgs(rc, tid, amt, msg)  == [TA0 EXCEPT !.rc = rc, !.tid = tid, !.amt = amt, !.msg = msg,
+                                           !.tids = <<tid>>, !.amts = <<amt>>]
+MtOnArgs(s, rc, tid, amt, msg) == [MtArgs(rc, tid, amt, msg) EXCEPT !.s = s]
+MtResArgs(s, rc, tid, amt) == [MtArgs(rc, tid, amt, "") EXCEPT !.s = s]
+\* NEP-245 batches: token_ids and amounts as sequences (tid "", amt 0).
+MtBatchArgs(rc, tids, amts, msg)      == [TA0 EXCEPT !.rc = rc, !.tids = tids, !.amts = amts, !.msg = msg]
+MtBatchOnArgs(s, rc, tids, amts, msg) == [MtBatchArgs(rc, tids, amts, msg) EXCEPT !.s = s]
+MtBatchResArgs(s, rc, tids, amts)     == [MtBatchArgs(rc, tids, amts, "") EXCEPT !.s = s]
 \* Batch [near_deposit(nd)?, storage_deposit(sdAcct, sd)?, ft_transfer[_call](rc, amt, msg)?]
 \* on one token account: one receipt, atomic, result = the last action's.
 BatchArgs(nd, sd, sdAcct, xf, rc, amt, msg) ==
