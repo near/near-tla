@@ -466,7 +466,9 @@ unchanged. The relayed flow `relay_chain1` (`chain1` wrapped in a delegate) was 
 unchanged (95 849 points, 222 918 receipts), and the refitted tables differ only in comments
 (observation counts). The largest gas difference, 5 Ggas on `ft_batch_C` (3 elsewhere), is rounding:
 burns and fees round up at each of two creation levels, so the model gives the receiver
-slightly less than nearcore, never more.
+slightly less than nearcore, never more. Rerun from a fresh sweep after per-byte storage
+(`356fd7b`, which also carries the zero-gas "either" verdict of `30d1daa`): all 74 flows pass
+with the same totals; no flow sets `StoragePerByte`.
 
 | flow | points | missing | sim receipts | statuses equal | gas within 5 Ggas | gas worst (Ggas) | sim edges (Tgas) | model edges equal | result |
 |---|---:|---:|---:|---:|---:|---:|---|---|---|
@@ -549,7 +551,7 @@ slightly less than nearcore, never more.
 
 Differences between the model and nearcore found by these flows, and what fixed each. The sim
 was not patched, and none is a sim-vs-nearcore divergence: the sim runs nearcore's runtime.
-None is open after `9702b14`; the joint-promise and yield/resume flows found none.
+None is open after `356fd7b`; the joint-promise and yield/resume flows found none.
 
 1. **ft_storage_again, wnear_storage_again: edge at 1.0 Tgas in nearcore, 1.1 in the model.**
    `storage_deposit` for a registered account refunds the deposit and burns 553 Ggas;
