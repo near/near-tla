@@ -480,8 +480,12 @@ TimedOut(p) == /\ IsYield(p)
 \* lifecycle.rs, instant_delete_via_delegate, also with a local creator).
 \* A transaction's own first receipt is not instant, nor is the delete's
 \* payout (a refund receipt), nor a DeleteAccount waiting on a callback's
-\* inputs.  (A yield receipt is instant too; the model puts the yield in
-\* post at its creator's commit, which is the same.)
+\* inputs.  A joint callback with no inputs (AndThen(<<>>, c, d0).cb: an
+\* empty promise_and, runtime/near-vm-runner/src/logic/host.rs:2486-2534,
+\* then .then, :2631-2643) waits on nothing and is instant if c has the
+\* shape: Commit tags it in post (InstantTagP), where it is runnable at
+\* once.  (A yield receipt is instant too; the model puts the yield in post
+\* at its creator's commit, which is the same.)
 \* Commit and NearKeys.ExecDelegate tag such a receipt with the field inst
 \* (InstantTag).  While one is pending (InstantPending), only tagged
 \* receipts run (Runnable), and SubmitAs, BlockTick and EpochTick are
@@ -497,8 +501,10 @@ IsInstantShape(c) ==
     /\ IsAcctRcpt(c)
     /\ ~c.ac.mk /\ c.ac.bnf # "" /\ c.ac.ka = <<>> /\ c.dep = 0
 InstantTag(c) == IF InstantFirst /\ IsInstantShape(c) THEN [inst |-> TRUE] @@ c ELSE c
+\* For a postponed child: only a joint callback with no inputs.
+InstantTagP(c) == IF IsJoint(c) /\ c.ins = <<>> THEN InstantTag(c) ELSE c
 IsInstant(r) == "inst" \in DOMAIN r
-InstantPending == InstantFirst /\ \E y \in rq : IsInstant(y)
+InstantPending == InstantFirst /\ (\E y \in rq : IsInstant(y) \/ \E p \in post : IsInstant(p))
 
 \* Receipts that can run now: ready ones; postponed ones whose data arrived
 \* (a yield with its resume payload); joint callbacks whose inputs all
@@ -512,7 +518,10 @@ RunnableAll ==
        \cup { [[rs |-> JointRes(p)] @@ p EXCEPT !.res = JointMark] :
                 p \in {q \in post : IsJoint(q) /\ Arrived(q)} }
        \cup { [p EXCEPT !.res = FailedRes] : p \in {q \in post : TimedOut(q)} }
-Runnable == IF InstantPending THEN {y \in rq : IsInstant(y)} ELSE RunnableAll
+Runnable == IF InstantPending
+            THEN {y \in rq : IsInstant(y)}
+                 \cup {[[rs |-> JointRes(p)] @@ p EXCEPT !.res = JointMark] : p \in {q \in post : IsInstant(q)}}
+            ELSE RunnableAll
 
 \* The promise results as the handler sees them: promise_results_count()
 \* (runtime/near-vm-runner/src/logic/host.rs:4583-4593) and promise_result(i - 1)
@@ -904,7 +913,7 @@ Label == IF fails > 0 THEN "forced" ELSE IF oog # {} THEN "caller-gas" ELSE "no-
 \* Commit: platform part.  The contract conjoins its own state update.
 Commit(r, O) ==
     /\ rq'   = RemR(r) \cup {InstantTag(c) : c \in Give(r, O, O.ready)}
-    /\ post' = RemP(r) \cup Give(r, O, O.post)
+    /\ post' = RemP(r) \cup {InstantTagP(c) : c \in Give(r, O, O.post)}
     /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
                      \cup ResumeData(r, O)
     /\ near' = [near EXCEPT ![r.to] = @ + r.dep - O.out]
@@ -937,7 +946,8 @@ FailOOG(r)    == FailL(r, "oog")
 \* children (fresh ids, so no other receipt equals one), the failure none.
 \* So Ok must come after Exec in the same action; written as membership in
 \* rq' / post', it is an error (not an assignment) if it comes first.
-Committed(r, O) == \E c \in Kids(O) : InstantTag(Alloc(r, O, c)) \in rq' \cup post'
+Committed(r, O) == \/ \E c \in O.ready : InstantTag(Alloc(r, O, c)) \in rq'
+                   \/ \E c \in O.post : InstantTagP(Alloc(r, O, c)) \in post'
 Ok(r, O) ==
     LET v == Verdict(r, O) IN
     IF v = "either" THEN Committed(r, O) ELSE v = "ok"

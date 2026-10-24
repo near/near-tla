@@ -30,6 +30,14 @@ LogOn = "FALSE"
 name = "instant_on_passes"
 expect = "pass"
 
+# The same with the delete as .then on an empty promise_and: a joint callback with no inputs
+# is instant too.
+[[run]]
+name = "instant_empty_join_passes"
+expect = "pass"
+[run.constants]
+EmptyJoin = "TRUE"
+
 # Without the rule a use in flight runs between close and its delete: a false positive.
 [[run]]
 name = "instant_off_spurious"
@@ -51,6 +59,13 @@ runs = ["instant_on_passes"]
 id = "instant_pending_use_waits"
 expr = '~(InstantPending /\ \E r \in rq : r.m = "use")'
 runs = ["instant_on_passes"]
+
+# With EmptyJoin: the delete pending in post as a joint callback with no inputs, tagged
+# instant, with a use waiting behind it.
+[[witness]]
+id = "empty_join_pending_use_waits"
+expr = '~(\E p \in post : IsInstant(p) /\ IsJoint(p) /\ \E r \in rq : r.m = "use")'
+runs = ["instant_empty_join_passes"]
 
 # Such a use then fails on the deleted account.
 [[witness]]
@@ -83,7 +98,7 @@ runs = ["instant_on_passes"]
 [[mutant]]
 id = "delete_not_instant_shape"
 file = "Closer.tla"
-find = 'Outcome({DeleteAcctRcpt(nid, r.tx, K, Arg(0), B, 0)}, {}, RVal(0), 0, 1)'
+find = 'Outcome({Del(r)}, {}, RVal(0), 0, 1)'
 replace = 'Outcome({AcctRcpt(nid, r.tx, K, K, Arg(0), 1, 0, FALSE, B)}, {}, RVal(0), 1, 1)'
 class = "breaks the instant shape"
 killed_by = ["NoUseAfterClose"]
@@ -93,7 +108,7 @@ runs = ["instant_on_passes"]
 [[mutant]]
 id = "close_without_delete"
 file = "Closer.tla"
-find = 'Outcome({DeleteAcctRcpt(nid, r.tx, K, Arg(0), B, 0)}, {}, RVal(0), 0, 1)'
+find = 'Outcome({Del(r)}, {}, RVal(0), 0, 1)'
 replace = 'Outcome({}, {}, RVal(0), 0, 0)'
 class = "dropped effect"
 killed_by = ["NoUseAfterClose"]
@@ -104,8 +119,19 @@ runs = ["instant_on_passes"]
 id = "lib_runnable_ignores_instant"
 file = "NearAsync.tla"
 library = true
-find = 'Runnable == IF InstantPending THEN {y \in rq : IsInstant(y)} ELSE RunnableAll'
-replace = 'Runnable == RunnableAll'
+find = 'Runnable == IF InstantPending'
+replace = 'Runnable == IF FALSE'
 class = "instant rule dropped (library)"
 killed_by = ["NoUseAfterClose"]
-runs = ["instant_on_passes"]
+runs = ["instant_on_passes", "instant_empty_join_passes"]
+
+# The library mutant: a joint callback with no inputs is not tagged instant.
+[[mutant]]
+id = "lib_empty_join_not_instant"
+file = "NearAsync.tla"
+library = true
+find = 'InstantTagP(c) == IF IsJoint(c) /\ c.ins = <<>> THEN InstantTag(c) ELSE c'
+replace = 'InstantTagP(c) == c'
+class = "instant rule narrowed (library)"
+killed_by = ["NoUseAfterClose"]
+runs = ["instant_empty_join_passes"]

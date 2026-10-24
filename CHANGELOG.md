@@ -378,8 +378,10 @@ Each entry ends with its migration.
 ### Added
 
 - **Instant receipts** (SEMANTICS S5; docs/USAGE.md section 16). A lone DeleteAccount
-  (`IsInstantShape`) that a receipt creates, in its outcome's ready set or as a delegate's
-  inner receipt, is tagged `inst` (`InstantTag`, by `Commit` and `NearKeys.ExecDelegate`).
+  (`IsInstantShape`) that a receipt creates, in its outcome's ready set, as a joint callback
+  with no inputs in its postponed set (`.then` on an empty `promise_and`, `InstantTagP`) or as
+  a delegate's inner receipt, is tagged `inst` (`InstantTag`, by `Commit` and
+  `NearKeys.ExecDelegate`).
   While one is pending (`InstantPending`), `Runnable` holds only tagged receipts (no yield
   timeout either; the earlier set is `RunnableAll`), `SubmitAs`, `BlockTick` and `EpochTick`
   are disabled, and `LocalPriorityOK` never holds a tagged receipt back. Models conjoin
@@ -392,7 +394,7 @@ Each entry ends with its migration.
   account and by the user itself, a transaction's delete that is not instant),
   `selftest_instant_off` and `selftest_payout_before` / `_after` (the payout runs in either
   order); new example `account-lifecycle/instant` (`instant_on_passes`,
-  `instant_off_spurious`, with witnesses and mutants).
+  `instant_empty_join_passes`, `instant_off_spurious`, with witnesses and mutants).
 - **CreateAccount and DeleteAccount** (SEMANTICS A6, A7; docs/USAGE.md section 16). A new
   receipt kind, ACCOUNT (`ACCT`, `IsAcctRcpt`), holds `[CreateAccount]? [Transfer]? [key
   actions]* [DeleteAccount]?` in an optional field `ac`: constructors `CreateAcctRcpt`,

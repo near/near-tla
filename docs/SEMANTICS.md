@@ -1171,15 +1171,18 @@ Each rule has four fields:
   and incoming creators alike, and for a delegate's inner receipt. Not instant: a
   transaction's own first receipt (it is converted, not created by a receipt); any receipt
   with another action, such as `[Transfer, DeleteAccount]` or `[CreateAccount, ...,
-  DeleteAccount]`; a `DeleteAccount` waiting on a callback's inputs; and the delete's payout
-  to the beneficiary, an ordinary refund receipt that runs later (A7). A `PromiseYield`
-  receipt is instant too; processing it only stores the yield.
+  DeleteAccount]`; a `DeleteAccount` waiting on a callback's inputs (but a joint callback
+  with no inputs, `.then` on an empty `promise_and`, waits on none and is instant); and the
+  delete's payout to the beneficiary, an ordinary refund receipt that runs later (A7). A
+  `PromiseYield` receipt is instant too; processing it only stores the yield.
 - **nearcore:** `core/primitives/src/receipt.rs:468-491` (`is_instant_receipt`),
   `runtime/runtime/src/lib.rs:1222-1234` (instant receipts are queued, not forwarded),
   `:2747-2775` (`process_receipt_and_instant_receipts`, called for local, delayed and incoming
   receipts at `:2538`, `:2642`, `:2727`), `runtime/runtime/src/actions.rs:500-512` (the
-  delegate's inner receipt is a new receipt).
-- **Model:** `Commit` (on the outcome's ready children) and `NearKeys.ExecDelegate` tag a
+  delegate's inner receipt is a new receipt); `runtime/near-vm-runner/src/logic/host.rs:2486-2534`
+  (`promise_and` accepts no promises), `:2631-2643` (`.then` keeps the empty dependency list).
+- **Model:** `Commit` (on the outcome's ready children, and on a postponed one that is a joint
+  callback with no inputs, `InstantTagP`) and `NearKeys.ExecDelegate` tag a
   receipt of that shape (`IsInstantShape`: an ACCOUNT receipt with only a DeleteAccount, no
   deposit) with the field `inst` (`InstantTag`). While one is pending (`InstantPending`),
   `Runnable` holds only tagged receipts (no timeout either), and `SubmitAs`, `BlockTick` and
@@ -1520,7 +1523,8 @@ against the current module code; some may be fixed in the modules later.
   the lone `DeleteAccount` it creates, which nearcore never allows. A contract that relies on
   its self-delete being immediate then shows spurious counterexamples
   (`examples/account-lifecycle/instant`, `instant_off_spurious`). With the default the rule is
-  exact, except that tagged receipts run in any order among themselves. A `PromiseYield`
+  exact, a joint callback with no inputs included (`instant_empty_join_passes`), except that
+  tagged receipts run in any order among themselves. A `PromiseYield`
   receipt is instant too, but processing it only stores it (`lib.rs:1549-1553`); the model puts
   the yield in `post` at its creator's commit, which is the same.
 - **N-local-off.** With the local-priority switch (S1) off, a self-signed first receipt may run

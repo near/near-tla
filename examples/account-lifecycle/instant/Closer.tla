@@ -12,6 +12,8 @@
 (* :2747-2775).  NoUseAfterClose: no use commits after close did.          *)
 (*                                                                         *)
 (* Run instant_on_passes: the library's rule (InstantFirst).  Run          *)
+(* instant_empty_join_passes: the same with the delete as a joint callback *)
+(* with no inputs (EmptyJoin).                                             *)
 (* instant_off_spurious: InstantFirst <- FALSE, the rule before the        *)
 (* library modelled it; a use in flight runs between close and its delete *)
 (* and NoUseAfterClose fails, a false positive.  So a model of such a      *)
@@ -37,11 +39,16 @@ NoTable == [x \in {} |-> 0]
 Arg(n)  == [n |-> n]
 Out0    == Outcome({}, {}, RVal(0), 0, 0)
 
+\* EmptyJoin (overridable): close emits the delete as .then on an empty
+\* promise_and, a joint callback with no inputs, which is instant too (S5).
+EmptyJoin == FALSE
+Del(r) == DeleteAcctRcpt(nid, r.tx, K, Arg(0), B, 0)
 \* K's handlers.
 H(r) ==
     IF r.m = "use" THEN Out0
     ELSE IF r.fr # O THEN OErr(Out0, "only the owner closes")
-    ELSE Outcome({DeleteAcctRcpt(nid, r.tx, K, Arg(0), B, 0)}, {}, RVal(0), 0, 1)
+    ELSE IF EmptyJoin THEN Outcome({}, {AndThen(<<>>, Del(r), nid + 1).cb}, RVal(0), 0, 1)
+    ELSE Outcome({Del(r)}, {}, RVal(0), 0, 1)
 
 RunK(r) ==
     LET O1 == H(r) IN
