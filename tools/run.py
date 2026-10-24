@@ -72,8 +72,7 @@ of violated names. expect = "violation" then means "the invariant is in the set"
 other expectation requires that nothing was peeled. Peel mode checks verdicts, budgets
 and vacuity only, not expect_output or expect_window.
 
-Divergence from the C5 contract: the temporal-formula key is `specification`, because
-`spec` already names the module.
+A temporal formula goes in `specification` (not `spec`, which names the module).
 
 Environment: TLA2TOOLS_JAR (if tools/tla2tools.jar is missing), NEAR_TLA_LIBRARY
 (like --library), TLC_JAVA_OPTS (extra JVM options, e.g. -Xmx4g).

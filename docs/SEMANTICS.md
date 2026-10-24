@@ -28,13 +28,13 @@ Each rule has four fields:
 - **nearcore:** where it lives. The rev is always b7b4737, and paths are relative to the
   nearcore root.
 - **Model:** the operator or constant that encodes it, in `modules/NearAsync.tla` unless another
-  module is named. The names are the current code's. `TBD(WS1)` marks an encoding that is not
-  settled yet.
+  module is named. The names are the current code's.
 - **Validated:** one of these levels:
   - **sim** means a per-receipt conformance run in this repo (`conformance/`, see
-    `docs/CONFORMANCE.md`) agreed with the model. No rule is at this level yet. Rules that a
-    conformance probe should cover carry the marker `<!-- conformance -->`; they are upgraded
-    from real results.
+    [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. No rule is at this level yet.
+    Rules that a conformance flow covers carry the marker `<!-- conformance -->` in the source
+    of this page; the final conformance run upgrades them from "nearcore reading" to "sim"
+    where its results agree (results: TBD-conformance).
   - **nearcore reading** means the rule was read in the nearcore source at b7b4737 and not
     exercised here.
   - **recalled** means it was neither read nor run. Treat it as an assumption.
@@ -45,9 +45,9 @@ Each rule has four fields:
   `modules/NearFees.tla`; its rounding error is under [N-precision](#under-approximations-unsound-they-can-hide-bugs).
 - **Sizes have two units. Convert explicitly.**
   - `NearAsync` sizes (`r.res.sz`, `RValSz(v, n)`, `OSz(O, n)`, `DataOfSz`, and the burn size
-    in `GasBurn[k].per * O.sz`) are in **KB, rounded up**. `NearAsync` does not say whether a KB
-    is 1000 or 1024 bytes. This page assumes **1 KB = 1000 bytes**, matching the `NearFees`
-    scaling (TBD(WS1): state it in `NearAsync`).
+    in `GasBurn[k].per * O.sz`) are in **KB, rounded up**, with **1 KB = 1000 bytes**. That
+    matches the `NearFees` scaling and the calibrated tables, whose per-size slopes are per
+    1000 bytes (`conformance/README.md`, "Units in the model").
   - `NearFees` per-byte operators (`DataBytesFee`, `FunctionCallBytesFee`, `AddKeyFcBytesFee`,
     `DeployBytesFee` and their send/exec parts) take **bytes**.
   - Bytes to model size: `sz = (n + 999) \div 1000`. Model size to bytes for a fee:
@@ -70,7 +70,8 @@ Each rule has four fields:
   (`process_receipt`).
 - **Model:** the `Rcpt(...)` record (transaction `tx`, receiver `to`, predecessor `fr`, method
   `m`, arguments `a`, deposit `dep`, refund target `rto`, callback link `cb`, gas fields
-  `gs`/`gw`/`gf`/`g`). Data results arrive in the callback's `r.res` (`DataOf`).
+  `gs`/`gw`/`gf`/`g`, and `loc` for a local receipt, set by `SubmitAs`). Data results arrive
+  in the callback's `r.res` (`DataOf`, `DataOfSz`).
 - **Validated:** nearcore reading.
 
 ### R2. A data receipt may arrive before or after the receipt that waits on it
@@ -171,7 +172,7 @@ Each rule has four fields:
   (`promise_results_count`).
 - **Model:** `r.res = [ok, v, sz]` with `v` a number, `EMPTY`, `MAL` or `NONEMPTY`, built by
   `RVal`; helpers `IsNum`, `IsEmpty`, `IsFailed`, `NumOr`. No results: `NoRes` with
-  `NoRes.v = NOPR`, and `IsNum(NoRes) = FALSE`.
+  `NoRes.v = NOPR` (`NoResults(r.res)`), and `IsNum(NoRes) = FALSE`.
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ### C4. Result size

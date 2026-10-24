@@ -14,21 +14,27 @@ near-contract-sim.
 
 ```
 modules/              the library, one flat directory (passed to TLC as -DTLA-Library)
-  NearAsync.tla       platform: receipts, callbacks, data, refunds, Transfer/Stake, gas, local receipts
-  NearKeys.tla        signer keys, permissions, AddKey/DeleteKey, multi-action atomicity, no-code failure
+  NearAsync.tla       platform: receipts, callbacks, data, refunds, Transfer/Stake, accounts, gas, local receipts
+  NearKeys.tla        access keys, signed submission, AddKey/DeleteKey, multi-action atomicity
   NearFees.tla        action fees in Ggas per protocol version (pure definitions)
   TokenCommon.tla     token argument records, deviations, resolver arithmetic
   Nep145.tla  Nep141.tla  WNear.tla  Tokens.tla   fungible tokens (EXTEND Tokens)
   Nep245.tla          external multi-token contract
+  CalibStd.tla        measured gas tables for the standard FT and wNEAR (generated; do not edit)
 examples/<name>/      toy contracts + runs.toml (must-pass and must-fail runs)
+examples/platform-selftest/   deterministic scenarios with known nearcore outcomes
 tools/run.py          runner: wrappers, TLC, verdict check (see --help)
 tools/sany.py         parse check
+tools/windows.py      fold print-only window reports into gas intervals
+tools/tlctrace.py     summarise a TLC counterexample
+tools/check_links.py  offline Markdown link check (CI runs it)
 conformance/          Rust conformance + calibration crate (standalone; CI does not build it)
-conformance/probes/   probe contracts (Rust -> wasm)
+conformance/probes/   probe contracts (Rust -> wasm), committed with their hashes
+conformance/flows/    flow specs (probes.toml, actions.toml, example.toml)
 conformance/tla/      the model side of conformance runs
-conformance/scripts/  conformance helpers (mkconf.py, conform.py)
-docs/                 SEMANTICS.md (rules, citations, trust), CONFORMANCE.md, VERSIONING.md,
-                      USAGE.md (planned)
+conformance/scripts/  gen_probes.py, mkconf.py, tlc.sh, conform.py
+docs/                 SEMANTICS.md (rules, citations, trust), USAGE.md (modelling a contract),
+                      CONFORMANCE.md, VERSIONING.md
 ```
 
 ## How to run things
@@ -39,8 +45,8 @@ tools/run.py                         # all example runs; nonzero exit on any une
 tools/run.py 'pay_*' --print-trace   # some runs, with traces
 ```
 
-`tools/tla2tools.jar` must be tla2tools v1.7.4 (see `CONTRIBUTING.md`). The conformance suite:
-`docs/CONFORMANCE.md`.
+`tools/tla2tools.jar` must be tla2tools v1.7.4 (see `CONTRIBUTING.md`). Modelling a contract:
+`docs/USAGE.md`. The conformance suite: `docs/CONFORMANCE.md`.
 
 ## Rules
 

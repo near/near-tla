@@ -2,7 +2,7 @@
 
 ## Setup
 
-- Java 17 or later.
+- Java 21 (what CI uses).
 - `tools/tla2tools.jar`: tla2tools **v1.7.4** (TLC 2.19). The file is gitignored. Fetch it the
   way CI does:
 
@@ -52,7 +52,8 @@ SANY in v1.7.4 exits 0 even on semantic errors; `tools/sany.py` checks the outpu
 The Rust crate in `conformance/` checks the model's per-receipt predictions against nearcore's
 runtime through near-contract-sim. It also produces the calibrated gas tables. It runs locally
 only; CI does not build Rust. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) for how to run
-it and how to add a probe.
+it and how to read a mismatch, and [`conformance/README.md`](conformance/README.md) for the
+flow-spec format used to add a probe flow.
 
 ## What every change needs
 
@@ -69,7 +70,7 @@ of these:
    for an unrelated one.
 3. **A conformance probe**, where feasible, that exercises the rule in the sim and compares
    per-receipt outcomes with the model. If it is not feasible, say why in `SEMANTICS.md` and mark
-   the rule "nearcore" or "recalled", not "sim".
+   the rule "nearcore reading" or "recalled", not "sim".
 4. **`docs/SEMANTICS.md` updated:** the rule, the citation, the operator, and the validation
    level. If the change adds or removes an approximation, update "Not modelled" as well.
 5. **`CHANGELOG.md` updated.** A break of an operator name, arity or meaning goes under
