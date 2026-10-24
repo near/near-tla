@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # TLC 2.19 (tla2tools v1.7.4). v1.8.0 is a rolling prerelease and cannot be pinned.
   TLA_TOOLS_VERSION: v1.7.4
@@ -22,24 +26,27 @@ jobs:
     runs-on: warp-ubuntu-2404-x64-2x
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: "21.0.13"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
       - name: Hygiene (no absolute home paths in tracked files)
         run: |
-          # The character classes keep this pattern from matching its own source line.
-          if git ls-files -z | xargs -0 grep -nIE '/User[s]/|/hom[e]/[^/[:space:]]+/'; then
-            echo "::error::absolute home paths found (write ~ instead)"
-            exit 1
-          fi
+          # Unix home dirs at the start of a path token (so URL paths, which follow a
+          # host name, do not match), and Windows user dirs. The character classes keep
+          # this pattern from matching its own source line.
+          pat='(^|[^[:alnum:]_./~-])/(Users|home)/[A-Za-z0-9._-]+|[A-Za-z]:[\\/]Users[\\/]'
+          rc=0
+          git grep -nIE "$pat" -- . || rc=$?
+          if [ "$rc" -eq 0 ]; then echo "::error::absolute home paths found (write ~ instead)"; exit 1; fi
+          if [ "$rc" -ne 1 ]; then echo "::error::git grep failed (exit $rc)"; exit 1; fi
 
       - name: Markdown link check (relative links and anchors, offline)
         run: python3 tools/check_links.py
@@ -54,16 +61,20 @@ jobs:
             "https://github.com/tlaplus/tlaplus/releases/download/${TLA_TOOLS_VERSION}/tla2tools.jar"
           echo "${TLA_TOOLS_SHA256}  tools/tla2tools.jar" | sha256sum -c -
 
-      - name: SANY-parse every module and example spec
-        # tools/sany.py fails on SANY's error output too: SANY 1.7.4 can exit 0 on semantic errors.
-        run: python3 tools/sany.py modules examples
+      - name: SANY-parse every module, example spec and conformance spec
+        # tools/sany.py also fails on SANY's error output: SANY 1.7.4 can exit 0 on
+        # semantic errors. conformance/tla may be empty or absent.
+        run: |
+          dirs="modules examples"
+          if [ -d conformance/tla ]; then dirs="$dirs conformance/tla"; fi
+          python3 tools/sany.py $dirs
 
       - name: TLC runs (every expectation in examples/*/runs.toml)
         run: python3 tools/run.py examples/
 
       - name: Upload TLC logs of failed runs
-        if: failure()
-        uses: actions/upload-artifact@v4
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tlc-logs
           path: examples/*/build/

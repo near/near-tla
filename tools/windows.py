@@ -27,7 +27,8 @@ import argparse
 import re
 import sys
 
-_WIN = re.compile(r'<<\s*"WIN"\s*,\s*"([^"]*)"\s*,\s*(-?\d+)')
+# TLC prints strings with \" and \\ escapes.
+_WIN = re.compile(r'<<\s*"WIN"\s*,\s*"((?:[^"\\]|\\.)*)"\s*,\s*(-?\d+)')
 
 
 def reports(text: str) -> dict[str, set[int]]:
@@ -35,6 +36,7 @@ def reports(text: str) -> dict[str, set[int]]:
     flat = " ".join(text.split())
     out: dict[str, set[int]] = {}
     for label, gas in _WIN.findall(flat):
+        label = re.sub(r"\\(.)", r"\1", label)
         out.setdefault(label, set()).add(int(gas))
     return out
 
@@ -55,14 +57,22 @@ def windows(text: str, step: int = 100) -> dict[str, list[tuple[int, int]]]:
 
 
 def parse_spec(spec: str) -> list[tuple[int, int]]:
-    """'39800-40700, 41000' -> [(39800, 40700), (41000, 41000)] (Ggas). '' -> []."""
-    out = []
+    """'39800-40700, 41000' -> [(39800, 40700), (41000, 41000)] (Ggas). '' -> [].
+
+    Intervals must be ascending and disjoint (lo <= hi < next lo); ValueError otherwise.
+    """
+    out: list[tuple[int, int]] = []
     for part in [p.strip() for p in spec.split(",") if p.strip()]:
         if "-" in part[1:]:
             i = part.index("-", 1)
-            out.append((int(part[:i]), int(part[i + 1:])))
+            lo, hi = int(part[:i]), int(part[i + 1:])
         else:
-            out.append((int(part), int(part)))
+            lo = hi = int(part)
+        if lo > hi:
+            raise ValueError(f"reversed interval {part!r}")
+        if out and lo <= out[-1][1]:
+            raise ValueError(f"interval {part!r} is not after the previous one")
+        out.append((lo, hi))
     return out
 
 

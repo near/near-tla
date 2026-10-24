@@ -3,7 +3,8 @@
 
 usage: tools/sany.py [--jar JAR] [--library DIR] PATH...
 
-PATH is a .tla file or a directory (searched recursively for *.tla, skipping build/).
+PATH is a .tla file or a directory (searched recursively for *.tla, skipping build/;
+an empty directory is fine, but at least one file must be found overall).
 Each file is parsed from its own directory with -DTLA-Library=<its dir>:<library>
 (default library: modules/).
 
@@ -37,7 +38,10 @@ def files(paths: list[str]) -> list[Path]:
     for a in paths:
         p = Path(a)
         if p.is_dir():
-            out += sorted(x for x in p.rglob("*.tla") if "build" not in x.relative_to(p).parts)
+            found = sorted(x for x in p.rglob("*.tla") if "build" not in x.relative_to(p).parts)
+            if not found:
+                print(f"note: no .tla files in {a}")
+            out += found
         elif p.suffix == ".tla" and p.is_file():
             out.append(p)
         else:
@@ -48,8 +52,11 @@ def files(paths: list[str]) -> list[Path]:
 def sany(jar: str, f: Path, library: str) -> tuple[bool, str]:
     cmd = ["java", f"-DTLA-Library={os.pathsep.join([str(f.parent), library])}",
            "-cp", jar, "tla2sany.SANY", f.name]
-    p = subprocess.run(cmd, cwd=f.parent, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, text=True, timeout=300)
+    try:
+        p = subprocess.run(cmd, cwd=f.parent, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, timeout=300)
+    except FileNotFoundError as e:
+        raise ConfigError(f"cannot run java: {e}") from e
     return p.returncode == 0 and not ERRORS.search(p.stdout), p.stdout
 
 
@@ -72,7 +79,11 @@ def main(argv=None) -> int:
     lib = str(Path(a.library).resolve())
     bad = []
     for f in fs:
-        ok, out = sany(jar, f, lib)
+        try:
+            ok, out = sany(jar, f, lib)
+        except ConfigError as e:
+            print(f"sany.py: {e}", file=sys.stderr)
+            return 2
         name = home_rewrite(os.path.relpath(f, ROOT) if f.is_relative_to(ROOT) else str(f))
         print(f"{'ok  ' if ok else 'FAIL'} {name}")
         if not ok:

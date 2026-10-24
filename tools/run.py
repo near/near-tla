@@ -7,18 +7,19 @@ Arguments are runs.toml files, directories (searched recursively for runs.toml),
 names (shell-style globs such as 'pay_*' work; names are looked up under examples/).
 With no arguments every run under examples/ is checked.
 
-For each run the runner writes, into build/ beside the runs.toml (gitignored):
+For each run the runner generates
   MC_<run>.tla   a wrapper that EXTENDS the spec and defines const_<C> == <expr>
   MC_<run>.cfg   a TLC config substituting C <- const_<C> (cfg files cannot hold tuples)
-  <run>.log      TLC's output, with $HOME rewritten to ~
-then runs TLC with -DTLA-Library=<spec dir>:<library>, parses the verdict, prints a
-table and exits nonzero if any run does not match its expectation. Build files of runs
-that match are deleted unless --keep; those of mismatching runs are always kept.
+in a fresh temporary directory (so nothing stale can shadow a module), runs TLC there
+with -DTLA-Library=<spec dir>:<library>, writes TLC's output to build/<run>.log beside
+the runs.toml ($HOME rewritten to ~, temp dirs to <tmp>), parses the verdict, prints a
+table and exits nonzero if any run does not match its expectation. Wrapper, cfg and log
+are kept in build/ (gitignored) for mismatching runs, and for every run with --keep.
 
 runs.toml format
 ----------------
   spec = "Pay"                # default module (a .tla beside runs.toml)
-  workers = 2                 # TLC workers (default 2, capped at 4)
+  workers = 2                 # TLC workers (default 2, max 4); --workers can only lower it
   library = "../../modules"   # relative to runs.toml (default ../../modules)
   [constants]                 # optional: file-level constants shared by every run
   U = '"u"'
@@ -35,23 +36,44 @@ runs.toml format
   properties = []
   deadlock = false            # false (default): pass -deadlock, quiescence is fine
   tags = ["semantics:x"]      # free-form
-  expect_output = 'regex'     # optional: must match the log (whitespace collapsed)
-  expect_window = "39800-40700"   # optional: print-only window (see tools/windows.py),
-                              # Ggas intervals "lo-hi, lo-hi"; a string checks the union of
-                              # all labels, a table { Books = "..." } checks per label
+  expect_output = 'regex'     # optional: must match TLC's output (whitespace collapsed)
+  expect_window = "39800-40700"   # optional: print-only window (see tools/windows.py):
+                              # ascending Ggas intervals "lo-hi, lo-hi". A string checks the
+                              # union of all labels; a table { Books = "..." } checks each
+                              # label and fails on labels it does not list
   window_step = 100           # optional: max gap inside one window interval (Ggas)
+  allow_no_invariants = "why" # optional: lets expect = "pass" run without any invariant
+                              # or property; the value must say why
   [run.constants]             # CONSTANT name -> TLA+ expression text (merged over
   Menu = '<<1, 2>>'           # [constants]); TOML ints and booleans are also accepted
 
-Every key except name/expect/invariant/expect_*/window_step may also be given at the
-top level as a default for all runs of the file.
+Every key except name/expect/invariant/expect_*/window_step/allow_no_invariants may also
+be given at the top level as a default for all runs of the file.
 
-A run that takes longer than budget_s fails but is still reported; a run still going
-after 3 x budget_s is killed and reported as "timeout".
+Checks
+- "pass" needs TLC's exit code 0, its "No error has been found" line, and at least one
+  distinct state; expect = "pass" needs at least one invariant or property (or
+  allow_no_invariants).
+- Constant names must be CONSTANTs declared by the spec or a module it EXTENDS, or
+  zero-arity definitions there (TLC's `<-` overrides a definition too; the library uses
+  that for overridable defaults). They are found by a simple parse of the spec dir and
+  the library. A constant may not reuse the name of init/next/specification or of a
+  checked invariant/property.
+- Temporal properties: TLC does not name a violated temporal property. expect =
+  "violation" with a property as `invariant` therefore requires that property to be
+  the only entry of `properties`; TLC's "Temporal properties were violated" then
+  matches it.
+- A run slower than budget_s fails but is still reported; a run still going after
+  3 x budget_s is killed and reported as "timeout".
 
-Peel mode (--peel): on a violation, drop the violated invariant/property and rerun,
+Peel mode (--peel): on a violation, drop the violated invariant/property and rerun
 until the run is clean, stops for another reason, or nothing is left; report the set
-of violated names. expect = "violation" then means "the invariant is in the set".
+of violated names. expect = "violation" then means "the invariant is in the set"; any
+other expectation requires that nothing was peeled. Peel mode checks verdicts, budgets
+and vacuity only, not expect_output or expect_window.
+
+Divergence from the C5 contract: the temporal-formula key is `specification`, because
+`spec` already names the module.
 
 Environment: TLA2TOOLS_JAR (if tools/tla2tools.jar is missing), NEAR_TLA_LIBRARY
 (like --library), TLC_JAVA_OPTS (extra JVM options, e.g. -Xmx4g).
@@ -59,27 +81,32 @@ Environment: TLA2TOOLS_JAR (if tools/tla2tools.jar is missing), NEAR_TLA_LIBRARY
 
 from __future__ import annotations
 
-import argparse
-import fnmatch
-import json
-import os
-import re
-import shlex
-import shutil
-import subprocess
 import sys
-import tempfile
-import time
-import tomllib
-from dataclasses import asdict, dataclass, field
-from pathlib import Path
+
+if sys.version_info < (3, 11):
+    sys.exit(f"tools/run.py needs Python 3.11 or newer (for tomllib); this is {sys.version.split()[0]}")
+
+import argparse  # noqa: E402
+import fnmatch  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import shlex  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import textwrap  # noqa: E402
+import time  # noqa: E402
+import tomllib  # noqa: E402
+from dataclasses import asdict, dataclass, field  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
 import tlcparse  # noqa: E402
-import trace as tlctrace  # noqa: E402  (tools/trace.py, not the stdlib module)
+import tlctrace  # noqa: E402
 import windows  # noqa: E402
 
 MAX_WORKERS = 4
@@ -90,8 +117,17 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 FILE_KEYS = {"spec", "workers", "library", "budget_s", "init", "next", "specification",
              "invariants", "properties", "deadlock", "tags", "constants", "run"}
-RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step"}
+RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step",
+                 "allow_no_invariants"}
 RUN_KEYS = (FILE_KEYS - {"run"}) | RUN_ONLY_KEYS
+
+# Standard and community modules that declare no CONSTANTS.
+NO_CONSTANT_MODULES = {
+    "Naturals", "Integers", "Reals", "Sequences", "FiniteSets", "TLC", "Bags", "RealTime",
+    "TLCExt", "Randomization", "Json", "Bitwise", "Functions", "Folds", "FiniteSetsExt",
+    "SequencesExt", "BagsExt", "IOUtils", "CSV", "Combinatorics", "Graphs", "Relation",
+    "UndirectedGraphs", "DyadicRationals", "Statistics", "VectorClocks", "TLAPS",
+}
 
 
 class ConfigError(Exception):
@@ -119,6 +155,7 @@ class Run:
     expect_output: str | None = None
     expect_window: str | dict | None = None
     window_step: int = 100
+    allow_no_invariants: str | None = None
 
     @property
     def dir(self) -> Path:
@@ -144,7 +181,24 @@ def tla_value(name: str, v) -> str:
     raise ConfigError(f"constant {name}: expected TLA+ expression text (a string), got {type(v).__name__}")
 
 
-def _str_list(where: str, key: str, v) -> list[str]:
+def _typed(where: str, d: dict, key: str, kinds, default=None):
+    """d[key] if present and of one of `kinds`, else default; ConfigError on a wrong type."""
+    if key not in d:
+        return default
+    v = d[key]
+    kinds = kinds if isinstance(kinds, tuple) else (kinds,)
+    if isinstance(v, bool) and bool not in kinds:  # TOML true is not an int here
+        ok = False
+    else:
+        ok = isinstance(v, kinds)
+    if not ok:
+        names = " or ".join(k.__name__ for k in kinds)
+        raise ConfigError(f"{where}: {key} must be a {names}, got {type(v).__name__} {v!r}")
+    return v
+
+
+def _str_list(where: str, d: dict, key: str) -> list[str]:
+    v = d.get(key, [])
     if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
         raise ConfigError(f"{where}: {key} must be a list of strings")
     return list(v)
@@ -171,21 +225,21 @@ def load_file(path: Path) -> list[Run]:
         unknown = set(raw) - RUN_KEYS
         if unknown:
             raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
-        merged = {**defaults, **{k: v for k, v in raw.items() if k != "constants"}}
-        name = merged.get("name")
-        if not isinstance(name, str) or not NAME_RE.match(name):
+        m = {**defaults, **{k: v for k, v in raw.items() if k != "constants"}}
+        name = _typed(where, m, "name", str)
+        if not name or not NAME_RE.match(name):
             raise ConfigError(f"{where}: name must match {NAME_RE.pattern}")
         where = f"{rel(path)} run {name}"
-        spec = merged.get("spec")
-        if not isinstance(spec, str) or not IDENT_RE.match(spec):
+        spec = _typed(where, m, "spec", str)
+        if not spec or not IDENT_RE.match(spec):
             raise ConfigError(f"{where}: spec must name a module")
         if not (path.parent / f"{spec}.tla").is_file():
             raise ConfigError(f"{where}: {spec}.tla not found beside runs.toml")
-        expect = merged.get("expect")
+        expect = _typed(where, m, "expect", str)
         if expect not in EXPECTS:
             raise ConfigError(f"{where}: expect must be one of {EXPECTS}")
-        lib = merged.get("library", "../../modules")
-        libs = [lib] if isinstance(lib, str) else _str_list(where, "library", lib)
+        lib = _typed(where, m, "library", (str, list), "../../modules")
+        libs = [lib] if isinstance(lib, str) else _str_list(where, m, "library")
         consts = {}
         for src in (file_consts, raw.get("constants", {})):
             if not isinstance(src, dict):
@@ -194,47 +248,67 @@ def load_file(path: Path) -> list[Run]:
                 if not IDENT_RE.match(k):
                     raise ConfigError(f"{where}: bad constant name {k!r}")
                 consts[k] = tla_value(k, v)
+        workers = _typed(where, m, "workers", int, 2)
+        if not 1 <= workers <= MAX_WORKERS:
+            raise ConfigError(f"{where}: workers must be 1..{MAX_WORKERS}")
+        budget = _typed(where, m, "budget_s", (int, float), 60)
+        if budget <= 0:
+            raise ConfigError(f"{where}: budget_s must be positive")
         r = Run(
             name=name, toml=path, spec=spec, expect=expect,
             library=[str((path.parent / x).resolve()) for x in libs],
-            workers=int(merged.get("workers", 2)),
-            budget_s=float(merged.get("budget_s", 60)),
-            specification=merged.get("specification"),
-            invariants=_str_list(where, "invariants", merged.get("invariants", [])),
-            properties=_str_list(where, "properties", merged.get("properties", [])),
-            deadlock=bool(merged.get("deadlock", False)),
-            tags=_str_list(where, "tags", merged.get("tags", [])),
+            workers=workers, budget_s=float(budget),
+            specification=_typed(where, m, "specification", str),
+            invariants=_str_list(where, m, "invariants"),
+            properties=_str_list(where, m, "properties"),
+            deadlock=_typed(where, m, "deadlock", bool, False),
+            tags=_str_list(where, m, "tags"),
             constants=consts,
-            invariant=merged.get("invariant"),
-            expect_output=merged.get("expect_output"),
-            expect_window=merged.get("expect_window"),
-            window_step=int(merged.get("window_step", 100)),
+            invariant=_typed(where, m, "invariant", str),
+            expect_output=_typed(where, m, "expect_output", str),
+            expect_window=_typed(where, m, "expect_window", (str, dict)),
+            window_step=_typed(where, m, "window_step", int, 100),
+            allow_no_invariants=_typed(where, m, "allow_no_invariants", str),
         )
         if r.specification:
-            if "init" in merged or "next" in merged:
+            if "init" in m or "next" in m:
                 raise ConfigError(f"{where}: give either specification or init/next, not both")
             r.init = r.next = None
         else:
-            r.init, r.next = merged.get("init", "Init"), merged.get("next", "Next")
+            r.init, r.next = _typed(where, m, "init", str, "Init"), _typed(where, m, "next", str, "Next")
         for n in [r.init, r.next, r.specification, *r.invariants, *r.properties]:
             if n is not None and not IDENT_RE.match(n):
                 raise ConfigError(f"{where}: {n!r} is not an operator name")
+        operators = {r.init, r.next, r.specification, *r.invariants, *r.properties} - {None}
+        clash = sorted(set(r.constants) & operators)
+        if clash:
+            raise ConfigError(f"{where}: constants {clash} reuse the name of init/next/an invariant/property")
         if r.expect == "violation":
             if not r.invariant:
                 raise ConfigError(f"{where}: expect = \"violation\" needs invariant = \"<name>\"")
             if r.invariant not in r.invariants + r.properties:
                 raise ConfigError(f"{where}: invariant {r.invariant} is not in invariants/properties")
+            if r.invariant in r.properties and len(r.properties) > 1:
+                raise ConfigError(f"{where}: TLC does not name a violated temporal property; an expected "
+                                  f"property violation must be the only entry of properties")
         elif r.invariant:
             raise ConfigError(f"{where}: invariant is only meaningful with expect = \"violation\"")
+        if r.allow_no_invariants is not None and not r.allow_no_invariants.strip():
+            raise ConfigError(f"{where}: allow_no_invariants must say why (a non-empty string)")
+        if r.expect == "pass" and not r.invariants and not r.properties and not r.allow_no_invariants:
+            raise ConfigError(f"{where}: expect = \"pass\" with no invariants or properties checks nothing; "
+                              f"add one, or set allow_no_invariants = \"<why>\"")
         if r.expect == "deadlock" and not r.deadlock:
             raise ConfigError(f"{where}: expect = \"deadlock\" needs deadlock = true")
         if r.expect_window is not None:
             ws = r.expect_window.values() if isinstance(r.expect_window, dict) else [r.expect_window]
-            try:
-                for w in ws:
+            for w in ws:
+                if not isinstance(w, str):
+                    raise ConfigError(f"{where}: expect_window values must be strings")
+                try:
                     windows.parse_spec(w)
-            except (ValueError, AttributeError) as e:
-                raise ConfigError(f"{where}: bad expect_window: {e}") from e
+                except ValueError as e:
+                    raise ConfigError(f"{where}: bad expect_window {w!r}: {e}") from e
         if r.expect_output is not None:
             try:
                 re.compile(r.expect_output)
@@ -242,6 +316,107 @@ def load_file(path: Path) -> list[Run]:
                 raise ConfigError(f"{where}: bad expect_output regex: {e}") from e
         out.append(r)
     return out
+
+
+# ------------------------------------------------- declared CONSTANTS (light TLA+ parse)
+
+
+def strip_tla(src: str) -> str:
+    """Source with comments removed and string literals emptied (newlines kept)."""
+    out, i, n, depth = [], 0, len(src), 0
+    while i < n:
+        if depth:
+            if src.startswith("(*", i):
+                depth, i = depth + 1, i + 2
+            elif src.startswith("*)", i):
+                depth, i = depth - 1, i + 2
+            else:
+                if src[i] == "\n":
+                    out.append("\n")
+                i += 1
+        elif src.startswith("(*", i):
+            depth, i = 1, i + 2
+        elif src.startswith("\\*", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+        elif src[i] == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            out.append('""')
+            i = j + 1
+        else:
+            out.append(src[i])
+            i += 1
+    return "".join(out)
+
+
+_ID_LIST_ITEM = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*\(\s*_(?:\s*,\s*_)*\s*\))?\s*(,?)")
+
+
+def _id_list(text: str, pos: int) -> list[str]:
+    names = []
+    while True:
+        m = _ID_LIST_ITEM.match(text, pos)
+        if not m:
+            return names
+        names.append(m.group(1))
+        pos = m.end()
+        if not m.group(2):
+            return names
+
+
+_ZERO_ARITY_DEF = re.compile(r"^[ \t]*(?:LOCAL[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*==", re.M)
+
+
+def module_decls(src: str) -> tuple[list[str], set[str]]:
+    """(EXTENDS list, names a cfg may substitute) of one module's source.
+
+    The names are the declared CONSTANTs plus zero-arity definitions: TLC's `Name <- Def`
+    also overrides a defined operator, and the library uses that for overridable
+    defaults.
+    """
+    s = strip_tla(src)
+    m = re.search(r"\bEXTENDS\b", s)
+    ext = _id_list(s, m.end()) if m else []
+    names: set[str] = set(_ZERO_ARITY_DEF.findall(s))
+    for m in re.finditer(r"\bCONSTANTS?\b", s):
+        names.update(_id_list(s, m.end()))
+    return ext, names
+
+
+def declared_constants(spec: str, dirs: list[str]) -> set[str] | None:
+    """Substitutable names (CONSTANTs, zero-arity definitions) of `spec` and its EXTENDS
+    chain, or None if a module is missing."""
+    seen: set[str] = set()
+    consts: set[str] = set()
+    todo = [spec]
+    while todo:
+        mod = todo.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        path = next((Path(d) / f"{mod}.tla" for d in dirs if (Path(d) / f"{mod}.tla").is_file()), None)
+        if path is None:
+            if mod in NO_CONSTANT_MODULES:
+                continue
+            return None
+        ext, cs = module_decls(path.read_text(encoding="utf-8", errors="replace"))
+        consts |= cs
+        todo += ext
+    return consts
+
+
+def check_constants(run: Run) -> str | None:
+    """ConfigError for undeclared constant names; a warning string if the check was skipped."""
+    declared = declared_constants(run.spec, [str(run.dir), *run.library])
+    if declared is None:
+        return f"{run.name}: could not find every module EXTENDed by {run.spec}; constant names not checked"
+    unknown = sorted(set(run.constants) - declared)
+    if unknown:
+        raise ConfigError(f"{rel(run.toml)} run {run.name}: {unknown} are neither CONSTANTs nor "
+                          f"definitions of {run.spec} or a module it EXTENDS")
+    return None
 
 
 def find_tomls(p: Path) -> list[Path]:
@@ -278,6 +453,12 @@ def select(args: list[str]) -> list[Run]:
 # ---------------------------------------------------------------- generation
 
 
+def _definition(name: str, expr: str) -> str:
+    if "\n" not in expr.strip():
+        return f"{name} == {expr.strip()}"
+    return f"{name} ==\n" + textwrap.indent(textwrap.dedent(expr.strip("\n")), "    ")
+
+
 def wrapper(run: Run, mod: str, invariants=None, properties=None) -> tuple[str, str]:
     """(wrapper module text, cfg text) for `run`, module name `mod`."""
     invs = run.invariants if invariants is None else invariants
@@ -285,7 +466,7 @@ def wrapper(run: Run, mod: str, invariants=None, properties=None) -> tuple[str, 
     tla = [f"---- MODULE {mod} ----",
            f"\\* Generated by tools/run.py for run {run.name}; do not edit.",
            f"EXTENDS {run.spec}"]
-    tla += [f"const_{k} == {v}" for k, v in run.constants.items()]
+    tla += [_definition(f"const_{k}", v) for k, v in run.constants.items()]
     tla.append("====")
     cfg = [f"\\* Generated by tools/run.py for run {run.name}; do not edit."]
     if run.specification:
@@ -306,11 +487,22 @@ def wrapper(run: Run, mod: str, invariants=None, properties=None) -> tuple[str, 
 
 # ---------------------------------------------------------------- running
 
+_TMP_PATTERNS = (
+    r"(?:/private)?/var/folders/[^/\s]+/[^/\s]+/T(?![\w.-])",
+    r"(?:/private)?/tmp(?![\w.-])",
+)
+
 
 def home_rewrite(text: str, home: str | None = None) -> str:
+    """Replace the home directory (at path boundaries) with ~ and temp dirs with <tmp>."""
+    tmps = {os.path.realpath(tempfile.gettempdir()), tempfile.gettempdir()}
+    for t in sorted((t.rstrip("/") for t in tmps if t not in ("", "/")), key=len, reverse=True):
+        text = re.sub(r"(?<![\w.-])" + re.escape(t) + r"(?![\w.-])", "<tmp>", text)
+    for pat in _TMP_PATTERNS:
+        text = re.sub(r"(?<![\w.-])" + pat, "<tmp>", text)
     homes = {home} if home else {os.path.expanduser("~"), os.path.realpath(os.path.expanduser("~"))}
-    for h in sorted((h for h in homes if h and h != "/"), key=len, reverse=True):
-        text = text.replace(h.rstrip("/"), "~")
+    for h in sorted((h.rstrip("/") for h in homes if h and h != "/"), key=len, reverse=True):
+        text = re.sub(r"(?<![\w.-])" + re.escape(h) + r"(?![\w.-])", "~", text)
     return text
 
 
@@ -347,148 +539,181 @@ class Outcome:
     generated: int | None = None
     distinct: int | None = None
     depth: int | None = None
+    tlc_seconds: int | None = None
     notes: list[str] = field(default_factory=list)
     log: str = ""
     peeled: list[str] | None = None
 
 
-def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int):
-    """Write the wrapper + cfg, run TLC; return (Result, wall seconds, log text, log path)."""
-    run.build.mkdir(exist_ok=True)
+@dataclass
+class Attempt:
+    mod: str
+    res: tlcparse.Result
+    wall: float
+    tlc_text: str  # TLC's own output only
+    tla: str
+    cfg: str
+    log_path: Path
+
+
+def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int) -> Attempt:
+    """Generate the wrapper + cfg in a fresh temp dir, run TLC there, write build/<log>."""
     tla, cfg = wrapper(run, mod, invs, props)
-    (run.build / f"{mod}.tla").write_text(tla)
-    (run.build / f"{mod}.cfg").write_text(cfg)
-    log_path = run.build / f"{mod.removeprefix('MC_')}.log"
-    meta = tempfile.mkdtemp(prefix=f"tlc-{mod}-", dir="/tmp" if os.path.isdir("/tmp") else None)
+    work = tempfile.mkdtemp(prefix=f"tlc-{mod}-", dir="/tmp" if os.path.isdir("/tmp") else None)
     libpath = os.pathsep.join([str(run.dir)] + run.library)
     cmd = ["java", "-XX:+UseParallelGC", *shlex.split(os.environ.get("TLC_JAVA_OPTS", "")),
            f"-DTLA-Library={libpath}", "-cp", jar, "tlc2.TLC",
            *([] if run.deadlock else ["-deadlock"]),
-           "-workers", str(workers), "-metadir", meta, "-config", f"{mod}.cfg", f"{mod}.tla"]
+           "-workers", str(workers), "-metadir", os.path.join(work, "states"),
+           "-config", f"{mod}.cfg", f"{mod}.tla"]
     hard = max(HARD_TIMEOUT_FACTOR * run.budget_s, run.budget_s + 30)
-    t0 = time.monotonic()
     timed_out = False
+    t0 = time.monotonic()
     try:
-        p = subprocess.run(cmd, cwd=run.build, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, timeout=hard)
-        out, code = p.stdout, p.returncode
-    except subprocess.TimeoutExpired as e:
-        out, code, timed_out = e.stdout or b"", None, True
+        Path(work, f"{mod}.tla").write_text(tla)
+        Path(work, f"{mod}.cfg").write_text(cfg)
+        try:
+            p = subprocess.run(cmd, cwd=work, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=hard)
+            out, code = p.stdout, p.returncode
+        except subprocess.TimeoutExpired as e:
+            out, code, timed_out = e.stdout or b"", None, True
+        except FileNotFoundError as e:
+            raise ConfigError(f"cannot run java: {e}") from e
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     wall = time.monotonic() - t0
-    shutil.rmtree(meta, ignore_errors=True)
-    text = out.decode("utf-8", errors="replace") if isinstance(out, bytes) else out
+    text = out.decode("utf-8", errors="replace") if isinstance(out, bytes) else (out or "")
     res = tlcparse.parse(text, code)
     if timed_out:
         res.verdict, res.message = "timeout", f"killed after {hard:.0f}s"
+    shown = [rel(jar) if c == jar else c for c in cmd]
     log = home_rewrite(
-        f"# run {run.name} ({rel(run.toml)})\n# {' '.join(shlex.quote(c) for c in cmd)}\n" + text
+        f"# run {run.name} ({rel(run.toml)})\n# {' '.join(shlex.quote(c) for c in shown)}\n" + text
         + f"\n# runner: wall={wall:.1f}s exit={code} verdict={res.label()}\n")
+    run.build.mkdir(exist_ok=True)
+    log_path = run.build / f"{mod.removeprefix('MC_')}.log"
     log_path.write_text(log)
-    return res, wall, log, log_path
+    return Attempt(mod, res, wall, text, tla, cfg, log_path)
 
 
-def check(run: Run, res, wall: float, log: str) -> tuple[bool, list[str]]:
-    notes = []
+def verdict_matches(run: Run, res) -> bool:
     if res.verdict == "violation":
-        ok = run.expect == "violation" and res.name == run.invariant
-    else:
-        ok = res.verdict == run.expect
-    if res.message:
-        notes.append(res.message)
+        return run.expect == "violation" and (
+            res.name == run.invariant or (res.name == "<temporal>" and run.invariant in run.properties))
+    return res.verdict == run.expect
+
+
+def check(run: Run, res, wall: float, tlc_text: str) -> tuple[bool, list[str]]:
+    """Does one TLC result meet the run's expectations? `tlc_text` is TLC's output only."""
+    ok = verdict_matches(run, res)
+    notes = [res.message] if res.message else []
+    if res.verdict == "pass" and not res.distinct:
+        ok = False
+        notes.append("vacuous: TLC explored no distinct states")
     if wall > run.budget_s:
         ok = False
         notes.append(f"over budget: {wall:.1f}s > {run.budget_s:g}s")
-    if run.expect_output is not None:
-        if not re.search(run.expect_output, " ".join(log.split())):
-            ok = False
-            notes.append(f"expect_output /{run.expect_output}/ not found")
+    if run.expect_output is not None and not re.search(run.expect_output, " ".join(tlc_text.split())):
+        ok = False
+        notes.append(f"expect_output /{run.expect_output}/ not found")
     if run.expect_window is not None:
-        w = windows.windows(log, run.window_step)
-        got_all = windows.fold(set().union(*windows.reports(log).values()) if w else set(), run.window_step)
-        notes.append("window " + "; ".join(f"{k} {windows.fmt_ggas(v)}" for k, v in w.items()) if w
-                     else "window: none")
+        got = windows.windows(tlc_text, run.window_step)
+        notes.append("window " + "; ".join(f"{k} {windows.fmt_ggas(v)}" for k, v in got.items())
+                     if got else "window: none")
         if isinstance(run.expect_window, dict):
-            for label, spec in run.expect_window.items():
-                if w.get(label, []) != windows.parse_spec(spec):
+            for label in sorted(set(got) | set(run.expect_window)):
+                want = run.expect_window.get(label)
+                if want is None:
                     ok = False
-                    notes.append(f"expected window {label} {spec}")
-        elif got_all != windows.parse_spec(run.expect_window):
-            ok = False
-            notes.append(f"expected window {run.expect_window}")
+                    notes.append(f"unexpected window label {label}")
+                elif got.get(label, []) != windows.parse_spec(want):
+                    ok = False
+                    notes.append(f"expected window {label} {want}")
+        else:
+            union = windows.fold(set().union(*windows.reports(tlc_text).values()), run.window_step)
+            if union != windows.parse_spec(run.expect_window):
+                ok = False
+                notes.append(f"expected window {run.expect_window}")
     return ok, notes
 
 
-def cleanup(run: Run, mod: str):
-    """Delete the wrapper, cfg, log and TLC trace files of one TLC invocation."""
-    for p in [run.build / f"{mod}.tla", run.build / f"{mod}.cfg",
-              run.build / f"{mod.removeprefix('MC_')}.log", *run.build.glob(f"{mod}_TTrace_*")]:
-        p.unlink(missing_ok=True)
-    try:
-        run.build.rmdir()
-    except OSError:
-        pass
+def finish(run: Run, attempts: list[Attempt], ok: bool, actual: str, notes: list[str],
+           keep: bool, peeled=None) -> Outcome:
+    """Build the Outcome; keep wrapper/cfg/log in build/ on a mismatch or with --keep."""
+    last = attempts[-1]
+    if ok and not keep:
+        for a in attempts:
+            a.log_path.unlink(missing_ok=True)
+        try:
+            run.build.rmdir()
+        except OSError:
+            pass
+    else:
+        for a in attempts:
+            (run.build / f"{a.mod}.tla").write_text(a.tla)
+            (run.build / f"{a.mod}.cfg").write_text(a.cfg)
+    expect = run.expect if run.expect != "violation" else f"violation {run.invariant}"
+    return Outcome(run.name, rel(run.dir), expect, actual, ok, sum(a.wall for a in attempts), run.budget_s,
+                   last.res.generated, last.res.distinct, last.res.depth, last.res.tlc_seconds, notes,
+                   "" if ok and not keep else rel(last.log_path), peeled)
+
+
+def effective_workers(run: Run, cli: int | None) -> int:
+    """The run's own setting is an upper bound; --workers can only lower it."""
+    return max(1, min(run.workers, cli or MAX_WORKERS, MAX_WORKERS))
 
 
 def do_run(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bool) -> Outcome:
-    w = min(workers or run.workers, MAX_WORKERS)
-    mod = f"MC_{run.name}"
-    res, wall, log, log_path = tlc_once(run, mod, None, None, jar, w)
-    ok, notes = check(run, res, wall, log)
-    o = Outcome(run.name, rel(run.dir), run.expect if run.expect != "violation" else f"violation {run.invariant}",
-                res.label(), ok, wall, run.budget_s, res.generated, res.distinct, res.depth, notes, rel(log_path))
-    if print_trace and res.verdict in ("violation", "assert", "deadlock"):
-        o.notes.append("trace:\n" + tlctrace.summary(log))
-    if ok and not keep:
-        cleanup(run, mod)
-        o.log = ""
-    return o
+    a = tlc_once(run, f"MC_{run.name}", None, None, jar, effective_workers(run, workers))
+    ok, notes = check(run, a.res, a.wall, a.tlc_text)
+    if print_trace and a.res.verdict in ("violation", "assert", "deadlock"):
+        notes.append("trace:\n" + tlctrace.summary(a.tlc_text))
+    return finish(run, [a], ok, a.res.label(), notes, keep)
 
 
 def do_peel(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bool) -> Outcome:
-    w = min(workers or run.workers, MAX_WORKERS)
+    w = effective_workers(run, workers)
     invs, props = list(run.invariants), list(run.properties)
-    peeled, wall_total, notes, mods = [], 0.0, [], []
-    i = 0
+    peeled: list[str] = []
+    attempts: list[Attempt] = []
+    notes: list[str] = []
     while True:
-        mod = f"MC_{run.name}" + (f"_p{i}" if i else "")
-        mods.append(mod)
-        res, wall, log, log_path = tlc_once(run, mod, invs, props, jar, w)
-        wall_total += wall
-        print(f"  {run.name} step {i}: {res.label()} ({fmt_n(res.distinct)} distinct, {wall:.1f}s)",
+        i = len(attempts)
+        a = tlc_once(run, f"MC_{run.name}" + (f"_p{i}" if i else ""), invs, props, jar, w)
+        attempts.append(a)
+        res = a.res
+        print(f"  {run.name} step {i}: {res.label()} ({fmt_n(res.distinct)} distinct, {a.wall:.1f}s)",
               file=sys.stderr, flush=True)
-        if wall > run.budget_s:
-            notes.append(f"step {i} over budget: {wall:.1f}s > {run.budget_s:g}s")
+        if a.wall > run.budget_s:
+            notes.append(f"step {i} over budget: {a.wall:.1f}s > {run.budget_s:g}s")
         if print_trace and res.verdict in ("violation", "assert", "deadlock"):
-            notes.append(f"trace (step {i}):\n" + tlctrace.summary(log))
-        if res.verdict != "violation" or res.name not in invs + props:
+            notes.append(f"trace (step {i}):\n" + tlctrace.summary(a.tlc_text))
+        name = res.name
+        if name == "<temporal>" and len(props) == 1:
+            name = props[0]
+        if res.verdict != "violation" or name not in invs + props:
             break
-        peeled.append(res.name)
-        invs = [x for x in invs if x != res.name]
-        props = [x for x in props if x != res.name]
+        peeled.append(name)
+        invs = [x for x in invs if x != name]
+        props = [x for x in props if x != name]
         if not invs and not props:
             break
-        i += 1
+    res = attempts[-1].res
     # "exhausted": the last remaining invariant/property was violated and peeled.
-    final = "exhausted" if res.verdict == "violation" and res.name in peeled else res.verdict
+    final = "exhausted" if res.verdict == "violation" and peeled and not invs and not props else res.verdict
     if res.message:
         notes.append(res.message)
-    over = any("over budget" in n for n in notes)
+    if final == "pass" and not res.distinct:
+        notes.append("vacuous: TLC explored no distinct states")
+        final = "vacuous"
     if run.expect == "violation":
-        ok = run.invariant in peeled and final in ("pass", "exhausted", "violation")
-    elif run.expect == "pass":
-        ok = not peeled and final == "pass"
+        ok = run.invariant in peeled and final in ("pass", "exhausted")
     else:
-        ok = final == run.expect
-    ok = ok and not over
+        ok = not peeled and final == run.expect
+    ok = ok and not any("over budget" in n for n in notes)
     actual = "peeled {" + ", ".join(peeled) + "}" + (f" then {res.label()}" if final not in ("pass", "exhausted") else "")
-    o = Outcome(run.name, rel(run.dir), run.expect if run.expect != "violation" else f"violation {run.invariant}",
-                actual, ok, wall_total, run.budget_s, res.generated, res.distinct, res.depth, notes,
-                rel(log_path), peeled)
-    if ok and not keep:
-        for m in mods:
-            cleanup(run, m)
-        o.log = ""
-    return o
+    return finish(run, attempts, ok, actual, notes, keep, peeled)
 
 
 # ---------------------------------------------------------------- output
@@ -503,7 +728,10 @@ def table(outs: list[Outcome]) -> str:
     rows = [(o.run, o.expect, o.actual, fmt_n(o.generated), fmt_n(o.distinct), fmt_n(o.depth),
              f"{o.seconds:.1f}", "ok" if o.ok else "FAIL") for o in outs]
     wid = [max(len(str(x[i])) for x in [head, *rows]) for i in range(len(head))]
-    line = lambda r: " | ".join(str(c).ljust(wid[i]) for i, c in enumerate(r)).rstrip()  # noqa: E731
+
+    def line(r):
+        return " | ".join(str(c).ljust(wid[i]) for i, c in enumerate(r)).rstrip()
+
     out = [line(head), "-+-".join("-" * x for x in wid)]
     for o, r in zip(outs, rows):
         out.append(line(r))
@@ -520,35 +748,41 @@ def main(argv=None) -> int:
     ap.add_argument("targets", nargs="*", help="runs.toml files, directories, or run names/globs")
     ap.add_argument("--list", action="store_true", help="list the selected runs and exit")
     ap.add_argument("--jar", help="tla2tools.jar (default tools/tla2tools.jar, else $TLA2TOOLS_JAR)")
-    ap.add_argument("--workers", type=int, help=f"override TLC workers (capped at {MAX_WORKERS})")
+    ap.add_argument("--workers", type=int, help="lower every run's TLC workers to at most N")
     ap.add_argument("--library", help="override every run's library dir ($NEAR_TLA_LIBRARY likewise)")
-    ap.add_argument("--keep", action="store_true", help="keep build files and logs of passing runs")
+    ap.add_argument("--keep", action="store_true", help="keep wrapper, cfg and log of passing runs in build/")
     ap.add_argument("--print-trace", action="store_true", help="print a counterexample summary on a violation")
     ap.add_argument("--peel", action="store_true", help="peel mode: drop violated invariants and rerun")
     ap.add_argument("--json", metavar="PATH", help="also write the results as JSON")
     a = ap.parse_args(argv)
     try:
+        if a.workers is not None and a.workers < 1:
+            raise ConfigError("--workers must be at least 1")
         runs = select(a.targets)
         lib = a.library or os.environ.get("NEAR_TLA_LIBRARY")
         if lib:
             for r in runs:
                 r.library = [str(Path(x).resolve()) for x in lib.split(os.pathsep)]
+        for r in runs:
+            warn = check_constants(r)
+            if warn:
+                print(f"warning: {warn}", file=sys.stderr)
         if a.list:
             for r in runs:
                 exp = r.expect + (f" {r.invariant}" if r.invariant else "")
-                print(f"{r.name:24} {rel(r.dir):24} {exp:24} {' '.join(r.tags)}")
+                print(f"{r.name:26} {rel(r.dir):38} {exp:26} {' '.join(r.tags)}")
             return 0
         if not runs:
             print("no runs selected", file=sys.stderr)
             return 2
         jar = find_jar(a.jar)
+        outs = []
+        for r in runs:
+            print(f"running {r.name} ({rel(r.dir)}) ...", file=sys.stderr, flush=True)
+            outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace))
     except ConfigError as e:
         print(f"run.py: {e}", file=sys.stderr)
         return 2
-    outs = []
-    for r in runs:
-        print(f"running {r.name} ({rel(r.dir)}) ...", file=sys.stderr, flush=True)
-        outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace))
     print(table(outs))
     bad = [o.run for o in outs if not o.ok]
     print(f"\n{len(outs) - len(bad)}/{len(outs)} runs as expected" + (f"; FAILED: {' '.join(bad)}" if bad else ""))

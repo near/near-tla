@@ -3,7 +3,10 @@
 Canned TLC 2.19 output snippets, toy module names; no TLC needed.
 """
 
+import contextlib
+import io
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -14,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import run  # noqa: E402
 import tlcparse  # noqa: E402
-import trace as tlctrace  # noqa: E402
+import tlctrace  # noqa: E402
 import windows  # noqa: E402
 
 PASS = """\
@@ -112,7 +115,7 @@ class ParseTest(unittest.TestCase):
     def test_pass_and_counts(self):
         r = tlcparse.parse(PASS, 0)
         self.assertEqual(r.verdict, "pass")
-        self.assertEqual((r.generated, r.distinct, r.left, r.depth), (12345, 6789, 0, 17))
+        self.assertEqual((r.generated, r.distinct, r.depth), (12345, 6789, 17))
         self.assertEqual(r.tlc_seconds, 65)
 
     def test_invariant(self):
@@ -148,7 +151,7 @@ class ParseTest(unittest.TestCase):
         self.assertIn("Was expecting", r.message)
 
     def test_parse_error_wins_over_other_errors(self):
-        self.assertEqual(tlcparse.parse(SEMANTIC + INV).verdict, "error")
+        self.assertEqual(tlcparse.parse(SEMANTIC + INV, 150).verdict, "error")
 
     def test_config_error(self):
         r = tlcparse.parse(UNKNOWN_INV, 151)
@@ -199,7 +202,7 @@ class LoadAndWrapperTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.d = Path(self.tmp.name)
-        write(self.d, "Toy.tla", "---- MODULE Toy ----\n====\n")
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\nCONSTANTS N, Menu, Who, Flag\n====\n")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -223,7 +226,7 @@ class LoadAndWrapperTest(unittest.TestCase):
             name = "b"
             expect = "violation"
             invariant = "Inv"
-            workers = 9
+            workers = 1
             [run.constants]
             N = '{1, 2}'
             """)
@@ -232,24 +235,35 @@ class LoadAndWrapperTest(unittest.TestCase):
         self.assertEqual(b.constants["N"], "{1, 2}")
         self.assertEqual(a.library, [str((self.d / "lib").resolve())])
         self.assertEqual((a.init, a.next, a.invariants, a.deadlock), ("Init", "Next", ["Inv"], False))
-        self.assertEqual(b.workers, 9)  # capped at run time, not load time
+        self.assertEqual((a.workers, b.workers), (2, 1))
+
+    def test_workers_flag_only_lowers(self):
+        a, b = self.load("""
+            spec = "Toy"
+            invariants = ["Inv"]
+            [[run]]
+            name = "a"
+            expect = "pass"
+            workers = 1
+            [[run]]
+            name = "b"
+            expect = "pass"
+            workers = 3
+            """)
+        self.assertEqual(run.effective_workers(a, 4), 1)
+        self.assertEqual(run.effective_workers(b, 2), 2)
+        self.assertEqual(run.effective_workers(b, None), 3)
 
     def test_wrapper_and_cfg(self):
-        (r,) = self.load("""
-            spec = "Toy"
-            [[run]]
-            name = "w"
-            expect = "pass"
-            invariants = ["A", "B"]
-            properties = ["P"]
-            [run.constants]
-            Menu = '<<39000, 39100>>'
-            Who = '"u"'
-            """)
+        (r,) = self.load(
+            'spec = "Toy"\n[[run]]\nname = "w"\nexpect = "pass"\ninvariants = ["A", "B"]\n'
+            'properties = ["P"]\n[run.constants]\nMenu = \'<<39000, 39100>>\'\n'
+            "Who = '''\n  /\\ x\n  /\\ y\n'''\n")
         tla, cfg = run.wrapper(r, "MC_w")
         self.assertIn("---- MODULE MC_w ----", tla)
         self.assertIn("EXTENDS Toy\n", tla)
         self.assertIn("const_Menu == <<39000, 39100>>\n", tla)
+        self.assertIn("const_Who ==\n    /\\ x\n    /\\ y\n", tla)  # multi-line: indented
         self.assertTrue(tla.rstrip().endswith("===="))
         self.assertIn("INIT Init\nNEXT Next\n", cfg)
         self.assertIn("CONSTANTS\n  Menu <- const_Menu\n  Who <- const_Who\n", cfg)
@@ -265,6 +279,7 @@ class LoadAndWrapperTest(unittest.TestCase):
             name = "s"
             expect = "pass"
             specification = "Spec"
+            properties = ["Live"]
             """)
         _, cfg = run.wrapper(r, "MC_s")
         self.assertIn("SPECIFICATION Spec\n", cfg)
@@ -278,15 +293,98 @@ class LoadAndWrapperTest(unittest.TestCase):
             "unknown expect": 'expect = "maybe"',
             "unknown key": 'expect = "pass"\ninvariantz = ["A"]',
             "deadlock expect without flag": 'expect = "deadlock"',
-            "bad window": 'expect = "pass"\nexpect_window = "a-b"',
+            "bad window": 'expect = "pass"\ninvariants = ["A"]\nexpect_window = "a-b"',
+            "reversed window": 'expect = "pass"\ninvariants = ["A"]\nexpect_window = "2-1"',
+            "string boolean": 'expect = "pass"\ninvariants = ["A"]\ndeadlock = "false"',
+            "string workers": 'expect = "pass"\ninvariants = ["A"]\nworkers = "2"',
+            "too many workers": 'expect = "pass"\ninvariants = ["A"]\nworkers = 9',
+            "temporal among several": 'expect = "violation"\ninvariant = "P"\nproperties = ["P", "Q"]',
         }
         for why, body in bad.items():
             with self.subTest(why), self.assertRaises(run.ConfigError):
                 self.load(f'spec = "Toy"\n[[run]]\nname = "x"\n{body}\n')
         with self.assertRaises(run.ConfigError):
-            self.load('spec = "Missing"\n[[run]]\nname = "x"\nexpect = "pass"\n')
+            self.load('spec = "Missing"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n')
         with self.assertRaises(run.ConfigError):
-            self.load('spec = "Toy"\n[[run]]\nname = "has-dash"\nexpect = "pass"\n')
+            self.load('spec = "Toy"\n[[run]]\nname = "has-dash"\nexpect = "pass"\ninvariants = ["A"]\n')
+
+    # 1. vacuous pass
+    def test_pass_needs_something_to_check(self):
+        with self.assertRaises(run.ConfigError):
+            self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\n')
+        with self.assertRaises(run.ConfigError):
+            self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\nallow_no_invariants = " "\n')
+        (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\n'
+                         'allow_no_invariants = "print-only window run"\nexpect_window = "1"\n')
+        self.assertEqual(r.allow_no_invariants, "print-only window run")
+
+    def test_zero_distinct_states_is_not_a_pass(self):
+        (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n')
+        empty = PASS.replace("12,345 states generated, 6,789 distinct", "0 states generated, 0 distinct")
+        res = tlcparse.parse(empty, 0)
+        self.assertEqual(res.verdict, "pass")
+        ok, notes = run.check(r, res, 1.0, empty)
+        self.assertFalse(ok)
+        self.assertIn("vacuous", " ".join(notes))
+        self.assertTrue(run.check(r, tlcparse.parse(PASS, 0), 1.0, PASS)[0])
+
+    # 6. constant names
+    def test_constant_may_not_shadow_operator(self):
+        with self.assertRaises(run.ConfigError):
+            self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["N"]\n'
+                      '[run.constants]\nN = "1"\n')
+        with self.assertRaises(run.ConfigError):
+            self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n'
+                      'next = "Menu"\n[run.constants]\nMenu = "1"\n')
+
+    def test_constants_checked_against_extends_chain(self):
+        lib = self.d / "lib"
+        lib.mkdir()
+        write(lib, "Base.tla", """\
+            ---- MODULE Base ----
+            EXTENDS Naturals
+            CONSTANT
+                Accounts,   \\* comment CONSTANT Fake
+                Op(_, _)
+            (* CONSTANTS AlsoFake *)
+            DefaultKind == "named"
+            Helper(x) == x
+            ====
+            """)
+        write(self.d, "Spec2.tla",
+              '---- MODULE Spec2 ----\nEXTENDS Base, TLC\nCONSTANTS U, V\nS == "CONSTANT Str"\n====\n')
+        (r,) = self.load('spec = "Spec2"\nlibrary = "lib"\n[[run]]\nname = "x"\nexpect = "pass"\n'
+                         'invariants = ["A"]\n[run.constants]\nU = "1"\nV = "2"\nAccounts = "{}"\n'
+                         'DefaultKind = \'"eth"\'\n')
+        self.assertIsNone(run.check_constants(r))
+        self.assertEqual(run.declared_constants("Spec2", [str(self.d), str(lib)]),
+                         {"U", "V", "S", "Accounts", "Op", "DefaultKind"})
+        for typo in ("Acounts", "Fake", "AlsoFake", "Str", "Helper"):
+            r.constants = {typo: "1"}
+            with self.subTest(typo), self.assertRaises(run.ConfigError):
+                run.check_constants(r)
+        r.library = [str(self.d / "nowhere")]
+        self.assertIsNotNone(run.check_constants(r))  # Base missing: skipped with a warning
+
+    # 7. temporal properties
+    def test_temporal_matches_only_property(self):
+        (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "violation"\ninvariant = "Live"\n'
+                         'invariants = ["A"]\nproperties = ["Live"]\n')
+        res = tlcparse.parse("Error: Temporal properties were violated.\n", 13)
+        self.assertTrue(run.check(r, res, 1.0, "")[0])
+        res = tlcparse.parse("Error: Invariant A is violated.\n", 12)
+        self.assertFalse(run.check(r, res, 1.0, "")[0])
+
+    # 9. window labels
+    def test_window_table_rejects_unlisted_labels(self):
+        (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["W"]\n'
+                         'expect_window = { Bal = "1100" }\n')
+        res = tlcparse.parse(PASS, 0)
+        self.assertTrue(run.check(r, res, 1.0, PASS + '<<"WIN", "Bal", 1100>>')[0])
+        ok, notes = run.check(r, res, 1.0, PASS + '<<"WIN", "Bal", 1100>> <<"WIN", "Other", 5>>')
+        self.assertFalse(ok)
+        self.assertIn("unexpected window label Other", notes)
+        self.assertFalse(run.check(r, res, 1.0, PASS)[0])  # listed label missing
 
     def test_check_window_and_output(self):
         (r,) = self.load("""
@@ -294,6 +392,7 @@ class LoadAndWrapperTest(unittest.TestCase):
             [[run]]
             name = "g"
             expect = "pass"
+            invariants = ["W"]
             expect_window = "1100-1200"
             expect_output = 'gas \\|-> 1100'
             """)
@@ -309,9 +408,111 @@ class LoadAndWrapperTest(unittest.TestCase):
         self.assertFalse(ok)  # over budget
 
 
+class FakeTLCTest(unittest.TestCase):
+    """End-to-end through do_run/do_peel with subprocess.run replaced by canned TLC output."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\n====\n")
+        self.calls = []
+        self.outputs = []
+        self._orig = run.subprocess.run
+        run.subprocess.run = self.fake
+
+    def tearDown(self):
+        run.subprocess.run = self._orig
+        self.tmp.cleanup()
+
+    def fake(self, cmd, cwd=None, **kw):
+        self.calls.append((cmd, cwd, sorted(os.listdir(cwd))))
+        text, code = self.outputs.pop(0)
+        return subprocess.CompletedProcess(cmd, code, stdout=text.encode())
+
+    def load(self, body: str) -> run.Run:
+        (r,) = run.load_file(write(self.d, "runs.toml",
+                                   f'spec = "Toy"\nlibrary = "."\n[[run]]\nname = "t"\n{body}\n'))
+        return r
+
+    def go(self, r, peel=False):
+        with contextlib.redirect_stderr(io.StringIO()):  # peel prints its steps
+            return (run.do_peel if peel else run.do_run)(r, "tla2tools.jar", None, keep=False, print_trace=False)
+
+    # 5. stale build modules cannot shadow the spec
+    def test_wrapper_runs_outside_build(self):
+        r = self.load('expect = "pass"\ninvariants = ["Small"]')
+        (self.d / "build").mkdir()
+        write(self.d / "build", "Toy.tla", "---- MODULE Toy ----\nStale == TRUE\n====\n")
+        self.outputs = [(PASS, 0)]
+        o = self.go(r)
+        self.assertTrue(o.ok, o.notes)
+        cmd, cwd, files = self.calls[0]
+        self.assertEqual(files, ["MC_t.cfg", "MC_t.tla"])  # a fresh dir: nothing else in it
+        self.assertNotEqual(Path(cwd).resolve(), (self.d / "build").resolve())
+        lib = next(c for c in cmd if c.startswith("-DTLA-Library="))
+        self.assertNotIn("build", lib)
+        self.assertFalse(os.path.exists(cwd))  # temp dir removed
+        self.assertFalse((self.d / "build" / "t.log").exists())  # passing run: log removed
+
+    def test_mismatch_keeps_wrapper_and_log(self):
+        r = self.load('expect = "pass"\ninvariants = ["Small"]')
+        self.outputs = [(INV, 12)]
+        self.assertFalse(self.go(r).ok)
+        for f in ("MC_t.tla", "MC_t.cfg", "t.log"):
+            self.assertTrue((self.d / "build" / f).exists(), f)
+
+    # 8. expect_output sees TLC's output only, not the runner's header/footer
+    def test_expect_output_ignores_runner_lines(self):
+        r = self.load('expect = "pass"\ninvariants = ["Small"]\nexpect_output = "runner: wall"')
+        self.outputs = [(PASS, 0)]
+        self.assertFalse(self.go(r).ok)
+        self.assertIn("runner: wall", (self.d / "build" / "t.log").read_text())
+
+    # 2. pass needs exit code 0
+    def test_pass_needs_exit_zero(self):
+        r = self.load('expect = "pass"\ninvariants = ["Small"]')
+        self.outputs = [(PASS, 1)]
+        self.assertFalse(self.go(r).ok)
+
+    # 3. peel is lenient only for expect = "violation"
+    def test_peel(self):
+        two = 'invariants = ["Small", "Big"]'
+        cases = [
+            (f'expect = "violation"\ninvariant = "Small"\n{two}', [(INV, 12), (PASS, 0)], True),
+            (f'expect = "pass"\n{two}', [(INV, 12), (PASS, 0)], False),
+            (f'expect = "pass"\n{two}', [(PASS, 0)], True),
+            (f'expect = "assert"\n{two}', [(INV, 12), (ASSERT, 14)], False),
+            (f'expect = "assert"\n{two}', [(ASSERT, 14)], True),
+            (f'expect = "deadlock"\ndeadlock = true\n{two}', [(INV, 12), (DEADLOCK, 11)], False),
+        ]
+        for body, outs, want in cases:
+            with self.subTest(body=body, outs=len(outs)):
+                r = self.load(body)
+                self.outputs = list(outs)
+                o = self.go(r, peel=True)
+                self.assertEqual(o.ok, want, (o.actual, o.notes))
+                self.assertEqual(self.outputs, [])
+
+
+class ParsePrintTTest(unittest.TestCase):
+    # 2. a PrintT of the sentence is not a pass
+    def test_printed_sentence_is_not_a_pass(self):
+        fake = '"Model checking completed. No error has been found."\n'
+        self.assertNotEqual(tlcparse.parse(fake, 0).verdict, "pass")
+        fake_inv = '"Error: Invariant X is violated."\n' + PASS
+        self.assertEqual(tlcparse.parse(fake_inv, 0).verdict, "pass")
+
+
 class HomeRewriteTest(unittest.TestCase):
     def test_rewrite(self):
         self.assertEqual(run.home_rewrite("at /fakehome/u/x and /fakehome/u", home="/fakehome/u"), "at ~/x and ~")
+        # path boundary: a longer name with the same prefix is left alone
+        self.assertEqual(run.home_rewrite("/fakehome/u2/x", home="/fakehome/u"), "/fakehome/u2/x")
+
+    def test_temp_paths(self):
+        s = "Parsing file /private/var/folders/ab/cd123/T/Naturals.tla and /tmp/tlc-x/MC.tla"
+        self.assertEqual(run.home_rewrite(s, home="/fakehome/u"),
+                         "Parsing file <tmp>/Naturals.tla and <tmp>/tlc-x/MC.tla")
 
 
 if __name__ == "__main__":

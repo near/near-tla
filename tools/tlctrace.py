@@ -14,7 +14,7 @@ TLC prints a violating behaviour as numbered states:
 whitespace collapsed. `summary(text)` prints the initial state, then for each step the
 action name and only the variables that changed.
 
-CLI: trace.py [--width N] <log>
+CLI: tlctrace.py [--width N] <log>
 """
 
 from __future__ import annotations
