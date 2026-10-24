@@ -708,9 +708,9 @@ The receiver returns a `Vec<U128>`, one unused amount per id: return `MtRet(<<u1
 The resolver refunds, per id, `min(unused_i, amount_i)` capped by your balance of that id; a
 panic, a malformed result or a vector of another length refunds everything. It returns the
 used amounts as a vector; `MtVecOf(r.res)` decodes it (`.ok`, `.v`), since a vector travels
-as one integer (`["v"]` is the number `v`). The code fits TLC's integers when the length
-times the bits of the largest entry is at most 21: two entries up to 1023, three up to 127;
-beyond that `MtVecCode` stops TLC with an Assert. The arbitrary receiver is
+as one integer (`["v"]` is the number `v`). The code fits TLC's integers when the vector
+has fewer than 16 entries and the length times the bits of the largest entry is at most 21:
+two entries up to 1023, three up to 127; beyond that `MtVecCode` stops TLC with an Assert. The arbitrary receiver is
 `MtRecvOutcome(r.a.amts, resp)` for `resp \in MtRecvResps`, or `MtRecvVecOutcome(vec)` for
 any vector, for instance every `vec \in MtAnswers(Len(r.a.amts), 0..3)` (lengths n - 1 to
 n + 1, so wrong lengths and over-amount answers too), as `RunRx` in

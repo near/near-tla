@@ -177,6 +177,10 @@ fn mt_zero_and_self_transfers() {
     println!("batch t1:5, t2:0 to bob: {:?}; bob {:?}", o.failure(), bals(&sim, BOB));
     o.assert_success();
     assert_eq!(bals(&sim, BOB), [5, 0, 0]);
+    let o = one(&mut sim, ALICE, 0);
+    println!("mt_transfer of 0 to alice herself: {:?}; alice {:?}", o.failure(), bals(&sim, ALICE));
+    o.assert_success();
+    assert_eq!(bal(&sim, ALICE, "t1"), SUPPLY - 5, "a zero entry is dropped before anything else");
     let o = one(&mut sim, ALICE, 10);
     println!("mt_transfer of 10 to alice herself: {:?}; alice {:?}", o.failure(), bals(&sim, ALICE));
     o.assert_success();
@@ -342,6 +346,20 @@ fn mt_resolve_transfer_rules() {
         assert_eq!(got, strs(used));
         assert_eq!(bals(&sim, BOB), [bob[0], bob[1], 0]);
     }
+
+    // One id twice, refunded to the sender itself (sender = receiver): the
+    // caps come from the balance read before any refund (5, then 0), and
+    // the refunds are applied afterwards, each crediting (core :573-599).
+    let mut sim = world();
+    batch(&mut sim, ALICE, BOB, &["t1"], &[5], 1).transact().assert_success();
+    let o = sim
+        .call(ALICE, MT, "mt_resolve_transfer")
+        .args_json(json!({ "sender_id": BOB, "receiver_id": BOB, "token_ids": ["t1", "t1"], "amounts": ["5", "5"] }))
+        .promise_results([PromiseResult::Failed])
+        .transact();
+    println!("bob to bob, holding t1:5, t1:5 twice, result Failed: returns {:?}; bob {:?}", o.json::<Vec<String>>(), bals(&sim, BOB));
+    assert_eq!(o.json::<Vec<String>>(), ["0", "5"]);
+    assert_eq!(bal(&sim, BOB, "t1"), 10);
 
     // Only the token may call it.
     let o = sim

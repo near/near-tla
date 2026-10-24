@@ -2014,9 +2014,11 @@ is available locally.
     byte limit, unlike T2) as a `Vec<U128>`. A Failed result, one that does not parse as
     a `Vec<U128>`, or one whose length differs from `amounts`' leaves every id unused
     (`unused_i = amount_i`). Otherwise `unused_i = min(v_i, amount_i)`. For each entry in
-    order, `refund_i = min(unused_i, the receiver's balance of id_i)` moves back to the
-    sender, the balance taken as the earlier entries' refunds left it (so two entries of one
-    id share it). It returns `[amount_i - refund_i]`. It does not check that `token_ids`
+    order, `refund_i = min(unused_i, cap(id_i))`, where the cap of an id is the receiver's
+    balance read before any refund, less the earlier entries' refunds of that id (so two
+    entries of one id share it). The refunds move back to the sender only after every cap is
+    taken, so a refund to a sender that is also the receiver never raises a later cap. It
+    returns `[amount_i - refund_i]`. It does not check that `token_ids`
     and `amounts` have equal lengths (the transfer methods do): it zips them, so only the
     first `min(len(token_ids), len(amounts))` entries are refunded and returned.
   - Gas (near-sdk-contract-tools 4.0.0): the `_call` methods panic below 30 Tgas prepaid
@@ -2033,14 +2035,16 @@ is available locally.
 - **Model:** `Nep245`; arguments `MtArgs` / `MtBatchArgs` (`TokenCommon`, fields `tids` and
   `amts`).
   - The batch resolver is `MtBatchResolveAct`, which applies `ResolveRefund` to each
-    entry, zipped as above (fixed cases with unequal lengths: `examples/mt-batch`,
-    `mt_resolver_cases`). The single-id resolver is unchanged (`ResolveRefund` on the
+    entry against the caps above, zipped as above (fixed cases: `examples/mt-batch`,
+    `mt_resolver_cases` for unequal lengths, `mt_resolver_cases_self` for a repeated id
+    refunded to oneself). The single-id resolver is unchanged (`ResolveRefund` on the
     result).
   - A `Vec<U128>` result travels as one integer (`MtVecCode` / `MtVecOf`; `MtRet(vec)`):
     `["v"]` is the number `v`, so the single-id resolver reads it as before; any other
     length is a negative code that packs the entries at the fewest bits that hold the
-    largest. TLC's integers bound it: length × bits ≤ 21 (two entries up to 1023, three up
-    to 127). A larger vector stops TLC with an Assert, never a wrong value.
+    largest. TLC's integers and the code's fields bound it: fewer than 16 entries and
+    length × bits ≤ 21 (two entries up to 1023, three up to 127). A larger vector stops TLC
+    with an Assert, never a code another vector also has (`mt_vec_code_long`).
   - The arbitrary receiver is `MtRecvOutcome(amts, resp)` for `resp \in MtRecvResps` (keep,
     return, over, short, long, mal, nonempty, empty, panic) or `MtRecvVecOutcome(vec)` for
     any vector. `MtAnswers(n, V)` is every vector of length n - 1 to n + 1 with entries in
@@ -2066,8 +2070,8 @@ is available locally.
       twice; a short balance on the second id failing the batch with nothing moved; the
       30 Tgas floor of both `_call` methods (29.9 refused, before the deposit check; 30
       accepted and delivered, for each).
-    - `mt_zero_and_self_transfers`: an `mt_transfer` of 0 and a batch entry of 0 succeed
-      and move nothing; an `mt_transfer` of 10 to oneself succeeds and raises one's balance
+    - `mt_zero_and_self_transfers`: an `mt_transfer` of 0 (to another account or to
+      oneself) and a batch entry of 0 succeed and move nothing; an `mt_transfer` of 10 to oneself succeeds and raises one's balance
       by 10; one of more than one holds fails.
     - `mt_transfer_call_receipts`: for 1, 2 and 3 ids, `mt_on_transfer` and then the
       resolver; their attached gas splits the leftover 10 : 1 with the resolver's 5 Tgas
@@ -2082,8 +2086,9 @@ is available locally.
       vector one short or one long, an empty vector, a bare number, bytes that are not JSON,
       and no bytes; the refund capped at the receiver's balance per id; two entries of one
       id sharing that balance; unequal `token_ids` and `amounts` (2 ids and 1 amount, 1 id
-      and 2 amounts, answers of either length), refunded and returned for the shorter; the
-      caller check.
+      and 2 amounts, answers of either length), refunded and returned for the shorter; one
+      id twice refunded to a sender that is also the receiver (balance 5, two entries of 5,
+      Failed: refunds 5 and 0, ending at 10); the caller check.
   - These tests check the implementation against this rule, not the model's encoding;
     `examples/mt-batch` checks the encoding.
   - <!-- conformance --> sim, flows (the set `mt`, 19 flows; `Nep245` with

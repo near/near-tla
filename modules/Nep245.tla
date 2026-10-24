@@ -40,9 +40,9 @@
 (* id resolver reads), any other length a code <= -1000 that MtVecOf       *)
 (* decodes; EMPTY, MAL, NONEMPTY are not vectors.  A code packs the        *)
 (* entries at k bits each, k the fewest bits that hold the largest entry,  *)
-(* so it fits TLC's integers when Len * k <= 21: two entries up to 1023,   *)
-(* three up to 127, seven up to 7 (a larger vector is an Assert, not a     *)
-(* wrong value).  MtRet(vec) is a receiver's return value.                 *)
+(* so it fits TLC's integers when Len * k <= 21 and Len < 16: two entries  *)
+(* up to 1023, three up to 127, seven up to 7 (a larger vector is an       *)
+(* Assert, not a wrong value).  MtRet(vec) is a receiver's return value.   *)
 (*                                                                         *)
 (* Gas (gas mode), per token t, MtGasShape[t] (overridable definition):    *)
 (*  "reserve" (default; recalled, not read): mt_on_transfer gets static    *)
@@ -83,7 +83,9 @@ VARIABLE mtk        \* [MtAccts -> [bal |-> [MtHolders[a] -> [MtIds -> Nat]]]]
 ----------------------------------------------------------------------------
 (* Vec<U128> results as integers (see the header).                         *)
 \* Code = -(1000 + Len + 16 * (k + 32 * num)), num the entries at k bits
-\* each (entry i at bit k * (i - 1)), Len < 16, 1 <= k < 32.
+\* each (entry i at bit k * (i - 1)), Len < 16, 1 <= k <= 21, Len * k <= 21:
+\* each field within its range, so the code is injective and fits TLC's
+\* integers.
 RECURSIVE MtVecBits(_, _), MtVecNum(_, _)
 MtVecBits(m, k) == IF 2 ^ k > m THEN k ELSE MtVecBits(m, k + 1)
 MtVecNum(s, k) == IF s = <<>> THEN 0 ELSE Head(s) + (2 ^ k) * MtVecNum(Tail(s), k)
@@ -91,6 +93,7 @@ MtVecMax(s) == IF s = <<>> THEN 0 ELSE CHOOSE x \in {s[i] : i \in DOMAIN s} : \A
 MtVecCode(s) ==
     IF \E i \in DOMAIN s : s[i] < 0 THEN Assert(FALSE, <<"MtVecCode: a negative entry", s>>)
     ELSE IF Len(s) = 1 THEN s[1]
+    ELSE IF Len(s) >= 16 THEN Assert(FALSE, <<"MtVecCode: 16 entries or more", s>>)
     ELSE IF MtVecMax(s) >= 2 ^ 21 THEN Assert(FALSE, <<"MtVecCode: an entry of 2^21 or more", s>>)
     ELSE LET k == MtVecBits(MtVecMax(s), 1) IN
          IF Len(s) * k > 21 THEN Assert(FALSE, <<"MtVecCode: Len * bits per entry over 21", s>>)
@@ -166,8 +169,10 @@ MtMove(L, s, rc, id, x, dev) ==
 MtXferAct(acc, r, s, rc, tid, amt) ==
     LET L == acc.L  dev == MtDev[r.to] IN
     IF ~MLive(acc) THEN acc
+    \* contract-tools drops zero entries before any other check (core :796)
+    ELSE IF amt = 0 /\ "zeroAmountSkipped" \in dev THEN acc
     ELSE IF s = rc /\ "selfTransferCredits" \notin dev THEN MAE(acc, "Sender and receiver should be different")
-    ELSE IF amt = 0 THEN IF "zeroAmountSkipped" \in dev THEN acc ELSE MAE(acc, "zero amount")
+    ELSE IF amt = 0 THEN MAE(acc, "zero amount")
     ELSE IF s \notin DOMAIN L.bal \/ rc \notin DOMAIN L.bal
          THEN Assert(FALSE, <<"MT transfer outside MtHolders", r.to, s, rc>>)
     ELSE IF L.bal[s][tid] < amt THEN MAE(acc, "insufficient balance")
@@ -230,17 +235,24 @@ MtResolveAct(acc, r) ==
 \* The resolver of a batch: per entry, the shared arithmetic on that
 \* entry of the result (ResolveRefund on the number v_i, or on Failed when
 \* the result is not a vector of Len(amts) entries, core :552-564),
-\* against the receiver's balance as earlier entries left it (:566-596),
+\* against a cap per id: the receiver's balance read before any refund,
+\* less the refunds of earlier entries of that id (balance_map, :566-596),
 \* for the first min(Len(tids), Len(amts)) entries (the zip, :585-589).
+\* The ledger moves never feed back into the caps (contract-tools applies
+\* them after every cap is taken, :597-599): for a receiver that is the
+\* sender ("selfTransferCredits") a refund does not raise a later entry's
+\* cap.
 MtBatchResolveAct(acc, r) ==
     LET a == r.a  m == Len(a.amts)  n == TMin(Len(a.tids), m)  vec == MtVecOf(r.res)
         Res(i) == IF vec.ok /\ Len(vec.v) = m THEN [r.res EXCEPT !.v = vec.v[i]] ELSE [r.res EXCEPT !.ok = FALSE]
-        \* F[i]: [L, refunds] after entries 1..i
+        Ids == {a.tids[i] : i \in 1..n}
+        \* F[i]: [L, caps, refunds] after entries 1..i
         F[i \in 0..n] ==
-            IF i = 0 THEN [L |-> acc.L, rf |-> <<>>]
-            ELSE LET L == F[i - 1].L  id == a.tids[i]
-                     refund == ResolveRefund(Res(i), a.amts[i], L.bal[a.rc][id], MtDev[r.to])
+            IF i = 0 THEN [L |-> acc.L, cap |-> [id \in Ids |-> acc.L.bal[a.rc][id]], rf |-> <<>>]
+            ELSE LET L == F[i - 1].L  c == F[i - 1].cap  id == a.tids[i]
+                     refund == ResolveRefund(Res(i), a.amts[i], c[id], MtDev[r.to])
                  IN [L |-> MtMove(L, a.rc, a.s, id, refund, MtDev[r.to]),
+                     cap |-> [c EXCEPT ![id] = @ - refund],
                      rf |-> F[i - 1].rf \o <<refund>>]
         used == [i \in 1..n |-> TMax(a.amts[i] - F[n].rf[i], 0)]
     IN IF ~MLive(acc) THEN acc

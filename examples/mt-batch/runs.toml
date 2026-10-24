@@ -154,6 +154,40 @@ tags = ["tokens:nep245"]
 [run.constants]
 RxStart = '[i \in {"t1", "t2"} |-> IF i = "t1" THEN 10 ELSE 0]'
 
+# A repeated id refunded to oneself (near-sdk-contract-tools' self-transfer): the caps
+# come from the balance before any refund, so the second entry's cap is 0.
+[[run]]
+name = "mt_resolver_cases_self"
+expect = "pass"
+spec = "MtResolverCases"
+next = "Stay"
+invariants = ["SelfCases"]
+tags = ["tokens:nep245", "tokens:deviation"]
+[run.constants]
+MDev = '{"selfTransferCredits"}'
+
+# A zero transfer to oneself with zero amounts skipped: no panic.
+[[run]]
+name = "mt_zero_self"
+expect = "pass"
+spec = "MtResolverCases"
+next = "Stay"
+invariants = ["ZeroSelf"]
+tags = ["tokens:nep245", "tokens:deviation"]
+[run.constants]
+MDev = '{"zeroAmountSkipped"}'
+
+# A vector of 16 entries: the code's length field holds 15 at most, so MtVecCode stops
+# TLC instead of returning a code another vector also has.
+[[run]]
+name = "mt_vec_code_long"
+expect = "assert"
+expect_output = 'MtVecCode: 16 entries or more'
+spec = "MtResolverCases"
+next = "Stay"
+invariants = ["VecCodeLong"]
+tags = ["tokens:nep245"]
+
 # ---- anti-vacuity: python3 tools/run.py examples/mt-batch --anti-vacuity ----
 # Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
 
@@ -316,3 +350,23 @@ find = 'IF vec.ok /\ Len(vec.v) = m THEN'
 replace = 'IF vec.ok /\ Len(vec.v) = Len(a.tids) THEN'
 class = "wrong argument"
 runs = ["mt_resolver_cases"]
+
+# A later entry's cap read from the ledger after earlier refunds (a self refund raises it).
+[[mutant]]
+id = "cap_after_moves"
+file = "Nep245.tla"
+library = true
+find = 'cap |-> [c EXCEPT ![id] = @ - refund],'
+replace = 'cap |-> [c EXCEPT ![id] = MtMove(L, a.rc, a.s, id, refund, MtDev[r.to]).bal[a.rc][id]],'
+class = "lost update"
+runs = ["mt_resolver_cases_self"]
+
+# The zero skip checked after the sender = receiver refusal.
+[[mutant]]
+id = "zero_skip_after_self_check"
+file = "Nep245.tla"
+library = true
+find = 'ELSE IF amt = 0 /\ "zeroAmountSkipped" \in dev THEN acc'
+replace = 'ELSE IF amt = 0 /\ "zeroAmountSkipped" \in dev /\ s # rc THEN acc'
+class = "removed precondition"
+runs = ["mt_zero_self"]

@@ -475,14 +475,18 @@ them. A model that lists platform variables one by one must add each.
   amts, msg)`; unequal lengths panic; each id moves in order, atomically), and
   `mt_resolve_transfer` on a batch applies the resolver arithmetic per id: a result that is
   Failed, not a `Vec<U128>` or of another length leaves every id unused, else `unused_i =
-  min(v_i, amount_i)`, and `refund_i = min(unused_i, the receiver's balance of id_i)`, entries
-  of one id sharing that balance; the result's length is compared with `amounts`', and
-  `token_ids` and `amounts` of different lengths (a direct resolver call) are zipped, as
-  the SDK does (`mt_resolver_cases`). Vectors travel as one integer (`MtVecCode`, `MtVecOf`, `MtRet`; `["v"]` is
-  the number `v`; length × bits per entry ≤ 21, so two entries up to 1023). New `MtDev`
-  behaviours `"zeroAmountSkipped"` and `"selfTransferCredits"` follow near-sdk-contract-tools
-  4.0.0, which skips a zero amount and lets a transfer to oneself raise one's balance; by
-  default the model still panics on both. An arbitrary receiver answers any label of
+  min(v_i, amount_i)`, and `refund_i = min(unused_i, cap)`, the cap being the receiver's
+  balance of id_i before any refund less the earlier entries' refunds of that id (entries of
+  one id share it; the refunds never raise a cap, even back to a sender that is the
+  receiver). The result's length is compared with `amounts`', and `token_ids` and `amounts`
+  of different lengths (a direct resolver call) are zipped, as the SDK does
+  (`mt_resolver_cases`, `mt_resolver_cases_self`). Vectors travel as one integer
+  (`MtVecCode`, `MtVecOf`, `MtRet`; `["v"]` is the number `v`; fewer than 16 entries and
+  length × bits per entry ≤ 21, so two entries up to 1023; beyond that an Assert,
+  `mt_vec_code_long`). New `MtDev` behaviours `"zeroAmountSkipped"` and
+  `"selfTransferCredits"` follow near-sdk-contract-tools 4.0.0, which drops a zero amount
+  before any other check (a zero transfer to oneself included) and lets a transfer to
+  oneself raise one's balance; by default the model still panics on both. An arbitrary receiver answers any label of
   `MtRecvResps` (`MtRecvOutcome`) or any vector (`MtRecvVecOutcome`, `MtAnswers(n, V)`:
   wrong lengths and over-amount entries included). The semantics are near-sdk-contract-tools
   4.0.0's, the only NEP-245 implementation read. New per-token gas shape `MtGasShape[t] =
