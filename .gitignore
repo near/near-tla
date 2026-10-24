@@ -1,0 +1,23 @@
+# TLC output
+states/
+*.st
+*_TTrace_*.tla
+*.bin
+.tlc/
+/tools/tla2tools.jar
+
+# Generated per-run wrappers and logs
+**/build/
+**/logs/
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+.DS_Store
+*.swp
