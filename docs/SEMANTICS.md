@@ -923,9 +923,10 @@ Each rule has four fields:
   storage rate) from the account's balance, `LackBalanceForState` if the balance is short, and
   adds nothing to the account's storage or code. The code is published by a separate
   distribution receipt the deploy emits: until that receipt runs, the identifier does not
-  resolve (or still resolves to the previous code). Each deploy bumps a per-identifier nonce,
-  and a distribution is applied only if its nonce is not older than the last one applied, so
-  the later of two deploys wins. `UseGlobalContract(identifier)` switches the account to a
+  resolve (or still resolves to the previous code). Each deploy bumps the identifier's nonce
+  stored on the deployer's shard, and a shard applies a distribution only if its nonce is not
+  below the one it stores, so the later of two deploys wins; on the deployer's shard an
+  earlier distribution arriving after a later deploy is dropped at once. `UseGlobalContract(identifier)` switches the account to a
   published global contract (`GlobalContractDoesNotExist` otherwise): the old contract's bytes
   (a local code's length, or the old identifier) leave its storage usage and the identifier's
   bytes join it, 32 for a hash and the owner id's length for an account id; a local
@@ -969,7 +970,9 @@ Each rule has four fields:
   `ExecBuiltin` runs it, `ExecGDist`) whose id is its nonce; it sets `gcode` if its nonce is
   above `gnonce`'s. The model's network has no order, so two distributions of one identifier
   arrive either way: the later deploy wins, and the earlier code may be published briefly
-  first (as on a shard other than the deployer's). `InitGCode` and `InitUses` (overridable)
+  first (as on a shard other than the deployer's). `gnonce` moves only when a distribution
+  is applied, not at the deploy as on the deployer's shard: an over-approximation, since the
+  model can publish the earlier code briefly where nearcore drops it. `InitGCode` and `InitUses` (overridable)
   set what is published, and who uses it, at the start. `GlobalInstant <- TRUE` publishes at
   the deploy's commit, without the receipt (unsound: N-global-instant). A receipt has at most
   one of each global action, and not a DeployContract together with a UseGlobalContract
