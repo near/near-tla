@@ -172,8 +172,8 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   NEP-245 probe (T5). Multi-shard order and missed chunks (S2, S4) need a multi-shard sim.
   Per-byte storage is checked by sim tests and the calibrator's storage table only; a probe
   flow comparing it with the model needs a re-sweep of every flow.
-- **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:** the
-  function-call AddKey per-byte fee; access-key allowances and transaction validity (nonces);
+- **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:**
+  access-key allowances and transaction validity (nonces);
   deterministic-account state init and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 
