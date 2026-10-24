@@ -114,10 +114,7 @@ AsciiName(m) ==
     IF \A i \in 1..Len(m) : SubSeq(m, i, i) \in AsciiChars THEN TRUE
     ELSE Assert(FALSE, <<"a method name with a character outside printable ASCII: TLC counts characters,"
                          \o " nearcore UTF-8 bytes; state the names' byte count with WithMethodBytes(p, n)", m>>)
-RECURSIVE NameBytes(_)
-NameBytes(M) == IF M = {} THEN 0
-                ELSE LET m == CHOOSE x \in M : TRUE IN
-                     IF AsciiName(m) THEN Len(m) + 1 + NameBytes(M \ {m}) ELSE 0
+NameBytes(M) == IF \A m \in M : AsciiName(m) THEN FunSum([m \in M |-> Len(m) + 1], M) ELSE 0
 WithMethodBytes(p, n) == ("mb" :> n) @@ p
 MethodBytes(p) == IF "mb" \in DOMAIN p THEN p.mb ELSE NameBytes(p.ms)
 \* max_number_bytes_method_names (2000 at 88): a function-call AddKey whose
@@ -155,9 +152,7 @@ KeyBytes(p) ==
          IN 33 + 8 + 1 + (IF HasAllowance(p) THEN 17 ELSE 1) + 4 + IdBytes(p.rcv) + 4 + mb + RecordExtraBytes
 \* The bytes of a key map (key id -> permission).
 KeyMapBytes(ks) ==
-    LET F[S \in SUBSET DOMAIN ks] == IF S = {} THEN 0
-                                    ELSE LET k == CHOOSE x \in S : TRUE IN KeyBytes(ks[k]) + F[S \ {k}]
-    IN F[DOMAIN ks]
+    FunSum([k \in DOMAIN ks |-> KeyBytes(ks[k])], DOMAIN ks)
 
 \* Init helper: keys0 : [KeyAccts -> (key id -> permission)].
 KeysInit(keys0) == keys = keys0 /\ sigpaid = [a \in Accounts |-> 0]
@@ -364,18 +359,26 @@ KAct(op, k, p) == [op |-> op, k |-> k, p |-> p]
 AddKeyAct(k, p) == IF MethodBytesOK(p) THEN KAct("add", k, p) ELSE FALSE
 DelKeyAct(k)    == KAct("del", k, FullPerm)
 
-\* Fold acts over one account's key map: [ok, ks].
-RECURSIVE KeysFold(_, _)
+\* Fold acts over one account's key map: [ok, ks].  In order, a DeleteKey of
+\* an absent key or an AddKey of a present one stops the fold (ok FALSE, ks
+\* as before that action).  Without recursion: a key's state after the first
+\* n actions is set by the last of them that names it (an add: present with
+\* its permission; a delete: absent), else by ks.
+KeysAfterN(ks, acts, n) ==
+    LET On(k) == {j \in 1..n : acts[j].k = k}
+        Last(k) == acts[CHOOSE j \in On(k) : \A l \in On(k) : l <= j]
+        Has(k) == IF On(k) = {} THEN k \in DOMAIN ks ELSE Last(k).op = "add"
+        Keys == {k \in DOMAIN ks \cup {acts[j].k : j \in 1..n} : Has(k)}
+    IN [k \in Keys |-> IF On(k) = {} THEN ks[k] ELSE Last(k).p]
+KeyActBad(ks, acts, i) ==
+    LET x == acts[i]  pre == DOMAIN KeysAfterN(ks, acts, i - 1) IN
+    IF x.op = "del" THEN x.k \notin pre ELSE x.k \in pre
 KeysFold(ks, acts) ==
-    IF acts = <<>> THEN [ok |-> TRUE, ks |-> ks]
-    ELSE LET x == Head(acts) IN
-         IF x.op = "del"
-         THEN IF x.k \in DOMAIN ks
-              THEN KeysFold([y \in DOMAIN ks \ {x.k} |-> ks[y]], Tail(acts))
-              ELSE [ok |-> FALSE, ks |-> ks]
-         ELSE IF x.k \in DOMAIN ks
-              THEN [ok |-> FALSE, ks |-> ks]
-              ELSE KeysFold((x.k :> x.p) @@ ks, Tail(acts))
+    IF acts = <<>> THEN [ok |-> TRUE, ks |-> ks] ELSE
+    LET bad == {i \in 1..Len(acts) : KeyActBad(ks, acts, i)} IN
+    IF bad = {} THEN [ok |-> TRUE, ks |-> KeysAfterN(ks, acts, Len(acts))]
+    ELSE LET i0 == CHOOSE i \in bad : \A j \in bad : i <= j IN
+         [ok |-> FALSE, ks |-> KeysAfterN(ks, acts, i0 - 1)]
 
 \* In a receipt with account actions (HasAc) the actor and the key map
 \* follow its CreateAccount: the new account, with no keys (A6, A8).
@@ -447,8 +450,7 @@ AcctKeyFee(r, x) ==
          IF x.op = "del" THEN NearFeeTable!ActionFee("delete_key", sir, "named")
          ELSE IF IsFull(x.p) THEN NearFeeTable!ActionFee("add_key_full", sir, "named")
          ELSE NearFeeTable!ActionFee("add_key_fc", sir, "named") + NearFeeTable!AddKeyFcBytesFee(sir, MethodBytes(x.p))
-RECURSIVE AcctKeysFee(_, _)
-AcctKeysFee(r, acts) == IF acts = <<>> THEN 0 ELSE AcctKeyFee(r, Head(acts)) + AcctKeysFee(r, Tail(acts))
+AcctKeysFee(r, acts) == SeqSum(LAMBDA x : AcctKeyFee(r, x), acts)
 WithAcctKeys(r, acts) ==
     IF ~(IsAcctRcpt(r) \/ AcCall(r)) THEN Assert(FALSE, <<"WithAcctKeys needs an ACCOUNT receipt or a call receipt with account actions", r.id>>)
     ELSE [r EXCEPT !.ac.ka = @ \o acts, !.gf = @ + AcctKeysFee(r, acts)]

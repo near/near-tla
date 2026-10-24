@@ -26,7 +26,7 @@ failed=()
 for f in "$@"; do
   meta=$(mktemp -d /tmp/tlc-ws2-conf.XXXXXX)
   mkdir "$meta/jtmp"   # private java.io.tmpdir: TLC unpacks its standard modules there
-  java -XX:+UseParallelGC -Djava.io.tmpdir="$meta/jtmp" -DTLA-Library="$lib" -cp "$jar" tlc2.TLC \
+  java -XX:+UseParallelGC -Xss16m -Djava.io.tmpdir="$meta/jtmp" -DTLA-Library="$lib" -cp "$jar" tlc2.TLC \
     -workers 2 -deadlock -metadir "$meta" -config "MC_$f.cfg" "MC_$f" > "$f.log" 2>&1
   rc=$?
   rm -rf "$meta"

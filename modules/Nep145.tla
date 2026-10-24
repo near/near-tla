@@ -68,16 +68,12 @@ TokRegBytes == [t \in TokenAccts |-> [h \in TokHolders[t] |-> 0]]
 RegBytes(t, h) ==
     IF h \in DOMAIN TokRegBytes[t] THEN TokRegBytes[t][h]
     ELSE Assert(FALSE, <<"TokRegBytes has no entry for holder", t, h>>)
-RECURSIVE RegBytesSum(_, _)
-RegBytesSum(t, S) == IF S = {} THEN 0
-                     ELSE LET h == CHOOSE x \in S : TRUE IN RegBytes(t, h) + RegBytesSum(t, S \ {h})
+RegBytesSum(t, S) == FunSum([h \in S |-> RegBytes(t, h)], S)
 
 \* Initial ledger helper: balances b (a function on TokHolders[a]), registered set.
 Ledger(b, reg) ==
     [bal |-> b, reg |-> reg,
-     sup |-> LET F[S \in SUBSET DOMAIN b] == IF S = {} THEN 0
-                                           ELSE LET x == CHOOSE y \in S : TRUE IN b[x] + F[S \ {x}]
-             IN F[DOMAIN b]]
+     sup |-> FunSum(b, DOMAIN b)]
 
 ----------------------------------------------------------------------------
 (* Execution accumulator.  A token receipt is a sequence of actions (one,  *)

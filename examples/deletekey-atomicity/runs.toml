@@ -89,11 +89,7 @@ runs = ["delkey_bundled"]
 id = "delete_absent_key_succeeds"
 file = "NearKeys.tla"
 library = true
-find = '''
-              THEN KeysFold([y \in DOMAIN ks \ {x.k} |-> ks[y]], Tail(acts))
-              ELSE [ok |-> FALSE, ks |-> ks]'''
-replace = '''
-              THEN KeysFold([y \in DOMAIN ks \ {x.k} |-> ks[y]], Tail(acts))
-              ELSE KeysFold(ks, Tail(acts))'''
+find = 'IF x.op = "del" THEN x.k \notin pre ELSE x.k \in pre'
+replace = 'IF x.op = "del" THEN FALSE ELSE x.k \in pre'
 class = "removed precondition"
 runs = ["delkey_bundled"]

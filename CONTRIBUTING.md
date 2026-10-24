@@ -48,6 +48,16 @@ exits nonzero if a verdict differs from its `expect`. It keeps the wrapper, conf
 run with `--keep`. See `python3 tools/run.py --help` for the `runs.toml` format, and
 [`docs/USAGE.md`](docs/USAGE.md) for writing a model of your own.
 
+**Thread stack.** TLC evaluates nested and recursive operators on the JVM thread stack, and
+the default (512 KB to 1 MB) overflows on large sets (`StackOverflowError`; CI hit it on the
+Linux runner in `limit_join_128` and `limit_log_101`). Every TLC process the repo starts gets
+`-Xss16m`: `tools/run.py` (and so both CI workflows), `tools/sany.py` and
+`conformance/scripts/tlc.sh`. `TLC_JAVA_OPTS` comes after it, so an `-Xss` there wins, and a
+run's own `stack = "512k"` in `runs.toml` after that. Library sums split their sets
+(`KeySum`, `RcptSum`, `SeqSum`, `FunSum` in `NearAsync`) instead of recursing once per element;
+write new ones that way. `examples/limits`' `limit_fan_gas_1000` checks it: a gas-mode split
+over 1000 children on a 512 KB stack, which a per-element sum overflows.
+
 ## Parsing
 
 Run SANY on everything you touched before pushing. CI parses every module and fails on any error:

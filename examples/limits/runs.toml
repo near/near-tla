@@ -79,6 +79,20 @@ expect = "pass"
 Shape = '"fan"'
 N = "1024"
 
+# The same fan-out in gas mode, 1000 receipts of weight 1: splitting D's leftover sums over
+# 1000 entries for each of them.  On a 512 KB thread stack (stack), so a library sum that
+# recurses once per element (a StackOverflowError) fails it.
+[[run]]
+name = "limit_fan_gas_1000"
+expect = "pass"
+stack = "512k"
+[run.constants]
+Shape = '"fan"'
+N = "1000"
+GasMode = '"gas"'
+GasCall = "LGasCall"
+GasBurn = "LGasBurn"
+
 [[run]]
 name = "limit_fan_1025"
 expect = "violation"
@@ -371,8 +385,8 @@ killed_by = ["assert"]
 id = "nested_join_bound_loose"
 file = "NearAsync.tla"
 library = true
-find = '(IF Len(c.ins) > 2 THEN Len(c.ins) - 1 ELSE 1)'
-replace = '(IF Len(c.ins) > 2 THEN Len(c.ins) ELSE 1)'
+find = 'IF Len(c.ins) > 2 THEN Len(c.ins) - 1 ELSE 1, J)'
+replace = 'IF Len(c.ins) > 2 THEN Len(c.ins) ELSE 1, J)'
 class = "off-by-one"
 runs = ["limit_nest_unstated_ok"]
 killed_by = ["assert"]

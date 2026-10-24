@@ -546,6 +546,23 @@ class FakeTLCTest(unittest.TestCase):
         self.assertFalse(os.path.exists(cwd))  # temp dir removed
         self.assertFalse((self.d / "build" / "t.log").exists())  # passing run: log removed
 
+    # the JVM thread stack: 16m for every run, after it TLC_JAVA_OPTS, then a run's own stack
+    def test_thread_stack(self):
+        old = os.environ.pop("TLC_JAVA_OPTS", None)
+        try:
+            self.outputs = [(PASS, 0), (PASS, 0)]
+            self.assertTrue(self.go(self.load('expect = "pass"\ninvariants = ["Small"]')).ok)
+            os.environ["TLC_JAVA_OPTS"] = "-Xss4m"
+            self.assertTrue(self.go(self.load('expect = "pass"\ninvariants = ["Small"]\nstack = "512k"')).ok)
+        finally:
+            os.environ.pop("TLC_JAVA_OPTS", None)
+            if old is not None:
+                os.environ["TLC_JAVA_OPTS"] = old
+        xss = [[c for c in cmd if c.startswith("-Xss")] for cmd, _, _ in self.calls]
+        self.assertEqual(xss, [["-Xss16m"], ["-Xss16m", "-Xss4m", "-Xss512k"]])
+        with self.assertRaisesRegex(run.ConfigError, "stack must be a JVM size"):
+            self.load('expect = "pass"\ninvariants = ["Small"]\nstack = "16 MB"')
+
     def test_mismatch_keeps_wrapper_and_log(self):
         r = self.load('expect = "pass"\ninvariants = ["Small"]')
         self.outputs = [(INV, 12)]

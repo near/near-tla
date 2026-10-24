@@ -41,6 +41,8 @@ runs.toml format
   invariants = ["Books"]
   properties = []
   deadlock = false            # false (default): pass -deadlock, quiescence is fine
+  stack = "256k"              # optional: the JVM thread stack (-Xss) for this run; the
+                              # default is 16m (DEFAULT_STACK), for every TLC run
   tags = ["semantics:x"]      # free-form
   expect_output = 'regex'     # optional: must match TLC's output (whitespace collapsed)
   expect_window = "39800-40700"   # optional: print-only window (see tools/windows.py):
@@ -167,7 +169,8 @@ selected runs (a check of a run that did not match its expectation is skipped) a
 a table and a per-file summary. Off by default; peel mode and windows are unaffected.
 
 Environment: TLA2TOOLS_JAR (if tools/tla2tools.jar is missing), NEAR_TLA_LIBRARY
-(like --library), TLC_JAVA_OPTS (extra JVM options, e.g. -Xmx4g).
+(like --library), TLC_JAVA_OPTS (extra JVM options, e.g. -Xmx4g; they come after the
+default -Xss16m, so an -Xss there wins, and a run's own stack after them).
 """
 
 from __future__ import annotations
@@ -203,13 +206,17 @@ import windows  # noqa: E402
 MAX_WORKERS = 4
 DEFAULT_LIBRARY = "../../modules"
 HARD_TIMEOUT_FACTOR = 3
+# TLC evaluates recursive operators on the JVM thread stack; the default (512 KB to 1 MB)
+# overflows on deep evaluations (StackOverflowError). Every run gets this one.
+DEFAULT_STACK = "16m"
+STACK_RE = re.compile(r"^[1-9][0-9]*[kKmM]$")
 EXPECTS = ("pass", "violation", "assert", "deadlock")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 FILE_KEYS = {"spec", "workers", "library", "budget_s", "init", "next", "specification",
              "invariants", "properties", "deadlock", "tags", "constants", "run", "witness", "mutant",
-             "sweep"}
+             "sweep", "stack"}
 RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step",
                  "allow_no_invariants"}
 RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant", "sweep"}) | RUN_ONLY_KEYS
@@ -258,6 +265,7 @@ class Run:
     expect_window: str | dict | None = None
     window_step: int = 100
     allow_no_invariants: str | None = None
+    stack: str | None = None
 
     @property
     def dir(self) -> Path:
@@ -443,7 +451,10 @@ def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
             expect_window=_typed(where, m, "expect_window", (str, dict)),
             window_step=_typed(where, m, "window_step", int, 100),
             allow_no_invariants=_typed(where, m, "allow_no_invariants", str),
+            stack=_typed(where, m, "stack", str),
         )
+        if r.stack is not None and not STACK_RE.match(r.stack):
+            raise ConfigError(f"{where}: stack must be a JVM size such as \"256k\" or \"16m\"")
         if r.specification:
             if "init" in m or "next" in m:
                 raise ConfigError(f"{where}: give either specification or init/next, not both")
@@ -1060,8 +1071,9 @@ def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int, defs=(), p
         # concurrent TLC processes from parsing each other's half-written copies.
         jtmp = os.path.join(work, "jtmp")
         os.makedirs(jtmp)
-        cmd = ["java", "-XX:+UseParallelGC", f"-Djava.io.tmpdir={jtmp}",
+        cmd = ["java", "-XX:+UseParallelGC", f"-Xss{DEFAULT_STACK}", f"-Djava.io.tmpdir={jtmp}",
                *shlex.split(os.environ.get("TLC_JAVA_OPTS", "")),
+               *([f"-Xss{run.stack}"] if run.stack else []),
                f"-DTLA-Library={libpath}", "-cp", jar, "tlc2.TLC",
                *([] if run.deadlock else ["-deadlock"]),
                "-workers", str(workers), "-metadir", os.path.join(work, "states"),

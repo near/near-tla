@@ -198,12 +198,18 @@ MtResolveGas(r, res) ==
     IF GasMode # "gas" \/ ~MtTools(r) \/ HasCallDef(r.to, "mt_resolve_transfer") THEN res
     ELSE WithCall(res, <<MtResolveStatic[r.to]>>, <<MtResolveWeight[r.to]>>)
 
+\* The resolver is owed (NearAsync WithOwed, docs/SEMANTICS.md F2), as
+\* Nep141's: OwedOK checks that none fails.  MtOwedResolve <- FALSE leaves it
+\* unmarked.
+MtOwedResolve == TRUE
+
 \* mt_[batch_]transfer_call after its transfer a1: mt_on_transfer with
 \* onA, then the resolver with resA (core :264-287).
 MtCallAct(a1, r, onA, resA) ==
     LET onT == WithCall(Rcpt(a1.n, r.tx, onA.rc, r.to, "mt_on_transfer", onA, 0, r.to, a1.n + 1),
                         <<MtOnStatic(r)>>, <<MtOnWeight(r)>>)
-        res == MtResolveGas(r, Rcpt(a1.n + 1, r.tx, r.to, r.to, "mt_resolve_transfer", resA, 0, r.to, r.cb))
+        res0 == Rcpt(a1.n + 1, r.tx, r.to, r.to, "mt_resolve_transfer", resA, 0, r.to, r.cb)
+        res == MtResolveGas(r, IF MtOwedResolve THEN WithOwed(res0) ELSE res0)
     IN IF ~MLive(a1) THEN a1
        ELSE [a1 EXCEPT !.rd = @ \cup {onT}, !.ps = @ \cup {res}, !.n = @ + 2,
                        !.ret = RProm, !.ev.call = TRUE]

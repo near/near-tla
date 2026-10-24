@@ -493,8 +493,16 @@ AndThen(ks, c, d0) ==
     [kids |-> [i \in DOMAIN ks |-> [ks[i] EXCEPT !.cb = d0 + i - 1]],
      cb   |-> [ins |-> [i \in DOMAIN ks |-> d0 + i - 1]] @@ c]
 
-RECURSIVE SumSeq(_)
-SumSeq(s) == IF s = <<>> THEN 0 ELSE Head(s) + SumSeq(Tail(s))
+\* SeqSum(F, s): the sum of F(s[i]) over a sequence, halving the index range
+\* (recursion depth log2 Len(s); one level per element would overflow a small
+\* thread stack on long sequences, as RcptSum explains).
+RECURSIVE SeqSumIn(_, _, _, _)
+SeqSumIn(F(_), s, lo, hi) ==
+    IF lo > hi THEN 0
+    ELSE IF lo = hi THEN F(s[lo])
+    ELSE LET mid == (lo + hi) \div 2 IN SeqSumIn(F, s, lo, mid) + SeqSumIn(F, s, mid + 1, hi)
+SeqSum(F(_), s) == SeqSumIn(F, s, 1, Len(s))
+SumSeq(s) == SeqSum(LAMBDA x : x, s)
 GasOf(r)   == SumSeq(r.g)                                 \* attached gas, all function calls
 LastGas(r) == IF r.g = <<>> THEN 0 ELSE r.g[Len(r.g)]     \* env::prepaid_gas() of the last call
 
@@ -640,26 +648,32 @@ DepTotal(r) == r.dep + XferOf(r)
 \* (near-vm-runner logic.rs:45-49).  near[r.to] is the balance before the
 \* receipt; a handler that reads its own balance reads BalSeen(r).
 BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]) + DepTotal(r)
-\* RcptSum(F, S): the sum of F(x) over a set of receipts S.  A sum that
-\* takes one element per level recurses |S| deep, and with a few hundred
-\* receipts that is past a 512 KB thread stack (TLC's StackOverflowError;
-\* the default stack is 1 MB on 64-bit Linux and macOS).  So a set of more
-\* than 16 is split in two by id (ids are unique integers), halving an id
-\* range that starts as all of TLC's integers (negative ids, then the
-\* rest): every id is inside it, so each level halves the range its
-\* receipts can occupy, and the depth stays below 16 + 2 x 32 whatever the
-\* ids are.  Only receipts that share an id reach a range of one id, where
-\* the sum is linear.
-RECURSIVE RcptSumIn(_, _, _, _)
-RcptSumIn(F(_), S, lo, hi) ==
-    IF Cardinality(S) <= 16 \/ lo >= hi
+\* KeySum(F, K, S): the sum of F(x) over a set S, where K(x) is an integer
+\* key (an id, or the value itself).  A sum that takes one element per
+\* level recurses |S| deep, and with a few hundred elements that is past a
+\* 512 KB thread stack (TLC's StackOverflowError; the default stack is
+\* 1 MB on 64-bit Linux and macOS).  So a set of more than 16 is split in
+\* two by one bit of the key, the lowest first: keys that are consecutive
+\* ids split evenly at each level, and the depth stays below 16 + 30 x 2
+\* whatever the keys are.  Elements that agree in key bits 0-29 (the same
+\* key, in practice) are summed linearly.
+RECURSIVE KeySumIn(_, _, _, _)
+KeySumIn(F(_), K(_), S, p) ==
+    IF Cardinality(S) <= 16 \/ p >= 1073741824
     THEN LET G[T \in SUBSET S] == IF T = {} THEN 0
                                   ELSE LET x == CHOOSE y \in T : TRUE IN F(x) + G[T \ {x}]
          IN G[S]
-    ELSE LET mid == lo + (hi - lo) \div 2 IN
-         RcptSumIn(F, {x \in S : x.id <= mid}, lo, mid) + RcptSumIn(F, {x \in S : x.id > mid}, mid + 1, hi)
-RcptSum(F(_), S) ==
-    RcptSumIn(F, {x \in S : x.id < 0}, -2147483647, -1) + RcptSumIn(F, {x \in S : x.id >= 0}, 0, 2147483647)
+    ELSE KeySumIn(F, K, {x \in S : (K(x) \div p) % 2 = 0}, 2 * p)
+         + KeySumIn(F, K, {x \in S : (K(x) \div p) % 2 = 1}, 2 * p)
+KeySum(F(_), K(_), S) == KeySumIn(F, K, S, 1)
+\* RcptSum(F, S): the sum of F(x) over a set of receipts S, split by id
+\* (ids are unique integers).
+RcptSum(F(_), S) == KeySum(F, LAMBDA x : x.id, S)
+\* FunSum(f, S): the sum of f[x] over S (f integer-valued, S any set, e.g. of
+\* account names), as the sum over f's distinct values v of v times the
+\* number of x with f[x] = v: the values are integers, so KeySum splits them.
+FunSum(f, S) ==
+    KeySum(LAMBDA v : v * Cardinality({x \in S : f[x] = v}), LAMBDA v : v, {f[x] : x \in S})
 Sum(S) == RcptSum(LAMBDA x : DepTotal(x), S)
 
 \* Ids are unique, so Sum over a set of receipts is well defined.
@@ -1374,10 +1388,9 @@ EntriesOf(S) ==
     UNION { IF GasListsOK(c) THEN { <<c.id, k, c.gw[k]>> : k \in {j \in DOMAIN c.gw : c.gw[j] > 0} } ELSE {}
             : c \in S }
 Entries(O) == EntriesOf(Kids(O))
-RECURSIVE WSum(_), FloorSum(_, _, _)
-WSum(E) == IF E = {} THEN 0 ELSE LET e == CHOOSE y \in E : TRUE IN e[3] + WSum(E \ {e})
-FloorSum(E, U, W) == IF E = {} THEN 0
-                     ELSE LET e == CHOOSE y \in E : TRUE IN (U * e[3]) \div W + FloorSum(E \ {e}, U, W)
+\* Sums over entries, split by receipt id (KeySum).
+WSum(E) == KeySum(LAMBDA e : e[3], LAMBDA e : e[1], E)
+FloorSum(E, U, W) == KeySum(LAMBDA e : (U * e[3]) \div W, LAMBDA e : e[1], E)
 \* The last weighted action.  The model orders by (receipt id, action index);
 \* nearcore by the order of the host calls that set the weights
 \* (receipt_manager.rs:414).  They agree when receipts are created in id
@@ -1399,15 +1412,18 @@ LastE(E) == CHOOSE e \in E : \A f \in E : f[1] < e[1] \/ (f[1] = e[1] /\ f[2] <=
 \*  "nearest": the last action in (id, index) order gets the remainder in
 \*    Ggas, as before; it can then exceed nearcore's share by up to n - 1
 \*    Ggas (docs/SEMANTICS.md, G3).
-Share(e, U, E) ==
-    LET W == WSum(E) IN
+\* W = WSum(E) and L = LastE(E), passed in so that a split over n children
+\* computes them once (Give), not once per child.
+ShareWL(e, U, E, W, L) ==
     IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div W
-    ELSE IF e = LastE(E) THEN U - FloorSum(E \ {e}, U, W) ELSE (U * e[3]) \div W
+    ELSE IF e = L THEN U - FloorSum(E \ {e}, U, W) ELSE (U * e[3]) \div W
+Share(e, U, E) == ShareWL(e, U, E, WSum(E), LastE(E))
 
-Assign(c, U, E) ==
+AssignWL(c, U, E, W, L) ==
     IF ~GasListsOK(c) THEN c
     ELSE [c EXCEPT !.g = [k \in DOMAIN c.gs |->
-                        c.gs[k] + (IF c.gw[k] > 0 /\ U > 0 THEN Share(<<c.id, k, c.gw[k]>>, U, E) ELSE 0)]]
+                        c.gs[k] + (IF c.gw[k] > 0 /\ U > 0 THEN ShareWL(<<c.id, k, c.gw[k]>>, U, E, W, L) ELSE 0)]]
+Assign(c, U, E) == AssignWL(c, U, E, WSum(E), LastE(E))
 
 \* The leftover U split over c's siblings: its action's under pa, else the receipt's.
 LeftFor(r, O, c) ==
@@ -1420,8 +1436,16 @@ EntriesFor(r, O, c) ==
 \* A child with its attached gas, after the split.
 Alloc(r, O, c) == Assign(c, LeftFor(r, O, c), EntriesFor(r, O, c))
 
+\* Without pa every child shares the receipt's leftover and entries, so they
+\* are computed once (the same values as Alloc's).
 Give(r, O, S) ==
-    IF GasMode # "gas" THEN S ELSE {Alloc(r, O, c) : c \in S}
+    IF GasMode # "gas" THEN S
+    ELSE IF PerAction(r, O) THEN {Alloc(r, O, c) : c \in S}
+    ELSE LET U == GasOf(r) - Need(r, O)
+             E == Entries(O)
+             W == WSum(E)
+             L == LastE(E)
+         IN {AssignWL(c, U, E, W, L) : c \in S}
 
 \* A function-call child left with 0 gas fails the creating receipt: new
 \* receipts are validated after the action (lib.rs:968-978;
@@ -1452,17 +1476,19 @@ ZeroGasKid(r, O) ==
 \* q = ceil(W / 10^9), at most 3, it is U*w >= q.  W is WSum over the
 \* entries, so Share's U*w and W themselves must fit (weights up to about
 \* 10^9 work only with small U).
-SureShare(r, O, c, k) ==
-    LET U == LeftFor(r, O, c)
-        w == c.gw[k]
-        W == WSum(EntriesFor(r, O, c))
-        q == W \div 1000000000 + (IF W % 1000000000 = 0 THEN 0 ELSE 1)
+SureShareUW(U, w, W) ==
+    LET q == W \div 1000000000 + (IF W % 1000000000 = 0 THEN 0 ELSE 1)
     IN  U >= 1 /\ w >= 1 /\ (U >= q \/ w >= q \/ U * w >= q)
+SureShare(r, O, c, k) == SureShareUW(LeftFor(r, O, c), c.gw[k], WSum(EntriesFor(r, O, c)))
 ZeroGasMaybe(r, O) ==
     /\ GasMode = "gas"
     /\ NearFeeTable!FeeRounding = "up"
-    /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs :
-         GasListsOK(c) /\ c.gs[k] = 0 /\ c.gw[k] > 0 /\ ~SureShare(r, O, c, k)
+    /\ LET pa == PerAction(r, O)
+           U0 == GasOf(r) - Need(r, O)
+           W0 == WSum(Entries(O))
+       IN \E c \in Kids(O) : \E k \in DOMAIN c.gs :
+            /\ GasListsOK(c) /\ c.gs[k] = 0 /\ c.gw[k] > 0
+            /\ ~IF pa THEN SureShare(r, O, c, k) ELSE SureShareUW(U0, c.gw[k], W0)
 
 \* A receipt with several function-call actions and no pa would pool their
 \* gas; that is only allowed with PooledGasOK.  A failing outcome without a
@@ -1487,10 +1513,7 @@ PoolCheck(r, O) ==
 \* children as pa partitions them (Partitioned, in either mode), and
 \* asserts without pa when the receipt's total could cross it.
 NJoins(S) == Cardinality({c \in S : IsJoint(c)})
-RECURSIVE JoinsUpTo(_)
-JoinsUpTo(J) == IF J = {} THEN 0
-                ELSE LET c == CHOOSE x \in J : TRUE IN
-                     (IF Len(c.ins) > 2 THEN Len(c.ins) - 1 ELSE 1) + JoinsUpTo(J \ {c})
+JoinsUpTo(J) == RcptSum(LAMBDA c : IF Len(c.ins) > 2 THEN Len(c.ins) - 1 ELSE 1, J)
 MaxJoins(S) == JoinsUpTo({c \in S : IsJoint(c)})
 PromiseCount(S) == Cardinality(S) + NJoins(S)
 \* The joins a record states (OJoins, or nj in a pa record), or -1.
@@ -2056,9 +2079,7 @@ PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformIn
 
 \* NEAR is conserved modulo rewards and burnt refunds.
 NearConserved(total0) ==
-    LET F[S \in SUBSET Accounts] == IF S = {} THEN 0
-                                    ELSE LET a == CHOOSE y \in S : TRUE IN near[a] + F[S \ {a}]
-    IN F[Accounts] + locked + InflightDeposits = total0 + minted - burnt
+    FunSum(near, Accounts) + locked + InflightDeposits = total0 + minted - burnt
 
 \* No orphans: every postponed callback still has its data in flight or a
 \* pending receipt that will deliver it (for each input of a joint

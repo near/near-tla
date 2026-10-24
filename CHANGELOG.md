@@ -470,6 +470,18 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **A 16 MB TLC thread stack, and sums that do not recurse per element.** Every TLC process
+  the repo starts gets `-Xss16m` (`tools/run.py`, `tools/sany.py`,
+  `conformance/scripts/tlc.sh`); a run may set its own (`stack` in `runs.toml`). The library's
+  sums split their sets by one bit of an integer key at a time (`KeySum`; `RcptSum` now uses
+  it), by index (`SeqSum`, `SumSeq`) or by value (`FunSum`) instead of recursing once per
+  element: `WSum`, `FloorSum`, `JoinsUpTo`, `NameBytes`, `AcctKeysFee`, `KeyMapBytes`,
+  `NearConserved`, `TSum`, `RegBytesSum` and `Ledger`'s supply, and `KeysFold` is a closed
+  form. Values are unchanged (every example run keeps its verdict and state counts). The gas
+  split computes the leftover, the entries and their weight once per receipt rather than
+  once per child. New run `limit_fan_gas_1000` (a split over 1000 children on a 512 KB stack;
+  the previous library overflows there even with 1 MB, and needed three minutes with 16 MB;
+  now 3 seconds).
 - **NEP-245 batches and the per-id resolver** (SEMANTICS T5, N-mt; `examples/mt-batch`):
   `Nep245` handles `mt_batch_transfer` and `mt_batch_transfer_call` (`MtBatchArgs(rc, tids,
   amts, msg)`; unequal lengths panic; each id moves in order, atomically), and
@@ -538,7 +550,8 @@ them. A model that lists platform variables one by one must add each.
   `DetachedVoided(Voided(_))` (once a failed detached receipt's transaction settles, the
   model's `Voided` holds). `FailWhyL(r, lbl, why, need)` is the failure step with a cause;
   `Exec`, `ForcedFail`, `ExecNoCode`, `ExecTransferFail` and `NearKeys.FailNoCode` pass one.
-  The NEP-141 resolver is owed by default (`Nep141.TokOwedResolve == TRUE`). A model that
+  The NEP-141 and NEP-245 resolvers are owed by default (`Nep141.TokOwedResolve == TRUE`,
+  `Nep245.MtOwedResolve == TRUE`). A model that
   marks nothing, and every token model whose resolver never fails, keeps its state space:
   every example run kept its verdict and state counts. Migration for a model that lists
   platform variables one by one: add `ofail` (initially `{}`).

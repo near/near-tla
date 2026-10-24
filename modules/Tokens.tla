@@ -105,8 +105,7 @@ TokStep(r, O) ==
     /\ Exec(r, O)
     /\ tk' = IF Ok(r, O) THEN O.tk ELSE tk
 
-RECURSIVE TSum(_, _)
-TSum(f, S) == IF S = {} THEN 0 ELSE LET x == CHOOSE y \in S : TRUE IN f[x] + TSum(f, S \ {x})
+TSum(f, S) == FunSum(f, S)
 TokSupplyOK == \A t \in TokenAccts : tk[t].sup = TSum(tk[t].bal, DOMAIN tk[t].bal)
 TokTypeOK   == \A t \in TokenAccts : /\ DOMAIN tk[t].bal = TokHolders[t]
                                      /\ \A h \in DOMAIN tk[t].bal : tk[t].bal[h] >= 0

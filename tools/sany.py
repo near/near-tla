@@ -50,7 +50,7 @@ def files(paths: list[str]) -> list[Path]:
 
 
 def sany(jar: str, f: Path, library: str) -> tuple[bool, str]:
-    cmd = ["java", f"-DTLA-Library={os.pathsep.join([str(f.parent), library])}",
+    cmd = ["java", "-Xss16m", f"-DTLA-Library={os.pathsep.join([str(f.parent), library])}",
            "-cp", jar, "tla2sany.SANY", f.name]
     try:
         p = subprocess.run(cmd, cwd=f.parent, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

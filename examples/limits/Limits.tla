@@ -10,7 +10,9 @@
 (*  "tx"     U sends one transaction of N P.pay calls itself.  More than   *)
 (*           100 actions make it invalid: it is never sent.                *)
 (*  "fan"    D pays N times through N receipts.  More than 1024 promises   *)
-(*           in one call fail D's call.                                    *)
+(*           in one call fail D's call.  In gas mode (LGasCall, LGasBurn)  *)
+(*           each pay has weight 1: D's leftover is split N ways, a sum    *)
+(*           over N entries (limit_fan_gas_1000, on a small JVM stack).    *)
 (*  "join"   D asks P for N quotes and reads them in one joint callback,   *)
 (*           D.gather.  More than 128 inputs fail D's call.                *)
 (*  "nest"   D pays N times through N receipts and asks P for 3 quotes,    *)
@@ -53,6 +55,10 @@ vars == <<platformVars, keyVars, mine>>
 Accts == {U, D, P}
 PFloor == [a \in Accts |-> 0]
 NoGasTable == [x \in {} |-> 0]
+\* Gas mode ("fan" only): D's go burns 1 Tgas, each pay 1 Ggas, static 0, weight 1.
+LGasCall == ("pay" :> [st |-> <<0>>, wt |-> <<1>>, fee |-> 1])
+LGasBurn == ("go" :> [base |-> 1000, per |-> 0]) @@ ("pay" :> [base |-> 1, per |-> 0])
+Go(r) == IF GasMode = "gas" THEN WithGas(r, 300000) ELSE r
 Out0 == Outcome({}, {}, RVal(0), 0, 0)
 
 \* A receipt of n function calls to P.pay (one static each: a batch).
@@ -72,7 +78,7 @@ Start ==
          [] Shape = "addkey" -> SubmitSigned(AddKeyRcpt(nid, 1, U, "s", NamesKey, 0), U, "k0")
          [] Shape = "multi"  -> Submit(WithStatic(Rcpt(nid, 1, D, U, "go", 0, 0, U, 0), <<0, 0>>))
                                 /\ UNCHANGED keyVars
-         [] OTHER            -> Submit(Rcpt(nid, 1, D, U, "go", 0, 0, U, 0)) /\ UNCHANGED keyVars
+         [] OTHER            -> Submit(Go(Rcpt(nid, 1, D, U, "go", 0, 0, U, 0))) /\ UNCHANGED keyVars
 
 \* D's and P's handlers.
 H(r) ==

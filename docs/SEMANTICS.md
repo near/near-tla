@@ -2264,8 +2264,8 @@ is available locally.
   has the state space it had.
 
   The NEP-141 resolver is owed by default: `Nep141.FtTransferCallAct` marks
-  `ft_resolve_transfer` (`TokOwedResolve`, default `TRUE`; `FALSE` leaves it unmarked).
-  NEP-245's `mt_resolve_transfer` is not marked yet.
+  `ft_resolve_transfer` (`TokOwedResolve`, default `TRUE`; `FALSE` leaves it unmarked), and
+  `Nep245.MtCallAct` marks `mt_resolve_transfer` the same way (`MtOwedResolve`).
 - **Validated:** model-only (a check over rules validated elsewhere). `examples/owed-effect`
   reaches each cause the check names in a toy vault (a panic, the log and return limits, a
   forced fault, out of gas with its gas and need) and the detached form in a payout without a

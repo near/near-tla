@@ -1168,8 +1168,9 @@ of owed failures, for a print-only window:
 WinOwed == OwedFailed # {} => PrintT(<<"WIN", "OwedOK", gas[1], OwedFailed>>)
 ```
 
-The token modules mark the NEP-141 resolver (`ft_resolve_transfer`) owed by default
-(`TokOwedResolve`; `TokOwedResolve <- FALSE` leaves it unmarked), so a token model that lists
+The token modules mark the NEP-141 resolver (`ft_resolve_transfer`) and the NEP-245 one
+(`mt_resolve_transfer`) owed by default (`TokOwedResolve`, `MtOwedResolve`; `<- FALSE` leaves
+them unmarked), so a token model that lists
 `OwedOK` checks that no resolver fails. Unmarked receipts record nothing, so marking costs
 states only where a marked receipt fails. `examples/owed-effect` has a vault with one wrong
 variant per cause and a payout without a callback.
@@ -1687,7 +1688,7 @@ definitions are set the same way.
   `"assert"` or `"deadlock"`.
 - Most keys can also be given at the top level of the file, as a default for every run:
   `spec`, `workers`, `library`, `budget_s`, `init`, `next`, `specification`, `invariants`,
-  `properties`, `deadlock`, `tags`, `[constants]`.
+  `properties`, `deadlock`, `tags`, `stack`, `[constants]`.
 - These keys belong to one run only and cannot be given at the top level: `name`, `expect`,
   `invariant`, `expect_output`, `expect_window`, `window_step` and `allow_no_invariants`.
 - `[[witness]]` and `[[mutant]]` tables sit beside the `[[run]]` tables and name the runs
@@ -1697,6 +1698,10 @@ definitions are set the same way.
   violating state.
 - `deadlock = true` makes a stuck receipt an error. Add a terminal stutter step once the model
   is idle, or quiescence is reported too.
+- `stack` sets the JVM thread stack (`-Xss`) of the run, e.g. `"512k"`; every run gets
+  `"16m"` otherwise, enough for the library's sums over a thousand receipts and more. A
+  recursive operator of your own that takes one element per level can still overflow on a
+  large set: split the set instead, as `NearAsync.KeySum` does.
 
 **Selecting runs.** Arguments are `runs.toml` files, directories (searched recursively), and
 run names (globs work). Names filter the runs of the given paths. With names only, they are
