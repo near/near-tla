@@ -1,0 +1,104 @@
+# Worst-case trie gas checked at every node count, not only the two ends (docs/SEMANTICS.md,
+# G6): a write's trie gas leaves its child less gas, and the child's owed callback can fail
+# at an intermediate charge while both ends pass.  See Relay.tla.
+#
+#   python3 tools/run.py examples/trie-gas/leftover
+#
+# OwedOK  no owed callback failed (NearAsync; the trace's last state shows ofail).
+# Sane    NEAR conserved, no orphans.
+
+spec = "Relay"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["OwedOK", "Sane"]
+tags = ["semantics:trie-gas"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "LGasCall"
+GasBurn = "LGasBurn"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+U = '"u"'
+V = '"v"'
+W = '"w"'
+X = '"x"'
+Prepaid = "605"
+KeyLen = "40"
+
+# Calibrated gas only: on_ping gets 445 Ggas.
+[[run]]
+name = "leftover_calibrated"
+expect = "pass"
+
+# Every node count: at 190 to 195 extra nodes work commits and on_ping runs out.
+[[run]]
+name = "leftover_worst"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'm \|-> "on_ping"'
+[run.constants]
+TrieGasWorst = "TRUE"
+
+# The two ends only (TrieGasEnds, unsound): 0 extra and the bound both pass, so this misses
+# leftover_worst's failure.  Kept as the record of why the library explores every count.
+[[run]]
+name = "leftover_ends_only"
+expect = "pass"
+[run.constants]
+TrieGasWorst = "TRUE"
+TrieGasEnds = "TRUE"
+
+# 660 Ggas: work has 67 at the bound, on_ping 12; every node count passes.
+[[run]]
+name = "leftover_worst_ok"
+expect = "pass"
+[run.constants]
+TrieGasWorst = "TRUE"
+Prepaid = "660"
+
+# ---- anti-vacuity: python3 tools/run.py examples/trie-gas/leftover --anti-vacuity ----
+
+# The system settles with work and on_ping committed (nothing of theirs in ofail).
+[[witness]]
+id = "on_ping_commits"
+expr = '~(Idle /\ sent /\ ~\E x \in ofail : x.m \in {"go", "work", "on_ping"})'
+runs = ["leftover_calibrated", "leftover_worst", "leftover_ends_only", "leftover_worst_ok"]
+
+# go commits at the bound: work holds Prepaid - 105 - 488 Ggas.
+[[witness]]
+id = "work_gets_bound_leftover"
+expr = '~(\E r \in rq : r.m = "work" /\ GasOf(r) = Prepaid - 105 - 488)'
+runs = ["leftover_worst", "leftover_ends_only", "leftover_worst_ok"]
+
+# With 605 Ggas, work then runs out of gas (unmarked, so not in ofail; oog has it).
+[[witness]]
+id = "work_out_of_gas"
+expr = '~(<<1, "work">> \in oog)'
+runs = ["leftover_worst", "leftover_ends_only"]
+
+# The failure the ends miss: on_ping with 11 Ggas (190 extra nodes).
+[[witness]]
+id = "on_ping_short_by_one"
+expr = '~(\E x \in OwedFailed : x.m = "on_ping" /\ x.g = 11)'
+runs = ["leftover_worst"]
+
+# One Ggas more burn in on_ping: 660 is no longer enough at the bound.
+[[mutant]]
+id = "on_ping_burn_plus_one"
+file = "Relay.tla"
+find = '("on_ping" :> [base |-> 12, per |-> 0])'
+replace = '("on_ping" :> [base |-> 13, per |-> 0])'
+class = "off-by-one guard"
+runs = ["leftover_worst_ok"]
+killed_by = ["OwedOK"]

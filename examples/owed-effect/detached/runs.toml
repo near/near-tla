@@ -30,6 +30,7 @@ GasBurn = "NoTable"
 LogOn = "FALSE"
 TrackSigner = "FALSE"
 WithCb = "TRUE"
+BothMarks = "FALSE"
 
 # on_paid reopens the item when the Transfer failed.
 [[run]]
@@ -45,6 +46,27 @@ invariant = "PayVoided"
 [run.constants]
 WithCb = "FALSE"
 
+# The Transfer marked owed as well as detached (BothMarks): its failure carries both marks,
+# and DetachedVoided still sees it, as in payout_detached.
+[[run]]
+name = "payout_detached_both"
+expect = "violation"
+invariant = "PayVoided"
+expect_output = 'k \|-> \{"owed", "detached"\}'
+[run.constants]
+WithCb = "FALSE"
+BothMarks = "TRUE"
+
+# The same with the callback: DetachedVoided holds, and OwedOK sees the owed mark.
+[[run]]
+name = "payout_cb_both"
+expect = "violation"
+invariant = "OwedOK"
+invariants = ["PayVoided", "Funded", "Sane", "OwedOK"]
+expect_output = 'k \|-> \{"owed", "detached"\}'
+[run.constants]
+BothMarks = "TRUE"
+
 # ---- anti-vacuity: python3 tools/run.py examples/owed-effect/detached --anti-vacuity ----
 
 # Funded's antecedent: the system settles after a payout.
@@ -56,6 +78,12 @@ expr = '~(Idle /\ "pay1" \in sent)'
 [[witness]]
 id = "detached_payout_failed"
 expr = '~(\E x \in DetachedFailed : TxSettled(x.tx))'
+
+# A failure recorded with both marks, in DetachedFailed and OwedFailed alike.
+[[witness]]
+id = "both_marks_recorded"
+expr = '~(\E x \in DetachedFailed \cap OwedFailed : x.k = {"owed", "detached"})'
+runs = ["payout_detached_both", "payout_cb_both"]
 
 # on_paid's two arms.
 [[witness]]

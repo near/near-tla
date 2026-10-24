@@ -14,7 +14,7 @@
 (* The calibrated burns fit the budget.  But a write's trie-node gas       *)
 (* grows with the depth of the trie under V's keys, which other users can  *)
 (* deepen (with keys sharing a prefix with V's).  With TrieGasWorst on,    *)
-(* each write may cost its worst case too, (2 (2 + 64 + KeyLen) + 2) x     *)
+(* each write may cost up to its worst case, (2 (2 + 64 + KeyLen) + 2) x   *)
 (* 2.28 Ggas for a 64-byte account id: 488 Ggas at KeyLen 40, so the      *)
 (* refund path needs 4000 + 976 Ggas.  A 4.5 Tgas budget then runs out on  *)
 (* the refund path, and U's n is lost: the library's OwedOK reports it as  *)

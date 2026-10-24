@@ -379,7 +379,8 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TokEvents` | `TRUE` | never, unless keeping older behaviour or the model declares the token's events itself: `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
 | `EvAcctLen`, `EvAmtExp`, `MtIdLen` | each model value's own length | the events' byte lengths matter: the real length of account ids and token ids, a token's decimal exponent ([section 8](#event-logs)) |
 | `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
-| `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at its worst-case trie-node gas ([section 12](#worst-case-storage-gas-trie-depth)) |
+| `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at every extra trie-node count up to its worst case ([section 12](#worst-case-storage-gas-trie-depth)) |
+| `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
 | `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
@@ -1140,19 +1141,29 @@ TrieGasWorst = "TRUE"
 TrieAcctLen = "20"        # the receiver's real account id length; default 64
 ```
 
-With the mode on, in gas mode, `Exec` runs every receipt with a declaration twice: with its
-calibrated burn, and with the burn plus each write's bound, `(2 (2 + TrieAcctLen + n) + 2) ×
-2.28` Ggas (`TrieExtra`). A failure in the second branch only reads `"out of gas (worst-case
-trie depth)"` in `ofail`. With the mode off, `OWriteKey` changes nothing, so a model can
-declare its writes and run both ways.
+With the mode on, in gas mode, `Exec` runs every receipt with a declaration once per extra
+node count n, from 0 up to the writes' bound, `2 (2 + TrieAcctLen + n) + 2` nodes per write:
+at its calibrated burn plus n × 2.28 Ggas (`TrieGasAt(n)`, rounded up). A failure that the
+calibrated burn alone would not have reads `"out of gas (worst-case trie depth)"` in `ofail`.
+With the mode off, `OWriteKey` changes nothing, so a model can declare its writes and run
+both ways.
 
 - Guard on `Ok(r, O)` after `Exec(r, O)` as usual. With the mode on, `Ok` reads `ofail`, where
-  every failure of a receipt with declared writes is recorded (with `k = ""` when unmarked).
+  every failure of a receipt with declared writes is recorded (with `k = {}` when unmarked).
+- Every count, not just 0 and the bound: less trie gas leaves the children more, and what a
+  child does with more gas need not be safer. `examples/trie-gas/leftover`: at 0 extra the
+  child's owed callback has enough, at the bound the child runs out before creating it, and
+  at 190 extra nodes the child commits and the callback runs out.
+- `TrieGasEnds <- TRUE` explores only 0 and the bound. It is **unsound** (it misses the
+  failure above; `leftover_ends_only` passes) and only for a first, cheaper look at a model
+  with many declared nodes.
 - The bound is an upper bound: it also counts the nodes the calibrated burn already paid for.
-  A write of a key the same receipt already wrote costs nothing more; declare it once.
+  A second write of a key the same receipt already wrote pays no more in a deep trie than in
+  a shallow one (the deeper path is charged once per receipt); declare it once.
 - Not on a panic path (`OPanicKey`), and an `Assert` with `pa`.
-- It doubles the receipts with declared writes, and their children's shares differ in the two
-  branches, so expect more states.
+- A receipt with declared writes has up to bound + 1 successors (215 for one 40-byte key with
+  a 64-byte account id), and its children's shares differ between them, so expect more
+  states.
 
 `examples/trie-gas` has an owed callback whose 4.5 Tgas budget fits its calibrated refund path
 (4 Tgas) but not the worst case of its two writes (+976 Ggas); its `cb_need` sweep finds the
@@ -1204,9 +1215,13 @@ check; you do not write an invariant about the callback yourself.
 The library records every failure of a marked receipt in the ghost `ofail`, with its cause:
 
 ```
-ofail = { [ m |-> "on_deliver", to |-> "v", tx |-> 1, id |-> 3, k |-> "owed",
+ofail = { [ m |-> "on_deliver", to |-> "v", tx |-> 1, id |-> 3, k |-> {"owed"},
             why |-> "out of gas", g |-> 3000, need |-> 4000, a |-> [n |-> 1, memo |-> 1] ] }
 ```
+
+`k` is the receipt's set of marks. A receipt marked both owed and detached is recorded once
+with `k |-> {"owed", "detached"}` and counts for both checks (`OwedFailed` and
+`DetachedFailed` filter by membership).
 
 `why` is a panic with the handler's message, `"out of gas"` (with the attached gas `g` and
 what it needed, `need`), a host limit (`TotalLogLengthExceeded`, `NumberOfLogsExceeded`,
@@ -1225,6 +1240,18 @@ them unmarked), so a token model that lists
 `OwedOK` checks that no resolver fails. Unmarked receipts record nothing, so marking costs
 states only where a marked receipt fails. `examples/owed-effect` has a vault with one wrong
 variant per cause and a payout without a callback.
+
+`ofail` keeps every record for the rest of the run; nothing clears it at settlement, because
+`DetachedVoided` reads a record after its transaction settles. Each record names its receipt
+(`tx`, `id`), so `ofail` is as finite as the receipts the model can create: with bounded
+transactions (`MaxTx`, `TxIds`), as in every example, it is. A model made finite some other
+way, say a hand-written cfg whose `VIEW` or `CONSTRAINT` merges states that differ only in
+history, has to account for `ofail` too, or two states the model considers equal stay apart
+by their failure history and the state space need not close. In such a `VIEW`, replace `ofail`
+by its (marks, cause) pairs, `{<<x.k, x.why>> : x \in ofail}`: `OwedOK` depends only on
+whether an owed record exists, so its verdict is kept; `DetachedVoided` reads `x.tx` and
+`x.a` and is not covered by that projection. Under `TrieGasWorst`, `Ok` reads `x.id` in
+the step's own successor, which a `VIEW` does not affect.
 
 ## 14. Joint callbacks, yield/resume and the block clock
 
@@ -2073,6 +2100,6 @@ All examples are toy contracts written for this repo.
   | `session-key` | a function-call key's allowance: sized as plays × cost, forgetting the gas refunds, it lets more plays through; a model that states no refund hides that |
   | `tx-nonce` | transaction nonces: a replay is refused; a wallet that signs payments in parallel loses one when a later one lands first; without nonces a replay pays twice |
   | `result-read-gas` | an owed token resolver that reads its receiver's result unbounded runs out of gas on a 4 MiB answer; the 42-byte bound does not |
-  | `trie-gas` | worst-case storage gas: an owed callback whose fixed budget fits its calibrated burn but not the trie-node gas of its writes in a deep trie (`TrieGasWorst`) |
+  | `trie-gas` | worst-case storage gas: an owed callback whose fixed budget fits its calibrated burn but not the trie-node gas of its writes in a deep trie (`TrieGasWorst`); `leftover/`: a child's owed callback that fails only at an intermediate trie charge |
   | `limits` | protocol limits at the last value nearcore accepts and the first it refuses: actions per receipt, promises per call, joint inputs, returned bytes, AddKey method names, logs |
   | `event-logs` | the token handlers' NEP-297 event lengths against the sim's, and an id class at the 16384-byte edge; `batch-payout/`: a batch payout whose event grows with the batch (sweep `payout_edge` finds the first size over the limit), an owed callback that marks it paid regardless; `resolver-log/`: an owed token resolver over a lowered log limit, reported by `OwedOK` |

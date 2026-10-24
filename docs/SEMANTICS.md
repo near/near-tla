@@ -858,24 +858,33 @@ Each rule has four fields:
   `core/parameters/res/runtime_configs/parameters.snap:268` (`flat_storage_reads: true`).
 - **Model:** opt-in. `OWriteKey(O, n)` declares a write or remove of an `n`-byte key in an
   outcome (field `trn`, its bound in nodes: `2 (2 + TrieAcctLen + n) + 2`). With
-  `TrieGasWorst <- TRUE`, in gas mode, `Exec` runs a receipt with declared writes both with
-  its calibrated burn and with the burn plus `TrieExtra(O)`, the bound × 2.28 Ggas rounded up
-  to whole Ggas (`TrieGas` in `Need`); `Ok` tells the two apart through `ofail`, where every
-  failure of such a receipt is recorded (unmarked ones with `k = ""`). A failure of the
-  worst-case branch only has the cause `"out of gas (worst-case trie depth)"`. `TrieAcctLen`
-  (default 64, the longest id) is the receiver's account id length. Off (the default),
-  `OWriteKey` changes nothing. Only the two extremes are explored: an out-of-gas grows with
-  the extra, and a child's share only shrinks, so the extremes bound the outcomes in between.
-  The bound counts the nodes the calibrated burn already paid for again (an upper bound, as
-  `Need` is), adds nothing on a panic path (`OPanicKey`), and is an `Assert` with per-action
-  accounting (`pa`). Example: `examples/trie-gas` (an owed callback with a fixed budget runs
-  out on its refund path; `OwedOK` reports it).
+  `TrieGasWorst <- TRUE`, in gas mode, `Exec` runs a receipt with declared writes at its
+  calibrated burn plus `TrieGasAt(n)`, n extra nodes × 2.28 Ggas rounded up to whole Ggas
+  (`TrieGas` in `Need`), for every n from 0 to the bound (`TrieNodes(O)`; one successor per
+  count); `Ok` tells them apart through `ofail`, where every failure of such a receipt is
+  recorded (unmarked ones with `k = {}`). A failure that the calibrated burn alone would not
+  have has the cause `"out of gas (worst-case trie depth)"`. `TrieAcctLen` (default 64, the
+  longest id) is the receiver's account id length. Off (the default), `OWriteKey` changes
+  nothing. Every count is explored, not just 0 and the bound, because the ends do not bound
+  what happens downstream: less trie gas leaves a child more gas, and what the child does
+  with it need not be monotone. `examples/trie-gas/leftover` has the shape: at 0 extra the
+  child's owed callback gets enough; at the bound the child itself runs out and creates no
+  callback; at 190 extra nodes the child commits and gives the callback 11 of the 12 Ggas it
+  needs. `TrieGasEnds <- TRUE` explores only 0 and the bound (fewer states for a receipt
+  with many declared nodes) and is **unsound** for that reason: it misses that failure
+  (`leftover_ends_only` passes). The bound counts the nodes the calibrated burn already
+  paid for again (an upper bound, as `Need` is), adds nothing on a panic path (`OPanicKey`),
+  and is an `Assert` with per-action accounting (`pa`). Examples: `examples/trie-gas` (an
+  owed callback with a fixed budget runs out on its refund path; `OwedOK` reports it) and
+  `examples/trie-gas/leftover`.
 - **Validated:** sim (`conformance/tests/gas.rs`, `trie_depth_storage_gas`: with a sibling key
   at each of an 8-byte key's 16 nibbles, each written in its own transaction, the key's write
   burns 16 × 2.28 Ggas more than in a trie with one other key, an overwrite and a remove 15 ×
   more, a read and `has_key` exactly the same; `trie_nodes_not_charged_twice_in_a_receipt`:
-  the second write of a key in one receipt pays no nodes). The `2L + 2` bound itself: nearcore
-  reading.
+  two writes of that key in one receipt, as two function-call actions, burn 16 × 2.28 Ggas
+  more in the deep trie than in the shallow one, the same as one write: the deeper path is
+  paid once per receipt, not once per write; what the second write pays in absolute terms is
+  not tested). The `2L + 2` bound itself: nearcore reading.
 
 ---
 
@@ -2340,8 +2349,9 @@ is available locally.
   `"acct.method"`; only for a postponed self-callback, `r.fr = r.to` and `r` in `post`, so a
   direct call of a private resolver that panics is not reported), and `WithDetached(c)`
   (any receipt kind, a Transfer too) or `DetachedMethods`. Every failure of a marked receipt
-  goes into the ghost `ofail` as `[tx, id, to, m, k, why, g, need, a]`: `k` is `"owed"` or
-  `"detached"`, `why` the cause (`FailWhy`, in `Verdict`'s order: an account-action error
+  goes into the ghost `ofail` as `[tx, id, to, m, k, why, g, need, a]`: `k` is its set of
+  marks, `{"owed"}`, `{"detached"}` or both (a receipt marked both ways is in `OwedFailed`
+  and in `DetachedFailed`, and each check sees it), `why` the cause (`FailWhy`, in `Verdict`'s order: an account-action error
   name, a missing account or code, `"panic: "` and the handler's message, `"out of gas before
   its panic"`, a host limit such as `NumberOfLogsExceeded`, `TotalLogLengthExceeded`,
   `ReturnedValueLengthExceeded` or `NumberPromisesExceeded`, `"out of gas"`,
@@ -2360,9 +2370,13 @@ is available locally.
   `ft_resolve_transfer` (`TokOwedResolve`, default `TRUE`; `FALSE` leaves it unmarked), and
   `Nep245.MtCallAct` marks `mt_resolve_transfer` the same way (`MtOwedResolve`).
 - **Validated:** model-only (a check over rules validated elsewhere). `examples/owed-effect`
-  reaches each cause the check names in a toy vault (a panic, the log and return limits, a
-  forced fault, out of gas with its gas and need) and the detached form in a payout without a
-  callback; `examples/nep141-refund-cap`, `refund_cap_resolver_fails`, a failing resolver.
+  reaches representative causes in a toy vault (a panic, the log and return limits, a forced
+  fault, out of gas with its gas and need), not every `FailWhy` branch (a missing account or
+  code, `FunctionCallZeroAttachedGas`, the action limit, `LackBalanceForState` and the
+  others are recorded by the same step but have no example of their own), and the detached
+  form in a payout without a callback, also with the Transfer marked both ways
+  (`payout_detached_both`, `payout_cb_both`); `examples/nep141-refund-cap`,
+  `refund_cap_resolver_fails`, a failing resolver.
 
 ---
 
@@ -2601,7 +2615,9 @@ against the current module code; some may be fixed in the modules later.
 - **N-burn. Trie and storage gas variation.** Burns are constants per (method, path), affine in
   one size variable at most, measured in one sim world. Real burns move with trie shape, key
   count, argument length and network (trie-node pricing). The writes' trie-node part can be
-  bounded with `OWriteKey` and `TrieGasWorst` (G6). A real out-of-gas at a prepaid amount
+  bounded with `OWriteKey` and `TrieGasWorst` (G6); `TrieGasEnds <- TRUE` checks only no
+  extra nodes and the bound, and can miss a failure at a count in between
+  (`examples/trie-gas/leftover`, `leftover_ends_only`). A real out-of-gas at a prepaid amount
   the model calls safe is possible near any calibrated edge. Treat windows as approximate. They
   are tied to the calibration's provenance (`docs/VERSIONING.md`).
 - **N-keyfee. AddKey per-byte fee from the model's method names.** `NearKeys.KeyFee` charges

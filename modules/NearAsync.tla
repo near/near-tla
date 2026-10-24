@@ -178,7 +178,7 @@ VARIABLES
     gcode,     \* published global contracts: a partial function identifier -> code tag (A10)
     guse,      \* accounts on a global contract: a partial function account -> identifier
     gnonce,    \* per identifier, the nonce of the last distribution applied (absent: 0)
-    ofail      \* ghost: failed receipts the model marked owed or detached (OwedOK, DetachedVoided); with TrieGasWorst also unmarked ones (k = "")
+    ofail      \* ghost: failed receipts the model marked owed or detached (OwedOK, DetachedVoided); with TrieGasWorst also unmarked ones (k = {})
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
@@ -474,6 +474,8 @@ WithGas(r, p)    == [r EXCEPT !.g = <<p>>]       \* a transaction's first receip
 \*            settled (DetachedVoided).  WithDetached(c) marks one receipt
 \*            of any kind (a Transfer too); DetachedMethods (overridable,
 \*            default {}) marks every function call with that method or key.
+\* A receipt may carry both marks; its ofail record then lists both (k), and
+\* OwedOK and DetachedVoided each check it.
 WithOwed(r)     == [owed |-> TRUE] @@ r
 WithDetached(r) == [dtch |-> TRUE] @@ r
 OwedMethods     == {}
@@ -895,19 +897,29 @@ OJoins(O, n) == [nj |-> n] @@ O
 \* ',' ++ key, L = 2 + TrieAcctLen + n bytes, at most 2L + 1 nodes on its
 \* path (one per nibble and the leaf), so a write costs at most 2L + 2
 \* nodes more than none.  With the switch on, in gas mode, Exec runs a
-\* receipt with declared writes both at its calibrated burn (extra 0) and
-\* at the burn plus every declared write's bound (TrieExtra, rounded up
-\* to whole Ggas).  Off (the default), OWriteKey changes nothing.
+\* receipt with declared writes at its calibrated burn plus the gas of n
+\* extra nodes, for every n from 0 to the declared writes' bound
+\* (TrieNodes; TrieGasAt(n), rounded up to whole Ggas).  Every n, not
+\* only the two ends: less gas spent here leaves more for the children,
+\* and what a child does with it need not be monotone (a child that runs
+\* out at the bound and has room at 0 may, in between, commit and give
+\* its owed callback too little).  TrieGasEnds <- TRUE takes only n = 0
+\* and the bound: smaller, and UNSOUND for that reason (SEMANTICS G6).
+\* Off (the default), OWriteKey changes nothing.
 \* TrieAcctLen: the receiver's account id length in bytes; the default is
 \* the longest id (64).  Nothing is added on a panic path (OPanicKey) and
 \* a receipt with per-action accounting (pa) and declared writes is an
 \* Assert.
 TrieGasWorst == FALSE
+TrieGasEnds  == FALSE
 TrieAcctLen  == 64
 TrieNodeMgas == 2280            \* wasm_touching_trie_node, Mgas (88)
 TrieNodes(O) == IF "trn" \in DOMAIN O THEN O.trn ELSE 0
 OWriteKey(O, n) == [trn |-> TrieNodes(O) + 2 * (2 + TrieAcctLen + n) + 2] @@ O
-TrieExtra(O) == (TrieNodes(O) * TrieNodeMgas + 999) \div 1000
+TrieGasAt(n) == (n * TrieNodeMgas + 999) \div 1000
+TrieExtra(O) == TrieGasAt(TrieNodes(O))
+\* The node counts Exec explores under TrieSplit.
+TrieNodeRange(O) == IF TrieGasEnds THEN {0, TrieNodes(O)} ELSE 0..TrieNodes(O)
 \* The extra gas Exec chose for this outcome (0 unless TrieSplit).
 TrieGas(O)   == IF "trg" \in DOMAIN O THEN O.trg ELSE 0
 TrieSplit(O) == GasMode = "gas" /\ TrieGasWorst /\ TrieNodes(O) > 0
@@ -1697,23 +1709,24 @@ Commit(r, O) ==
     /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
     /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code, gcode, guse, gnonce, ofail>>
 
-\* The kind of r's mark when it runs (F2): "owed", "detached" or "".
+\* r's marks when it runs (F2): a subset of {"owed", "detached"}; a receipt
+\* can carry both, and each check reads its own.
 MarkedIn(S, r) == r.m \in S \/ CallKey(r.to, r.m) \in S
-MarkOf(r) ==
-    IF \/ "owed" \in DOMAIN r /\ r.owed
-       \/ IsCall(r) /\ r.fr = r.to /\ MarkedIn(OwedMethods, r) /\ \E p \in post : p.id = r.id
-    THEN "owed"
-    ELSE IF \/ "dtch" \in DOMAIN r /\ r.dtch
-            \/ IsCall(r) /\ MarkedIn(DetachedMethods, r)
-    THEN "detached"
-    ELSE ""
+MarksOf(r) ==
+    (IF \/ "owed" \in DOMAIN r /\ r.owed
+        \/ IsCall(r) /\ r.fr = r.to /\ MarkedIn(OwedMethods, r) /\ \E p \in post : p.id = r.id
+     THEN {"owed"} ELSE {})
+    \cup
+    (IF \/ "dtch" \in DOMAIN r /\ r.dtch
+        \/ IsCall(r) /\ MarkedIn(DetachedMethods, r)
+     THEN {"detached"} ELSE {})
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
 \* why: the cause, for ofail (FailWhy); need: the gas it needed when it ran
-\* out (OogNeed), else 0.  A marked receipt (MarkOf) is recorded in ofail
-\* as [tx, id, to, m, k (its mark), why, g (its attached gas), need, a].
-\* FailWhyLK with keep: record r in ofail even when unmarked (k = ""), so
+\* out (OogNeed), else 0.  A marked receipt (MarksOf) is recorded in ofail
+\* as [tx, id, to, m, k (its marks, a set), why, g (its attached gas), need, a].
+\* FailWhyLK with keep: record r in ofail even when unmarked (k = {}), so
 \* that Ok can tell a failure from a commit by r's id (TrieSplit).
 FailWhyLK(r, lbl, why, need, keep) ==
     /\ rq'   = RemR(r) \cup (IF DepTotal(r) > 0
@@ -1725,8 +1738,8 @@ FailWhyLK(r, lbl, why, need, keep) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ ofail' = LET k == MarkOf(r) IN
-                IF k = "" /\ ~keep THEN ofail
+    /\ ofail' = LET k == MarksOf(r) IN
+                IF k = {} /\ ~keep THEN ofail
                 ELSE ofail \cup {[tx |-> r.tx, id |-> r.id, to |-> r.to, m |-> r.m, k |-> k, why |-> why,
                                   g |-> GasOf(r), need |-> need, a |-> r.a]}
     /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
@@ -1745,7 +1758,7 @@ FailOOG(r)    == FailL(r, "oog")
 \* rq' / post', it is an error (not an assignment) if it comes first.
 Committed(r, O) == \/ \E c \in O.ready : InstantTag(Alloc(r, O, c)) \in rq'
                    \/ \E c \in O.post : InstantTagP(Alloc(r, O, c)) \in post'
-\* Under TrieSplit, Exec takes the outcome at both trie gases (G6), so the
+\* Under TrieSplit, Exec takes the outcome at every trie gas (G6), so the
 \* verdict alone does not say which successor this step is, and a receipt
 \* with no children leaves no trace in rq' / post': every failure branch
 \* then records r in ofail (keep), and Ok reads that.
@@ -1763,7 +1776,7 @@ Exec(r, O) ==
     IF TrieSplit(O)
     THEN IF "pa" \in DOMAIN O /\ Len(O.pa) > 1
          THEN Assert(FALSE, <<"OWriteKey with per-action accounting (pa) is not supported", r.m>>)
-         ELSE \E x \in {0, TrieExtra(O)} : ExecKeep(r, [trg |-> x] @@ O, TRUE)
+         ELSE \E n \in TrieNodeRange(O) : ExecKeep(r, [trg |-> TrieGasAt(n)] @@ O, TRUE)
     ELSE ExecKeep(r, O, FALSE)
 
 \* The forced-fault switch as one step (the contract conjoins UNCHANGED of its vars).
@@ -2106,14 +2119,14 @@ StorageCovered ==
 \* (g) and needed (need), a host limit such as NumberOfLogsExceeded or
 \* ReturnedValueLengthExceeded, a forced fault, ...).  OwedFailed lists
 \* them, e.g. for a print-only window.
-OwedFailed == {x \in ofail : x.k = "owed"}
+OwedFailed == {x \in ofail : "owed" \in x.k}
 OwedOK     == OwedFailed = {}
 \* DetachedVoided(Voided(_)): once the transaction of a failed detached
 \* receipt x has settled, Voided(x) holds: the model's own predicate that
 \* the work x carried (read it from x.a, x.to, x.m) is neither executable
 \* again nor counted as done or credited.  Before the transaction settles
 \* a callback may still void it (the escrow that restores its claim).
-DetachedFailed == {x \in ofail : x.k = "detached"}
+DetachedFailed == {x \in ofail : "detached" \in x.k}
 DetachedVoided(Voided(_)) == \A x \in DetachedFailed : TxSettled(x.tx) => Voided(x)
 
 \* No pending yield's deadline lies past the clock bound.  When this fails,

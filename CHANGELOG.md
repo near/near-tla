@@ -568,10 +568,14 @@ them. A model that lists platform variables one by one must add each.
   `storage_write` and `storage_remove` pay 2.28 Ggas per trie node on the key's path, which
   other users can lengthen; reads and `has_key` pay none (flat storage). `OWriteKey(O, n)`
   declares a write or remove of an `n`-byte key; with `TrieGasWorst <- TRUE`, in gas mode,
-  `Exec` runs such a receipt both at its calibrated burn and at the burn plus each write's
-  bound, `(2 (2 + TrieAcctLen + n) + 2)` nodes (`TrieAcctLen`, default 64). A failure of the
-  worst-case branch only has the cause `"out of gas (worst-case trie depth)"`. Off by
-  default; `OWriteKey` then changes nothing. Sim: `conformance/tests/gas.rs`.
+  `Exec` runs such a receipt at its calibrated burn plus n extra nodes' gas for every n
+  from 0 to the writes' bound, `(2 (2 + TrieAcctLen + n) + 2)` nodes per write
+  (`TrieAcctLen`, default 64): every count, since the two ends do not bound what a child
+  does with the leftover (`examples/trie-gas/leftover`: an owed callback that fails only at
+  an intermediate count). `TrieGasEnds <- TRUE` explores only the two ends and is unsound.
+  A failure that the calibrated burn alone would not have has the cause `"out of gas
+  (worst-case trie depth)"`. Off by default; `OWriteKey` then changes nothing. Sim:
+  `conformance/tests/gas.rs`.
 - **Least-gas and size sweeps in `tools/run.py`** (`[[sweep]]` in `runs.toml`, `--sweep`;
   ad hoc `--least-gas KNOB=FORM --gas-range LO:HI [--success ..]`): `kind = "least_gas"`
   bisects a gas knob for the least value at which `success` holds (bracketed by a window
@@ -585,7 +589,8 @@ them. A model that lists platform variables one by one must add each.
   (`WithDetached(c)`, `DetachedMethods`). Every failure of a marked receipt is recorded in the
   new ghost platform variable `ofail` with its cause (`why`: a panic and its message, out of
   gas with the attached gas and the need, a host limit by nearcore's error name, a forced
-  fault, ...). Checks: `OwedOK` (no owed failure; `OwedFailed` lists them) and
+  fault, ...) and its marks (`k`, a set: a receipt marked both ways counts for both
+  checks). Checks: `OwedOK` (no owed failure; `OwedFailed` lists them) and
   `DetachedVoided(Voided(_))` (once a failed detached receipt's transaction settles, the
   model's `Voided` holds). `FailWhyL(r, lbl, why, need)` is the failure step with a cause;
   `Exec`, `ForcedFail`, `ExecNoCode`, `ExecTransferFail` and `NearKeys.FailNoCode` pass one.

@@ -1,8 +1,8 @@
 # Worst-case trie gas (docs/SEMANTICS.md, G6): an owed callback with a fixed gas budget whose
 # storage writes may cost more than calibrated when the trie under the contract's keys is
-# deep.  The switch TrieGasWorst <- TRUE makes each write the outcome declares (OWriteKey)
-# cost either its calibrated burn or that plus its worst-case trie-node gas.  See
-# TrieLedger.tla.
+# deep.  The switch TrieGasWorst <- TRUE runs a receipt whose outcome declares writes
+# (OWriteKey) at its calibrated burn plus the gas of every extra node count up to the writes'
+# worst case.  See TrieLedger.tla, and leftover/ for why every count and not just the ends.
 #
 #   python3 tools/run.py examples/trie-gas
 #
@@ -13,7 +13,7 @@
 spec = "TrieLedger"
 workers = 2
 library = "../../modules"
-budget_s = 60
+budget_s = 120
 invariants = ["OwedOK", "Books", "Sane"]
 tags = ["semantics:trie-gas"]
 
@@ -122,7 +122,9 @@ killed_by = ["Books"]
 # ---- sweeps: python3 tools/run.py examples/trie-gas --sweep ----
 
 # Least gas: the smallest budget for on_take at which it cannot fail under worst-case trie
-# gas: 4000 (the refund burn) + 976 (two writes' bound) = 4976 Ggas.
+# gas: 4000 (the refund burn) + 976 (two writes' bound) = 4976 Ggas.  A bisection boundary;
+# here also the least, since on_take creates nothing and only its own gas depends on the
+# budget (success is monotone in it).
 [[sweep]]
 id = "cb_need"
 kind = "least_gas"

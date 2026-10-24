@@ -20,10 +20,15 @@
 (* done while the NEAR sits in P (payout_detached fails).  WithCb = TRUE:  *)
 (* P chains on_paid(item) and reopens the item when the Transfer failed    *)
 (* (payout_cb passes).                                                     *)
+(*                                                                         *)
+(* BothMarks = TRUE marks the Transfer WithOwed too (a library check, not  *)
+(* a design): its failure is then recorded once with both marks, and each  *)
+(* check sees it (payout_detached_both fails PayVoided, payout_cb_both     *)
+(* fails OwedOK).                                                          *)
 (***************************************************************************)
 EXTENDS NearAsync
 
-CONSTANT WithCb
+CONSTANTS WithCb, BothMarks
 
 VARIABLES done, sent   \* done: P's <<item, ticket>> pairs marked paid; sent: steps submitted
 mine == <<done, sent>>
@@ -46,7 +51,8 @@ H(r) ==
     CASE r.m = "pay" ->
            IF Paid THEN [O |-> OErr(Out0, "already paid"), d |-> done]
            ELSE LET w   == [k |-> Item, t |-> r.tx]
-                    pay == WithDetached(Rcpt(nid, r.tx, B, P, XFER, w, 1, P, IF WithCb THEN nid + 1 ELSE 0))
+                    xfer == WithDetached(Rcpt(nid, r.tx, B, P, XFER, w, 1, P, IF WithCb THEN nid + 1 ELSE 0))
+                    pay  == IF BothMarks THEN WithOwed(xfer) ELSE xfer
                     cb  == Rcpt(nid + 1, r.tx, P, P, "on_paid", w, 0, P, 0)
                 IN IF WithCb THEN [O |-> Outcome({pay}, {cb}, RVal(EMPTY), 1, 2), d |-> done \cup {<<Item, r.tx>>}]
                    ELSE [O |-> Outcome({pay}, {}, RVal(EMPTY), 1, 1), d |-> done \cup {<<Item, r.tx>>}]
