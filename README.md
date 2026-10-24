@@ -167,8 +167,9 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   deploy key or an app token.
 - **Promote the rest of the rules to "sim" validation.** What the existing probes cannot
   reach needs new probe methods: `promise_set_refund_to` (R5), returning a joint promise or
-  appending to one (C5, C6), the `_with_id` yield, a yield's deposit, a returned yield and its
-  signer (C7), interleaved appends across promises (G3), a callback after a Stake (B1), and a
+  appending to one (C5, C6), reading one result of a joint promise by index (C6, the order
+  of a nested join past index 0), logging `block_timestamp` (S3), the `_with_id` yield, a
+  yield's deposit, a returned yield and its signer (C7), interleaved appends across promises (G3), a callback after a Stake (B1), and a
   NEP-245 probe (T5). Multi-shard order and missed chunks (S2, S4) need a multi-shard sim.
   Per-byte storage is checked by sim tests and the calibrator's storage table only; a probe
   flow comparing it with the model needs a re-sweep of every flow.

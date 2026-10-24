@@ -90,8 +90,10 @@ Each rule has four fields:
   `gs`/`gw`/`gf`/`g`, and `loc` for a local receipt, set by `SubmitAs`). Data results arrive
   in the callback's `r.res` (`DataOf`, `DataOfSz`).
 - **Validated:** a data receipt carrying one result to the receipt waiting on it: sim
-  (`conformance/tests/receipts.rs`, `data_receipt_carries_one_result`: a callback reads the
-  bytes its input returned, and one result per input of a joint callback). The action
+  (`conformance/tests/receipts.rs`, `data_receipt_carries_one_result`: a callback reads a
+  result of the size its input returned, and a joint callback of two inputs one result per
+  input, each at its input's index, in both orders). The contents are not compared: the
+  probes report sizes. The action
   receipt's other fields: nearcore reading (the signer and its key: K1).
 
 ### R2. A data receipt may arrive before or after the receipt that waits on it
@@ -225,8 +227,8 @@ Each rule has four fields:
   `RVal`; helpers `IsNum`, `IsEmpty`, `IsFailed`, `NumOr`, and for a bounded read
   (`promise_result_checked`, C4) `ResTooLong` and `NumOrChecked`. No results: `NoRes` with
   `NoRes.v = NOPR` (`NoResults(r.res)`), and `IsNum(NoRes) = FALSE`.
-- **Validated:** sim (`conformance/tests/receipts.rs`, `data_receipt_carries_one_result`: the
-  bytes an input returned; `Successful` with empty bytes, not `Failed`, for a call that
+- **Validated:** sim (`conformance/tests/receipts.rs`, `data_receipt_carries_one_result`: a
+  result of the size an input returned; `Successful` with empty bytes, not `Failed`, for a call that
   returned nothing; `Failed` for a failed input; a count of 0 with no inputs, and of `n` with
   `n` joined inputs). `NotReady`: nearcore reading (the runtime never supplies it).
   <!-- conformance --> The flows produce every shape (empty, numeric, non-numeric, failed), but
@@ -285,8 +287,8 @@ Each rule has four fields:
   (output receivers only for the last action).
 - **Model:** `ret = RProm`, with the tail receipt's `cb` wired to `r.cb`.
 - **Validated:** sim (`conformance/tests/receipts.rs`, `returned_promise_forwards_its_result`:
-  p's callback on `ft_transfer_call` reads the resolver's value, not empty bytes, and runs
-  after the resolver). The last action's result: sim under A8. `CannotReturnJointPromise`:
+  p's callback on `ft_transfer_call` reads a result the size of the resolver's value, 4 bytes
+  for `"10"` and 3 for `"0"`, not the call's own empty result, and runs after the resolver). The last action's result: sim under A8. `CannotReturnJointPromise`:
   nearcore reading (no probe returns a joint promise). <!-- conformance --> In the flows,
   `ft_transfer_call` and `near_withdraw` return promises only to the transaction, which the
   comparison does not see; no receipt there waits on a forwarded result.
@@ -335,10 +337,12 @@ Each rule has four fields:
   time, is not compared (nearcore reading; every receipt of these flows is in one
   transaction, so the transaction says nothing about it either). It does not see what the
   callback reads otherwise, and the sim gives one arrival order. Nested joins flattened
-  (three inputs joined pairwise give three results), an input that returns a promise
-  forwarding the result to its position, and the 128-input limit: sim
+  (three inputs joined pairwise give three results, the first input's at index 0), an input
+  that returns a promise forwarding the result to its index (with two inputs, in both
+  orders, each index's size asserted), and the 128-input limit: sim
   (`conformance/tests/receipts.rs`, `data_receipt_carries_one_result`,
-  `returned_promise_forwards_its_result`, `joint_promise_input_limit`). The restrictions on
+  `returned_promise_forwards_its_result`, `joint_promise_input_limit`). The order of indices
+  1 and 2 of a nested join: needs a probe that reads one result by index. The restrictions on
   joint promises (no return, no appended actions, no `refund_to`): nearcore reading (no probe
   tries them). `examples/platform-selftest` checks the order with the failing input first
   (`and_order`), a starved input (`and_starved_leg`) and a joint callback with no gas
@@ -429,8 +433,9 @@ Each rule has four fields:
   resumes that run in one block both return 1 and the first payload wins; a resume after the
   timeout returns 0; a resume of another account's yield returns 0 and leaves it parked; the
   payload limit ([N-yield-payload](#under-approximations-unsound-they-can-hide-bugs)); and
-  (`yield_times_out_at_200_blocks`) the timeout at the creating height + 200, not before,
-  with the callback reading `Failed` and the yielding account as its predecessor. The
+  (`yield_times_out_at_200_blocks`) the timeout of a yield made at h: still parked at
+  h + 199, resolved at h + 200, and its callback run at exactly h + 201, reading `Failed`,
+  with the yielding account as its predecessor. The
   `_with_id` form, a deposit, a returned yield and the callback's signer: nearcore reading
   (the async probe has none of them and does not log the signer).
   `examples/platform-selftest` checks a second resume (`resume_twice`), two
@@ -566,7 +571,8 @@ Each rule has four fields:
   split of a multi-call receipt (`ft_batch_SC`, `wnear_batch_SC`, `wnear_batch_DC`,
   `wnear_batch_DSC`). The floor-and-remainder rule (a few gas) is below that tolerance: sim
   (`conformance/tests/receipts.rs`, `leftover_split_floor_and_remainder`: three weight-1
-  children get `⌊U/3⌋`, `⌊U/3⌋` and `⌊U/3⌋ + U mod 3`, the last appended taking the
+  children get `⌊U/3⌋`, `⌊U/3⌋` and `⌊U/3⌋ + U mod 3`, U derived from the parent's attached
+  gas, burn and fees, not from the shares,, the last appended taking the
   remainder, and one more prepaid gas gives one more leftover gas); the calibration's split
   check confirms it to the gas on every flow, against the formula rather than the model, and
   `examples/weight-split` covers it in the model under both modes. "Last" in host-call order
@@ -636,10 +642,14 @@ Each rule has four fields:
 ### A1. Account existence
 
 - **Rule:** Before each action the runtime checks the receiver account. `CreateAccount` needs it
-  absent. A Transfer to an absent account fails unless implicit creation applies (A3). All other
-  actions (FunctionCall, AddKey, DeleteKey, Stake, Deploy, DeleteAccount, ...) need it present.
-  At 87+ the account must also be initialized; an uninitialised `0u` account counts as absent.
-- **nearcore:** `runtime/runtime/src/actions.rs:814-895` (`check_account_existence`), called at
+  absent. A Transfer to an absent account fails unless implicit creation applies (A3). The
+  NEP-616 state inits (`DeterministicStateInit`, `UniversalStateInit`) pass whether the account
+  exists or not: they create a missing one. All other actions (FunctionCall, AddKey, DeleteKey,
+  Stake, Deploy, DeleteAccount, ...) need it present. At 87+ the account must also be
+  initialized for them: an uninitialised `0u` account counts as absent, except to a Transfer
+  and its own state init (N-universal).
+- **nearcore:** `runtime/runtime/src/actions.rs:814-895` (`check_account_existence`; the state
+  inits at `:851-861`, the uninitialised check at `:883-888`), called at
   `runtime/runtime/src/lib.rs:600-605`.
 - **Model:** the `Exists` constant (initial accounts) and `AcctExists`: an account exists if
   it is in `Exists` or `created` and not in `deleted` (A7).
@@ -647,7 +657,8 @@ Each rule has four fields:
   AddKey to an absent account fails with `AccountDoesNotExist`, existence checked before the
   actor; an uninitialised universal account refuses both with `AccountNotInitialized` and
   takes a Transfer). A deleted account: sim (`conformance/tests/lifecycle.rs`,
-  `receipts_to_deleted`); CreateAccount on an existing id: A6.
+  `receipts_to_deleted`); CreateAccount on an existing id: A6. The state inits: nearcore
+  reading (no test builds one; state init is [not modelled](#not-modelled)).
 
 ### A2. Account types (by id pattern)
 
@@ -728,11 +739,13 @@ Each rule has four fields:
 - **Validated:** a lone Transfer to an absent NEAR-implicit or eth-implicit id succeeds and
   its creator pays the creation fees: sim (`send_nimp_new`, `send_eth_new`, `send_eth_new_cb`).
   The only-action condition (a universal id created even when batched), what each kind
-  creates (182, 132, 100 and 100 bytes; the NEAR-implicit key derived from the id; the
-  eth-wallet global-contract reference; an uninitialised universal account) and the account
+  creates (182, 132, 100 and 100 bytes; the NEAR-implicit key derived from the id; a
+  global-contract reference by hash for eth-implicit; an uninitialised universal account) and the account
   creation charge (0.007 N less the create_account exec gas, burnt): sim
   (`conformance/tests/accounts.rs`, `implicit_creation_by_kind`, `account_creation_charge`).
-  That a call to an eth-implicit account runs the wallet contract: not sim-testable, because
+  That the reference is the eth-wallet contract's hash: nearcore reading (the sim does not
+  expose the expected hash). That a call to an eth-implicit account runs the wallet contract:
+  not sim-testable, because
   the sim's chain has not published the wallet code, so there the call fails with
   `CodeDoesNotExist`; the rule holds on a chain that has published it (nearcore reading).
   The comparison sees no balances. <!-- conformance -->
@@ -1199,8 +1212,9 @@ Each rule has four fields:
   inclusive expiry with the refund to the relayer, the refund to the sender when the inner
   call fails, the key checked when the outer receipt runs, and the function-call-key checks
   on both sides; `delegate_signature_sender_and_nonce_bound`: an absent sender, a signature
-  that no longer verifies, a sender other than the transaction's receiver, a nonce at or
-  above height × 1e6, and two Delegates in one transaction). `DelegateV2` and a delegate
+  that no longer verifies, a sender other than the transaction's receiver, the nonce bound
+  to the unit, `H × 1e6` failing and `H × 1e6 − 1` passing for the height H the outer receipt
+  runs at, and two Delegates in one transaction). `DelegateV2` and a delegate
   carrying a delegate: nearcore reading (the action types cannot express the second).
   <!-- conformance --> The probe flow
   `relay_chain1` (`chain1` relayed by `dave.near`) compares the model with the sim receipt by
@@ -1371,8 +1385,11 @@ Each rule has four fields:
     handler reading the clock and at most `k` yields per behaviour, `MaxBlk >= k * YieldTicks`
     suffices: the clock never passes the last deadline, so that bound cuts nothing.
 - **Validated:** sim (`conformance/tests/receipts.rs`, `block_height_and_timestamp`: the
-  receipts of one chunk read its height and timestamp, a created receipt runs a block later,
-  and both only grow); the epoch height: nearcore reading. `examples/yield-clock` shows
+  receipts of one chunk read its height, which the probe logs; their outcomes record one height
+  and one timestamp; a created receipt runs a block later, and both only grow). The
+  timestamp a contract reads: needs a probe that logs `block_timestamp` (the sim's outcome
+  metadata shows the block's, not what the host function returns). The epoch height: nearcore
+  reading. `examples/yield-clock` shows
   `YieldDeadlinesInBound` and
   an early timeout failing at a too small bound, a bug that `TickAnytime = FALSE` hides, and
   the horizon: with `MaxBlk = 2` a double refund passes unnoticed (`horizon_short_passes`),
@@ -1739,7 +1756,8 @@ locally.
   model's.
 - **Validated:** source read; for 5.29.1, sim (`conformance/tests/tokens.rs`,
   `storage_deposit_and_unregister`: the panic below `min`, the excess and a registered
-  account's whole deposit back to the predecessor, `storage_balance_of`, and
+  account's whole deposit back to the predecessor, `storage_balance_of` (`min` total and 0
+  available once registered, null before), and
   `storage_unregister`'s 1 yocto, `false`, the panic without `force`, the burn and the
   `min` + 1 yocto payout).
 
@@ -2080,7 +2098,7 @@ against the current module code; some may be fixed in the modules later.
 - **N-universal. Universal accounts are created uninitialised.** nearcore creates a `0u`
   account from a Transfer without code, keys or data; every action but Transfer and its own state
   init then fails with `AccountNotInitialized` (`runtime/runtime/src/actions.rs:276-282`,
-  `:880-887`). The model fails function calls to it (`HasCode`), the key actions and
+  `:883-888`). The model fails function calls to it (`HasCode`), the key actions and
   DeleteAccount of an ACCOUNT receipt (`AccountNotInitialized`, A6) and a delegate it signs
   (`NearKeys.DelegErr`), all through `UninitUniversal`, which needs `UniversalOn` (without it
   a `0u` id is named and its account an ordinary one); `ExecKeyAct` and Stake do not check

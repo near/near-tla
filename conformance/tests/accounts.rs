@@ -66,10 +66,14 @@ fn burns(o: &TxOutcome) -> (u64, u64) {
     (o.transaction.as_ref().unwrap().gas_burnt.as_gas(), o.first_call().unwrap().gas_burnt.as_gas())
 }
 
-/// A1, A5. Every action but CreateAccount and Transfer needs the receiver
-/// to exist, checked before the actor (runtime/runtime/src/actions.rs:814-895
-/// `check_account_existence`, called at runtime/runtime/src/lib.rs:600-605);
-/// an uninitialised universal account counts as absent for them (:883-888).
+/// A1, A5. The receiver's existence is checked before the actor
+/// (runtime/runtime/src/actions.rs:814-895 `check_account_existence`,
+/// called at runtime/runtime/src/lib.rs:600-605). CreateAccount needs it
+/// absent, a Transfer may create it (A3), and DeterministicStateInit and
+/// UniversalStateInit pass either way (:851-861; not exercised here: the
+/// test builds no state init). Every other action needs it to exist
+/// (:862-882), and an uninitialised universal account counts as absent for
+/// them (:883-888).
 /// A FunctionCall to an existing account without code fails with
 /// CodeDoesNotExist (runtime/runtime/src/function_call.rs:309-312), and its
 /// deposit is refunded.
@@ -112,8 +116,8 @@ fn existence_and_code() {
 /// Transfer creates too (runtime/runtime/src/actions.rs:929-946
 /// `implicit_creation_allowed`; otherwise AccountDoesNotExist, :842-849).
 /// What is created (:221-287): NEAR-implicit 182 bytes and a full-access key
-/// derived from the id; eth-implicit 132 bytes and the eth-wallet global
-/// contract (:255-269); deterministic 100 bytes, no key; universal 100
+/// derived from the id; eth-implicit 132 bytes and a global-contract
+/// reference by hash, the eth-wallet contract's in nearcore (:255-269); deterministic 100 bytes, no key; universal 100
 /// bytes, uninitialised (:276-282).
 #[test]
 fn implicit_creation_by_kind() {
@@ -152,13 +156,16 @@ fn implicit_creation_by_kind() {
             }
             ETH => {
                 assert_eq!((a.storage_usage, keys), (132, 0));
-                assert!(a.global_contract_hash.is_some(), "the eth-wallet global contract");
+                // A global-contract reference by hash. That it is the
+                // eth-wallet contract's hash is not checked: the sim does
+                // not expose the expected hash.
+                assert!(a.global_contract_hash.is_some(), "a global-contract reference");
             }
             _ => assert_eq!((a.storage_usage, keys), (100, 0)),
         }
     }
     // eth-implicit: the record names the eth-wallet global contract
-    // (see the nearcore lines cited under A3 in docs/SEMANTICS.md),
+    // (runtime/runtime/src/actions.rs:255-269),
     // and a call resolves the account's code through it
     // (runtime/runtime/src/lib.rs:684-694). The sim's chain has not published
     // that code, so here the call finds none: on such a chain it fails with

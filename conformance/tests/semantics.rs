@@ -821,10 +821,13 @@ fn local_receipt_delayed_when_chunk_full() {
 /// C7, the deadline: a yield made at height h times out at h + 200
 /// (`yield_timeout_length_in_blocks`,
 /// core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:274;
-/// runtime/runtime/src/function_call.rs:151-170 enqueues the deadline;
-/// runtime/runtime/src/lib.rs:3113-3221 resolves `expires_at <=
-/// block_height`, :3146): not before, and the callback then reads Failed.
-/// Its predecessor is the yielding account (function_call.rs:171-189).
+/// runtime/runtime/src/function_call.rs:151-170 enqueues the deadline).
+/// The chunk at h + 200 resolves it (runtime/runtime/src/lib.rs:3113-3221,
+/// `expires_at <= block_height` at :3146) by sending a PromiseResume
+/// receipt with no data to the yielding account (:3161-3172, forwarded as
+/// an outgoing receipt at :3196-3200), so the callback runs at h + 201 and
+/// reads Failed. Its predecessor is the yielding account
+/// (function_call.rs:171-189).
 #[test]
 fn yield_times_out_at_200_blocks() {
     let mut sim = yield_world();
@@ -834,14 +837,21 @@ fn yield_times_out_at_200_blocks() {
     println!("yield made at #{h}; expires_at {}", y.expires_at);
     assert_eq!(y.expires_at, h + 200);
     sim.advance_to(h + 199);
+    let parked_199 = sim.yields().len();
+    println!("at #{}: {parked_199} parked, callback logs {:?}", sim.height(), on_yield_logs(&sim, tx));
+    assert_eq!(sim.height(), h + 199);
+    assert_eq!((parked_199, on_yield_logs(&sim, tx)), (1, None), "parked and not run before h + 200");
     sim.step();
-    println!("at #{}: callback logs {:?}", sim.height(), on_yield_logs(&sim, tx));
+    let parked_200 = sim.yields().len();
+    println!("at #{}: {parked_200} parked, callback logs {:?}", sim.height(), on_yield_logs(&sim, tx));
     assert_eq!(sim.height(), h + 200);
-    assert_eq!(on_yield_logs(&sim, tx), None, "not before h + 200");
+    assert_eq!((parked_200, on_yield_logs(&sim, tx)), (0, None), "resolved at h + 200; the callback has not run yet");
     sim.settle();
+    // The callback, checked on its own: the exact height, what it read and
+    // who sent it.
     let cb = sim.outcome(tx).expect_receipt("on_yield").clone();
     println!("callback at #{}, from {}: logs {:?}", cb.block_height, cb.predecessor_id, cb.logs);
-    assert!(cb.block_height >= h + 200);
+    assert_eq!(cb.block_height, h + 201, "the timeout resolved at h + 200 runs the callback at h + 201");
     assert_eq!(cb.logs, ["timeout"]);
     assert_eq!(cb.predecessor_id.as_str(), Y);
 }
@@ -850,7 +860,8 @@ fn yield_times_out_at_200_blocks() {
 /// (runtime/runtime/src/actions.rs:453-535 `apply_delegate_action`):
 /// the sender must exist (:862-887), the signature must verify (:474-477),
 /// the delegate's sender must be the transaction's receiver (:483-490), and
-/// the nonce must be below block_height x 1e6 (:659-666). A transaction
+/// the nonce must be below H x 1e6, H the height the outer receipt runs at
+/// (:656-666, `>=` fails): H x 1e6 fails, H x 1e6 - 1 passes. A transaction
 /// holds at most one Delegate (runtime/runtime/src/action_validation.rs:136-151).
 #[test]
 fn delegate_signature_sender_and_nonce_bound() {
@@ -879,12 +890,29 @@ fn delegate_signature_sender_and_nonce_bound() {
     let o = sim.tx(RELAYER, BOB).action(signed).transact();
     check(&mut sim, "alice's delegate sent to bob", o, "DelegateActionSenderDoesNotMatchTxReceiver");
 
-    let mut sim = base.clone();
-    let mut signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
-    signed.delegate_action.nonce = (h + 10) * 1_000_000;
-    signed.signature = alice.sign(signed.delegate_action.get_nep461_hash().as_ref());
-    let o = sim.tx(RELAYER, ALICE).action(signed).transact();
-    check(&mut sim, "nonce (h + 10) x 1e6", o, "DelegateActionNonceTooLarge");
+    // The nonce bound, at the height H the outer receipt runs at (the same
+    // in every clone of `base`): found with a nonce far above it, then
+    // H x 1e6 fails and H x 1e6 - 1 passes.
+    let with_nonce = |nonce: u64| {
+        let mut sim = base.clone();
+        let mut signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+        signed.delegate_action.nonce = nonce;
+        signed.signature = alice.sign(signed.delegate_action.get_nep461_hash().as_ref());
+        let o = sim.tx(RELAYER, ALICE).action(signed).transact();
+        let at = outer(&o).block_height;
+        (sim, o, at)
+    };
+    let (mut sim, o, big) = with_nonce((h + 1000) * 1_000_000);
+    check(&mut sim, "nonce (h + 1000) x 1e6", o, "DelegateActionNonceTooLarge");
+    let bound = big * 1_000_000;
+    let (mut sim, o, at) = with_nonce(bound);
+    assert_eq!(at, big);
+    assert!(status(&o).contains(&format!("upper_bound: {bound}")), "{}", status(&o));
+    check(&mut sim, &format!("nonce H x 1e6 = {bound} (H = #{at})"), o, "DelegateActionNonceTooLarge");
+    let (sim, o, at) = with_nonce(bound - 1);
+    println!("nonce H x 1e6 - 1 (H = #{at}): {}; marks {:?}", status(&o), marks(&sim));
+    assert_eq!(at, big);
+    assert_eq!(marks(&sim), "a,", "one below the bound passes");
 
     let mut sim = base.clone();
     let one = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);

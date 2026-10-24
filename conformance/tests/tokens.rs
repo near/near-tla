@@ -222,7 +222,10 @@ fn storage_deposit_and_unregister() {
     println!("dave deposits 1 N for registered erin: payouts {:?}; logs {:?}", payouts(&o), o.logs());
     assert_eq!(payouts(&o), [(DAVE.to_string(), near(1))]);
     let of = |sim: &Sim, a: &str| sim.view(FT, "storage_balance_of", json!({ "account_id": a })).json::<Value>();
-    println!("storage_balance_of erin {}, dave {}", of(&sim, ERIN), of(&sim, DAVE));
+    println!("storage_balance_of carol {}, erin {}, dave {}", of(&sim, CAROL), of(&sim, ERIN), of(&sim, DAVE));
+    let registered = json!({ "total": min.to_string(), "available": "0" });
+    assert_eq!(of(&sim, CAROL), registered);
+    assert_eq!(of(&sim, ERIN), registered, "registered by dave's deposit");
     assert_eq!(of(&sim, DAVE), Value::Null);
 
     let unregister = |sim: &mut Sim, who: &str, force: Option<bool>, yocto: u128| {

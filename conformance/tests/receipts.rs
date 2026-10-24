@@ -75,9 +75,29 @@ fn get(sim: &Sim, acct: &str, k: &str) -> Option<String> {
     sim.view(acct, "get", json!({ "key": k })).json::<Option<String>>()
 }
 
+/// A joint callback's results, read three ways on the same `kids`:
+/// `y.on_yield` returns the size of result 0 (it reads only index 0),
+/// `p.on_read` the total size, `p.on_count` the number of results. With
+/// two results, index 1's size is the total less index 0's.
+fn joint_reads(base: &Sim, kids: &Value) -> (u64, u64, u64) {
+    let cbs = [
+        json!({ "receiver": Y, "method": "on_yield", "static_ggas": 10000, "weight": 1 }),
+        json!({ "method": "on_read", "static_ggas": 10000, "weight": 1 }),
+        json!({ "method": "on_count", "static_ggas": 10000, "weight": 1 }),
+    ];
+    let [i0, total, count] = cbs.map(|cb| {
+        let m = cb["method"].as_str().unwrap().to_string();
+        let mut sim = base.clone();
+        let o = chain(&mut sim, kids.clone(), Some(cb)).transact();
+        val(o.expect_receipt(&m)).as_u64().unwrap()
+    });
+    (i0, total, count)
+}
+
 /// R1, C1, C3. A data receipt carries one promise result to the one
-/// receipt that waits on it: the callback reads the bytes its input
-/// returned (runtime/runtime/src/lib.rs:1146-1189 sends one data receipt
+/// receipt that waits on it: the callback reads a result of the size its
+/// input returned (the probes report sizes, not contents), one per input
+/// at that input's index (runtime/runtime/src/lib.rs:1146-1189 sends one data receipt
 /// per output receiver, :1172-1176 builds its `data`; :861-899 collects the
 /// inputs in `input_data_ids` order, `None` as `Failed`, :894-895). The
 /// shapes (near-vm-runner logic/host.rs:4583 `promise_results_count`,
@@ -95,22 +115,24 @@ fn data_receipt_carries_one_result() {
     let cb = o.expect_receipt("on_read");
     println!("q.ret(7) then p.on_read: read {} bytes (callback at #{}, ret at #{})", val(cb), cb.block_height, o.expect_receipt("ret").block_height);
     assert_eq!(val(cb), 7);
-    // Two inputs, 3 and 4 bytes: one result each.
-    let kids = json!([call(Q, "ret", json!({ "bytes": 3 }), 10000, 1), call(Q, "ret", json!({ "bytes": 4 }), 10000, 1)]);
-    let o = chain(&mut sim, kids.clone(), Some(on("on_read"))).transact();
-    let read = val(o.expect_receipt("on_read"));
-    let o = chain(&mut sim, kids, Some(on("on_count"))).transact();
-    let count = val(o.expect_receipt("on_count"));
-    println!("q.ret(3) & q.ret(4) then p.on_read: {read} bytes; then p.on_count: {count} results");
-    assert_eq!((read, count), (json!(7), json!(2)));
-    // Three, joined pairwise ((a & b) & c): flattened to three results.
-    let kids = json!([1, 2, 4].map(|n| call(Q, "ret", json!({ "bytes": n }), 10000, 1)));
-    let o = chain(&mut sim, kids.clone(), Some(on("on_read"))).transact();
-    let read = val(o.expect_receipt("on_read"));
-    let o = chain(&mut sim, kids, Some(on("on_count"))).transact();
-    let count = val(o.expect_receipt("on_count"));
-    println!("(q.ret(1) & q.ret(2)) & q.ret(4): {read} bytes in {count} results");
-    assert_eq!((read, count), (json!(7), json!(3)));
+    // Two inputs of distinct sizes, in both orders: one result each, at
+    // its input's index (`promise_and` order).
+    for [x, y] in [[3u64, 4], [4, 3]] {
+        let kids = json!([x, y].map(|n| call(Q, "ret", json!({ "bytes": n }), 10000, 1)));
+        let (i0, total, count) = joint_reads(&sim, &kids);
+        println!("q.ret({x}) & q.ret({y}): {count} results; index 0 has {i0} bytes, index 1 {} (total {total})", total - i0);
+        assert_eq!(count, 2);
+        assert_eq!((i0, total - i0), (x, y), "each result at its input's index");
+    }
+    // Three, joined pairwise ((a & b) & c): flattened to three results,
+    // the first input's at index 0 (indices 1 and 2 are not told apart:
+    // no probe reads a result past index 0 on its own).
+    for sizes in [[1u64, 2, 4], [4, 1, 2]] {
+        let kids = json!(sizes.map(|n| call(Q, "ret", json!({ "bytes": n }), 10000, 1)));
+        let (i0, total, count) = joint_reads(&sim, &kids);
+        println!("(q.ret({}) & q.ret({})) & q.ret({}): {count} results, {total} bytes; index 0 has {i0}", sizes[0], sizes[1], sizes[2]);
+        assert_eq!((i0, total, count), (sizes[0], 7, 3));
+    }
     // No inputs: promise_results_count() = 0.
     let o = sim.call(ALICE, P, "on_count").transact();
     println!("p.on_count as a plain call: {}", o.json::<u64>());
@@ -166,7 +188,9 @@ fn callback_waits_for_its_data_either_order() {
         cbr.block_height,
         val(cbr)
     );
+    assert_eq!(cbr.result_held, Some(5), "the fault held q's result");
     assert!(!ran_early, "postponed while its input is missing");
+    assert_eq!(waiting, 1, "the callback waits, pending");
     assert!(cbr.block_height > ret.block_height + 2);
     assert_eq!(val(cbr), 7);
 
@@ -332,7 +356,9 @@ fn result_size_limit_and_per_receiver_fee() {
 /// receiver is moved onto the returned receipt and gets that receipt's
 /// result, later (near-vm-runner logic/host.rs:4659-4678 `promise_return`;
 /// runtime/runtime/src/lib.rs:1151-1170). p's callback on
-/// `ft_transfer_call` reads the resolver's value, and runs after it.
+/// `ft_transfer_call` reads a result the size of the resolver's value
+/// (4 bytes for "10", 3 for "0"; not the empty result of the call itself),
+/// and runs after it.
 #[test]
 fn returned_promise_forwards_its_result() {
     for (msg, used) in [("keep", "10"), ("return", "0")] {
@@ -359,16 +385,23 @@ fn returned_promise_forwards_its_result() {
     // C6: a joint input that returns a promise forwards its position: the
     // joint callback reads the resolver's value at ft_transfer_call's place
     // (runtime/runtime/src/lib.rs:1151-1170 on each input).
-    let mut sim = world();
+    // In both orders: the resolver's 4-byte "10" sits at ft_transfer_call's
+    // index, q.ret(5)'s 5 bytes at the other.
+    let base = world();
     let args = json!({ "receiver_id": Q, "amount": "10", "msg": "keep" });
-    let kids = json!([
-        { "receiver": FT, "method": "ft_transfer_call", "args": args.to_string(), "static_ggas": 60000, "weight": 1, "deposit": "1" },
-        call(Q, "ret", json!({ "bytes": 3 }), 10000, 1)
-    ]);
-    let o = chain(&mut sim, kids, Some(json!({ "method": "on_read", "static_ggas": 10000, "weight": 0 }))).transact();
+    let ftc = json!({ "receiver": FT, "method": "ft_transfer_call", "args": args.to_string(), "static_ggas": 60000, "weight": 1, "deposit": "1" });
+    let ret5 = call(Q, "ret", json!({ "bytes": 5 }), 10000, 1);
+    for (what, kids, want) in [("ft_transfer_call & q.ret(5)", json!([ftc, ret5]), (4, 5)), ("q.ret(5) & ft_transfer_call", json!([ret5, ftc]), (5, 4))] {
+        let (i0, total, count) = joint_reads(&base, &kids);
+        println!("{what}: {count} results; index 0 has {i0} bytes, index 1 {}", total - i0);
+        assert_eq!(count, 2);
+        assert_eq!((i0, total - i0), want, "the forwarded result at its input's index");
+    }
+    // The joint callback runs after the resolver.
+    let mut sim = base.clone();
+    let o = chain(&mut sim, json!([ftc, ret5]), Some(json!({ "method": "on_read", "static_ggas": 10000, "weight": 0 }))).transact();
     let (res, cbr) = (o.expect_receipt("ft_resolve_transfer"), o.expect_receipt("on_read"));
-    println!("ft_transfer_call & q.ret(3) then p.on_read: read {} bytes (the resolver's 4 and 3), at #{} after the resolver at #{}", val(cbr), cbr.block_height, res.block_height);
-    assert_eq!(val(cbr), 4 + 3);
+    println!("joint callback at #{}, the resolver at #{}", cbr.block_height, res.block_height);
     assert!(cbr.block_height > res.block_height);
 }
 
@@ -450,56 +483,63 @@ fn per_action_gas_and_panic_label() {
     }
 }
 
-/// The attached gas of p.chain's three q.mark children, by tag.
-fn shares(sim: &mut Sim, prepaid: Gas) -> [u64; 3] {
+/// The attached gas of p.chain's three q.mark children, by tag, and the
+/// leftover U computed without them: p.chain's attached gas less what it
+/// used, which is its burn (gas burnt less its own exec fees, burnt
+/// before it ran) plus the exec fees it prepaid for its children (their
+/// statics are 0). This is the calibration's split formula (src/calib.rs,
+/// `check_split`).
+fn shares(sim: &mut Sim, prepaid: Gas) -> ([u64; 3], u64) {
     let kids: Vec<Value> = (1..=3).map(|i| call(Q, "mark", json!({ "tag": i.to_string() }), 0, 1)).collect();
     let o = chain(sim, json!(kids), None).gas(prepaid).transact();
     o.assert_success();
-    let g = |tag: &str| {
+    let kid = |tag: &str| {
         o.receipts
             .iter()
             .find(|r| r.executor_id.as_str() == Q && r.args_json::<Value>().map(|a| a["tag"] == tag).unwrap_or(false))
             .unwrap()
-            .attached_gas
-            .as_gas()
     };
-    [g("1"), g("2"), g("3")]
+    let p = o.expect_receipt("chain");
+    let kid_exec: u64 = ["1", "2", "3"].iter().map(|t| kid(t).prepaid_exec_fees.as_gas()).sum();
+    let used = p.gas_burnt.as_gas() - p.prepaid_exec_fees.as_gas() + kid_exec;
+    ([kid("1"), kid("2"), kid("3")].map(|r| r.attached_gas.as_gas()), p.attached_gas.as_gas() - used)
 }
 
 /// G3. The leftover U is split by weight, each weighted call getting
 /// ⌊U·w/W⌋ and the last one appended also the remainder
 /// (runtime/runtime/src/receipt_manager.rs:679-719 `distribute_gas`,
 /// :414-419 `gas_weights` pushed at append time). Three children of weight
-/// 1 and static 0; the prepaid gas goes up one gas unit at a time, and so
-/// does U.
+/// 1 and static 0; U is derived from the parent's burn and fees (see
+/// `shares`), not from the shares; the prepaid gas goes up one gas unit at
+/// a time, and so does U.
 #[test]
 fn leftover_split_floor_and_remainder() {
     let base = world();
     let p0 = Gas::from_teragas(100).as_gas();
     let mut rems = Vec::new();
-    let mut last_total = None;
+    let mut last_u = None;
     for d in 0..3u64 {
         let mut sim = base.clone();
-        let [a, b, c] = shares(&mut sim, Gas::from_gas(p0 + d));
-        let total = a + b + c;
-        println!("prepaid 100 Tgas + {d} gas: shares {a}, {b}, {c} (sum {total}); the last gets {} more", c - a);
-        assert_eq!(a, b, "the first two get the floor");
-        assert!(c >= a && c - a < 3, "the last also gets the remainder, < n");
-        assert_eq!(c - a, total % 3, "the remainder of U / 3");
-        if let Some(t) = last_total {
-            assert_eq!(total, t + 1, "one more prepaid gas, one more leftover gas");
+        let ([a, b, c], u) = shares(&mut sim, Gas::from_gas(p0 + d));
+        println!("prepaid 100 Tgas + {d} gas: U = {u}; shares {a}, {b}, {c} (sum {}); the last gets {} more", a + b + c, c - a);
+        assert_eq!(a + b + c, u, "the children share exactly U");
+        assert_eq!((a, b, c), (u / 3, u / 3, u / 3 + u % 3), "the floor each, the remainder to the last");
+        if let Some(t) = last_u {
+            assert_eq!(u, t + 1, "one more prepaid gas, one more leftover gas");
         }
-        last_total = Some(total);
+        last_u = Some(u);
         rems.push(c - a);
     }
     rems.sort();
     assert_eq!(rems, [0, 1, 2]);
 }
 
-/// S3. Every receipt of a chunk sees the block's height and timestamp
-/// (near-vm-runner logic/host.rs:827 `block_index`, :837
-/// `block_timestamp`); a receipt created by a receipt runs in a later
-/// block (runtime/runtime/src/lib.rs:1222-1234: not instant, so outgoing).
+/// S3. Every receipt of a chunk sees the block's height (near-vm-runner
+/// logic/host.rs:827 `block_index`; the probe logs it); its outcome records
+/// the block's height and timestamp. A receipt created by a receipt runs in
+/// a later block (runtime/runtime/src/lib.rs:1222-1234: not instant, so
+/// outgoing). The timestamp a contract reads (:837 `block_timestamp`) is
+/// not checked: no probe logs it.
 #[test]
 fn block_height_and_timestamp() {
     let mut sim = world();
