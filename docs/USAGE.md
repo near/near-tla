@@ -2073,8 +2073,8 @@ inputs around 128.
 size at which something stops fitting, make success the failure you are looking for:
 `examples/event-logs/batch-payout`'s `payout_edge` sweeps a batch's size with `success =
 ["NeverPaid"]` (the recipient never receives the batch), which fails while the batch's event
-fits and holds from the first size whose event is over 16384 bytes, so `need` is that size
-(217 ids per class there).
+fits and holds from the first size whose event is over 16384 bytes, so the reported
+`boundary` is that size (217 ids per class there; add `exact = true` to check it by scanning).
 
 ## Worked material
 
