@@ -31,10 +31,15 @@ Each rule has four fields:
   module is named. The names are the current code's.
 - **Validated:** one of these levels:
   - **sim** means a per-receipt conformance run in this repo (`conformance/`, see
-    [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. No rule is at this level yet.
-    Rules that a conformance flow covers carry the marker `<!-- conformance -->` in the source
-    of this page; the final conformance run upgrades them from "nearcore reading" to "sim"
-    where its results agree (results: TBD-conformance).
+    [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. Rules the conformance flows were
+    written to cover carry the marker `<!-- conformance -->` in the source of this page, and
+    each such entry says what the sim checked, if anything. The run on the current library
+    (58 flows, 76,154 prepaid points, 166,712 sim receipts) found no status, window-edge or
+    attached-gas mismatch ([results](../conformance/README.md#results-at-the-pins)). The
+    comparison sees each receipt's status and attached gas and the window edges; the
+    calibration checks the leftover split and the action-only fees. A rule is "sim" where a
+    flow exercises it and that comparison would show a difference. Where a flow covers only
+    part of a rule, the entry says which part; the rest keeps its earlier level.
   - **nearcore reading** means the rule was read in the nearcore source at b7b4737 and not
     exercised here.
   - **recalled** means it was neither read nor run. Treat it as an assumption.
@@ -94,7 +99,9 @@ Each rule has four fields:
   rollback `:1084-1087`.
 - **Model:** `Exec(r, O)`, which takes the `Verdict` and dispatches to `Commit`, `FailOOG` or
   `FailP`. The contract conjoins its own state update.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> The sim compared each receipt's
+  verdict (ok, out of gas, failed) on every flow, but it does not see state or interleaving,
+  so the atomicity itself is not checked there.
 
 ### R4. Revert scope: only the failing receipt
 
@@ -109,7 +116,11 @@ Each rule has four fields:
   sets the error, `:151-227` builds children only when `execution_succeeded`).
 - **Model:** `FailP` / `FailOOG` create no children; the contract keeps its own variables
   unchanged when `~Ok(r, O)`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** a failed receipt creates none of its children: sim (the `chain*`, `ret*`
+  and `send_*_cb` flows below their window edge, e.g. `chain1` below 12.9 Tgas; `chain_s0`).
+  The state rollback and the survival of earlier receipts' effects: nearcore reading (the
+  comparison sees no state).
+  <!-- conformance -->
 
 ### R5. Deposit refund on failure
 
@@ -130,7 +141,8 @@ Each rule has four fields:
   is burnt by `ExecTransferFail` (`RefundBurn`): it is consumed, its callback (if any) sees
   Failed, and the amount goes to the ghost `burnt`, which `NearConserved` subtracts.
   `BurnLostRefunds <- FALSE` restores the older behaviour (the refund stays in flight).
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> The comparison leaves refund receipts
+  out on both sides, so no flow checks this rule.
 
 ---
 
@@ -145,7 +157,10 @@ Each rule has four fields:
   with `data = None`), `:894-895` (`None => PromiseResult::Failed` when inputs are collected).
 - **Model:** a failed receipt's data is `DataOf(r, FALSE, ...)`, which the callback sees as
   `IsFailed(r.res)`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** the callback runs after its dependency fails: sim (`send_named_missing_cb`,
+  `ft_call_panic`, and the window just above 8.4 Tgas in `ft_call_*` and `wnear_call*`, where
+  `ft_on_transfer` runs out of gas). That it reads `Failed`: nearcore reading (the comparison
+  does not see what a callback reads). <!-- conformance -->
 
 ### C2. A callback can itself fail
 
@@ -156,7 +171,9 @@ Each rule has four fields:
   `apply_action_receipt` (`runtime/runtime/src/lib.rs:827-1274`).
 - **Model:** the callback is an ordinary receipt for `Exec`. It can fail by gas (gas mode) or
   by `ForcedFail` (fault mode).
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> No flow makes a callback fail: every
+  callback's static gas covers its burn, and all 30,014 callback receipts in the sweeps
+  succeed, so the sim does not check this rule.
 
 ### C3. Promise result shapes
 
@@ -173,7 +190,9 @@ Each rule has four fields:
 - **Model:** `r.res = [ok, v, sz]` with `v` a number, `EMPTY`, `MAL` or `NONEMPTY`, built by
   `RVal`; helpers `IsNum`, `IsEmpty`, `IsFailed`, `NumOr`. No results: `NoRes` with
   `NoRes.v = NOPR` (`NoResults(r.res)`), and `IsNum(NoRes) = FALSE`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> The flows produce every shape (empty,
+  numeric, non-numeric, failed), but the comparison does not see what a callback reads, and
+  no status or attached gas in them depends on it.
 
 ### C4. Result size
 
@@ -206,7 +225,9 @@ Each rule has four fields:
   receivers are appended to the returned receipt); `runtime/runtime/src/function_call.rs:249-254`
   (output receivers only for the last action).
 - **Model:** `ret = RProm`, with the tail receipt's `cb` wired to `r.cb`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> `ft_transfer_call` and `near_withdraw`
+  return promises in the flows, but only to the transaction, which the comparison does not
+  see; no receipt waits on a forwarded result.
 
 ---
 
@@ -225,7 +246,9 @@ Each rule has four fields:
   `core/parameters/res/runtime_configs/83.yaml:8`.
 - **Model:** `WithGas(r, p)` on the first receipt (`Submit(WithGas(...))`); `LastGas(r)` is
   what the receipt sees as `env::prepaid_gas()`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** sim (every flow: the first receipt's gas is the prepaid at 1313 points from
+  0.5 to 300 Tgas, and its out-of-gas edge matches); the 1000 Tgas cap: nearcore reading.
+  <!-- conformance -->
 
 ### G2. Static gas, checked at promise creation
 
@@ -254,7 +277,10 @@ Each rule has four fields:
   `ZeroGasKid` fails the creator when a child call gets 0 gas, ready or callback. In gas mode a
   function-call child must have one static (and weight) per call, from `GasCall` or `WithCall`;
   an empty list is an `Assert` (`GasListsOK`).
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** sim (`chain1`, `chain3w`, `chain_w0`, `ret*`: the creator fails until its
+  children's statics and fees fit; `chain_s0`: a 0-gas child fails its creator;
+  `ft_call_panic`: out of gas before the panic, then the panic); nearcore reading for the
+  per-action panic label (`OPanicAt`), which no flow reaches. <!-- conformance -->
 
 ### G3. Weight and the leftover split (`distribute_gas`)
 
@@ -283,7 +309,13 @@ Each rule has four fields:
   `GasCall[key] = [st, wt, fee]`
   (`CallKey`/`CallDef2` look up `"acct.method"`, then `"method"`), overridden by `WithCall`,
   `WithStatic`, `WithWeight` and `WithFee`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** sim within 5 Ggas: the split by weight (`chain1`, `chain3w`), `W = 0`
+  (`chain_w0`), `ft_on_transfer`'s leftover (`ft_call_*`, `wnear_call*`) and the per-action
+  split of a multi-call receipt (`ft_batch_SC`, `wnear_batch_SC`, `wnear_batch_DC`,
+  `wnear_batch_DSC`). The floor-and-remainder rule (a few gas) is below that tolerance and
+  stays nearcore reading; the calibration's split check confirms it in nearcore to the gas,
+  against the formula rather than the model, and `examples/weight-split` covers it in the
+  model. <!-- conformance -->
 
 ### G4. Who pays action send and exec fees
 
@@ -309,7 +341,14 @@ Each rule has four fields:
   table through `NearFeeTable == INSTANCE NearFees` (`XferFee`, `StakeFee`, `BuiltinFee`);
   `NearKeys` through `KeyFee`, which omits the per-byte part of a function-call AddKey (see
   N-keyfee).
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** for action-only Transfer children, sim: the creator pays the whole receipt's
+  fees from its own gas, by receiver kind (`send_*` edges; `ft_storage_again`,
+  `wnear_storage_again` and `wnear_withdraw` for a contract's Transfer to a named account), and
+  the calibration found every action-only exec fee equal to the fee table (AddKey,
+  CreateAccount and DeleteAccount too, from `flows/actions.toml`, with no model run). For
+  function-call children the send fee and the data-receipt fees sit inside calibrated burns
+  and the exec fee is calibrated, so the sim does not check them against the table: nearcore
+  reading. <!-- conformance -->
 
 ### G5. Out-of-gas revert scope
 
@@ -321,7 +360,10 @@ Each rule has four fields:
   error); `runtime/runtime/src/lib.rs:535-541`, `:1304-1316` (failure refunds against
   `gas_burnt`, success against `gas_used`).
 - **Model:** `FailOOG`, with the `oog` ghost recording `<<tx, method>>`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** an out-of-gas receipt has status out of gas and no children, and its
+  callback still runs: sim (the flows that create children, below their window edge, e.g.
+  `chain1` below 12.9 Tgas; `ft_call_*` and `wnear_call*` just above 8.4 Tgas). The deposit
+  and gas refunds: nearcore reading (the comparison leaves refunds out). <!-- conformance -->
 
 ---
 
@@ -359,7 +401,11 @@ Each rule has four fields:
   "deterministic", "universal"}`. `AcctKinds`, `AcctKind`/`KindOf` and `IsImplicit` assign kinds
   to model accounts; `IsImplicit` covers NEAR-implicit, eth-implicit, deterministic and (when
   `UniversalOn`, 87+) universal.
-- **Validated:** nearcore reading. The fee-by-pattern rule: <!-- conformance -->
+- **Validated:** nearcore reading. The fee-by-pattern rule for named, NEAR-implicit and
+  eth-implicit receivers, existing and absent: sim (`send_named`, `send_nimp`, `send_nimp_new`,
+  `send_eth`, `send_eth_new`; an existing eth-implicit receiver puts the edge at 8.5 Tgas, as
+  an absent one does, against 0.8 for a named one). Deterministic and universal ids: nearcore
+  reading. <!-- conformance -->
 
 ### A3. Implicit-account creation on Transfer
 
@@ -396,7 +442,11 @@ Each rule has four fields:
   created NEAR-implicit, deterministic or universal account fail; the NEAR-implicit key, the
   rest of the universal uninitialised state (N-universal) and the charge (N-gas-money) are not
   modelled.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** a lone Transfer to an absent NEAR-implicit or eth-implicit id succeeds and
+  its creator pays the creation fees: sim (`send_nimp_new`, `send_eth_new`, `send_eth_new_cb`).
+  The only-action condition, what is created (key, eth-wallet code), deterministic and
+  universal ids, and the account creation charge: nearcore reading (no flow reaches them, and
+  the comparison sees no balances). <!-- conformance -->
 
 ### A4. Transfer to a missing named account fails and refunds
 
@@ -405,7 +455,9 @@ Each rule has four fields:
   happens to a batched Transfer to an absent implicit id (A3).
 - **nearcore:** `runtime/runtime/src/actions.rs:842-849`; refund as in R5.
 - **Model:** `ExecTransferFail(r)`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** the Transfer fails: sim (`send_named_missing`, `send_named_missing_cb`). The
+  refund (the comparison leaves refunds out) and the batched implicit case: nearcore reading.
+  <!-- conformance -->
 
 ### A5. Function call to an account without code fails
 
@@ -420,7 +472,8 @@ Each rule has four fields:
   overridable definition `Contracts` (default `Accounts`). `CallsNeedCode <- FALSE` turns the
   rule off for older models. `NearKeys.FailNoCode` and `ExecNoCode` are the same rule as an
   explicit step.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> No flow calls an account without code,
+  so the sim does not check this rule.
 
 ---
 
@@ -448,7 +501,8 @@ Each rule has four fields:
   per transaction, so on a `REFND` receipt it returns the transaction's signer, not
   `"system"`. That is harmless because refunds run no contract code; do not use `Signer(r)` of a
   refund in an invariant.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> The comparison does not see the signer.
+  `conformance/tests/semantics.rs` observes the propagation in the sim, with no model run.
 
 ### K2. Full-access versus function-call keys
 
@@ -472,7 +526,8 @@ Each rule has four fields:
   Transfer, Stake or key action, no multi-call receipt). It does not check allowances
   (N-allowance) or key actions a model bundles into a call receipt (N-fckey-one-action). There
   is no bootstrap path.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> No flow signs with a function-call
+  key, so the sim does not check this rule.
 
 ### K3. AddKey and DeleteKey
 
@@ -485,7 +540,10 @@ Each rule has four fields:
   (CreateAccount sets the actor); `runtime/runtime/src/access_keys.rs:157-164` (AddKey exists),
   `:83-89` (DeleteKey absent).
 - **Model:** `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct`, `KeyPresent`.
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** nearcore reading. <!-- conformance --> `flows/actions.toml` only prices
+  AddKey and DeleteKey (G4), and no probe flow has a key action.
+  `conformance/tests/semantics.rs` observes a failing DeleteKey of an absent key in the sim,
+  with no model run.
 
 ### M1. Multi-action receipts are atomic
 
@@ -505,7 +563,11 @@ Each rule has four fields:
   is accounted per action, with burn keys `"<acct>.batch/<shape>#<method>"` (G3); a
   single-call batch uses `"<acct>.batch/<shape>"`. `TokBatchPerAction <- FALSE` makes it one
   pool with the whole-batch key (N-batch-oog).
-- **Validated:** nearcore reading. <!-- conformance -->
+- **Validated:** the per-action gas of a token batch: sim (`ft_batch_*`, `wnear_batch_*`; it
+  shows in the batches ending in `ft_transfer_call`, whose `ft_on_transfer` gets only that
+  call's leftover: mismatch 4 in the conformance log). No flow fails a batch part way, so the
+  atomicity itself is nearcore reading; `conformance/tests/semantics.rs` observes
+  it in the sim (DeleteKey with a call, both orders), with no model run. <!-- conformance -->
 
 ---
 
@@ -548,7 +610,9 @@ Each rule has four fields:
   - Run safety properties **with the switch OFF as well**. A violation that appears only with
     the switch OFF is real under congestion unless you can argue the receiving chunk cannot be
     at its limit; do not dismiss it without that argument.
-- **Validated:** nearcore reading. <!-- conformance --> (the self-call priority probe).
+- **Validated:** nearcore reading. <!-- conformance --> The comparison does not see order.
+  `conformance/tests/semantics.rs` observes the rule in the sim (a local receipt runs before
+  incoming ones; a contract's self-call is not local), with no model run.
 
 ### S2. Ordering otherwise
 
@@ -584,8 +648,8 @@ Each rule has four fields:
 - **Model:** `ExecStake` (actor check, then `StakeFails`; result `EMPTY`), `EpochTick`;
   constants `StakingAcct`, `MinStake`,
   `MaxEpoch` and `MaxReward`.
-- **Validated:** nearcore reading. <!-- conformance --> The sim simplifies epochs (one validator,
-  no minimum stake, flat rewards).
+- **Validated:** nearcore reading. <!-- conformance --> No flow stakes. The sim simplifies
+  epochs (one validator, no minimum stake, flat rewards).
 
 ### B2. Balance must cover storage (`LackBalanceForState`)
 
@@ -625,7 +689,11 @@ locally.
 - **Sources:** NEP-141 `:203`, `:234-240`; near-contract-standards 5.29.1
   `fungible_token/core_impl.rs:94-112` (`internal_transfer`), `:121-155`.
 - **Model:** `Nep141` / `Tokens` modules: `TokHandle`, `TokStep`; arguments `FtArgs`.
-- **Validated:** NEP text and near-contract-standards source read. <!-- conformance -->
+- **Validated:** NEP text and near-contract-standards source read. <!-- conformance --> For
+  5.29.1, the receipts each call creates and their gas: sim (`ft_transfer` and `wnear_transfer`
+  create none; `ft_call_*` and `wnear_call*` create `ft_on_transfer`, then the resolver as its
+  callback). The panics are not reached (every flow's transfer is valid) and
+  the comparison sees no balances.
 
 ### T2. `ft_resolve_transfer`
 
@@ -645,6 +713,8 @@ locally.
   token only. The burn path is reached when the sender calls `storage_unregister(force)`
   between the transfer and the resolver (T4).
 - **Validated:** near-contract-standards source read (5.23.0-5.29.1). <!-- conformance -->
+  The flows run the resolver after every receiver outcome (keep, return, over, panic, out of
+  gas, a non-numeric result), but the comparison sees only its status and gas, not the refund.
 
 ### T3. Gas behaviour of `ft_transfer_call` (version-dependent)
 
@@ -669,7 +739,10 @@ locally.
   out-of-gas path of the reserve shape can disappear. Tokens built on
   near-contract-standards 3.x/4.x (many older deployments) use the reserve shape; check your
   token's version and set `TokFtGasShape` to "reserve" for those.
-- **Validated:** 5.x read; the older behaviour is recalled. <!-- conformance -->
+- **Validated:** 5.29.1 (the probes' version): sim (`ft_call_*`, `wnear_call*`, and the
+  batches ending in `ft_transfer_call`: `ft_on_transfer`'s leftover, the resolver's 5 Tgas,
+  the edge at 8.4 Tgas). 5.23.0-5.29.0 read; the older behaviour is recalled.
+  <!-- conformance -->
 
 ### T4. NEP-145 `storage_deposit`
 
@@ -712,7 +785,10 @@ locally.
   falling back to `"<t>.near_deposit"`). The shipped gas keys come from the repo's wNEAR-like probe
   (`conformance/`); recalibrate for a real deployment.
 - **Validated:** recalled. <!-- conformance --> The probe checks the probe, not a production
-  deployment.
+  deployment. For the repo's wNEAR-like probe, the receipts of `near_deposit` (registered and
+  registering) and `near_withdraw` (with the Transfer it returns), and their gas: sim
+  (`wnear_deposit`, `wnear_deposit_new`, `wnear_withdraw`, `wnear_batch_D*`). The comparison
+  sees no balances.
 
 ### T7. Token deviations
 
@@ -745,8 +821,8 @@ locally.
 - **nearcore:** no counterpart for the switch itself. Gas mode encodes G1-G5.
 - **Model:** `GasMode`, `MayFail`, `MaxFails`, `ForcedFail`, `GasCall`, `GasBurn`, `FailOOG`,
   `Label`, plus the ghosts `oog` and `rlog`.
-- **Validated:** gas mode: nearcore reading. <!-- conformance --> Fault mode is an abstraction by
-  design.
+- **Validated:** gas mode: sim as far as G1-G5 are (every flow runs the model in gas mode).
+  <!-- conformance --> Fault mode is an abstraction by design and has no sim counterpart.
 
 ---
 

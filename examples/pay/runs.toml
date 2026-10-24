@@ -138,9 +138,10 @@ Amts = "{1}"
 # Same window with the token side measured (CalibStd, near-contract-standards 5.29.1).
 # The window is set by pay / on_paid alone (see pay_gas): on_paid gets 1 Tgas + half
 # of (prepaid - 39.8 Tgas) and burns 1.5. It holds as long as the token side fits in
-# ft_transfer_call's 35 Tgas: StdFt ft_transfer_call burn (1.587) + 0.9 + resolver
-# fee (0.888) + resolver static (5) = 8.4 Tgas, and the resolver burn (0.858) fits
-# in its 5 Tgas. A recalibration that moves burns by a few Ggas keeps 39800-40700.
+# ft_transfer_call's 35 Tgas: StdFt ft_transfer_call burn (1.592) + 0.9 + resolver
+# fee (0.889) + resolver static (5) = 8.4 Tgas, and the resolver burn (0.859 with a
+# refund, 0.417 without) fits in its 5 Tgas. A recalibration that moves burns by a few
+# Ggas keeps 39800-40700.
 [[run]]
 name = "pay_gas_std"
 expect = "pass"

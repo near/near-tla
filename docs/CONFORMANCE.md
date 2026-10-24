@@ -84,21 +84,23 @@ at this commit:
 
 | | |
 |---|---|
-| flows | TBD-conformance |
-| prepaid points per flow | TBD-conformance |
-| receipts compared | TBD-conformance |
-| status mismatches | TBD-conformance |
-| edge mismatches | TBD-conformance |
-| attached-gas differences above tolerance | TBD-conformance |
-| split-check mismatches | TBD-conformance |
+| flows | 58, all match |
+| prepaid points per flow | 1313 (76,154 points in all) |
+| receipts compared | 166,712 sim receipts |
+| status mismatches | 0 |
+| edge mismatches | 0 |
+| attached-gas differences above tolerance | 0 (tolerance 5 Ggas; largest 5 Ggas, from rounding up at two creation levels) |
+| split-check mismatches | 0 of 76,662 children (largest difference 0 gas) |
 
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
 burns, `ft_transfer_call`'s gas behaviour) are in
 [Results at the pins](../conformance/README.md#results-at-the-pins). The differences found so
 far and how each was resolved are in its [Mismatch log](../conformance/README.md#mismatch-log).
 
-Once these numbers are in, the rules marked `<!-- conformance -->` in
-[`SEMANTICS.md`](SEMANTICS.md) move from "nearcore reading" to "sim" where a flow covers them.
+With these results, the rules marked `<!-- conformance -->` in [`SEMANTICS.md`](SEMANTICS.md)
+have moved to "sim" where a flow exercises them and the comparison can see a difference. Where
+a flow covers a rule only in part, its **Validated:** line says which part the sim checked;
+the rest keeps its earlier level.
 
 ## Triage: what a mismatch means
 

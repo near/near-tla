@@ -80,7 +80,7 @@ pub struct World {
     /// Protocol version the sim runs; default: the pinned nearcore's.
     pub protocol_version: Option<u32>,
     /// Model account name for each sim account in emitted keys
-    /// (`"wrap.near" = "wrap"`); default: the sim id.
+    /// (`"wnear-probe.near" = "wnear_probe"`); default: the sim id.
     #[serde(default)]
     pub names: BTreeMap<String, String>,
     /// Model key for a method key (`"near_deposit+ft_transfer" =
