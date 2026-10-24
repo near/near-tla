@@ -110,6 +110,12 @@ EXTENDS Integers, FiniteSets, Sequences, TLC
 \* EXTENDS NearFees itself.
 NearFeeTable == INSTANCE NearFees
 
+\* The fee table's self-checks (NearFees, "Self-checks"), including that
+\* FeeRounding is "nearest" or "up". TLC ignores the ASSUMEs of an INSTANCEd
+\* module, so NearFees' own ASSUME never runs here; this one does, with the
+\* run's FeeRounding and FeeProtocol.
+ASSUME NearFeeTable!FeeSelfChecks
+
 CONSTANTS
     Accounts,        \* all accounts that hold native NEAR in the model
     StakingAcct,     \* the one account that stakes

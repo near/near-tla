@@ -13,7 +13,13 @@ A flow's `path` suffixes the burn key of every receipt it applies to
 Every burn key the model will look up must be in tla/CalibProbes.tla; a
 missing one is an error unless the flow's `model_keys` maps it to another
 key (recorded in flows/probes.toml, e.g. for a path the sim never
-completes)."""
+completes).
+
+The fee table runs with FeeRounding "nearest" (pinned in the cfg), not the
+library's default "up": conformance measures accuracy, and "up" overstates
+an action-only child's fee by up to 4 Ggas, which moves a creator's edge
+onto the next 0.1 Tgas grid point where the margin is that thin (two
+storage_deposit refund flows). Those shifts are on the safe side only."""
 import json, os, re, sys, tomllib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -249,6 +255,7 @@ CONSTANTS
   After <- mc_after
   MaxBlk <- mc_maxblk
   YieldTicks <- mc_one
+  FeeRounding <- [NearFees] mc_fee_rounding
 INVARIANTS
   Report
   NotStuck
@@ -279,7 +286,8 @@ def main():
             f.write(f"mc_grid == {grid(g_override or flow.get('grid', 'standard'))}\n")
             f.write(f"mc_first == {rc}\n")
             f.write(f"mc_after == {after(ctx, flow)}\n")
-            f.write("mc_one == 1\nmc_maxblk == 1 + Len(mc_after)\n====\n")
+            f.write("mc_one == 1\nmc_maxblk == 1 + Len(mc_after)\n")
+            f.write('mc_fee_rounding == "nearest"\n====\n')
         with open(os.path.join(BUILD, mod + ".cfg"), "w") as f:
             f.write(CFG)
         print(mod)

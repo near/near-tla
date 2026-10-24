@@ -56,8 +56,10 @@ noise. The rest of this guide is the mechanics.
 3. **Calibrate before trusting windows.** A gas window is only as good as the burn table. Use
    measured burns, record their provenance, and check that the leftover split reproduces with
    zero mismatches before believing any gas-mode verdict.
-4. **Replay every counterexample on real wasm.** The model over-approximates ordering and
-   abstracts your contract. A trace is a hypothesis until the same receipt tree, with the same
+4. **Replay every counterexample on real wasm.** The model over-approximates some ordering
+   (it has no chunks or shards) and abstracts your contract. Do not dismiss a counterexample
+   only because two receipts from one account to another run in the opposite order to their
+   creation: nearcore can do that ([S4](SEMANTICS.md#s4-no-per-pair-order)). A trace is a hypothesis until the same receipt tree, with the same
    gas and faults, reproduces in near-contract-sim against the compiled contract.
 5. **Make every invariant able to fail.** For each invariant, add a deliberately wrong
    variant that TLC must report, and confirm from the trace that it fails for the reason you
@@ -324,6 +326,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
+| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into TLC's `FeeRounding <- [NearFees] ...` ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`.
 Pick names the library does not export (`ReserveShape`, for example, is a `Nep141` operator):
@@ -1032,7 +1035,10 @@ The sim's own docs describe its API; the steps below use its names.
 If it does not reproduce, find out why before discarding it:
 
 - the order needs timing a network does not produce (see the over-approximations in
-  [Not modelled](SEMANTICS.md#over-approximations));
+  [Not modelled](SEMANTICS.md#over-approximations)). A sim without fault injection rarely
+  shows a same-pair reorder, but nearcore produces one under load
+  ([S4](SEMANTICS.md#s4-no-per-pair-order)); reproduce it with `Fault::Hold`, not by waiting
+  for it;
 - the gas tables are wrong for this path ([Calibrating](#calibrating));
 - your handler does not match the contract (re-read the source);
 - or the library is wrong: open an issue with the trace and the sim test.
@@ -1144,7 +1150,9 @@ and prints the intervals in Tgas.
   fails if a label it does not list prints anything.
 
 Windows inherit the precision of the tables: only trust a window that is wider than the
-rounding bound summed over its path, and only on calibrated tables.
+rounding bound summed over its path, and only on calibrated tables. With the default
+`FeeRounding = "up"` the fee table never understates, so a window's lower edge errs high (by
+less than 4 Ggas per action-only receipt), never low.
 
 ## Worked material
 
@@ -1171,6 +1179,8 @@ All examples are toy contracts written for this repo.
   | `local-priority` | local-receipt priority on versus off |
   | `weight-split` | the split of unused gas by weight |
   | `eth-implicit-fee` | the Transfer fee to an eth-implicit receiver |
+  | `fee-edge` | a gas budget at a fee's edge: `FeeRounding` `"up"` catches a budget 0.37 Ggas short that `"nearest"` passes |
+  | `pair-order` | no per-pair FIFO: a receiver that assumes in-order delivery fails, one with sequence numbers passes |
   | `nep141-refund-cap` | the NEP-141 resolver caps the refund at the amount |
   | `nep145-refund-to-predecessor` | `storage_deposit` refunds the excess to the predecessor |
   | `mt-smoke` | NEP-245 transfer and resolve |

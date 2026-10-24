@@ -15,11 +15,18 @@
 (* eth_fee_creates, where the Transfer creates it (Created holds).         *)
 (*                                                                         *)
 (* Correct P: budgets Burn(forward) + the receiver-type dependent fee,     *)
-(* pinned here as literals at protocol 88: 8146 Ggas for an eth-implicit   *)
-(* receiver, 446 Ggas for a named one (Transfer send + exec plus the       *)
+(* pinned here as literals at protocol 88 (Transfer send + exec plus the   *)
 (* receipt base fee; eth-implicit adds create_account only,                *)
-(* core/parameters/src/cost.rs:794-796, :832-834).                         *)
-(* FeesPinned checks the library's fee table against them.                 *)
+(* core/parameters/src/cost.rs:794-796, :832-834).  FeesPinned checks the  *)
+(* library's fee table against them.  The literals depend on               *)
+(* NearFees.FeeRounding, which rounds each fee entry on its own:           *)
+(*   exact Ggas: receipt 108.0595 and transfer 115.1231, each charged      *)
+(*   on the send and on the exec side; create_account 500 send, 7200 exec  *)
+(*   "up" (default): 109 + 116 per side, so named 2 x 225 = 450, and       *)
+(*                   eth-implicit 450 + 500 + 7200 = 8150                  *)
+(*   "nearest":      108 + 115 per side, so named 2 x 223 = 446, and       *)
+(*                   eth-implicit 446 + 500 + 7200 = 8146                  *)
+(* against the exact 446.37 and 8146.37 (run eth_fee_ok_nearest).          *)
 (* Wrong P (Wrong = TRUE): budgets the named-account fee.  For an          *)
 (* eth-implicit To, R.forward runs out of gas, the deposit returns to P    *)
 (* and To is never paid: Delivered fails (run eth_fee_named_budget).  The  *)
@@ -40,8 +47,11 @@ ForwardBurn == 1000
 PGasCall == "forward" :> [st |-> <<0>>, wt |-> <<0>>, fee |-> 300]
 PGasBurn == ("pay" :> [base |-> 2000, per |-> 0]) @@ ("forward" :> [base |-> ForwardBurn, per |-> 0])
 
-EthFee   == 8146      \* Ggas, Transfer to an eth-implicit account, protocol 88
-NamedFee == 446       \* Ggas, Transfer to a named account, protocol 88
+\* Ggas at protocol 88, by FeeRounding (see the header): Transfer to an
+\* eth-implicit account, and to a named one.
+Up == NearFeeTable!FeeRounding = "up"
+EthFee   == IF Up THEN 8150 ELSE 8146
+NamedFee == IF Up THEN 450 ELSE 446
 Budget == ForwardBurn + (IF Wrong \/ KindOf(To) # "eth_implicit" THEN NamedFee ELSE EthFee)
 
 Start == /\ ~sent

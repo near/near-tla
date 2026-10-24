@@ -26,10 +26,14 @@ the runtime allows.
   [Not modelled](docs/SEMANTICS.md#not-modelled).
 - **Over- versus under-approximations.** Most omissions are over-approximations: the model
   allows more orders than a network produces, so it misses no bug but can report
-  counterexamples no network reaches. Replay every counterexample in the sim. A few are
-  under-approximations, which can hide bugs (for example, local-receipt priority under a full
-  chunk, and rounding near gas edges); they are listed separately in
+  counterexamples no network reaches. Replay every counterexample in the sim. (Receipts from
+  one account to another overtaking each other is not one of them: nearcore does that too,
+  [S4](docs/SEMANTICS.md#s4-no-per-pair-order).) A few are under-approximations, which can
+  hide bugs (for example, local-receipt priority under a full chunk); they are listed
+  separately in
   [Under-approximations](docs/SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs).
+  Fees are rounded up by default, so a gas budget the model finds enough is enough as far as
+  the fee table goes.
 
 ## Quickstart
 
@@ -117,13 +121,16 @@ to move to a new protocol version.
 
 - `promise_and`: callbacks that join several promise results (SEMANTICS C6).
 - Yield/resume (NEP-519), with an abstract block clock for the timeout (C7, S3).
+- Fees rounded up instead of to the nearest Ggas, so gas edges err on the safe side
+  (`FeeRounding`, N-precision); calibrated burns fitted as an upper envelope.
+- Per-sender-receiver ordering: dropped. nearcore keeps no per-pair order at protocol 88
+  (SEMANTICS S4), so the model's free order is exact there and a pair-order switch would
+  hide real bugs.
 
 ### Planned (v0.2)
 
 - Delegate actions (NEP-366), where the signer is the relayer.
-- Opt-in per-sender-receiver ordering, to cut false counterexamples.
 - Per-byte storage staking instead of a fixed floor.
-- Fees rounded up instead of to the nearest Ggas, so gas edges err on the safe side.
 
 ### Later
 

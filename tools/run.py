@@ -11,7 +11,8 @@ arguments every run under examples/ is checked. Example, one run of your own mod
 
 For each run the runner generates
   MC_<run>.tla   a wrapper that EXTENDS the spec and defines const_<C> == <expr>
-  MC_<run>.cfg   a TLC config substituting C <- const_<C> (cfg files cannot hold tuples)
+  MC_<run>.cfg   a TLC config substituting C <- const_<C> (cfg files cannot hold tuples);
+                 for a key Mod!C, C <- [Mod] const_Mod_C
 in a fresh temporary directory (so nothing stale can shadow a module), runs TLC there
 with -DTLA-Library=<spec dir>:<library>, writes TLC's output to build/<run>.log beside
 the runs.toml ($HOME rewritten to ~, temp dirs to <tmp>), parses the verdict, prints a
@@ -51,6 +52,10 @@ runs.toml format
                               # or property; the value must say why
   [run.constants]             # CONSTANT name -> TLA+ expression text (merged over
   Menu = '<<1, 2>>'           # [constants]); TOML ints and booleans are also accepted
+  "NearFees!FeeRounding" = '"nearest"'   # Mod!Name: a definition of a module the spec
+                              # EXTENDS or INSTANCEs (directly or through its modules):
+                              # TLC's `Name <- [Mod] expr`, which also reaches a named
+                              # instance such as NearAsync's NearFeeTable
 
 Every key except name/expect/invariant/expect_*/window_step/allow_no_invariants may also
 be given at the top level as a default for all runs of the file.
@@ -61,8 +66,9 @@ Checks
   allow_no_invariants).
 - Constant names must be CONSTANTs declared by the spec or a module it EXTENDS, or
   zero-arity definitions there (TLC's `<-` overrides a definition too; the library uses
-  that for overridable defaults). They are found by a simple parse of the spec dir and
-  the library. A constant may not reuse the name of init/next/specification or of a
+  that for overridable defaults). A `Mod!Name` key must name a zero-arity definition or
+  CONSTANT of a module reachable from the spec through EXTENDS and INSTANCE. They are
+  found by a simple parse of the spec dir and the library. A constant may not reuse the name of init/next/specification or of a
   checked invariant/property.
 - Temporal properties: TLC does not name a violated temporal property. expect =
   "violation" with a property as `invariant` therefore requires that property to be
@@ -253,9 +259,15 @@ def load_file(path: Path) -> list[Run]:
             if not isinstance(src, dict):
                 raise ConfigError(f"{where}: constants must be a table")
             for k, v in src.items():
-                if not IDENT_RE.match(k):
-                    raise ConfigError(f"{where}: bad constant name {k!r}")
+                if not all(IDENT_RE.match(x) for x in k.split("!", 1)):
+                    raise ConfigError(f"{where}: bad constant name {k!r} (Name or Mod!Name)")
                 consts[k] = tla_value(k, v)
+        defs: dict[str, str] = {}
+        for k in consts:
+            d = const_def_name(k)
+            if d in defs:
+                raise ConfigError(f"{where}: constants {defs[d]!r} and {k!r} both define {d}")
+            defs[d] = k
         workers = _typed(where, m, "workers", int, 2)
         if not 1 <= workers <= MAX_WORKERS:
             raise ConfigError(f"{where}: workers must be 1..{MAX_WORKERS}")
@@ -393,6 +405,29 @@ def module_decls(src: str) -> tuple[list[str], set[str]]:
     return ext, names
 
 
+_INSTANCE = re.compile(r"\bINSTANCE\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def reachable_modules(spec: str, dirs: list[str]) -> dict[str, Path] | None:
+    """Every module `spec` reaches through EXTENDS and INSTANCE (itself included), by
+    name, with its file; standard modules are left out. None if a module is missing."""
+    found: dict[str, Path] = {}
+    todo = [spec]
+    while todo:
+        mod = todo.pop()
+        if mod in found:
+            continue
+        path = next((Path(d) / f"{mod}.tla" for d in dirs if (Path(d) / f"{mod}.tla").is_file()), None)
+        if path is None:
+            if mod in NO_CONSTANT_MODULES:
+                continue
+            return None
+        found[mod] = path
+        src = path.read_text(encoding="utf-8", errors="replace")
+        todo += module_decls(src)[0] + _INSTANCE.findall(strip_tla(src))
+    return found
+
+
 def declared_constants(spec: str, dirs: list[str]) -> set[str] | None:
     """Substitutable names (CONSTANTs, zero-arity definitions) of `spec` and its EXTENDS
     chain, or None if a module is missing."""
@@ -420,10 +455,23 @@ def check_constants(run: Run) -> str | None:
     declared = declared_constants(run.spec, [str(run.dir), *run.library])
     if declared is None:
         return f"{run.name}: could not find every module EXTENDed by {run.spec}; constant names not checked"
-    unknown = sorted(set(run.constants) - declared)
+    unknown = sorted(k for k in run.constants if "!" not in k and k not in declared)
     if unknown:
         raise ConfigError(f"{rel(run.toml)} run {run.name}: {unknown} are neither CONSTANTs nor "
                           f"definitions of {run.spec} or a module it EXTENDS")
+    qualified = [k for k in run.constants if "!" in k]
+    if qualified:
+        mods = reachable_modules(run.spec, [str(run.dir), *run.library])
+        if mods is None:
+            return f"{run.name}: could not find every module {run.spec} reaches; {qualified} not checked"
+        for k in qualified:
+            mod, name = k.split("!", 1)
+            if mod not in mods:
+                raise ConfigError(f"{rel(run.toml)} run {run.name}: {k!r}: {run.spec} neither EXTENDS "
+                                  f"nor INSTANCEs a module {mod}")
+            if name not in module_decls(mods[mod].read_text(encoding="utf-8", errors="replace"))[1]:
+                raise ConfigError(f"{rel(run.toml)} run {run.name}: {k!r}: {name} is neither a CONSTANT "
+                                  f"nor a zero-arity definition of {mod}")
     return None
 
 
@@ -470,6 +518,20 @@ def select(args: list[str]) -> list[Run]:
 # ---------------------------------------------------------------- generation
 
 
+def const_def_name(key: str) -> str:
+    """The wrapper's definition for constant key `Name` or `Mod!Name`."""
+    return "const_" + key.replace("!", "_")
+
+
+def cfg_substitution(key: str) -> str:
+    """The cfg line for constant key `Name` (`Name <- const_Name`) or `Mod!Name`
+    (`Name <- [Mod] const_Mod_Name`: TLC's override of a definition in module Mod)."""
+    if "!" in key:
+        mod, name = key.split("!", 1)
+        return f"{name} <- [{mod}] {const_def_name(key)}"
+    return f"{key} <- {const_def_name(key)}"
+
+
 def _definition(name: str, expr: str) -> str:
     if "\n" not in expr.strip():
         return f"{name} == {expr.strip()}"
@@ -483,7 +545,7 @@ def wrapper(run: Run, mod: str, invariants=None, properties=None) -> tuple[str, 
     tla = [f"---- MODULE {mod} ----",
            f"\\* Generated by tools/run.py for run {run.name}; do not edit.",
            f"EXTENDS {run.spec}"]
-    tla += [_definition(f"const_{k}", v) for k, v in run.constants.items()]
+    tla += [_definition(const_def_name(k), v) for k, v in run.constants.items()]
     tla.append("====")
     cfg = [f"\\* Generated by tools/run.py for run {run.name}; do not edit."]
     if run.specification:
@@ -492,7 +554,7 @@ def wrapper(run: Run, mod: str, invariants=None, properties=None) -> tuple[str, 
         cfg += [f"INIT {run.init}", f"NEXT {run.next}"]
     if run.constants:
         cfg.append("CONSTANTS")
-        cfg += [f"  {k} <- const_{k}" for k in run.constants]
+        cfg += [f"  {cfg_substitution(k)}" for k in run.constants]
     if invs:
         cfg.append("INVARIANTS")
         cfg += [f"  {i}" for i in invs]

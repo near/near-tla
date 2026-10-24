@@ -52,7 +52,7 @@ once per point. What the sim offers for yields at this rev, and what the flows u
 | `src/spec.rs` | the flow-spec format, and `run_flow` (a flow's transaction and its `after` steps) |
 | `src/calib.rs` | the split check, burn collection and fit, and the TLA+ emitter |
 | `src/bin/calibrate.rs` | the calibration / sweep tool |
-| `tests/semantics.rs` | receipt semantics: local-receipt priority, signer propagation, DeleteKey batch atomicity (`docs/SEMANTICS.md`: "Local receipts first", "Signer and signer public key propagate", "Multi-action receipts are atomic"); yield/resume: the resume payload limit, two resumes in one block, a resume after the timeout, a resume of another account's yield ("Yield and resume (NEP-519)", "N-yield-payload") |
+| `tests/semantics.rs` | receipt semantics: local-receipt priority, signer propagation, DeleteKey batch atomicity (`docs/SEMANTICS.md`: "Local receipts first", "Signer and signer public key propagate", "Multi-action receipts are atomic"); yield/resume: the resume payload limit, two resumes in one block, a resume after the timeout, a resume of another account's yield ("Yield and resume (NEP-519)", "N-yield-payload"); no per-pair order: a later receipt from `p-probe` to `q-probe` overtaking earlier, buffered ones ("No per-pair order") |
 | `tests/smoke.rs` | the smoke grid: split check (per action too), standard burns, action-only fees, two window edges |
 | `tla/ProbeConf.tla` | the model side: the probe contracts on the library, one flow per run (its `after` steps included), `PrintT` of the parked yields and every receipt |
 | `tla/CalibProbes.tla` | the probe world's burn and exec-fee table (generated) |
@@ -165,10 +165,14 @@ A flow passes `conform.py` only if:
   log (`rlog`) carries no parent and no order, so receipts are matched by label, not by their
   place in the receipt tree, and the order in which they ran is not compared.
 
-The model runs on the library's defaults: token batches are accounted per call (each call of a
+The model runs on the library's defaults, except the fee table's rounding: `mkconf.py` pins
+`FeeRounding <- [NearFees] "nearest"`, because the comparison measures accuracy and the
+default `"up"` overstates an action-only child's fee by up to 4 Ggas on purpose (under `"up"`
+two flows, `ft_storage_again` and `wnear_storage_again`, move their edge from 1.0 to 1.1 Tgas;
+`docs/SEMANTICS.md`, N-precision). Token batches are accounted per call (each call of a
 batch keyed `<acct>.batch/<shape>#<method>`, the per-call keys above), token methods use their
-path keys where `CalibProbes` has them, and the token gas knobs are the library's. The cfg sets
-only the world: `Contracts` = the four probe accounts with code, the token holders and storage
+path keys where `CalibProbes` has them, and the token gas knobs are the library's. Apart from
+that pin, the cfg sets only the world: `Contracts` = the four probe accounts with code, the token holders and storage
 minimum, and the calibrated tables.
 
 For a quick look, `mkconf.py --grid smoke` runs the model on the smoke grid, and
@@ -232,10 +236,16 @@ The tool works in three steps:
    arguments the outcome does not record; one per receipt is solved from the exec fee the child
    prepaid (full-access key, or base + per byte · n with n whole) and priced from the same
    parameters.
-3. **Fit.** For each key it fits `base + per · size` (Ggas, size in the unit of `[[size]]`). It
-   prints the residuals and the spread over all successful receipts. `base` and exec fees are
-   rounded up to whole Ggas, so the model never has more gas left than nearcore; otherwise a
-   receipt that needs a fraction of a Ggas more than its prepaid gas succeeds in the model.
+3. **Fit.** For each key it fits `base + per · size` (Ggas, size in the unit of `[[size]]`) as
+   an upper envelope: `per` is the least-squares slope rounded to the nearest whole Ggas, and
+   `base` the smallest whole Ggas that puts every measured burn at or below the line (with
+   one size, the largest burn). Exec fees are rounded up too. So the model never has more gas
+   left than nearcore on what was measured; otherwise a receipt that needs a fraction of a
+   Ggas more than its prepaid gas succeeds in the model. It prints the spread over all
+   successful receipts and, as "max residual", the most the line overstates one burn. Past
+   the largest size measured a `per` rounded down understates by up to 0.5 Ggas per size
+   unit beyond it: measure the sizes you rely on. This matches the fee table's default
+   rounding up (`NearFees.FeeRounding`).
 
 A key that never succeeds (a receipt that always fails, such as a receiver that panics) takes
 the burn up to its failure (status `failed`, not out of gas), commented as such: the model
@@ -329,8 +339,9 @@ parked-yield count.
 - Gas is in Ggas (1 Tgas = 1000).
 - Result sizes (`r.res.sz`) and `GasBurn.per` are per KB (1000 bytes). The measured slopes are
   2.84 Ggas/KB for a callback reading its results and 69.53 Ggas/KB for returning a value. The
-  table rounds `per` to whole Ggas (3 and 70), so over 100 KB the rounding is up to about
-  16 and 47 Ggas.
+  table rounds `per` to whole Ggas (3 and 70), and `base` is then the smallest that puts every
+  measured burn at or below the line, so over the sizes measured the line overstates by up to
+  17.5 and 47.2 Ggas (the "max residual" in `tla/CalibProbes.tla`), never understates.
 - The model counts whole Ggas, so nearcore's remainder rule (the last weighted call gets the
   few gas the floor shares leave) is below conformance resolution here; the split check above
   checks it to the gas, and `examples/weight-split` covers it in the model.
@@ -444,7 +455,9 @@ whichever transaction resumed it.
 and the parked yields compared (output of `scripts/conform.py`; edges in Tgas). All 73 flows
 pass: 95 849 points, 222 918 sim receipts compared, 0 status mismatches, 0 edge mismatches, 0
 points with attached gas off by more than 5 Ggas, 0 model points missing. No point of any flow
-ends with a yield parked, in the sim or the model. The table and totals are the same as at
+ends with a yield parked, in the sim or the model. Rerun after the fee-rounding change
+(`FeeRounding` pinned to `"nearest"` by `mkconf.py`, `CalibProbes` refitted as an upper
+envelope): the table and totals are unchanged, the worst gas differences included. The table and totals are the same as at
 `06f8a1b`, before transactions and parked yields were compared. The 58 flows before the async patterns give the same totals as at `1ba96ff`
 (76 154 points, 166 712 receipts), and their calibrated rows in `tla/CalibProbes.tla` are
 unchanged. The largest gas difference, 5 Ggas on `ft_batch_C` (3 elsewhere), is rounding:

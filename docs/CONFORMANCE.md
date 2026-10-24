@@ -79,6 +79,11 @@ prepaid-gas point:
 - **Edges.** The prepaid values at which the vector of statuses changes. These are the window
   boundaries a gas-mode model predicts, so they must be identical, not just close.
 
+The model side runs with the fee table's `FeeRounding` pinned to `"nearest"` (by
+`conformance/scripts/mkconf.py`), because the comparison measures accuracy; the library's
+default `"up"` overstates fees on purpose ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)
+gives what changes under `"up"`: two flows' edges, one grid point up, on the safe side).
+
 Not compared: the order in which receipts run. Each point is compared as a multiset of
 receipts per transaction plus the final parked-yield count, so two executions that differ only
 in order (a callback before or after one of its inputs) look the same. The order of a joint

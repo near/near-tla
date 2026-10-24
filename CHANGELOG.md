@@ -11,7 +11,7 @@ Tokens, Nep245, plus a separate NearKeys).
 ## [Unreleased]
 
 ```
-nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, covered 84-88
+nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: 29e909033bb59eab792dee136e9d02870488bc3e
 near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ```
@@ -19,6 +19,29 @@ near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ### Breaking
 
 Each entry ends with its migration.
+
+- **`NearFees` rounds fees up by default** (`FeeRounding == "up"`; it rounded to the nearest
+  Ggas). Every table entry is rounded up on its own, so no fee is understated and the parts
+  still add up: a named Transfer costs its creator 450 Ggas (was 446; exact 446.37), an
+  eth-implicit one 8150 (was 8146), near-implicit 8354 (8350), a Stake receipt 463 (460),
+  DeleteKey 408 (406), full-access AddKey 422 (420), function-call AddKey 424 (420). Gas-mode
+  verdicts and windows move by less than 4 Ggas per action-only receipt (a Transfer or Stake
+  child, a key action), always towards "needs more gas": a budget that was a few Ggas short
+  in nearcore but passed in the model now fails (`examples/fee-edge`). Models that compare
+  `XferFee`, `StakeFee`, `KeyFee` or `NearFeeTable!...` results with literals, or whose gas
+  windows sit within that margin of an edge, change verdict. In the repo only
+  `eth-implicit-fee` pinned literals; its `FeesPinned` now reads them by mode. No other
+  example run changed verdict or state count. Migration: `"NearFees!FeeRounding" =
+  '"nearest"'` in a run's `[constants]` (or `[constants]` of the file) restores the old
+  behaviour exactly (every table entry, and `Bytes(n, u)` for all `n` up to 3000 and at 20 KB,
+  1, 4 and 16 MiB, were checked equal); or update the literals (450, 8150, ...). A model that
+  `EXTENDS NearFees` can write `FeeRounding <- ...` unqualified.
+- **The fee table's self-checks now run for every model.** TLC ignores the `ASSUME`s of an
+  INSTANCEd module, so `NearFees`' own checks never ran for models that reach it through
+  `NearAsync`'s `NearFeeTable`. `NearAsync` now carries `ASSUME NearFeeTable!FeeSelfChecks`:
+  a `FeeRounding` other than `"nearest"` or `"up"`, a `FeeProtocol` outside 84-88, or an
+  edited table that no longer reproduces the pinned totals stops TLC before it explores.
+  Migration: none for an unedited library.
 
 - **New platform variable `blk` in `NearAsync`** (the block height, advanced only by the new
   `BlockTick`; it stays 0 unless a model sets `MaxBlk > 0`). It is in `platformVars`, and
@@ -243,6 +266,29 @@ Each entry ends with its migration.
 
 ### Added
 
+- **`NearFees.FeeRounding`** (`"up"`, the default, or `"nearest"`), `FeeRoundingModes`,
+  `FeeRoundM` / `FeeRoundU`, the source tables `BaseRowM` (mGgas, rounded up) and `ByteRowG`
+  (exact gas per byte), and `FeeSelfChecks` (the self-checks, pinned per mode, as one
+  operator; `FeePin(nearest, up)` picks the value). Error bounds per mode are in the module
+  header and SEMANTICS N-precision.
+- **`tools/run.py`: module-qualified constants.** A key `Mod!Name` in `[constants]` or
+  `[run.constants]` becomes TLC's `Name <- [Mod] const_Mod_Name`, which overrides a definition
+  of a module the spec reaches through EXTENDS or INSTANCE, so `"NearFees!FeeRounding" =
+  '"nearest"'` also reaches `NearAsync`'s `NearFeeTable`. The runner checks that `Mod` is
+  reachable and defines `Name` (zero-arity or a CONSTANT).
+- **`examples/fee-edge`**: a Transfer budget 0.37 Ggas short of nearcore's fee passes under
+  `"nearest"` (`edge_nearest_misses`, a false pass) and fails under `"up"`
+  (`edge_up_catches`); the must-pass `edge_up_ok`, and `edge_up_tight_false_cex`, the price of
+  "up" (a budget nearcore accepts, within the margin, fails).
+- **`examples/pair-order`**: two messages from one contract to another, the second sent only
+  after the first was created. A receiver that assumes they arrive in order is left open
+  (`pair_assumes_fifo`, must fail); one that keeps the highest sequence number seen passes
+  (`pair_seqno_ok`).
+- **`eth-implicit-fee`: run `eth_fee_ok_nearest`**, the same model under `"nearest"`.
+- **Conformance: `later_receipt_overtakes_buffered`** in `conformance/tests/semantics.rs`: in
+  the sim, with no fault injected, three ~1.2 MB receipts `p-probe` made for `q-probe` are
+  overtaken by a small one `p-probe` made after them in the same block (SEMANTICS S4).
+
 - **Joint promises** (`promise_and(..).then(..)`, SEMANTICS C6): `AndThen(ks, c, d0)` wires
   input receipts to fresh data ids and returns the callback with the optional field `ins`.
   The callback runs once, after all inputs, in any arrival order; `NRes(r)` and `ResAt(r, i)`
@@ -410,6 +456,23 @@ Each entry ends with its migration.
   sides; the totals and the calibrated tables are unchanged.
 
 ### Changed
+
+- Docs: SEMANTICS N-order and N-resume-order were wrong. nearcore keeps no per-pair order at
+  protocol 88: a new receipt bypasses the link's outgoing buffer whenever it fits
+  (`congestion_control.rs:292-325`, `:451`), and missed chunks reverse the order across heights
+  (`chunk_validation.rs:478-480`). They are replaced by S4 ("No per-pair order"), which states
+  what nearcore does order (S2: per chunk, not per pair). The model's free order was not an
+  over-approximation there, it is exact; the planned opt-in pair-order switch is dropped, as
+  it would only hide real reorderings.
+- Docs: N-precision, Units, USAGE and the `NearFees` header describe both rounding modes.
+- Conformance calibrator (`conformance/src/calib.rs`, `fit`): the burn line is an upper
+  envelope. `per` is still the least-squares slope rounded to the nearest Ggas, but `base` is
+  now the smallest value that puts every measured burn at or below `base + per × size` (it was
+  the least-squares intercept, rounded up, which could sit below a measurement). "max
+  residual" in a table's comments is now the most the line overstates one measurement.
+  `CalibStd` is regenerated: no number changed (all its keys have `per = 0`, where the fit was
+  already the largest burn); only its header gained a line on the envelope.
+  `conformance/tla/CalibProbes.tla`: `p.on_read` base 268 → 270 and `q.burn` base 0 → 1 Ggas.
 
 - Docs: C6 and C7 no longer claim that the sim validates execution order (the callback
   after the last input, after the resume or the timeout): the comparison is per receipt and

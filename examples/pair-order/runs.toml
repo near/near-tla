@@ -1,0 +1,50 @@
+# Two receipts on one sender-receiver pair may run in either order (docs/SEMANTICS.md, S4).
+# See Notify.tla.
+#
+#   python3 tools/run.py examples/pair-order
+#
+# NoDangling  once both messages are sent and nothing is in flight, D is closed.
+# Sane        NEAR conserved, no orphans.
+#
+# The violation is not a false counterexample: nearcore can deliver d_close before d_open
+# on the same pair (conformance/tests/semantics.rs, later_receipt_overtakes_buffered).
+
+spec = "Notify"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["NoDangling", "Sane"]
+tags = ["semantics:pair-order"]
+
+[constants]
+Accounts = "Accts"
+Exists = "Accts"
+StorageFloor = "Zero"
+StakingAcct = '"s"'
+MinStake = "1"
+MaxEpoch = "0"
+MaxReward = "0"
+GasMode = '"fault"'
+GasCall = "[x \\in {} |-> 0]"
+GasBurn = "[x \\in {} |-> 0]"
+MayFail = "{}"
+MaxFails = "0"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+U = '"u"'
+S = '"s"'
+D = '"d"'
+Seqno = "TRUE"
+
+# Must pass: D ignores the older message, so it ends closed in either order.
+[[run]]
+name = "pair_seqno_ok"
+expect = "pass"
+
+# Must fail: D assumes in-order delivery; d_close runs first and d_open reopens D.
+[[run]]
+name = "pair_assumes_fifo"
+expect = "violation"
+invariant = "NoDangling"
+[run.constants]
+Seqno = "FALSE"

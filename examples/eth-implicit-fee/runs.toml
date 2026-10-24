@@ -49,6 +49,13 @@ expect = "pass"
 Wrong = "TRUE"
 To = '"bob"'
 
+# The same under the earlier rounding ("nearest"): the literals of FeesPinned follow it.
+[[run]]
+name = "eth_fee_ok_nearest"
+expect = "pass"
+[run.constants]
+"NearFees!FeeRounding" = '"nearest"'
+
 # The eth-implicit receiver does not exist yet: the Transfer creates it.
 [[run]]
 name = "eth_fee_creates"

@@ -367,6 +367,42 @@ class LoadAndWrapperTest(unittest.TestCase):
         r.library = [str(self.d / "nowhere")]
         self.assertIsNotNone(run.check_constants(r))  # Base missing: skipped with a warning
 
+    def test_module_qualified_constant(self):
+        """`Mod!Name` overrides a definition of a module the spec reaches, INSTANCE included."""
+        lib = self.d / "lib"
+        lib.mkdir()
+        write(lib, "Fees.tla", '---- MODULE Fees ----\nRounding == "up"\nFee(x) == x\n====\n')
+        write(lib, "Plat.tla", "---- MODULE Plat ----\nCONSTANT Accts\nTable == INSTANCE Fees\n====\n")
+        write(lib, "Other.tla", '---- MODULE Other ----\nKnob == 1\n====\n')
+        write(self.d, "Spec3.tla", "---- MODULE Spec3 ----\nEXTENDS Plat\n====\n")
+        (r,) = self.load('spec = "Spec3"\nlibrary = "lib"\n[constants]\n"Fees!Rounding" = \'"nearest"\'\n'
+                         '[[run]]\nname = "q"\nexpect = "pass"\ninvariants = ["A"]\n'
+                         '[run.constants]\nAccts = "{1}"\n')
+        self.assertEqual(r.constants["Fees!Rounding"], '"nearest"')
+        self.assertIsNone(run.check_constants(r))
+        self.assertEqual(set(run.reachable_modules("Spec3", [str(self.d), str(lib)])), {"Spec3", "Plat", "Fees"})
+        tla, cfg = run.wrapper(r, "MC_q")
+        self.assertIn('const_Fees_Rounding == "nearest"\n', tla)
+        self.assertIn("  Rounding <- [Fees] const_Fees_Rounding\n", cfg)
+        self.assertIn("  Accts <- const_Accts\n", cfg)
+        for bad in ("Other!Knob",      # a module the spec does not reach
+                    "Fees!Fee",        # not zero-arity
+                    "Fees!Rounds",     # not defined there
+                    "Rounding"):       # unqualified: Fees is INSTANCEd, not EXTENDed
+            r.constants = {bad: "1"}
+            with self.subTest(bad), self.assertRaises(run.ConfigError):
+                run.check_constants(r)
+        r.library = [str(self.d / "nowhere")]
+        r.constants = {"Fees!Rounding": "1"}
+        self.assertIsNotNone(run.check_constants(r))  # Plat missing: skipped with a warning
+        for name in ("Fees!", "!Rounding", "Fees!Round!ing", "Fe es!Rounding"):
+            with self.subTest(name), self.assertRaises(run.ConfigError):
+                self.load(f'spec = "Spec3"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n'
+                          f'[run.constants]\n"{name}" = "1"\n')
+        with self.assertRaises(run.ConfigError):  # two keys, one wrapper definition
+            self.load('spec = "Spec3"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n'
+                      '[run.constants]\n"Fees!Rounding" = "1"\nFees_Rounding = "2"\n')
+
     # 7. temporal properties
     def test_temporal_matches_only_property(self):
         (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "violation"\ninvariant = "Live"\n'

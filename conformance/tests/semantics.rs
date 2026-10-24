@@ -5,7 +5,8 @@
 //! receipts are atomic"), and yield/resume on the async probe: the resume
 //! payload limit, two resumes in one block, a resume after the timeout and
 //! a resume of another account's yield ("Yield and resume (NEP-519)",
-//! "N-yield-payload").
+//! "N-yield-payload"); and a later receipt overtaking an earlier one on
+//! the same sender-receiver pair ("No per-pair order").
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
 use near_contract_sim::{AccessKey, CryptoHash, TxOutcome};
@@ -294,4 +295,65 @@ fn resume_by_another_account_returns_false() {
     assert!(!r.json::<bool>());
     assert_eq!(sim.yields().len(), 1, "still parked");
     assert_eq!(on_yield_logs(&sim, tx), None);
+}
+
+/// No FIFO per sender-receiver pair (docs/SEMANTICS.md, S4): a receipt
+/// that p-probe makes for q-probe can run before one p-probe made for
+/// q-probe earlier. A new receipt is forwarded whenever it fits the link's
+/// limits, without looking at that link's outgoing buffer
+/// (runtime/runtime/src/congestion_control.rs:292-325, :451). Six ~1.2 MB
+/// calls fill the grant of the route the (single) shard has to itself, so
+/// some wait a block in the buffer; a small call p-probe makes after them,
+/// in the same block, goes out at once and runs first. The same as the
+/// sim's own tests/order.rs:400-433, on the probe contracts; nothing is
+/// injected, this is nearcore's congestion control.
+#[test]
+fn later_receipt_overtakes_buffered() {
+    let (wasm, _) = probe_wasm("probe");
+    let users = [ALICE, BOB, "w1.near", "w2.near", "w3.near", "w4.near"];
+    let small_user = "w0.near";
+    let mut fx = Fixture::new();
+    for u in users.iter().chain([&small_user]) {
+        fx = fx.account(*u, Balance::from_near(100));
+    }
+    let mut sim = fx.contract(P, wasm.clone()).contract(Q, wasm).build();
+    // q.marks takes no arguments, so it ignores the 1.2 MB and stores nothing.
+    let kid = |method: &str, args: String| json!([{ "receiver": Q, "method": method, "args": args, "static_ggas": 30000, "weight": 0 }]);
+    let chain = |sim: &mut Sim, user: &str, kids: Value| -> CryptoHash {
+        sim.call(user, P, "chain").args_json(json!({ "kids": kids })).gas(Gas::from_teragas(300)).submit()
+    };
+    let bigs: Vec<CryptoHash> = users.iter().map(|u| chain(&mut sim, u, kid("marks", "x".repeat(1_200_000)))).collect();
+    let small = chain(&mut sim, small_user, kid("mark", r#"{"tag":"small"}"#.to_owned()));
+    sim.settle();
+    // Execution order of every receipt that ran.
+    let order: Vec<CryptoHash> = sim.receipts_in(..).iter().map(|r| r.id).collect();
+    let at = |id: &CryptoHash| order.iter().position(|x| x == id).expect("it ran");
+    // (height, position) of tx's p.chain receipt, and of the q receipt it made.
+    let link = |sim: &Sim, tx: CryptoHash| {
+        let o = sim.outcome(tx);
+        o.assert_success();
+        let r = |acct: &str| o.receipts.iter().find(|r| r.executor_id.as_str() == acct && !r.is_refund()).unwrap();
+        let (p, q) = (r(P), r(Q));
+        assert_eq!(q.predecessor_id.as_str(), P);
+        ((p.block_height, at(&p.id)), (q.block_height, at(&q.id)))
+    };
+    let (sp, sq) = link(&sim, small);
+    println!("small: p.chain at #{} (pos {}), its q receipt at #{} (pos {})", sp.0, sp.1, sq.0, sq.1);
+    let mut overtaken = 0;
+    for h in &bigs {
+        let (bp, bq) = link(&sim, *h);
+        let made_first = bp.1 < sp.1;
+        let ran_later = bq.1 > sq.1;
+        println!(
+            "big:   p.chain at #{} (pos {}), its q receipt at #{} (pos {}){}",
+            bp.0,
+            bp.1,
+            bq.0,
+            bq.1,
+            if made_first && ran_later { "  <- made before the small one, ran after it" } else { "" }
+        );
+        overtaken += usize::from(made_first && ran_later);
+    }
+    // The three made in the small one's block, before it (as in the sim's test).
+    assert_eq!(overtaken, 3, "p -> q receipts made earlier and run later");
 }

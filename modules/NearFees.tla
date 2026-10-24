@@ -42,24 +42,36 @@
 \* ---------------------------------------------------------------------------
 \* Units and rounding
 \* ---------------------------------------------------------------------------
-\* - Base fees: every table entry is rounded to the nearest Ggas. Every
-\*   exported operator is a SUM of table entries, so the parts add up exactly:
-\*   SendFee + ExecFee = ActionFee, and ReceiptFee + ActionFee = the
-\*   single-action receipt total. The error is at most 0.5 Ggas per entry.
+\* - FeeRounding (below) selects the rounding: "up" (the default) or
+\*   "nearest" (the earlier rounding). Every table entry is rounded on its own
+\*   to a whole Ggas, and every exported operator is a SUM of table entries,
+\*   so the parts add up exactly in both modes: SendFee + ExecFee = ActionFee,
+\*   and ReceiptFee + ActionFee = the single-action receipt total.
 \* - Per-byte fees are stored in micro-Ggas per byte (1 uGgas = 1e-6 Ggas =
-\*   1000 gas), rounded to the nearest uGgas. Bytes(n, u) multiplies and rounds
-\*   the product once to the nearest Ggas. It never forms a product above
-\*   about 1.1e9, so it stays inside TLC's 32-bit integers for n up to 16 MiB.
-\*   Every protocol limit on a byte count is below that: arguments, return
-\*   data and contract size are all at most 4 MiB at 88 (SNAP88:248-252).
-\* - Error bounds. A base entry is off by at most 0.5 Ggas. Bytes(n, u) is off
-\*   by at most 0.5 Ggas (final rounding) + 0.001 Ggas (truncation) +
-\*   0.5e-6 * n Ggas (u rounded to the uGgas), i.e. <= 0.51 Ggas for n <= 20 KB
-\*   and <= 2.6 Ggas at n = 4 MiB. Each operator sums such terms, and the
-\*   errors can go either way: a single-action receipt total (receipt base +
-\*   one action, send + exec = 4 base entries, plus up to 2 per-byte terms) is
-\*   off by at most ~3 Ggas for byte counts up to a few KB. A gas edge
-\*   predicted from these fees is only accurate to that bound.
+\*   1000 gas), rounded to a whole uGgas the same way. Bytes(n, u) multiplies
+\*   and rounds the product once to a whole Ggas. It never forms a product
+\*   above about 1.1e9, so it stays inside TLC's 32-bit integers for n up to
+\*   16 MiB. Every protocol limit on a byte count is below that: arguments,
+\*   return data and contract size are all at most 4 MiB at 88
+\*   (SNAP88:248-252).
+\* - Error bounds, "up": every base entry is over by less than 1 Ggas and
+\*   never under; Bytes(n, u) is over by less than 1.001 + 1e-6 * n Ggas and
+\*   never under (u rounded up, then the product). A single-action receipt
+\*   total (receipt base + one action, send + exec = 4 base entries) is over
+\*   by less than 4 Ggas (a named Transfer: 450 against 446.37), plus the
+\*   per-byte terms. As far as these fees go, a prepaid amount the model
+\*   finds enough is enough in nearcore; the price is a false out-of-gas
+\*   within that margin.
+\* - Error bounds, "nearest": a base entry is off by at most 0.5 Ggas.
+\*   Bytes(n, u) is off by at most 0.5 Ggas (final rounding) + 0.001 Ggas
+\*   (truncation) + 0.5e-6 * n Ggas (u rounded to the uGgas), i.e. <= 0.51
+\*   Ggas for n <= 20 KB and <= 2.6 Ggas at n = 4 MiB. The errors can go
+\*   either way: a single-action receipt total is off by at most ~3 Ggas for
+\*   byte counts up to a few KB, and may be UNDERSTATED, so a prepaid amount
+\*   up to that much short can pass in the model and run out of gas in
+\*   nearcore (examples/fee-edge).
+\* A gas edge predicted from these fees is only accurate to these bounds
+\* (docs/SEMANTICS.md, N-precision).
 \*
 \* ---------------------------------------------------------------------------
 \* sir ("sender is receiver")
@@ -124,7 +136,7 @@ EXTENDS Integers, TLC
 FeeProtocol == 88
 
 FeeVersions == {84, 85, 86, 87, 88}
-ASSUME FeeProtocol \in FeeVersions
+ASSUME FeeProtocol \in FeeVersions   \* also in FeeSelfChecks (runs through INSTANCE)
 
 \* universal_accounts is on from 87 (SNAP87:232; version.rs:639).
 UniversalAccountsOn(pv) == pv >= 87
@@ -140,57 +152,93 @@ Row(ss, sn, ex) == [ss |-> ss, sn |-> sn, ex |-> ex]
 
 SendPart(row, sir) == IF sir THEN row.ss ELSE row.sn
 
-\* ===== Base fees, Ggas (exact gas in the comment) ==========================
-BaseRow(pv, name) ==
-  CASE name = "receipt"            -> Row(108, 108, 108)
+\* ===== Rounding ============================================================
+\* FeeRounding (below) selects how every table entry becomes a whole Ggas
+\* (base fees) or a whole uGgas per byte (per-byte fees):
+\*   "up"       rounded up (the default): no fee is ever understated, so a
+\*              prepaid amount the model finds enough is enough in nearcore,
+\*              as far as these fees go (docs/SEMANTICS.md, N-precision);
+\*   "nearest"  rounded to the nearest (the earlier rounding): closest to
+\*              nearcore's figures, but a fee can be understated by up to
+\*              0.5 Ggas per entry.
+\* Change it here, like FeeProtocol, or per run with
+\*   "NearFees!FeeRounding" = '"nearest"'
+\* in a runs.toml's [constants] (tools/run.py), which is TLC's
+\*   FeeRounding <- [NearFees] <value>
+\* and also reaches the NearFeeTable instance inside NearAsync.
+FeeRounding == "up"
+
+FeeRoundingModes == {"nearest", "up"}
+
+\* mGgas (1e6 gas) to Ggas, and gas to uGgas (1000 gas), by FeeRounding.
+FeeRoundM(m) == IF FeeRounding = "up" THEN (m + 999) \div 1000 ELSE (m + 500) \div 1000
+FeeRoundU(g) == IF FeeRounding = "up" THEN (g + 999) \div 1000 ELSE (g + 500) \div 1000
+
+\* ===== Base fees ===========================================================
+\* The source table is in mGgas (exact gas / 1e6, rounded up), with the exact
+\* gas in the comment. BaseRow rounds each entry to a whole Ggas by
+\* FeeRounding. Rounding up to the mGgas first moves no "nearest" value: no
+\* entry's fraction of a Ggas lies in [0.4995, 0.5).
+BaseRowM(pv, name) ==
+  CASE name = "receipt"            -> <<108060, 108060, 108060>>
          \* action_receipt_creation 108,059,500,000 x3          SNAP:9-13
-    [] name = "data_receipt"       -> Row(36, 36, 36)
+    [] name = "data_receipt"       -> <<36487, 36487, 36487>>
          \* data_receipt_creation_config.base_cost 36,486,732,312 x3   SNAP:14-19
     [] name = "create_account"     ->
-         IF pv >= 85 THEN Row(500, 500, 7200)
+         IF pv >= 85 THEN <<500000, 500000, 7200000>>
          \* 500,000,000,000 / 500,000,000,000 / 7,200,000,000,000  SNAP85:27-31, 85.yaml:16-27
-                     ELSE Row(3850, 3850, 3850)
+                     ELSE <<3850000, 3850000, 3850000>>
          \* 3,850,000,000,000 x3                                 SNAP84:27-31
-    [] name = "delete_account"     -> Row(147, 147, 147)
+    [] name = "delete_account"     -> <<147489, 147489, 147489>>
          \* 147,489,000,000 x3                                   SNAP:84-88
-    [] name = "deploy_base"        -> Row(185, 185, 185)
+    [] name = "deploy_base"        -> <<184766, 184766, 184766>>
          \* 184,765,750,000 x3                                   SNAP:32-36
-    [] name = "function_call_base" -> Row(200, 200, 780)
+    [] name = "function_call_base" -> <<200000, 200000, 780000>>
          \* 200,000,000,000 / 200,000,000,000 / 780,000,000,000  SNAP:42-46
-    [] name = "transfer"           -> Row(115, 115, 115)
+    [] name = "transfer"           -> <<115124, 115124, 115124>>
          \* 115,123,062,500 x3                                   SNAP:52-56
-    [] name = "stake"              -> Row(142, 142, 102)
+    [] name = "stake"              -> <<141716, 141716, 102218>>
          \* 141,715,687,500 / 141,715,687,500 / 102,217,625,000  SNAP:57-61
-    [] name = "add_key_full"       -> Row(102, 102, 102)
+    [] name = "add_key_full"       -> <<101766, 101766, 101766>>
          \* add_key_cost.full_access_cost 101,765,125,000 x3      SNAP:63-67
-    [] name = "add_key_fc"         -> Row(102, 102, 102)
+    [] name = "add_key_fc"         -> <<102218, 102218, 102218>>
          \* add_key_cost.function_call_cost 102,217,625,000 x3    SNAP:68-72
-    [] name = "delete_key"         -> Row(95, 95, 95)
+    [] name = "delete_key"         -> <<94947, 94947, 94947>>
          \* 94,946,625,000 x3                                    SNAP:79-83
-    [] name = "delegate"           -> Row(200, 200, 200)
+    [] name = "delegate"           -> <<200000, 200000, 200000>>
          \* 200,000,000,000 x3                                   SNAP:89-93
     [] OTHER -> Assert(FALSE, "NearFees: unknown base fee name")
 
-\* ===== Per-byte fees, uGgas per byte (exact gas per byte in the comment) ===
-ByteRow(pv, name) ==
-  CASE name = "data_receipt_byte"  -> Row(17212, 47684, 17212)
-         \* 17,212,011 / 47,683,715 / 17,212,011                SNAP:20-24
-    [] name = "deploy_byte"        -> Row(6813, 47684, 64573)
-         \* 6,812,999 / 47,683,715 / 64,572,944                  SNAP:37-41
-    [] name = "function_call_byte" -> Row(2236, 47684, 2236)
-         \* 2,235,934 / 47,683,715 / 2,235,934                   SNAP:47-51
-    [] name = "add_key_fc_byte"    -> Row(1925, 47684, 1925)
-         \* 1,925,331 / 47,683,715 / 1,925,331                   SNAP:73-77
+\* A base row in whole Ggas.
+BaseRow(pv, name) ==
+  LET t == BaseRowM(pv, name) IN Row(FeeRoundM(t[1]), FeeRoundM(t[2]), FeeRoundM(t[3]))
+
+\* ===== Per-byte fees =======================================================
+\* The source table is in exact gas per byte (every entry is below 2^31).
+ByteRowG(pv, name) ==
+  CASE name = "data_receipt_byte"  -> <<17212011, 47683715, 17212011>>
+         \*                                                    SNAP:20-24
+    [] name = "deploy_byte"        -> <<6812999, 47683715, 64572944>>
+         \*                                                    SNAP:37-41
+    [] name = "function_call_byte" -> <<2235934, 47683715, 2235934>>
+         \*                                                    SNAP:47-51
+    [] name = "add_key_fc_byte"    -> <<1925331, 47683715, 1925331>>
+         \*                                                    SNAP:73-77
     [] OTHER -> Assert(FALSE, "NearFees: unknown per-byte fee name")
 
-\* n bytes at u uGgas/byte, in Ggas, rounded to the nearest Ggas.
-\* m is the product in milli-Ggas (truncated below 1 mGgas). With n <= 16 MiB
-\* and u <= 64573 every intermediate value is below 1.1e9.
+\* A per-byte row in uGgas per byte.
+ByteRow(pv, name) ==
+  LET t == ByteRowG(pv, name) IN Row(FeeRoundU(t[1]), FeeRoundU(t[2]), FeeRoundU(t[3]))
+
+\* n bytes at u uGgas/byte, in Ggas. m is the product in milli-Ggas: "up"
+\* rounds its sub-mGgas part and then the Ggas up; "nearest" truncates the
+\* sub-mGgas part and rounds the Ggas to the nearest (as before). With
+\* n <= 16 MiB and u <= 64573 every intermediate value is below 1.1e9.
 Bytes(n, u) ==
   LET h == n \div 1000
       l == n % 1000
-      m == h * u + (l * u) \div 1000
-  IN  (m + 500) \div 1000
+      m == h * u + (IF FeeRounding = "up" THEN (l * u + 999) \div 1000 ELSE (l * u) \div 1000)
+  IN  FeeRoundM(m)
 
 \* ===== Receipt base ========================================================
 \* Charged once per created action receipt, whatever its actions
@@ -331,23 +379,46 @@ TransferExecTotal(kind)      == TransferExecTotalAt(FeeProtocol, kind)
 TransferFeeTotal(sir, kind)  == TransferFeeTotalAt(FeeProtocol, sir, kind)
 OneCallReceiptExecFee(n)     == OneCallReceiptExecFeeAt(FeeProtocol, n)
 
-\* ===== Self-checks (TLC evaluates these whenever the module is loaded) ======
-\* Exact-gas totals they reproduce, from the nearcore values above:
+\* ===== Self-checks =========================================================
+\* FeeSelfChecks holds iff FeeRounding is a known mode and the table
+\* reproduces these totals in that mode, from the exact gas above:
 \*   named Transfer, any version 84-88: 2 x (108.0595 + 115.1231) = 446.36 Ggas
+\*     "nearest": 2 x (108 + 115) = 446    "up": 2 x (109 + 116) = 450
 \*   eth-implicit Transfer, 85-88: send 723.18 + exec 7423.18 = 8146.36 Ggas
+\*     "nearest": 723 + 7423 = 8146        "up": 725 + 7425 = 8150
 \*   eth-implicit Transfer, 84:    send 4073.18 + exec 4073.18 = 8146.36 Ggas
-ASSUME \A pv \in FeeVersions, s \in BOOLEAN :
-         TransferFeeTotalAt(pv, s, "named") = 446
-ASSUME \A pv \in {85, 86, 87, 88} :
-         /\ TransferSendTotalAt(pv, FALSE, "eth_implicit") = 723
-         /\ TransferExecTotalAt(pv, "eth_implicit") = 7423
-ASSUME /\ TransferSendTotalAt(84, FALSE, "eth_implicit") = 4073
-       /\ TransferExecTotalAt(84, "eth_implicit") = 4073
-ASSUME \A pv \in FeeVersions :
-         TransferFeeTotalAt(pv, FALSE, "eth_implicit") = 8146
-ASSUME \A pv \in FeeVersions, a \in FeeActions, s \in BOOLEAN, k \in RcvKinds :
-         ActionFeeAt(pv, a, s, k) = SendFeeAt(pv, a, s, k) + ExecFeeAt(pv, a, k)
-ASSUME /\ Bytes(0, 47684) = 0
+\*     "nearest": 4073 + 4073 = 8146       "up": 4075 + 4075 = 8150
+\* and Send + Exec = Action for every entry, which holds in both modes because
+\* each entry is rounded on its own.
+\*
+\* TLC evaluates an ASSUME only in the modules a spec EXTENDS, never in an
+\* INSTANCEd one. So the ASSUME below runs for a model that EXTENDS NearFees,
+\* and NearAsync, which reaches the table through INSTANCE (NearFeeTable),
+\* repeats it as ASSUME NearFeeTable!FeeSelfChecks, so it runs for every model
+\* on the library, with any per-run FeeRounding.
+FeePin(nearest, up) == IF FeeRounding = "up" THEN up ELSE nearest
+
+FeeSelfChecks ==
+  /\ Assert(FeeRounding \in FeeRoundingModes,
+            <<"NearFees: FeeRounding must be \"nearest\" or \"up\"", FeeRounding>>)
+  /\ Assert(FeeProtocol \in FeeVersions, <<"NearFees: FeeProtocol not covered", FeeProtocol>>)
+  /\ Assert(
+       /\ \A pv \in FeeVersions, s \in BOOLEAN :
+            TransferFeeTotalAt(pv, s, "named") = FeePin(446, 450)
+       /\ \A pv \in {85, 86, 87, 88} :
+            /\ TransferSendTotalAt(pv, FALSE, "eth_implicit") = FeePin(723, 725)
+            /\ TransferExecTotalAt(pv, "eth_implicit") = FeePin(7423, 7425)
+       /\ TransferSendTotalAt(84, FALSE, "eth_implicit") = FeePin(4073, 4075)
+       /\ TransferExecTotalAt(84, "eth_implicit") = FeePin(4073, 4075)
+       /\ \A pv \in FeeVersions :
+            TransferFeeTotalAt(pv, FALSE, "eth_implicit") = FeePin(8146, 8150)
+       /\ \A pv \in FeeVersions, a \in FeeActions, s \in BOOLEAN, k \in RcvKinds :
+            ActionFeeAt(pv, a, s, k) = SendFeeAt(pv, a, s, k) + ExecFeeAt(pv, a, k)
+       /\ Bytes(0, 47684) = 0
+       /\ Bytes(1, 47684) = FeePin(0, 1)
        /\ Bytes(1000, 47684) = 48
-       /\ Bytes(4194304, 64573) = 270839
+       /\ Bytes(4194304, 64573) = 270839,
+       <<"NearFees: the fee table does not reproduce its pinned totals", FeeRounding>>)
+
+ASSUME FeeSelfChecks
 =============================================================================

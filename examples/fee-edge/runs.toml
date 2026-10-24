@@ -1,0 +1,74 @@
+# A gas budget at the edge of a Transfer fee, under both NearFees.FeeRounding modes.
+# See Edge.tla.
+#
+#   python3 tools/run.py examples/fee-edge
+#
+# Delivered  once idle, the Transfer has reached To.
+# Sane       NEAR conserved, gas bounded by the prepaid gas.
+#
+# The pair is edge_up_catches (must fail) / edge_up_ok (must pass);
+# edge_nearest_misses is why "up" is the default.
+
+spec = "Edge"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Delivered", "Sane"]
+tags = ["gas:fee-rounding"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"p"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "PGasCall"
+GasBurn = "PGasBurn"
+LogOn = "FALSE"
+U = '"u"'
+P = '"p"'
+R = '"r"'
+To = '"bob"'
+Amt = "2"
+Attach = "446"
+
+# 446 Ggas is 0.37 short of the real 446.37, but "nearest" prices the
+# Transfer at 446: a false pass.
+[[run]]
+name = "edge_nearest_misses"
+expect = "pass"
+[run.constants]
+"NearFees!FeeRounding" = '"nearest"'
+
+# Must fail: "up" prices it at 450, so 446 runs out of gas, as in nearcore.
+[[run]]
+name = "edge_up_catches"
+expect = "violation"
+invariant = "Delivered"
+
+# 447 is enough in nearcore; "up" overstates by up to 4 Ggas per receipt.
+[[run]]
+name = "edge_up_tight_false_cex"
+expect = "violation"
+invariant = "Delivered"
+[run.constants]
+Attach = "447"
+
+# Must pass: the budget "up" asks for.
+[[run]]
+name = "edge_up_ok"
+expect = "pass"
+[run.constants]
+Attach = "450"
+
+[[run]]
+name = "edge_nearest_ok"
+expect = "pass"
+[run.constants]
+Attach = "450"
+"NearFees!FeeRounding" = '"nearest"'

@@ -48,8 +48,9 @@ Each rule has four fields:
 
 ## Units
 
-- **Gas** is in **Ggas** (1 Tgas = 1000 Ggas), rounded to the nearest Ggas. The fee table is
-  `modules/NearFees.tla`; its rounding error is under [N-precision](#under-approximations-unsound-they-can-hide-bugs).
+- **Gas** is in **Ggas** (1 Tgas = 1000 Ggas). The fee table is `modules/NearFees.tla`. It
+  rounds each entry **up** to a whole Ggas by default (`FeeRounding`; `"nearest"` restores the
+  earlier rounding); the error bounds are under [N-precision](#under-approximations-unsound-they-can-hide-bugs).
 - **Sizes have two units. Convert explicitly.**
   - `NearAsync` sizes (`r.res.sz`, `RValSz(v, n)`, `OSz(O, n)`, `DataOfSz`, and the burn size
     in `GasBurn[k].per * O.sz`) are in **KB, rounded up**, with **1 KB = 1000 bytes**. That
@@ -783,11 +784,29 @@ Each rule has four fields:
 ### S2. Ordering otherwise
 
 - **Rule:** Beyond R2 (a callback waits for its inputs) and S1, the model lets any enabled
-  receipt run next. nearcore is more constrained (see N-order).
-- **nearcore:** `runtime/runtime/src/congestion_control.rs:292` (`forward_or_buffer_receipt`),
-  `chain/chain/src/sharding.rs:13` (`shuffle_receipt_proofs`).
+  receipt run next. nearcore's order at protocol 88 is about chunks, not accounts:
+  - a chunk runs local receipts (S1), then the delayed queue, then the incoming receipts, then
+    yield timeouts;
+  - the delayed queue is one strict FIFO per shard, and incoming receipts never overtake it:
+    once a chunk reaches its compute or proof limit, every remaining incoming receipt goes to
+    the back of the queue, in order;
+  - incoming receipts run in the order of the chunk's incoming list. Within one receipt proof
+    (one source chunk to one destination shard) they keep their order; proofs from different
+    source shards in one block are shuffled, and a chunk after missed chunks takes the
+    receipts of the newest source block first.
+
+  None of this orders receipts by sender and receiver: there is no per-pair FIFO (S4). The
+  model has no chunks or shards, so it encodes none of these rules; within a pair the
+  model's freedom is real (S4), and the rest of it is the over-approximation N-shards.
+- **nearcore:** `runtime/runtime/src/lib.rs:2787-2826` (`process_receipts`: local `:2800`,
+  delayed `:2808`, incoming `:2816`, timeouts `:2825`), `:2694-2711` (incoming in list order;
+  over the limit, pushed to the delayed queue), `core/store/src/trie/receipts_column_helper.rs:83-119`
+  (`push_back` / `pop_front`), `chain/chain/src/sharding.rs:13-21` (`shuffle_receipt_proofs`),
+  `chain/chain/src/stateless_validation/chunk_validation.rs:478-480` ("from the newest blocks
+  to the oldest") and `:509-514` (shuffle per block, then each proof in order),
+  `runtime/runtime/src/congestion_control.rs:292-325` (`forward_or_buffer_receipt`, S4).
 - **Model:** `\E r \in Runnable : ...` (or `Schedulable`) in `Next`.
-- **Validated:** nearcore reading (as a description of what is over-approximated).
+- **Validated:** nearcore reading. The per-pair part is observed in the sim (S4).
 
 ### S3. Block clock
 
@@ -851,6 +870,58 @@ Each rule has four fields:
   (`final_obs_short_passes`); `ClockHorizonOK(1, 1)` flags that bound
   (`final_obs_short_flagged`), where `n * max(T, YieldTicks)` did not; at `MaxBlk = 2` the
   invariant fails (`final_obs_bug_found`).
+
+### S4. No per-pair order
+
+- **Rule:** nearcore does not keep the receipts from one account to another in the order they
+  were created, not even when both accounts sit on one shard or are the same account. Two
+  mechanisms reorder them at protocol 88:
+  - **A new receipt can bypass the outgoing buffer.** A receipt created by a receipt goes to
+    `forward_or_buffer_receipt`, which forwards it at once whenever it fits the link's
+    remaining gas and size limits, without checking whether that link's outgoing buffer
+    already holds earlier receipts; only if it does not fit is it buffered. Draining the
+    buffer stops at the first receipt that does not fit, and the rest of the allowance stays
+    usable. So an earlier, larger receipt (in bytes, or in attached gas under gas congestion)
+    waits in the buffer while a later, smaller one to the same receiver goes out and runs
+    first. A shard's route to itself has a bandwidth grant too, so this holds for same-shard
+    pairs and self-calls.
+  - **Missed chunks reverse the order across heights.** After the destination shard misses
+    chunks, its next chunk collects incoming receipts from the newest source block to the
+    oldest, so a pair's receipts sent at height `h + 2` run before those sent at `h + 1`.
+
+  Resumes of one yield (C7) are no exception: each `PromiseResume` leaves through the same
+  path, so a later resume can arrive first, and whichever arrives first wins; the others are
+  dropped by a status check, not by their order. Refunds, receipts from different source
+  shards, local against non-local receipts, and receipts waiting on data are not ordered
+  either. (Earlier versions of this page listed per-pair order as an over-approximation,
+  N-order, and the resume order as N-resume-order. Both were wrong: those reorderings are
+  reachable.)
+- **nearcore:** `runtime/runtime/src/lib.rs:1222-1234` (a created receipt is instant or goes to
+  `forward_or_buffer_receipt`), `runtime/runtime/src/congestion_control.rs:292-325`
+  (`forward_or_buffer_receipt`: `try_forward` first, buffer only on failure), `:451`
+  (`try_forward` admits a receipt if `forward_limit.gas >= admission_gas &&
+  forward_limit.size >= size`), `:379-381` (draining stops at the first misfit);
+  `runtime/runtime/src/bandwidth_scheduler/scheduler.rs:427-435` (grants cover every shard
+  pair, a shard to itself included);
+  `chain/chain/src/stateless_validation/chunk_validation.rs:478-480` and
+  `chain/chain/src/chain.rs:3648-3659` (`[new_receipts, old_receipts]`); resumes:
+  `runtime/runtime/src/lib.rs:1554-1622` (the first `PromiseResume` runs the yield, `:1616-1620`
+  ignores the rest).
+- **Model:** no constraint: any enabled receipt may run next (S2), whatever its sender,
+  receiver and creation order, and any resume in flight may be the one that wins (C7). That
+  is what nearcore can do, so a counterexample that needs a same-pair reorder is not a false
+  positive. The library offers no switch that imposes a pair order, because no such order
+  holds for all shard layouts and loads; a contract that needs one must enforce it itself
+  (sequence numbers, or one message in flight at a time). `examples/pair-order` shows both:
+  a receiver that assumes in-order delivery fails (`pair_assumes_fifo`), and one that keeps
+  the highest sequence number seen passes (`pair_seqno_ok`).
+- **Validated:** nearcore reading. <!-- conformance --> The comparison does not see order.
+  `conformance/tests/semantics.rs` (`later_receipt_overtakes_buffered`) observes the bypass in
+  the sim, with no model run: six ~1.2 MB calls from `p-probe` to `q-probe` fill the single
+  shard's grant to itself; a small call `p-probe` makes after three of them, in the same
+  block, runs a block before them. This is the sim's own `tests/order.rs:400-433`
+  (near-contract-sim `29e9090`) on the probe contracts, with no fault injected. Missed
+  chunks: nearcore reading only (the sim has none).
 
 ---
 
@@ -1093,12 +1164,6 @@ against the current module code; some may be fixed in the modules later.
 
 ### Over-approximations
 
-- **N-order. Per-sender-receiver ordering.** nearcore delivers receipts from one shard to
-  another in order per route (outgoing buffers drain in order,
-  `runtime/runtime/src/congestion_control.rs:292`), and keeps group order when it shuffles
-  incoming receipt proofs (`chain/chain/src/sharding.rs:13`). The model lets any enabled receipt
-  run next. It can show a reordering between two receipts of the same pair that nearcore would
-  not produce.
 - **N-shards. Shards and cross-shard latency.** There are no shards, no blocks and no
   latency; any causally enabled order is allowed. This covers every real schedule **with the
   local-priority switch OFF** (with it ON, see N-local-congested), but some model schedules need
@@ -1155,9 +1220,6 @@ against the current module code; some may be fixed in the modules later.
   lets pending yields past their deadline time out in any order. With the default untimed
   clock a yield may time out right after it is created, which nearcore never does before 200
   blocks; use the clock (S3) when "not before the deadline" matters.
-- **N-resume-order. Several resumes of one yield.** All resumes travel from the account to
-  itself through one outgoing buffer, so the first sent arrives first; the model lets any of
-  them win (as N-order).
 
 ### Under-approximations (unsound: they can hide bugs)
 
@@ -1182,18 +1244,40 @@ against the current module code; some may be fixed in the modules later.
   for the state an invariant reads after the last step) and list it as an invariant, or give
   your own argument that a smaller bound covers the model; otherwise report the result as
   bounded.
-- **N-precision. Rounding of fees and burns.** Fees (`NearFees`) and calibrated burns are
-  rounded to the nearest Ggas. Error bounds:
-  - at most 0.5 Ggas per base fee entry;
-  - per-byte terms at most `0.5 + 0.001 + 0.5e-6 × n` Ggas for `n` bytes (≤ 0.51 Ggas up to
-    20 KB, ≤ 2.6 Ggas at 4 MiB);
-  - roughly **3 Ggas per receipt** in total (receipt base and one action, send and exec, plus
-    the burn).
+- **N-precision. Rounding of fees and burns.**
+  - **Fees (`NearFees`), by `NearFees.FeeRounding`.** Each table entry is rounded on its own,
+    so the parts still add up (send + exec = action).
+    - `"up"` (the default): never understated. A base entry is over by less than 1 Ggas, a
+      per-byte term by less than `1.001 + 1e-6 × n` Ggas for `n` bytes, a single-action
+      receipt (receipt base and one action, send and exec) by less than **4 Ggas** (a named
+      Transfer: 450 against 446.37). As far as the fee table goes, a prepaid amount the model
+      finds enough is enough in nearcore. The price is a false out-of-gas within that margin.
+    - `"nearest"` (the earlier rounding; set `"NearFees!FeeRounding" = '"nearest"'` in a run's constants):
+      at most 0.5 Ggas per base entry, `0.5 + 0.001 + 0.5e-6 × n` Ggas per per-byte term
+      (≤ 0.51 Ggas up to 20 KB, ≤ 2.6 Ggas at 4 MiB), roughly 3 Ggas per receipt, **either
+      way**: a budget up to that much short can pass in the model and run out of gas in
+      nearcore.
+    - `examples/fee-edge` shows both: a budget 0.37 Ggas short of a Transfer passes under
+      `"nearest"` (`edge_nearest_misses`) and fails under `"up"` (`edge_up_catches`), and
+      under `"up"` a budget that is enough by 0.63 Ggas fails too
+      (`edge_up_tight_false_cex`).
+  - **Calibrated burns** (`CalibStd`, and tables from `conformance`'s `calibrate`). `base` and
+    exec fees are rounded up, and `base` is fitted as an upper envelope: every burn measured
+    is at or below `base + per × size`. `per` is the fitted slope rounded to the nearest whole
+    Ggas per KB, so past the largest size measured a burn is understated by up to
+    `(per_exact − per) × (size − largest size measured)` when `per` was rounded down. A table
+    says nothing about paths or sizes its flows did not measure.
+  - **Still understated:** the function-call AddKey per-byte fee (N-keyfee).
+  - **Overstated:** the KB rounding of sizes ([Units](#units)) when sizes feed fees or burns.
 
-  The error can go either way, so a predicted gas edge is accurate only to that bound summed
-  over the receipts on the path. Window edges closer together than that, and windows narrower
-  than it, are not trustworthy. Conformance compares gas at 0.1 Tgas resolution. The KB
-  rounding of sizes ([Units](#units)) adds to this when sizes feed fees or burns.
+  A predicted gas edge is accurate only to these bounds summed over the receipts on the path.
+  Window edges closer together than that, and windows narrower than it, are not trustworthy.
+  Conformance compares gas at 0.1 Tgas resolution with `FeeRounding` pinned to `"nearest"`,
+  since it measures accuracy. Under `"up"` the same comparison differs only where it should:
+  2 of 73 flows (`ft_storage_again`, `wnear_storage_again`, whose `storage_deposit` refunds
+  the excess by a Transfer) move their edge one grid point up, from 1.0 to 1.1 Tgas. At 1.0
+  Tgas nearcore succeeds with 0.8 and 1.3 Ggas to spare, and the model, 3.6 Ggas over on the
+  Transfer, runs out of gas. Nothing else changes.
 - **N-batch-oog. Per-action out-of-gas in batches.** nearcore checks each function-call action
   against its own gas and splits only that action's leftover (G3). `NearAsync` does the same
   for an outcome with `pa`, and the token batch emits it by default (`TokBatchPerAction`). A

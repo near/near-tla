@@ -16,6 +16,7 @@ The rule of thumb: **anything that can change the verdict of an existing model i
 |---|---|
 | A new operator, module, constant with a default, account kind, or fee row for a new protocol version, with every default unchanged | minor |
 | Changing the default `FeeProtocol` (fees move, so gas-mode verdicts and windows can change) | **major** |
+| Changing the default `FeeRounding` (every fee moves by up to 1 Ggas per entry) | **major** |
 | Changing a fee value for an already covered version (a correction) | **major** (it can change verdicts); patch only if no shipped example or calibration is affected, and say so |
 | A renamed or removed operator, a changed arity, a changed meaning, or a new required constant | major |
 | A semantic fix that changes a verdict of an existing model | major |
@@ -29,7 +30,7 @@ in `CHANGELOG.md` with a one-line migration.
 Every release section in `CHANGELOG.md` carries these lines:
 
 ```
-nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, covered 84-88
+nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: <rev>          near-contract-standards (token gas defaults): <version>
 ```
 
@@ -37,7 +38,8 @@ near-contract-sim: <rev>          near-contract-standards (token gas defaults): 
   to.
 - **behaviour:** the protocol version whose rules `NearAsync` and `NearKeys` encode.
 - **fees:** the `FeeProtocol` default in `modules/NearFees.tla`, plus the versions its
-  `...At(pv, ...)` operators cover.
+  `...At(pv, ...)` operators cover, and the `FeeRounding` default ("rounded up" or "rounded to
+  nearest").
 - **near-contract-sim:** the sim revision the conformance suite and the shipped calibrations ran
   on.
 - **near-contract-standards:** the version whose `ft_transfer_call` gas behaviour the token
@@ -168,5 +170,6 @@ the repo's probe contracts. A model of a real deployment must be recalibrated ag
 deployment's wasm.
 
 `NearFees.tla` values come from nearcore's parameter files and are not calibrated. They change
-only with the protocol version. Their rounding error is bounded in the `NearFees.tla` header and
-in N-precision in `docs/SEMANTICS.md`.
+only with the protocol version. They are rounded up to whole Ggas by default (`FeeRounding`);
+the rounding error is bounded in the `NearFees.tla` header and in N-precision in
+`docs/SEMANTICS.md`.
