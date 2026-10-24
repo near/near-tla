@@ -44,6 +44,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      # nearcore's build needs libclang (bindgen), cmake, protoc and OpenSSL headers.
+      - name: System packages for the nearcore build
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            clang libclang-dev llvm-dev cmake pkg-config libssl-dev protobuf-compiler
+
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install 1.95.0 --profile minimal && cargo --version
 
@@ -55,7 +62,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             conformance/target
-          key: conformance-${{ runner.os }}-rust1.95.0-${{ hashFiles('conformance/Cargo.lock') }}
+          key: conformance-${{ runner.os }}-rust1.95.0-${{ hashFiles('conformance/Cargo.lock', 'conformance/rust-toolchain.toml') }}
           restore-keys: conformance-${{ runner.os }}-rust1.95.0-
 
       # The read-only deploy key exists only for this step: cargo fetches near-contract-sim
@@ -80,17 +87,18 @@ jobs:
           cargo fetch --locked
 
       - name: Build (release; tests and the calibrator)
+        id: build
         run: cargo build --release --offline --locked --tests --bins
 
       - name: Save the cargo cache
-        if: always() && steps.cache.outputs.cache-hit != 'true'
+        if: steps.build.outcome == 'success' && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             conformance/target
-          key: conformance-${{ runner.os }}-rust1.95.0-${{ hashFiles('conformance/Cargo.lock') }}
+          key: conformance-${{ runner.os }}-rust1.95.0-${{ hashFiles('conformance/Cargo.lock', 'conformance/rust-toolchain.toml') }}
 
       - name: Sim tests (every suite, one at a time)
         run: cargo test --release --offline --locked -- --test-threads 1
