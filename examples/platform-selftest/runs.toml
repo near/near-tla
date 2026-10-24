@@ -169,7 +169,8 @@ expect = "pass"
 MaxBlk = "2"
 YieldTicks = "1"
 Scns = '''{"and_order", "resume_twice", "resume_same_call", "timeout_then_resume",
-          "resume_beats_timeout", "resume_other_acct", "yield_returned"}'''
+          "resume_beats_timeout", "resume_other_acct", "yield_returned", "yield_id_recreate",
+          "yield_id_recreate_timeout", "yield_id_same_call"}'''
 
 # The same in gas mode, plus gas-only scenarios: a joint or yield callback with 0 gas fails
 # its creator; a starved input is Failed at its position only.
@@ -185,3 +186,27 @@ YieldTicks = "1"
 Scns = '''{"and_order", "and_zero_cb", "and_starved_leg", "resume_twice", "resume_same_call",
           "timeout_then_resume", "resume_beats_timeout", "resume_other_acct", "yield_returned",
           "yield_zero_cb"}'''
+
+# Mutants: the duplicate check of promise_yield_create_with_id through the state view
+# PendingYields(r.to) (OldDupCheck) is wrong inside a handler.  It still lists the running
+# callback, so the callback cannot re-create its own custom id ...
+[[run]]
+name = "selftest_yield_id_old_recreate"
+expect = "violation"
+invariant = "Check"
+[run.constants]
+MaxBlk = "2"
+YieldTicks = "1"
+OldDupCheck = "TRUE"
+Scns = '{"yield_id_recreate"}'
+
+# ... and it misses a yield created earlier in the same call, so a duplicate is created.
+[[run]]
+name = "selftest_yield_id_old_same_call"
+expect = "violation"
+invariant = "Check"
+[run.constants]
+MaxBlk = "2"
+YieldTicks = "1"
+OldDupCheck = "TRUE"
+Scns = '{"yield_id_same_call"}'

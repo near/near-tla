@@ -214,7 +214,9 @@ DefaultKey == "default"
 
 \* Block clock and yield timeouts.  blk is env::block_height(), advanced only
 \* by BlockTick, which a model adds to its Next.
-\* MaxBlk: bound on blk; 0 = no clock (blk stays 0).
+\* MaxBlk: bound on blk; 0 = no clock (blk stays 0).  A bound, not an
+\* abstraction: behaviours that need a later height are not explored (an
+\* under-approximation for a model that reads blk; see ClockHorizonOK).
 \* YieldTicks: a yield's timeout in ticks.  nearcore: the creating receipt's
 \* block height + yield_timeout_length_in_blocks (200 at protocol 88,
 \* runtime/runtime/src/function_call.rs:160-170;
@@ -384,7 +386,7 @@ JointMark == [ok |-> FALSE, v |-> JOINTRES, sz |-> 0, len |-> 0]
 \* one step, allowed while no resume is in flight: exact, since a resume sent
 \* before the timeout's PromiseResume arrives wins in both.  At blk = MaxBlk
 \* every pending yield may time out (so a deadline past the bound stays
-\* reachable; ClockBoundOK reports it).
+\* reachable; YieldDeadlinesInBound reports it).
 FailedRes   == [ok |-> FALSE, v |-> 0, sz |-> 0, len |-> 0]
 TimedOut(p) == /\ IsYield(p)
                /\ ~\E d \in data : d.to = p.id
@@ -466,8 +468,24 @@ YieldRcpt(id, r, m, a, dep, cb) ==
 \* yield created in the same call is not in post yet: the handler knows it
 \* is pending (the resume succeeds, ext.rs:365-370).
 CanResume(r, y) == \E p \in post : p.id = y /\ p.id # r.id /\ IsYield(p) /\ p.to = r.to
-\* Ids of account a's yields still waiting (e.g. for the duplicate check of
-\* promise_yield_create_with_id, ext.rs:375-385, which the handler models).
+\* The yields of r's account still waiting, as r's handler sees them; ps:
+\* the yields this handler has created so far (a subset of its outcome's
+\* post).  For the duplicate check of promise_yield_create_with_id
+\* (ext.rs:375-385: a pending custom id fails, u64::MAX at host.rs:4391-4399),
+\* which the handler models by matching the custom id it keeps in each
+\* yield's args.  r itself is excluded: when a yield callback runs, its
+\* receipt, status and custom-id mapping are already removed
+\* (lib.rs:1572-1575, :1576-1591, committed at :903 before the code runs
+\* at :1602-1604), so it may re-create its own custom id.  ps is included:
+\* the trie update already holds the mappings this call wrote
+\* (ext.rs:380-385).
+\* A plain promise_yield_create has no custom id: keep the two kinds apart
+\* in the args.
+PendingYieldRcpts(r, ps) == {q \in RemP(r) \cup ps : IsYield(q) /\ q.to = r.to}
+PendingYieldsAt(r, ps)   == {p.id : p \in PendingYieldRcpts(r, ps)}
+\* Ids of account a's yields still waiting, as a state view (invariants,
+\* send steps).  Not for a handler: it still lists the running yield
+\* callback, and not the yields created in the same call; use PendingYieldsAt.
 PendingYields(a) == {p.id : p \in {q \in post : IsYield(q) /\ q.to = a}}
 
 ----------------------------------------------------------------------------
@@ -909,8 +927,34 @@ NoOrphans ==
 
 \* No pending yield's deadline lies past the clock bound.  When this fails,
 \* some yield could time out before its deadline (at blk = MaxBlk, see
-\* TimedOut): raise MaxBlk.  Trivially TRUE without a clock.
-ClockBoundOK == MaxBlk = 0 \/ \A p \in post : IsYield(p) => p.ydl <= MaxBlk
+\* TimedOut), so a violation found in that run may be an artefact: raise
+\* MaxBlk.  When it holds, no timeout in the run is premature.  It says
+\* nothing about what the bound leaves out (ClockHorizonOK).  Trivially
+\* TRUE without a clock.
+YieldDeadlinesInBound == MaxBlk = 0 \/ \A p \in post : IsYield(p) => p.ydl <= MaxBlk
+
+\* Clock horizon: does MaxBlk cover every behaviour of the model?  blk stops
+\* at MaxBlk, so a guard of the model that only becomes TRUE past the bound
+\* (a cancel window, a late timeout) never fires there, and a run that
+\* passes says nothing about it: an under-approximation.  A check on the
+\* constants (list it as an invariant; it fails in the initial state).
+\* Assumption: every comparison with the clock (in handlers, guards and
+\* invariants) is blk - h >= c or its negation, with h a height recorded
+\* earlier in the behaviour (blk at some step, a yield's creation) or 0, and
+\* 0 <= c <= T; count blk > h + c and blk = h + c as c + 1, and a
+\* comparison of BlockTs as the height it needs.  Then a gap of more than
+\* K = max(T, YieldTicks) blocks between two clock-relevant steps can be cut
+\* to K without changing any comparison, so MaxBlk >= n * K covers every
+\* behaviour with at most n clock-relevant steps (steps that read or record
+\* blk or BlockTs, yield creations, yield callbacks).  Sufficient, not
+\* necessary; a smaller bound needs its own argument.  Without a clock
+\* (MaxBlk = 0) only T matters: every yield may time out at any moment.
+\* (blk <= MaxBlk always holds; it makes this a state predicate, which TLC
+\* reports as a violation rather than as an error at startup.)
+ClockHorizonOK(n, T) ==
+    /\ blk <= MaxBlk
+    /\ IF MaxBlk = 0 THEN T = 0
+       ELSE MaxBlk >= n * (IF T > YieldTicks THEN T ELSE YieldTicks)
 
 \* No receipt in flight holds more gas than its transaction's prepaid gas
 \* (the split never creates gas).

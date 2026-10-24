@@ -250,9 +250,8 @@ fn main() {
             lines
         } else {
             let w = res.flow_world(&base, flow);
-            let tx = flow.tx.clone();
             let t0 = std::time::Instant::now();
-            let lines = sweep(&flow.name, &w, &g, &|sim, gas| spec::run(sim, &tx, Some(gas)), None);
+            let lines = sweep(&flow.name, &w, &g, &|sim, gas| spec::run_flow(sim, flow, gas), None);
             publish(&path, &want, &lines, &g);
             eprintln!("{}: {} points in {:.1}s", flow.name, g.len(), t0.elapsed().as_secs_f64());
             lines

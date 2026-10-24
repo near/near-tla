@@ -370,6 +370,11 @@ Every step must say what it leaves unchanged. The library's steps (`Exec`, `Subm
 variables, for `tk` if the step is not a token step, and for `keyVars` if it is not a key step.
 A step that touches no platform state writes `UNCHANGED platformVars`.
 
+Build `vars` (the tuple in `Spec == Init /\ [][Next]_vars`) from `platformVars` as above, not
+from a hand-written list of platform variables. A variable missing from `vars` is unconstrained
+by the stuttering steps of `[][Next]_vars`, and TLC only warns. When the library adds a
+platform variable (`blk` in 0.2), a hand-written list goes stale silently.
+
 ## 4. Receipts
 
 Every receipt is a record built by
@@ -841,13 +846,25 @@ Outcome({}, {YieldRcpt(nid, r, "on_answer", Arg(nid), 0, r.cb)}, RProm, 0, 1)
 [O |-> OResume(Out0, y, 7, 0), pay |-> CanResume(r, y) /\ reqs[y] = "open"]
 ```
 
-`promise_yield_create_with_id` is the same receipt; its duplicate check (test
-`PendingYields(r.to)` against the id your model keeps) and its deposit (`dep`, also in `out`)
-are the handler's job. The payload limit is not checked ([N-yield-payload](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
+`promise_yield_create_with_id` is the same receipt; its duplicate check and its deposit
+(`dep`, also in `out`) are the handler's job. Keep the custom id in the yield's args and test
+it against `PendingYieldRcpts(r, ps)`, with `ps` the yields this handler has already created:
+a yield callback may re-create its own id (it is no longer pending when it runs), and a second
+create of one id in the same call is a duplicate. `PendingYields(r.to)` is wrong here: it is
+the state view, which still lists the running callback and misses the current call's yields.
+
+```tla
+\* create_with_id(k) for on_answer: on a duplicate the host returns u64::MAX and creates nothing
+IF \E p \in PendingYieldRcpts(r, {}) : p.m = "on_answer" /\ p.a.k = k THEN Out0
+ELSE Outcome({}, {YieldRcpt(nid, r, "on_answer", [k |-> k], 0, 0)}, RVal(0), 0, 1)
+```
+
+The payload limit is not checked ([N-yield-payload](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
 
 **The block clock.** Without it (`MaxBlk = 0`) every pending yield may time out at any
-moment, which is sound. To model "not before the deadline", set `MaxBlk` and `YieldTicks` and
-add the step to `Next`:
+moment, which is sound for yields; but `blk` stays 0, so a handler that reads it never sees
+time pass. To model "not before the deadline", set `MaxBlk` and `YieldTicks` and add the step
+to `Next`:
 
 ```tla
 Next == Send \/ Run \/ (BlockTick /\ UNCHANGED mine)
@@ -855,8 +872,26 @@ Next == Send \/ Run \/ (BlockTick /\ UNCHANGED mine)
 
 A handler reads the height as `blk` and the timestamp as `BlockTs` (`TsOf(blk)`; `TsOf` takes
 an argument, so the runner cannot override it: compute your own function of `blk` instead).
-Add `ClockBoundOK` to the invariants: it fails if a pending yield's deadline passed `MaxBlk`,
-where yields may time out early. With `TickAnytime <- FALSE` and at most `k` yields per
+
+`MaxBlk` is a bound, not an abstraction of later time, and it has two consequences
+([S3](SEMANTICS.md#s3-block-clock)). Add a check for each to the invariants:
+
+- `YieldDeadlinesInBound` fails if a pending yield's deadline passed `MaxBlk`, where yields
+  may time out early. While it holds, no timeout in the run is premature, so a violation is
+  real. It says nothing about what the bound leaves out.
+- `ClockHorizonOK(n, T)` fails if `MaxBlk < n * max(T, YieldTicks)`. Nothing past `MaxBlk`
+  is explored: a window your model opens later, or a timeout delayed past the bound, is
+  missing, and a pass is a pass up to `MaxBlk` only
+  ([N-clock-horizon](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Take `T`
+  = the largest number of blocks any comparison with the clock counts (`blk >= at + CancelAt`
+  counts `CancelAt`; `>` and `=` count one more), and `n` = the most steps in one behaviour
+  that read or record `blk` or `BlockTs`, create a yield or run a yield callback. Define it in
+  your module (`HorizonOK == ClockHorizonOK(2 * MaxTx, CancelAt)`) and list it. If you choose
+  a smaller `MaxBlk`, write down why it still covers your model, or report the result as
+  bounded. `horizon_*` in `yield-clock` shows a double refund that passes at `MaxBlk = 2`,
+  is flagged by `HorizonOK` and found at `MaxBlk = 3`.
+
+With `TickAnytime <- FALSE`, no handler reading the clock and at most `k` yields per
 behaviour, `MaxBlk = k * YieldTicks` is enough. Keep `TickAnytime` TRUE whenever a handler reads
 `blk` or `BlockTs`: with FALSE the clock stops when no yield is pending, which can hide a bug
 (`cancel_after_answer` in `yield-clock` passes with it). `BlockTick` and `EpochTick` are

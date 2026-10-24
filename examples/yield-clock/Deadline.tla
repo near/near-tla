@@ -20,8 +20,16 @@
 (*   "after_answer"    cancel also refunds an answered request whose       *)
 (*                     callback is still in flight.                        *)
 (* NoEarlyTimeout (ghost): no on_answer saw Failed before its deadline.    *)
-(* With the clock bound MaxBlk below a deadline it can fail: ClockBoundOK  *)
-(* reports that case.                                                      *)
+(* With the clock bound MaxBlk below a deadline it can fail:               *)
+(* YieldDeadlinesInBound reports that case.                                *)
+(*                                                                         *)
+(* The clock stops at MaxBlk, so a pass covers only behaviours that fit    *)
+(* below it.  HorizonOK (ClockHorizonOK) states when the bound is enough:  *)
+(* the clock-relevant steps are request (records blk), cancel (reads it)   *)
+(* and on_answer (a timeout; Early reads blk), at most 2 * MaxTx; the      *)
+(* largest comparison is CancelAt (cancel), YieldTicks (the deadline) or   *)
+(* ReqUntil + 1 (request).                                                 *)
+(* ReqUntil: request fails above this height (-1: never; the default).     *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -39,6 +47,7 @@ NoGasTable == [x \in {} |-> 0]
 Cred0 == 3
 Arg(y) == [y |-> y]
 Out0 == Outcome({}, {}, RVal(0), 0, 0)
+ReqUntil == -1
 
 Send ==
     /\ ntx < MaxTx
@@ -60,6 +69,7 @@ HQ(r) ==
   LET K == [O |-> Out0, cr |-> cr, esc |-> esc, op |-> opPaid, reqs |-> reqs] IN
   CASE r.m = "request" ->
          IF cr < 1 THEN [K EXCEPT !.O = OErr(Out0, "no credit")]
+         ELSE IF ReqUntil >= 0 /\ blk > ReqUntil THEN [K EXCEPT !.O = OErr(Out0, "too late")]
          ELSE [K EXCEPT !.O = Outcome({}, {YieldRcpt(nid, r, "on_answer", Arg(nid), 0, r.cb)}, RProm, 0, 1),
                         !.cr = cr - 1, !.esc = esc + 1,
                         !.reqs = (nid :> [at |-> blk, st |-> "open"]) @@ reqs]
@@ -111,5 +121,6 @@ Books          == Idle => cr + esc + opPaid = Cred0
 NoNegEscrow    == esc >= 0
 Settled        == Idle => esc = 0
 NoEarlyTimeout == ~early
+HorizonOK      == ClockHorizonOK(2 * MaxTx, IF CancelAt > ReqUntil + 1 THEN CancelAt ELSE ReqUntil + 1)
 Sane           == NoOrphans /\ NearConserved(0)
 =============================================================================

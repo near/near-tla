@@ -3,7 +3,7 @@
 # ./build.sh (wasm32-unknown-unknown); the wasms and their sha256 are in res/.
 [workspace]
 resolver = "2"
-members = ["probe", "ft", "wrap"]
+members = ["probe", "ft", "wrap", "async-probe"]
 
 [workspace.dependencies]
 near-sdk = { version = "=5.29.1" }

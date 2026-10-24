@@ -115,20 +115,29 @@ pub fn status(r: &ReceiptOutcome) -> &'static str {
 /// Every receipt of the outcome, the conversion first, refunds included,
 /// as JSON values (schema in README.md).
 pub fn dump(o: &TxOutcome) -> Value {
+    dump_all(std::slice::from_ref(o))
+}
+
+/// `dump` of several transactions' outcomes (a flow's transaction, then its
+/// `after` transactions): their receipts in that order, each with the index
+/// of its transaction (`tx`); `tx_ok` is the first transaction's.
+pub fn dump_all(os: &[TxOutcome]) -> Value {
     let mut parent: HashMap<String, String> = HashMap::new();
-    for r in o.transaction.iter().chain(&o.receipts) {
-        for c in &r.receipt_ids {
-            parent.insert(c.to_string(), r.id.to_string());
+    for o in os {
+        for r in o.transaction.iter().chain(&o.receipts) {
+            for c in &r.receipt_ids {
+                parent.insert(c.to_string(), r.id.to_string());
+            }
         }
     }
-    let rs: Vec<Value> = o
-        .transaction
+    let rs: Vec<Value> = os
         .iter()
-        .map(|r| (r, true))
-        .chain(o.receipts.iter().map(|r| (r, false)))
-        .map(|(r, conv)| {
+        .enumerate()
+        .flat_map(|(t, o)| o.transaction.iter().map(move |r| (t, r, true)).chain(o.receipts.iter().map(move |r| (t, r, false))))
+        .map(|(t, r, conv)| {
             let id = r.id.to_string();
             json!({
+                "tx": t,
                 "id": id,
                 "parent": parent.get(&id),
                 "conversion": conv,
@@ -152,7 +161,7 @@ pub fn dump(o: &TxOutcome) -> Value {
             })
         })
         .collect();
-    json!({ "tx_ok": !o.is_failure(), "receipts": rs })
+    json!({ "tx_ok": os.first().is_some_and(|o| !o.is_failure()), "receipts": rs })
 }
 
 /// Prepaid-gas grids, in gas.
@@ -211,21 +220,22 @@ pub fn lock_beside(path: &Path, exclusive: bool) -> std::io::Result<std::fs::Fil
 }
 
 /// Runs `tx` on a clone of `base` at every gas of `grid`, and returns one
-/// JSON value per point (`dump` plus `flow` and `gas`). With `out`, it
-/// writes them as JSON lines to `out` once the whole grid has run
-/// (`write_atomic`): an interrupted sweep leaves the previous file whole.
+/// JSON value per point (`dump_all` of the outcomes `tx` returns, plus
+/// `flow` and `gas`). With `out`, it writes them as JSON lines to `out`
+/// once the whole grid has run (`write_atomic`): an interrupted sweep
+/// leaves the previous file whole.
 pub fn sweep(
     flow: &str,
     base: &Sim,
     grid: &[u64],
-    tx: &dyn Fn(&mut Sim, Gas) -> TxOutcome,
+    tx: &dyn Fn(&mut Sim, Gas) -> Vec<TxOutcome>,
     out: Option<&Path>,
 ) -> Vec<Value> {
     let mut lines = vec![];
     for &g in grid {
         let mut sim = base.clone();
-        let o = tx(&mut sim, Gas::from_gas(g));
-        let mut v = dump(&o);
+        let os = tx(&mut sim, Gas::from_gas(g));
+        let mut v = dump_all(&os);
         v["flow"] = json!(flow);
         v["gas"] = json!(g);
         lines.push(v);

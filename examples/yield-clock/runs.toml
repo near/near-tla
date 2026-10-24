@@ -35,18 +35,18 @@ YieldTicks = "2"
 [[run]]
 name = "yield_ok_timed"
 expect = "pass"
-invariants = ["Books", "NoNegEscrow", "Settled", "Sane", "NoEarlyTimeout", "ClockBoundOK"]
+invariants = ["Books", "NoNegEscrow", "Settled", "Sane", "NoEarlyTimeout", "YieldDeadlinesInBound"]
 [run.constants]
 MaxBlk = "6"
 TickAnytime = "FALSE"
 
 # A bound below a deadline: at blk = MaxBlk the yield may time out early (saturation).
-# ClockBoundOK reports it ...
+# YieldDeadlinesInBound reports it ...
 [[run]]
 name = "yield_saturation_flagged"
 expect = "violation"
-invariant = "ClockBoundOK"
-invariants = ["ClockBoundOK"]
+invariant = "YieldDeadlinesInBound"
+invariants = ["YieldDeadlinesInBound"]
 [run.constants]
 MaxBlk = "1"
 TickAnytime = "FALSE"
@@ -61,7 +61,9 @@ invariants = ["NoEarlyTimeout"]
 MaxBlk = "1"
 TickAnytime = "FALSE"
 
-# cancel reads blk, so blocks pass freely (TickAnytime, the default).
+# cancel reads blk, so blocks pass freely (TickAnytime, the default).  A bounded pass: with
+# 3 transactions HorizonOK needs MaxBlk >= 2 * 3 * CancelAt = 18, so behaviours that need a
+# later height (a request late in the run, then its cancel window) are not explored here.
 [[run]]
 name = "cancel_guarded"
 expect = "pass"
@@ -95,3 +97,62 @@ Steps = '{"request", "answer", "cancel"}'
 MaxBlk = "4"
 CancelAt = "3"
 Bug = '"after_answer"'
+
+# The bounded clock is an under-approximation.  One request, at height 0 (ReqUntil), then a
+# cancel; cancel opens at height 3 (CancelAt), the deadline is 2.  With MaxBlk = 2 the cancel
+# never opens, so trusts_timeout passes NoNegEscrow, and YieldDeadlinesInBound holds too (no
+# deadline past the bound): neither says the bound was too small.
+[[run]]
+name = "horizon_short_passes"
+expect = "pass"
+invariants = ["NoNegEscrow", "YieldDeadlinesInBound"]
+[run.constants]
+MaxTx = "2"
+Steps = '{"request", "cancel"}'
+CancelAt = "3"
+ReqUntil = "0"
+MaxBlk = "2"
+Bug = '"trusts_timeout"'
+
+# ... HorizonOK does (it needs MaxBlk >= 2 * 2 * 3 = 12) ...
+[[run]]
+name = "horizon_short_flagged"
+expect = "violation"
+invariant = "HorizonOK"
+invariants = ["HorizonOK", "NoNegEscrow", "YieldDeadlinesInBound"]
+[run.constants]
+MaxTx = "2"
+Steps = '{"request", "cancel"}'
+CancelAt = "3"
+ReqUntil = "0"
+MaxBlk = "2"
+Bug = '"trusts_timeout"'
+
+# ... and one more block shows the bug: the timeout is delayed past height 3, U cancels, then
+# the timeout's callback refunds again.
+[[run]]
+name = "horizon_bug_found"
+expect = "violation"
+invariant = "NoNegEscrow"
+invariants = ["NoNegEscrow", "YieldDeadlinesInBound"]
+[run.constants]
+MaxTx = "2"
+Steps = '{"request", "cancel"}'
+CancelAt = "3"
+ReqUntil = "0"
+MaxBlk = "3"
+Bug = '"trusts_timeout"'
+
+# The correct handler at a justified bound: HorizonOK holds, so this pass covers every
+# behaviour of the model, at any height.
+[[run]]
+name = "horizon_justified"
+expect = "pass"
+invariants = ["Books", "NoNegEscrow", "Settled", "Sane", "NoEarlyTimeout", "YieldDeadlinesInBound",
+              "HorizonOK"]
+[run.constants]
+MaxTx = "2"
+Steps = '{"request", "answer", "cancel"}'
+CancelAt = "3"
+ReqUntil = "0"
+MaxBlk = "12"

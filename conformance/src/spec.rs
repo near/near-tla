@@ -196,6 +196,23 @@ pub struct Flow {
     /// instead, where the sim never completes the path the model takes.
     #[serde(default)]
     pub model_keys: BTreeMap<String, String>,
+    /// Steps after the swept transaction, in order, each once the chain is
+    /// idle: another transaction at its own gas, or the timeout of every
+    /// parked yield (see `run_flow`).
+    #[serde(default)]
+    pub after: Vec<After>,
+}
+
+/// One step after a flow's transaction: exactly one of `call` (a
+/// transaction, at its `tgas`, default 300) and `expire = true` (every
+/// yield still parked times out: the sim advances to its `expires_at` and
+/// settles, so its callback runs with `PromiseResult::Failed`).
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct After {
+    #[serde(default)]
+    pub expire: bool,
+    pub call: Option<Call>,
 }
 
 fn default_grid() -> String {
@@ -320,6 +337,30 @@ impl Resolved {
     pub fn name<'a>(&'a self, id: &'a str) -> &'a str {
         self.spec.world.names.get(id).map(|s| s.as_str()).unwrap_or(id)
     }
+}
+
+/// Runs a flow at prepaid `gas`: its transaction, then its `after` steps,
+/// each once the chain is idle (`transact` returns with a yield still
+/// parked). Returns the outcome of every transaction, the flow's first,
+/// each read again at the end: a yield callback belongs to the transaction
+/// that yielded, whichever one resumed it.
+pub fn run_flow(sim: &mut Sim, flow: &Flow, gas: Gas) -> Vec<TxOutcome> {
+    let mut hashes = vec![run(sim, &flow.tx, Some(gas)).hash];
+    for (i, a) in flow.after.iter().enumerate() {
+        match (a.expire, &a.call) {
+            (true, None) => {
+                for y in sim.yields() {
+                    // expiring one fires every yield due before it
+                    if sim.yields().contains(&y) {
+                        sim.expire(&y);
+                    }
+                }
+            }
+            (false, Some(c)) => hashes.push(run(sim, c, None).hash),
+            _ => panic!("flow {} after[{i}]: set exactly one of call and expire = true", flow.name),
+        }
+    }
+    hashes.into_iter().map(|h| sim.outcome(h)).collect()
 }
 
 /// Runs one call to completion, at `gas` (default: its `tgas`, else 300).

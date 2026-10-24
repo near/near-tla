@@ -25,10 +25,14 @@ Each entry ends with its migration.
   `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialise it, so models that
   use those and write `UNCHANGED platformVars` need no change (every example is such a
   model). A step that lists platform variables one by one in `UNCHANGED` must add `blk`
-  (in the library: `NearKeys.ExecKeyAct`), and a hand-written `Init` must set it. State
-  counts of models without yields or a clock are unchanged. Migration: write
+  (in the library: `NearKeys.ExecKeyAct`), a hand-written `Init` must set it, and so must a
+  hand-written full-state tuple: if the `vars` of `[][Next]_vars` lists platform variables
+  by name, `blk` is missing from it and unconstrained by its stuttering steps (TLC only
+  warns). State counts of models without yields or a clock are unchanged. Migration: write
   `UNCHANGED platformVars` or add `blk` to the list; conjoin `PlatformInitClock`
-  (`blk = 0`) to a hand-written `Init` that does not use `PlatformInitExtra`.
+  (`blk = 0`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
+  hand-written `vars`, replace the platform variables with `platformVars`
+  (`vars == <<platformVars, mine>>`) or add `blk`.
 - **`RemD` and `NoOrphans` cover several inputs per receipt** (`InIds`): a joint callback
   consumes all its inputs, a yield every resume addressed to it, and a pending yield is never
   an orphan. Results for receipts without the new fields are unchanged. Migration: none,
@@ -222,8 +226,9 @@ Each entry ends with its migration.
   `PooledGasOK`; for v0.2: `blk` (a variable), `MaxBlk`, `YieldTicks`, `TickAnytime`,
   `TsOf`, `IsJoint`, `IsYield`, `InIds`, `DRes`, `Arrived`, `JointRes`, `JOINTRES`,
   `JointMark`, `FailedRes`, `TimedOut`, `NRes`, `ResAt`, `AndThen`, `YieldRcpt`,
-  `CanResume`, `PendingYields`, `OResume`, `Rsm`, `ResumeData`, `BlockTick`, `BlockTs`,
-  `PlatformInitClock`, `ClockBoundOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
+  `CanResume`, `PendingYields`, `PendingYieldRcpts`, `PendingYieldsAt`, `OResume`, `Rsm`,
+  `ResumeData`, `BlockTick`, `BlockTs`, `PlatformInitClock`, `YieldDeadlinesInBound`,
+  `ClockHorizonOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
   `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
   `FtMaxResultLen`, `ResolveUnusedLim`, `ResolveRefundLim`, `TokResolveMaxLen`,
   `ResolveMaxLen`,
@@ -247,19 +252,32 @@ Each entry ends with its migration.
   result is an `Assert`.
 - **Yield/resume** (NEP-519, SEMANTICS C7): `YieldRcpt(id, r, m, a, dep, cb)` (optional field
   `ydl`), `OResume(O, y, v, n)` (outcome field `rsm`), `CanResume(r, y)` (the host's return
-  value: TRUE for every resume until the callback runs), `PendingYields(a)`, `Rsm`,
-  `ResumeData`. The callback runs with the first resume to arrive or times out with
-  `Failed`; a resume in flight beats the timeout; extra resumes are dropped; only the
-  yielding account can resume. `promise_yield_create_with_id`'s duplicate check and deposit
-  are the handler's. Not checked: the payload limit (N-yield-payload).
+  value: TRUE for every resume until the callback runs), `PendingYieldRcpts(r, ps)` /
+  `PendingYieldsAt(r, ps)` (the yields of `r.to` still pending as `r`'s handler sees them:
+  without `r`, plus `ps`, the yields the handler created so far), `PendingYields(a)` (the
+  same as a state view, for invariants; not for handlers), `Rsm`, `ResumeData`. The callback
+  runs with the first resume to arrive or times out with `Failed`; a resume in flight beats
+  the timeout; extra resumes are dropped; only the yielding account can resume.
+  `promise_yield_create_with_id`'s duplicate check and deposit are the handler's: test the
+  custom id, kept in the yield's args, against `PendingYieldRcpts(r, ps)`, so that a callback
+  may re-create its own id and a second create of one id in a call is a duplicate
+  (platform-selftest `yield_id_*`; the mutant runs `selftest_yield_id_old_*` show that
+  `PendingYields(r.to)` gets both wrong). Not checked: the payload limit (N-yield-payload).
 - **Block clock** (SEMANTICS S3): the variable `blk`, `BlockTick`, `BlockTs`, and the
   overridable `MaxBlk` (default 0: no clock, every pending yield may time out at any moment),
   `YieldTicks`, `TickAnytime` (default TRUE; FALSE ticks only while a yield's deadline is
-  ahead) and `TsOf`. `ClockBoundOK` reports a pending deadline past `MaxBlk`.
-  `PlatformInitClock`. `BlockTick` is independent of `EpochTick`.
+  ahead) and `TsOf`. `PlatformInitClock`. `BlockTick` is independent of `EpochTick`.
+  `MaxBlk` is a bound, so a model that reads the clock passes only up to it (an
+  under-approximation, SEMANTICS N-clock-horizon). Two checks to list as invariants:
+  `YieldDeadlinesInBound` (no pending deadline past `MaxBlk`, so no timeout in the run is
+  premature; it says nothing about coverage; `ClockBoundOK` in the pre-release tree) and
+  `ClockHorizonOK(n, T)` (`MaxBlk >= n * max(T, YieldTicks)`, with `T` the largest number of
+  blocks a clock comparison counts and `n` the most clock-relevant steps per behaviour: then
+  the bound covers every behaviour).
 - Examples `joint-promise` (`Pair`), `yield-resume` (`Oracle`, the double-resume trap) and
   `yield-clock` (`Deadline`: early timeouts at a too small bound, `cancel_trusts_timeout`,
-  `cancel_after_answer`), with must-pass and must-fail runs.
+  `cancel_after_answer`, and `horizon_*`: a double refund that passes at `MaxBlk = 2`, is
+  flagged by `ClockHorizonOK` and found at `MaxBlk = 3`), with must-pass and must-fail runs.
 - `examples/platform-selftest`: `selftest_async` and `selftest_async_gas`, 10 scenarios for
   joint callbacks (result order, a starved input, a callback with no gas) and yields (a second
   resume, two resumes in the yielding call, timeout then resume, a resume in flight at the
@@ -348,6 +366,20 @@ Each entry ends with its migration.
   it; `OversizedRefunded` fails).
 - `examples/minimal`: the walkthrough model from `docs/USAGE.md` (`Tally`), in
   fault and gas mode, with a must-fail variant and a printed gas window.
+- Conformance: joint promises (`promise_and(..).then`) are covered by 8 flows (`and2_*`,
+  `and3_mixed`): `AndThen` in `ProbeConf`, joined chains with their own burn keys; inputs ok,
+  failing and out of gas, result order (a callback that fails iff its first result failed), and
+  zero-gas inputs and callbacks.
+- Conformance: yield/resume is covered by a separate `async-probe` contract (on
+  `y-probe.near`) and 7 flows (`yield_*`): resume from a later transaction, timeout, a late
+  resume, a double resume, a resume in the yielding call, a callback out of gas, a zero-gas
+  callback. Flow specs gain `[[flow.after]]` steps (another transaction, or `expire = true`);
+  sweeps hold every transaction's receipts (new JSONL field `tx`).
+- Conformance: the yield resume payload limit is measured at 1024 bytes, not KiB
+  (`tests/semantics.rs`), with semantics tests for two resumes in one block, a resume after
+  the timeout and a resume of another account's yield. Totals: 73 flows, 95,849 points,
+  222,918 receipts, 0 mismatches; C6 and C7 are validated in the sim for the parts the flows
+  observe.
 - Conformance: `conform.py` requires each sweep to hold its flow's declared grid exactly
   once and to match a `.meta.json` bound to it by sha256 and point count; empty,
   truncated or duplicated sweeps and model points outside the grid fail. Status and

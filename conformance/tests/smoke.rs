@@ -35,8 +35,7 @@ fn resolved() -> Resolved {
 fn run(res: &Resolved, base: &near_contract_sim::prelude::Sim, name: &str, g: &[u64]) -> Vec<Value> {
     let flow = res.spec.flows.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no flow {name}"));
     let w = res.flow_world(base, flow);
-    let tx = flow.tx.clone();
-    sweep(name, &w, g, &|sim, gas| spec::run(sim, &tx, Some(gas)), None)
+    sweep(name, &w, g, &|sim, gas| spec::run_flow(sim, flow, gas), None)
 }
 
 #[test]

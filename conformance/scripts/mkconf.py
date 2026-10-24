@@ -3,7 +3,12 @@
 
 Writes tla/build/MC_<flow>.tla and .cfg for every flow of
 flows/probes.toml (or the named ones): the flow's transaction as a model
-receipt for ProbeConf.tla, over the flow's prepaid-gas grid (Ggas).
+receipt for ProbeConf.tla, over the flow's prepaid-gas grid (Ggas), and its
+`after` steps (ProbeConf's After: transactions at their own gas, or a block
+that times out the parked yield; the clock is one tick, YieldTicks = 1).
+
+A flow's `path` suffixes the burn key of every receipt it applies to
+(`path_for`, empty: all), the leaves' too (their payload's gk).
 
 Every burn key the model will look up must be in tla/CalibProbes.tla; a
 missing one is an error unless the flow's `model_keys` maps it to another
@@ -96,18 +101,52 @@ def pa(fields):
     return "PA([PA0 EXCEPT " + ", ".join(f"!.{k} = {v}" for k, v in fields.items()) + "])"
 
 
-def leaf_args(m, args):
+def leaf_args(m, args, gk=""):
     a = json.loads(args) if args else {}
+    f = {"gk": q(gk)} if gk else {}
     if m == "burn":
-        return pa({"n": a["ggas"]})
-    if m == "ret":
-        return pa({"n": a["bytes"] // 1000})
-    return pa({})
+        f["n"] = a["ggas"]
+    elif m == "ret":
+        f["n"] = a["bytes"] // 1000
+    return pa(f)
 
 
-def kid(ctx, c, here):
-    to = ctx.n(c.get("receiver", here))
-    return f'KidRec({q(to)}, {q(c["method"])}, {leaf_args(c["method"], c.get("args", ""))}, {c.get("static_ggas", 0)}, {c.get("weight", 0)}, {dep(c.get("deposit", "0"))})'
+def kid(ctx, c, here, flow=None):
+    rx = c.get("receiver", here)
+    to, m = ctx.n(rx), c["method"]
+    gk = ""
+    if flow is not None:
+        # (not checked here: a kid of a creator that always fails never
+        # runs; TLC asserts every key a run looks up)
+        path = ctx.path_of(flow, f"{rx}.{m}")
+        gk = m + path if path else ""
+    return f'KidRec({q(to)}, {q(m)}, {leaf_args(m, c.get("args", ""), gk)}, {c.get("static_ggas", 0)}, {c.get("weight", 0)}, {dep(c.get("deposit", "0"))})'
+
+
+# The async probe's keys the model picks by what happens (ProbeConf).
+YKEYS = {"resume": ["resume/ok", "resume/none"], "on_yield": ["on_yield/payload", "on_yield/timeout"]}
+
+
+def after(ctx, flow):
+    """ProbeConf's After: the flow's `after` steps as records."""
+    steps = []
+    for st in flow.get("after", []):
+        if st.get("expire"):
+            steps.append('[k |-> "expire", to |-> "", m |-> "", a |-> PA(PA0), fr |-> "", g |-> 0]')
+            continue
+        c = st["call"]
+        to, m = ctx.n(c["receiver"]), c["method"]
+        a = json.loads(c["args"]) if c.get("args") else {}
+        if m != "resume":
+            raise SystemExit(f"{flow['name']}: no model for an after step {to}.{m}")
+        if a["bytes"] > 1024:
+            raise SystemExit(f"{flow['name']}: a payload over 1024 bytes fails the resumer in nearcore; the model does not check it")
+        for k in YKEYS[m]:
+            ctx.key(flow, to, k)
+        g = round(float(c.get("tgas", 300)) * 1000)
+        steps.append(f'[k |-> "tx", to |-> {q(to)}, m |-> {q(m)}, a |-> {pa({"n": a["bytes"]})}, '
+                     f'fr |-> {q(ctx.n(c["signer"]))}, g |-> {g}]')
+    return "<<" + ", ".join(steps) + ">>"
 
 
 def first(ctx, flow):
@@ -119,11 +158,22 @@ def first(ctx, flow):
         kids = a["kids"]
         cb = a.get("cb")
         ms = [k["method"] for k in kids] + ([cb["method"]] if cb else [])
-        f = {"kids": "<<" + ", ".join(kid(ctx, k, rx) for k in kids) + ">>",
-             "gk": q(ctx.key(flow, here, "chain/" + ",".join(sorted(ms))))}
+        ck = flow.get("keys", {}).get("chain") or "chain/" + ",".join(sorted(ms))
+        f = {"kids": "<<" + ", ".join(kid(ctx, k, rx, flow) for k in kids) + ">>",
+             "gk": q(ctx.key(flow, here, ck + ctx.path_of(flow, f"{rx}.chain")))}
         if cb:
-            f["cb"] = "<<" + kid(ctx, cb, rx) + ">>"
-        assert len(kids) == 1 or a.get("detach"), "joined promises are not modelled"
+            f["cb"] = "<<" + kid(ctx, cb, rx, flow) + ">>"
+        if a.get("detach"):
+            f["det"] = "TRUE"
+        args = pa(f)
+    elif m == "yield_create":
+        yk = flow.get("keys", {}).get(m) or m
+        f = {"st": a["cb_ggas"], "wt": a["cb_weight"], "rb": a.get("resume", -1),
+             "gk": q(ctx.key(flow, here, yk + ctx.path_of(flow, f"{rx}.{m}")))}
+        if a.get("resume") is not None and a["resume"] > 1024:
+            raise SystemExit(f"{flow['name']}: a payload over 1024 bytes fails the resumer in nearcore; the model does not check it")
+        for k in YKEYS["on_yield"]:
+            ctx.key(flow, here, k)
         args = pa(f)
     elif m == "send":
         f = {"to": q(ctx.n(a["to"])), "amt": dep(a["yocto"])}
@@ -196,6 +246,9 @@ CONSTANTS
   FirstRcpt <- mc_first
   Signer0 <- mc_signer
   Grid <- mc_grid
+  After <- mc_after
+  MaxBlk <- mc_maxblk
+  YieldTicks <- mc_one
 INVARIANTS
   Report
   TypeOK
@@ -223,7 +276,9 @@ def main():
             f.write('mc_staking == "p"\nmc_empty == {}\nmc_gas == "gas"\nmc_tokens == Toks\nmc_wnear == {"wnear_probe"}\n')
             f.write(f"mc_signer == {q(signer)}\n")
             f.write(f"mc_grid == {grid(g_override or flow.get('grid', 'standard'))}\n")
-            f.write(f"mc_first == {rc}\n====\n")
+            f.write(f"mc_first == {rc}\n")
+            f.write(f"mc_after == {after(ctx, flow)}\n")
+            f.write("mc_one == 1\nmc_maxblk == 1 + Len(mc_after)\n====\n")
         with open(os.path.join(BUILD, mod + ".cfg"), "w") as f:
             f.write(CFG)
         print(mod)

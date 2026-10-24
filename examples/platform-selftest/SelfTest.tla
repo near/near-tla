@@ -20,6 +20,11 @@ EXTENDS Tokens, NearKeys
 
 CONSTANT Scns       \* the scenarios explored by this run
 
+\* Mutant switch: TRUE checks promise_yield_create_with_id's duplicates with
+\* the state view PendingYields(r.to) instead of PendingYieldsAt (the check
+\* the docs prescribed before; the yield_id runs must then fail).
+OldDupCheck == FALSE
+
 VARIABLES scn, ntx, acc, ran, seen
 mine == <<scn, ntx, acc, ran, seen>>
 vars == <<platformVars, tk, keyVars, mine>>
@@ -93,6 +98,14 @@ ResTag(res) == IF ~res.ok THEN "fail"
                       [] res.v = MAL -> "mal" [] res.v = NONEMPTY -> "bytes" [] OTHER -> "num"
 SeenRes(r) == {Sn(r, ResTag(r.res), NumOr(r.res, 0)), Sn(r, "sz", r.res.sz)}
 Out0 == Outcome({}, {}, RVal(0), 0, 0)
+\* promise_yield_create_with_id: the custom id k is kept in the args (amt),
+\* with a generation number (cd); only ycbid yields carry one.
+YidArgs(k, gen) == G("", "", "", k, gen, "", "")
+YidOf(p) == IF p.m = "ycbid" THEN Ar(p).amt ELSE -1
+YidTaken(r, ps, k) ==
+    IF OldDupCheck THEN \E p \in post : p.id \in PendingYields(r.to) /\ YidOf(p) = k
+    ELSE \E p \in PendingYieldRcpts(r, ps) : YidOf(p) = k
+YieldId(id, r, k, gen) == YieldRcpt(id, r, "ycbid", YidArgs(k, gen), 0, 0)
 CbOf(r, id) == Rcpt(id, r.tx, r.to, r.to, "cb", G0, 0, r.to, r.cb)
 H(r) ==
   LET a == Ar(r) IN
@@ -209,6 +222,21 @@ H(r) ==
     [] r.m = "dcb" -> [O |-> Out0, s |-> {Sn(r, "dcb:" \o ResTag(r.res), NumOr(r.res, 0))}]
     [] r.m = "ans" ->       \* promise_yield_resume(a.amt, a.cd); n = its return value
          [O |-> OResume(Out0, a.amt, a.cd, 0), s |-> {Sn(r, "ans", IF CanResume(r, a.amt) THEN 1 ELSE 0)}]
+    [] r.m = "reqid" ->     \* promise_yield_create_with_id(a.amt) for self.ycbid;
+                            \* yid 1: created, 0: a duplicate (u64::MAX, nothing created)
+         IF YidTaken(r, {}, a.amt) THEN [O |-> Out0, s |-> {Sn(r, "yid", 0)}]
+         ELSE [O |-> Outcome({}, {YieldId(nid, r, a.amt, 0)}, RVal(0), 0, 1), s |-> {Sn(r, "yid", 1)}]
+    [] r.m = "reqid2" ->    \* the same, twice in one call; yid2: the second one
+         LET y1 == YieldId(nid, r, a.amt, 0) IN
+         IF YidTaken(r, {y1}, a.amt)
+         THEN [O |-> Outcome({}, {y1}, RVal(0), 0, 1), s |-> {Sn(r, "yid", 1), Sn(r, "yid2", 0)}]
+         ELSE [O |-> Outcome({}, {y1, YieldId(nid + 1, r, a.amt, 0)}, RVal(0), 0, 2),
+               s |-> {Sn(r, "yid", 1), Sn(r, "yid2", 1)}]
+    [] r.m = "ycbid" ->     \* the custom-id callback, resumed or timed out: generation 0
+                            \* re-creates its own custom id; reyid 1: created, 0: a duplicate
+         IF a.cd # 0 THEN [O |-> Out0, s |-> {}]
+         ELSE IF YidTaken(r, {}, a.amt) THEN [O |-> Out0, s |-> {Sn(r, "reyid", 0)}]
+         ELSE [O |-> Outcome({}, {YieldId(nid, r, a.amt, 1)}, RVal(0), 0, 1), s |-> {Sn(r, "reyid", 1)}]
     [] r.m = "ycb" ->       \* the yield callback: returns the payload; panics on a timeout
          [O |-> IF IsFailed(r.res) THEN OErr(Out0, "timed out") ELSE Outcome({}, {}, RVal(r.res.v), 0, 0),
           s |-> {Sn(r, "ycb", NumOr(r.res, 0)), Sn(r, "ygas", GasOf(r))}]
@@ -357,6 +385,9 @@ Script(s) ==
     [] s = "resume_other_acct" -> << TxG(C, U, "req", G0, 0, 10000), Ans(D, 2, 5), BTick >>
     [] s = "yield_returned"   -> << TxG(D, U, "callreq", G0, 0, 20000), Ans(C, 4, 5) >>
     [] s = "yield_zero_cb"    -> << TxG(C, U, "req", G("zero", "", "", 0, 0, "", ""), 0, 10000) >>
+    [] s = "yield_id_recreate" -> << TxG(C, U, "reqid", YidArgs(7, 0), 0, 10000), Ans(C, 2, 5) >>
+    [] s = "yield_id_recreate_timeout" -> << TxG(C, U, "reqid", YidArgs(7, 0), 0, 10000), BTick >>
+    [] s = "yield_id_same_call" -> << TxG(C, U, "reqid2", YidArgs(7, 0), 0, 10000) >>
 
 Near0(s) == [a \in Accts |-> CASE a \in {U, W, V, FT} ->
                                   (IF s \in {"floor_locked", "liquid_negative"} /\ a = V THEN 4 ELSE 10)
@@ -591,6 +622,16 @@ Expect(s) ==
     [] s = "yield_zero_cb" ->     \* a yield callback with 0 gas fails its creator
          \* verifier.rs:711-717, action_validation.rs:350-351
          seen = {} /\ post = {}
+    [] s \in {"yield_id_recreate", "yield_id_recreate_timeout"} ->
+         \* a custom-id callback (resumed, or timed out) may re-create its own id: the
+         \* yield, its status and the id mapping are removed before it runs
+         \* lib.rs:1572-1591, :903; ext.rs:375-385
+         /\ seen = {S1("yid", 1), S1("reyid", 1)}
+                   \cup (IF s = "yield_id_recreate" THEN {S2("ans", 1)} ELSE {})
+         /\ {YidOf(p) : p \in post} = {7} /\ Cardinality(post) = 1
+    [] s = "yield_id_same_call" -> \* a second create_with_id of a pending id in the same call
+         \* is a duplicate: u64::MAX, nothing created.  ext.rs:380-385, host.rs:4391-4399
+         seen = {S1("yid", 1), S1("yid2", 0)} /\ Cardinality(post) = 1
 
 Check == Done => Expect(scn)
 NoNegDeposit == \A x \in rq \cup post : x.dep >= 0

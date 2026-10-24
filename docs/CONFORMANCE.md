@@ -58,7 +58,9 @@ standard-grid run counts as a result.
 
 ## What is compared
 
-For each flow (one transaction shape on the probe world) and each prepaid-gas point:
+For each flow (one transaction shape on the probe world, swept over prepaid gas, and
+optionally further steps after it: a transaction at fixed gas, or a yield's timeout) and each
+prepaid-gas point:
 
 - **Statuses.** Every receipt's outcome: ok, failed, out of gas, or not created. The model's
   outcome is its per-receipt log (`rlog`, with `LogOn = TRUE`), printed by TLC; the sim's is
@@ -88,17 +90,19 @@ at this commit:
 
 | | |
 |---|---|
-| flows | 58, all match |
-| prepaid points per flow | 1313 (76,154 points in all) |
-| receipts compared | 166,712 sim receipts |
+| flows | 73, all match (58, plus 8 joint-promise and 7 yield/resume flows) |
+| prepaid points per flow | 1313 (95,849 points in all) |
+| receipts compared | 222,918 sim receipts |
 | status mismatches | 0 |
 | edge mismatches | 0 |
 | attached-gas differences above tolerance | 0 (tolerance 5 Ggas; largest 5 Ggas, from rounding up at two creation levels) |
-| split-check mismatches | 0 of 76,662 children (largest difference 0 gas) |
+| split-check mismatches | 0 of 106,608 children (largest difference 0 gas) |
 
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
 burns, `ft_transfer_call`'s gas behaviour) are in
-[Results at the pins](../conformance/README.md#results-at-the-pins). The differences found so
+[Results at the pins](../conformance/README.md#results-at-the-pins). What the joint-promise and
+yield/resume flows check, the sim's yield API they use, and what they leave out are in
+[Async patterns](../conformance/README.md#async-patterns-joint-promises-and-yieldresume). The differences found so
 far and how each was resolved are in its [Mismatch log](../conformance/README.md#mismatch-log).
 
 With these results, the rules marked `<!-- conformance -->` in [`SEMANTICS.md`](SEMANTICS.md)

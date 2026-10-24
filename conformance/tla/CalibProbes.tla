@@ -17,6 +17,10 @@
 (*     conformance/probes/probe (near-sdk 5.29.1)                          *)
 (*     sha256 4c8fa4fa1c927ccae31f871049e9cafb                             *)
 (*            dc44a8edc6e0eb690d5290f027c6cf77                             *)
+(*   y-probe.near: async_probe.wasm                                        *)
+(*     conformance/probes/async-probe (near-sdk 5.29.1)                    *)
+(*     sha256 f31b5b1083dcc1d204ed6787ad71d0cf                             *)
+(*            d26fe1c0bd364c15008a2f2754035fbc                             *)
 (*   ft-probe.near: ft.wasm                                                *)
 (*     conformance/probes/ft (near-contract-standards 5.29.1)              *)
 (*     sha256 2d356b2df7a4cb11edcefe41dea4ce93                             *)
@@ -29,9 +33,9 @@
 (*     ft_probe,wnear_probe --batch-actions --tla tla/CalibProbes.tla      *)
 (*     --prefix Probe                                                      *)
 (* flows: probes.toml sha256                                               *)
-(*     83486b15ccbfa2676c9ff4d89fb40cc46e96a555f3497a1da33d52d5f170d53b    *)
-(* grid: standard (1313 points), 58 flows                                  *)
-(* split check: 76662 children, 0 mismatches; 7408 per action              *)
+(*     052f7c3732359737aae8e597030235b8e1570c2d8ffc95653503488b2f459a93    *)
+(* grid: standard (1313 points), 73 flows                                  *)
+(* split check: 106608 children, 0 mismatches; 7408 per action             *)
 (*                                                                         *)
 (* Burns depend on the contract's code and state: recalibrate for a real   *)
 (* deployment (conformance/README.md).                                     *)
@@ -71,13 +75,21 @@ ProbeGasBurn ==
     "p.batch/storage_deposit+ft_transfer" :> [base |-> 852, per |-> 0] @@  \* 2 pts; spread 0.851-0.852 Tgas; max residual 1.0
     "p.batch/storage_deposit+ft_transfer_call" :> [base |-> 855, per |-> 0] @@  \* 2 pts; spread 0.853-0.854 Tgas; max residual 1.0
     "p.burn" :> [base |-> 2001, per |-> 0] @@  \* 1 pt; spread 2.000-2.000 Tgas
+    "p.burn/and" :> [base |-> 2001, per |-> 0] @@  \* 1 pt; spread 2.000-2.000 Tgas
     "p.chain/burn,burn,on_read" :> [base |-> 1379, per |-> 0] @@  \* 1 pt; spread 1.378-1.378 Tgas
+    "p.chain/burn,burn,on_read,ret/and" :> [base |-> 1877, per |-> 0] @@  \* 1 pt; spread 1.876-1.876 Tgas
     "p.chain/burn,on_count" :> [base |-> 1037, per |-> 0] @@  \* 1 pt; spread 1.037-1.037 Tgas; burn up to the failure (never succeeds)
+    "p.chain/burn,on_count,ret/and" :> [base |-> 1462, per |-> 0] @@  \* 1 pt; spread 1.462-1.462 Tgas; burn up to the failure (never succeeds)
+    "p.chain/burn,on_count,ret/and_cb0" :> [base |-> 1462, per |-> 0] @@  \* 1 pt; spread 1.462-1.462 Tgas; burn up to the failure (never succeeds)
     "p.chain/burn,on_read" :> [base |-> 1037, per |-> 0] @@  \* 2 pts; spread 1.037-1.037 Tgas
+    "p.chain/burn,on_read,ret/and" :> [base |-> 1463, per |-> 0] @@  \* 2 pts; spread 1.462-1.462 Tgas
+    "p.chain/fail,on_order,ret/and_y" :> [base |-> 1456, per |-> 0] @@  \* 2 pts; spread 1.456-1.456 Tgas
+    "p.chain/fail,on_read,ret/and" :> [base |-> 1463, per |-> 0] @@  \* 1 pt; spread 1.463-1.463 Tgas
     "p.chain/on_count,ret" :> [base |-> 1038, per |-> 0] @@  \* 2 pts; spread 1.037-1.037 Tgas
     "p.chain/on_read,ret" :> [base |-> 1038, per |-> 0] @@  \* 4 pts; spread 1.037-1.037 Tgas
     "p.on_count" :> [base |-> 260, per |-> 0] @@  \* 2 pts; spread 0.259-0.259 Tgas
     "p.on_read" :> [base |-> 268, per |-> 3] @@  \* 9 pts; spread 0.260-0.552 Tgas; per exact 2.8413; max residual 8.0
+    "p.on_read/and" :> [base |-> 291, per |-> 0] @@  \* 4 pts; spread 0.273-0.291 Tgas; max residual 18.3
     "p.send/[Transfer],on_read/eth_new" :> [base |-> 716, per |-> 0] @@  \* 1 pt; spread 0.716-0.716 Tgas
     "p.send/[Transfer],on_read/nobody" :> [base |-> 705, per |-> 0] @@  \* 1 pt; spread 0.705-0.705 Tgas
     "p.send/[Transfer]/eth" :> [base |-> 299, per |-> 0] @@  \* 1 pt; spread 0.298-0.298 Tgas
@@ -87,6 +99,9 @@ ProbeGasBurn ==
     "p.send/[Transfer]/nobody" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas
     "p.send/[Transfer]/q" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas
     "q.burn" :> [base |-> 0, per |-> 1] @@  \* 3 pts; spread 1.000-2.000 Tgas; per exact 1.0002
+    "q.burn/and" :> [base |-> 1, per |-> 1] @@  \* 3 pts; spread 1.000-5.000 Tgas; per exact 1.0000
+    "q.fail/and" :> [base |-> 360, per |-> 0] @@  \* 1 pt; spread 0.359-0.359 Tgas; burn up to the failure (never succeeds)
+    "q.fail/and_y" :> [base |-> 360, per |-> 0] @@  \* 2 pts; spread 0.359-0.359 Tgas; burn up to the failure (never succeeds)
     "q.ft_on_transfer/big2000" :> [base |-> 501, per |-> 0] @@  \* 1 pt; spread 0.500-0.500 Tgas
     "q.ft_on_transfer/burn20000" :> [base |-> 20085, per |-> 0] @@  \* 1 pt; spread 20.085-20.085 Tgas
     "q.ft_on_transfer/keep" :> [base |-> 362, per |-> 0] @@  \* 8 pts; spread 0.361-0.362 Tgas
@@ -94,6 +109,8 @@ ProbeGasBurn ==
     "q.ft_on_transfer/panic" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas; burn up to the failure (never succeeds)
     "q.ft_on_transfer/return" :> [base |-> 363, per |-> 0] @@  \* 2 pts; spread 0.362-0.363 Tgas; max residual 1.0
     "q.ret" :> [base |-> 271, per |-> 70] @@  \* 6 pts; spread 0.270-7.223 Tgas; per exact 69.5272
+    "q.ret/and" :> [base |-> 341, per |-> 0] @@  \* 4 pts; spread 0.340-0.340 Tgas
+    "q.ret/and_y" :> [base |-> 341, per |-> 0] @@  \* 2 pts; spread 0.340-0.340 Tgas
     "wnear_probe.batch/C" :> [base |-> 1599, per |-> 0] @@  \* 1 pt; spread 1.599-1.599 Tgas
     "wnear_probe.batch/D" :> [base |-> 610, per |-> 0] @@  \* 1 pt; spread 0.609-0.609 Tgas
     "wnear_probe.batch/DC" :> [base |-> 2168, per |-> 0] @@  \* 1 pt; spread 2.167-2.167 Tgas
@@ -135,7 +152,16 @@ ProbeGasBurn ==
     "wnear_probe.storage_balance_of" :> [base |-> 345, per |-> 0] @@  \* 1 pt; spread 0.345-0.345 Tgas
     "wnear_probe.storage_deposit" :> [base |-> 591, per |-> 0] @@  \* 2 pts; spread 0.552-0.591 Tgas; max residual 38.4
     "wnear_probe.storage_deposit/new" :> [base |-> 591, per |-> 0] @@  \* 1312 pts; spread 0.591-0.591 Tgas
-    "wnear_probe.storage_deposit/registered" :> [base |-> 553, per |-> 0]  \* 1308 pts; spread 0.552-0.552 Tgas
+    "wnear_probe.storage_deposit/registered" :> [base |-> 553, per |-> 0] @@  \* 1308 pts; spread 0.552-0.552 Tgas
+    "y.on_order/and_y" :> [base |-> 194, per |-> 0] @@  \* 1 pt; spread 0.193-0.193 Tgas
+    "y.on_yield/payload" :> [base |-> 214, per |-> 0] @@  \* 4 pts; spread 0.214-0.214 Tgas
+    "y.on_yield/timeout" :> [base |-> 203, per |-> 0] @@  \* 2 pts; spread 0.202-0.202 Tgas
+    "y.resume/none" :> [base |-> 1587, per |-> 0] @@  \* 2 pts; spread 1.587-1.587 Tgas
+    "y.resume/ok" :> [base |-> 1587, per |-> 0] @@  \* 3 pts; spread 1.586-1.586 Tgas
+    "y.yield_create" :> [base |-> 904, per |-> 0] @@  \* 4 pts; spread 0.903-0.903 Tgas
+    "y.yield_create/cb0" :> [base |-> 904, per |-> 0] @@  \* 1 pt; spread 0.903-0.903 Tgas; burn up to the failure (never succeeds)
+    "y.yield_create/oog" :> [base |-> 904, per |-> 0] @@  \* 1 pt; spread 0.903-0.903 Tgas
+    "y.yield_create/self2" :> [base |-> 3321, per |-> 0]  \* 1 pt; spread 3.321-3.321 Tgas
 
 ProbeGasCall ==
     "ft_probe.batch/C" :> [st |-> <<30000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
@@ -148,6 +174,7 @@ ProbeGasCall ==
     "p.on_count" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
     "p.on_read" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
     "q.burn" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
+    "q.fail" :> [st |-> <<3000>>, wt |-> <<0>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
     "q.ft_on_transfer" :> [st |-> <<0>>, wt |-> <<1>>, fee |-> 889] @@
     "q.ret" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889] @@  \* static/weight vary by caller: set them with WithCall
     "wnear_probe.batch/C" :> [st |-> <<30000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
@@ -161,5 +188,7 @@ ProbeGasCall ==
     "wnear_probe.batch/SC" :> [st |-> <<5000, 30000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
     "wnear_probe.batch/ST" :> [st |-> <<5000, 5000>>, wt |-> <<1, 1>>, fee |-> 1669] @@  \* static/weight as the probe flows' caller declared them
     "wnear_probe.batch/T" :> [st |-> <<5000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
-    "wnear_probe.ft_resolve_transfer" :> [st |-> <<5000>>, wt |-> <<0>>, fee |-> 889]
+    "wnear_probe.ft_resolve_transfer" :> [st |-> <<5000>>, wt |-> <<0>>, fee |-> 889] @@
+    "y.on_order" :> [st |-> <<4000>>, wt |-> <<1>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them
+    "y.on_yield" :> [st |-> <<>>, wt |-> <<>>, fee |-> 889]  \* static/weight vary by caller: set them with WithCall
 =============================================================================

@@ -35,7 +35,7 @@ Each rule has four fields:
     [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. Rules the conformance flows were
     written to cover carry the marker `<!-- conformance -->` in the source of this page, and
     each such entry says what the sim checked, if anything. The run on the current library
-    (58 flows, 76,154 prepaid points, 166,712 sim receipts) found no status, window-edge or
+    (73 flows, 95,849 prepaid points, 222,918 sim receipts) found no status, window-edge or
     attached-gas mismatch ([results](../conformance/README.md#results-at-the-pins)). The
     comparison sees each receipt's status and attached gas and the window edges; the
     calibration checks the leftover split and the action-only fees. A rule is "sim" where a
@@ -172,9 +172,10 @@ Each rule has four fields:
   `apply_action_receipt` (`runtime/runtime/src/lib.rs:827-1274`).
 - **Model:** the callback is an ordinary receipt for `Exec`. It can fail by gas (gas mode) or
   by `ForcedFail` (fault mode).
-- **Validated:** nearcore reading. <!-- conformance --> No flow makes a callback fail: every
-  callback's static gas covers its burn, and all 30,014 callback receipts in the sweeps
-  succeed, so the sim does not check this rule.
+- **Validated:** sim for both failure kinds <!-- conformance -->: a joint callback that
+  panics (`and2_order_ff`) and a yield callback that runs out of gas (`yield_cb_oog`, between
+  1.9 and 2.1 Tgas). The comparison sees the callback's status, not what it reverts; the rest
+  is nearcore reading.
 
 ### C3. Promise result shapes
 
@@ -277,9 +278,20 @@ Each rule has four fields:
   checks each input. Gas: inputs and callback are ordinary children (`KidsCost`, `Give`,
   `ZeroGasKid`); the per-input data-receipt base fee and the `promise_and` fees are in the
   creator's calibrated burn, which therefore needs its own key per input count (G4).
-- **Validated:** nearcore reading. `examples/platform-selftest` checks the order with the
-  failing input first (`and_order`), a starved input (`and_starved_leg`) and a joint callback
-  with no gas (`and_zero_cb`).
+- **Validated:** sim for these parts (`conformance/`, flows `and2_*` and `and3_mixed`; see
+  [Async patterns](../conformance/README.md#async-patterns-joint-promises-and-yieldresume)):
+  the callback runs once, after the last input, also when an input panics (`and2_fail`) or
+  runs out of gas (`and2_oog`, below its window edge); the callback's attached gas, the
+  inputs' and the creator's window edges with two and three inputs, same- and cross-account
+  (`and2_ok`, `and3_mixed`; the creator's burn calibrated per input count); the result order
+  (`and2_order_ff` / `and2_order_fs`: a callback that fails iff its first result is `Failed`
+  fails with the failing input first and succeeds with it second); an input or a joint
+  callback with 0 gas fails the creator (`and2_s0`, `and2_cb0`). The comparison does not see
+  what the callback reads otherwise, and the sim gives one arrival order. Nested joins, an
+  input that returns a promise, the 128-input limit and the restrictions on joint promises:
+  nearcore reading. `examples/platform-selftest` checks the order with the failing input first
+  (`and_order`), a starved input (`and_starved_leg`) and a joint callback with no gas
+  (`and_zero_cb`). <!-- conformance -->
 
 ### C7. Yield and resume (NEP-519)
 
@@ -296,45 +308,75 @@ Each rule has four fields:
   leftover; with 0 gas it fails the creator. A failing creator leaves no yield, a failing
   resumer sends nothing. A yield can be returned (the caller's result is the callback's) or be
   an input of a `.then` or `promise_and`. A resume in the same call that yielded works.
+  `promise_yield_create_with_id` fails (creates nothing) while the account has a pending yield
+  with the same custom id, including one created earlier in the same call; a yield callback
+  is no longer pending when it runs, so it may re-create its own custom id.
 - **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:4245-4327` (`promise_yield_create`:
   receipt with one same-account dependency, weight, data id to a register), `:4330-4440`
-  (`promise_yield_create_with_id`: a caller-chosen id, `u64::MAX` on a duplicate, may carry a
-  deposit), `:4473-4518` (`promise_yield_resume`, the payload limit at `:4505-4510`);
-  `runtime/runtime/src/ext.rs:365-370` (the status is written at creation), `:375-385`
-  (duplicate check of the `_with_id` form), `:406-430` (`submit_promise_resume_data`: TRUE
-  while the yield receipt or its status exists for this account); `runtime/runtime/src/lib.rs:1549-1553`
-  (the `PromiseYield` receipt is stored), `:1554-1563` (a timeout resume is dropped after a
-  payload resume), `:1564-1615` (the first resume removes the yield and its status,
-  `:1572-1575`, and runs the callback), `:1616-1622` (later resumes are ignored),
+  (`promise_yield_create_with_id`: a caller-chosen id, `u64::MAX` on a duplicate at
+  `:4391-4399`, may carry a deposit), `:4473-4518` (`promise_yield_resume`, the payload limit
+  at `:4505-4510`); `runtime/runtime/src/ext.rs:365-370` (the status is written at creation),
+  `:375-385` (duplicate check of the `_with_id` form, which sees the ids written earlier in
+  the same call), `:406-430` (`submit_promise_resume_data`: TRUE while the yield receipt or
+  its status exists for this account); `runtime/runtime/src/lib.rs:1549-1553` (the
+  `PromiseYield` receipt is stored), `:1554-1563` (a timeout resume is dropped after a payload
+  resume), `:1564-1615` (the first resume removes the yield and its status, `:1572-1575`, and
+  its custom-id mapping, `:1576-1591`, then runs the callback, `:1602-1604`; `:903` commits
+  the removals before the callback's code runs), `:1616-1622` (later resumes are ignored),
   `:3113-3221` (`resolve_promise_yield_timeouts`, `expires_at <= block_height` at `:3146`, an
   early stop at the compute limit at `:3130-3132`), `:1151-1168` (a returned yield forwards
   the caller's receivers); `runtime/runtime/src/function_call.rs:151-170` (the timeout is
   enqueued only when the call succeeds, deadline = block height + 200), `:171-189` (signer and
-  predecessor); `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:274`
-  (200 blocks).
+  predecessor);
+  `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:274` (200
+  blocks).
 - **Model:** `YieldRcpt(id, r, m, a, dep, cb)`, a receipt with the optional field `ydl` (the
   height from which it may time out, `blk + YieldTicks`), placed in the outcome's `post`.
   `OResume(O, y, v, n)` records a resume in the outcome (`rsm`); `Commit` adds
   `ResumeData(r, O)`, one data receipt per resume of a yield of `r.to` that is pending in
-  `post` or created by the same outcome. `CanResume(r, y)` is the host's return value.
-  `Runnable` offers the yield with each resume in flight (the first to arrive wins), and with
-  `FailedRes` when `TimedOut`: no resume in flight and `blk >= ydl` (or `blk = MaxBlk`). The
-  timeout's trigger and its arrival are one step; that is exact, because a resume sent before
-  the timeout's `PromiseResume` arrives wins in nearcore too. `RemD` drops the extra resumes.
-  `PendingYields(a)` lists a's waiting yields. Gas: the yield callback is an ordinary child
-  (`KidsCost`, `Give`, `ZeroGasKid`); the `yield_create_*` fees and the receipt and data-receipt
-  base fees are in the creator's calibrated burn, the `yield_resume_*` fees in the resumer's
+  `post` or created by the same outcome. `CanResume(r, y)` is the host's return value. `Runnable` offers the
+  yield with each resume in flight (the first to arrive wins), and with `FailedRes` when
+  `TimedOut`: no resume in flight and `blk >= ydl` (or `blk = MaxBlk`). The timeout's trigger
+  and its arrival are one step; that is exact, because a resume sent before the timeout's
+  `PromiseResume` arrives wins in nearcore too. `RemD` drops the extra resumes.
+  `PendingYieldRcpts(r, ps)` lists the yields of `r.to` still pending as `r`'s handler sees
+  them: without `r` itself (a running yield callback is no longer pending) and with `ps`, the
+  yields the handler has created so far; `PendingYieldsAt(r, ps)` is their ids.
+  `PendingYields(a)` lists a's waiting yields as a state view (for invariants, not handlers).
+  `examples/platform-selftest` checks a callback re-creating its own custom id
+  (`yield_id_recreate`, `yield_id_recreate_timeout`) and a duplicate in one call
+  (`yield_id_same_call`); the runs `selftest_yield_id_old_*` show that the state view would
+  get both wrong. Gas: the yield callback is an ordinary child (`KidsCost`, `Give`,
+  `ZeroGasKid`); the `yield_create_*` fees and the receipt and data-receipt base fees are in
+  the creator's calibrated burn, the `yield_resume_*` fees in the resumer's
   (`host.rs:4256-4310`, `:4481-4489`).
-- **Left to the handler:** `promise_yield_create_with_id`'s duplicate check (test
-  `PendingYields(r.to)` against a key the model keeps in the yield's args, and create nothing
-  on a duplicate) and its deposit (`YieldRcpt(.., dep, ..)` with `dep` in the outcome's `out`).
-- **Validated:** nearcore reading. `examples/platform-selftest` checks a second resume
-  (`resume_twice`), two resumes in the yielding call (`resume_same_call`), a timeout then a
-  resume (`timeout_then_resume`), a resume in flight at the deadline (`resume_beats_timeout`),
-  a resume by another account (`resume_other_acct`), a returned yield (`yield_returned`) and a
-  yield callback with no gas (`yield_zero_cb`). near-contract-sim's own tests cover the race at
-  the deadline (`tests/yields.rs:70-92` at its rev 29e9090); this repo has no conformance flow
-  for yields yet.
+- **Left to the handler:** `promise_yield_create_with_id`'s duplicate check (keep the custom
+  id in the yield's args, test it against `PendingYieldRcpts(r, ps)`, and create nothing on a
+  duplicate; a plain `promise_yield_create` has no custom id, so mark which yields carry one)
+  and its deposit (`YieldRcpt(.., dep, ..)` with `dep` in the outcome's `out`).
+- **Validated:** sim for these parts (`conformance/`, flows `yield_*` on a separate async probe
+  contract; see
+  [Async patterns](../conformance/README.md#async-patterns-joint-promises-and-yieldresume)):
+  the callback runs once, after a resume sent by a later transaction (`yield_resume`) or, with
+  no resume, after the timeout (`yield_timeout`); a resume once the callback has run, by
+  timeout (`yield_resume_late`) or by an earlier resume (`yield_resume_twice`), sends nothing;
+  two resumes in the yielding call give one callback (`yield_self_resume2`); the callback's
+  gas is a child's (static and weighted share: `yield_cb_oog` runs out of gas between the
+  creator's edge at 1.9 Tgas and its own at 2.1 Tgas, and the split check covers every yield
+  callback), and with 0 gas it fails the creator (`yield_cb0`), although the yield is stored,
+  not sent. The flows run the model on a one-tick clock, so the 200-block deadline and the
+  race at it are not checked there (near-contract-sim's own tests cover the race,
+  `tests/yields.rs:70-92` at its rev 29e9090), and what the callback reads is not compared.
+  `conformance/tests/semantics.rs` observes in the sim, without a model comparison: two
+  resumes that run in one block both return 1 and the first payload wins; a resume after the
+  timeout returns 0; a resume of another account's yield returns 0 and leaves it parked; the
+  payload limit ([N-yield-payload](#under-approximations-unsound-they-can-hide-bugs)). The
+  `_with_id` form, a deposit, a returned yield and the callback's signer and predecessor:
+  nearcore reading. `examples/platform-selftest` checks a second resume (`resume_twice`), two
+  resumes in the yielding call (`resume_same_call`), a timeout then a resume
+  (`timeout_then_resume`), a resume in flight at the deadline (`resume_beats_timeout`), a
+  resume by another account (`resume_other_acct`), a returned yield (`yield_returned`) and a
+  yield callback with no gas (`yield_zero_cb`). <!-- conformance -->
 
 ---
 
@@ -751,13 +793,37 @@ Each rule has four fields:
   of receipts may run at one height, a callback even at its creator's height, and any number
   of blocks may pass between two receipts (no latency bound). `TickAnytime` (default TRUE)
   lets a block pass at any time; FALSE only while some yield's deadline is ahead, which is
-  exact only when no handler reads `blk` or `BlockTs`. At `blk = MaxBlk` every pending yield
-  may time out, so a deadline beyond the bound is still reachable; `ClockBoundOK` (an
-  invariant to add) fails when a pending yield's deadline exceeds `MaxBlk`, i.e. when a run
-  could rely on such an early timeout. With `TickAnytime = FALSE` and at most `k` yields per
-  behaviour, `MaxBlk >= k * YieldTicks` suffices. `BlockTick` is independent of `EpochTick`.
-- **Validated:** nearcore reading. `examples/yield-clock` shows `ClockBoundOK` and an early
-  timeout failing at a too small bound, and a bug that `TickAnytime = FALSE` hides.
+  exact only when no handler reads `blk` or `BlockTs`. `BlockTick` is independent of
+  `EpochTick`. The bound has two consequences, each with its own check (invariants to add):
+  - **Premature timeouts (an over-approximation).** At `blk = MaxBlk` every pending yield
+    may time out, so a deadline beyond the bound is still reachable, but early.
+    `YieldDeadlinesInBound` fails when a pending yield's deadline exceeds `MaxBlk`; while it
+    holds no timeout in the run is premature, so a violation the run finds is not an artefact
+    of the bound. It says nothing about coverage. With `TickAnytime = TRUE` it fails whenever
+    a yield can be created within `YieldTicks` blocks of the bound.
+  - **Missing later behaviour (an under-approximation, N-clock-horizon).** The clock stops at
+    `MaxBlk`, so nothing that needs a later height is explored: a guard of the model that
+    opens past the bound, or a timeout delayed past it (nearcore can process a timeout late,
+    `runtime/runtime/src/lib.rs:3129-3147`, and it then sends an outgoing resume receipt,
+    `:3163-3201`). A pass is a pass up to `MaxBlk` only. `ClockHorizonOK(n, T)` holds when
+    `MaxBlk >= n * max(T, YieldTicks)`. `T` is the largest number of blocks any comparison
+    with the clock counts (in handlers, guards or invariants; `blk > h + c` and `blk = h + c`
+    count `c + 1`); `n` is the most clock-relevant steps in one behaviour (steps that read or
+    record `blk` or `BlockTs`, yield creations, yield callbacks). If every comparison is
+    `blk - h >= c` or its negation, with `h` a height recorded earlier in the behaviour or 0,
+    that bound covers every behaviour: cutting any longer gap between two clock-relevant steps
+    to `max(T, YieldTicks)` blocks changes no comparison. It is sufficient, not necessary; a
+    smaller `MaxBlk` needs its own argument. `MaxBlk > T + YieldTicks` is not enough on its
+    own, because windows chain: a step that needs one window to have passed can open the next
+    (a request sent only after an earlier one timed out, then its own cancel window). With
+    `TickAnytime = FALSE`, no handler reading the clock and at most `k` yields per behaviour,
+    `MaxBlk >= k * YieldTicks` suffices.
+- **Validated:** nearcore reading. `examples/yield-clock` shows `YieldDeadlinesInBound` and
+  an early timeout failing at a too small bound, a bug that `TickAnytime = FALSE` hides, and
+  the horizon: with `MaxBlk = 2` a double refund passes unnoticed (`horizon_short_passes`),
+  `ClockHorizonOK` flags that bound (`horizon_short_flagged`), one more block finds the bug
+  (`horizon_bug_found`), and the correct handler passes at a justified bound
+  (`horizon_justified`).
 
 ---
 
@@ -1050,7 +1116,8 @@ against the current module code; some may be fixed in the modules later.
   bound, so the model can show that a race exists (a resume against a timeout) but cannot
   prove that a receipt sent within N blocks always arrives in time. Timestamps are `TsOf(blk)`,
   one fixed increasing function; nearcore's step per block varies. Saturation at `MaxBlk`
-  lets pending yields time out early; `ClockBoundOK` reports it.
+  lets pending yields time out early; `YieldDeadlinesInBound` reports it. The bound itself is
+  an under-approximation: see N-clock-horizon.
 - **N-epoch-clock. Epochs and blocks are independent.** `EpochTick` and `BlockTick` are
   separate steps: an epoch may change without a block passing and the other way round (an
   epoch is 43,200 blocks on mainnet). A staking model that also yields, and depends on how
@@ -1073,6 +1140,19 @@ against the current module code; some may be fixed in the modules later.
   first (`runtime/runtime/src/lib.rs:2513-2521`, `:2800-2813`,
   `runtime/runtime/src/congestion_control.rs:864`). `LocalPriorityOK` forbids that order, so a
   bug that needs it is missed. Mitigation: run with the switch OFF as well (S1).
+- **N-clock-horizon. The block clock stops at `MaxBlk`.** No behaviour that needs a later
+  height is explored: a guard that opens past the bound never fires, and a timeout cannot be
+  delayed past it (nearcore can process it any number of blocks late,
+  `runtime/runtime/src/lib.rs:3129-3147`). A model whose handlers, guards or invariants read
+  the clock therefore passes only up to `MaxBlk`. Example (`examples/yield-clock`,
+  `horizon_*`): a cancel window that opens 3 blocks after a request, a yield deadline of 2,
+  and an `on_answer` that refunds on a timeout even when the request was cancelled. With
+  `MaxBlk = 2` the cancel never opens and `NoNegEscrow` passes, as does
+  `YieldDeadlinesInBound`; with `MaxBlk = 3` the timeout is delayed past the cancel and the
+  escrow goes negative. Mitigation: choose `MaxBlk` so that `ClockHorizonOK(n, T)` holds (S3:
+  `T` the largest number of blocks any clock comparison counts, `n` the most clock-relevant
+  steps per behaviour) and list it as an invariant, or give your own argument that a smaller
+  bound covers the model; otherwise report the result as bounded.
 - **N-precision. Rounding of fees and burns.** Fees (`NearFees`) and calibrated burns are
   rounded to the nearest Ggas. Error bounds:
   - at most 0.5 Ggas per base fee entry;
@@ -1155,13 +1235,17 @@ against the current module code; some may be fixed in the modules later.
   missed. At 88 it cannot happen.
 - **N-yield-payload. Resume payload limit.** `promise_yield_resume` fails the resumer when the
   payload exceeds `max_yield_payload_size`
-  (`runtime/near-vm-runner/src/logic/host.rs:4505-4510`); the yield then times out. The model
-  does not check it, so a resume nearcore rejects succeeds in the model. The value is 1024
-  (`.snap:275`); `core/parameters/res/runtime_configs/parameters.yaml:321` annotates it
-  `# kiB`, while the field is documented as a number of bytes (`core/parameters/src/vm.rs:197-198`)
-  and the check compares it with the payload length in bytes. A sim probe with 1024- and
-  1025-byte payloads will settle which. Until then, a handler with large payloads should
-  panic on an oversized one itself.
+  (`runtime/near-vm-runner/src/logic/host.rs:4504-4511`, `HostError::YieldPayloadLength`); the
+  yield stays parked and then times out. The limit is **1024 bytes**: the value is 1024
+  (`.snap:275`), the field is a number of bytes (`core/parameters/src/vm.rs:197-198`) and the
+  check compares it with the payload length in bytes; the `# kiB` annotation in
+  `core/parameters/res/runtime_configs/parameters.yaml:321` is wrong. The sim confirms it
+  (`conformance/tests/semantics.rs`, `yield_payload_limit_is_1024_bytes`): a 1024-byte payload
+  is delivered, while 1025 bytes, and 1 MiB, fail the resumer with "Yield resume payload is 1025
+  bytes which exceeds the 1024 byte limit" and the callback later times out. The model does not
+  check it (`OResume` sizes are in KB, which cannot express the bound), so a resume nearcore
+  rejects succeeds in the model. A handler whose payloads can exceed 1024 bytes should fail
+  on an oversized one itself (`OErr`), and so model the resumer's failure.
 - **N-delete-account. DeleteAccount details.** Large-state refusal, the staking check, gas-key
   burning and the beneficiary transfer (`runtime/runtime/src/actions.rs:330-410`, `:777-792`) are
   not modelled.

@@ -1,11 +1,14 @@
 //! Receipt semantics the library encodes, observed in the sim on the probe
-//! contract: local-receipt priority, signer propagation and the atomicity
+//! contracts: local-receipt priority, signer propagation and the atomicity
 //! of a `[DeleteKey, FunctionCall]` receipt (docs/SEMANTICS.md: "Local
 //! receipts first", "Signer and signer public key propagate", "Multi-action
-//! receipts are atomic").
+//! receipts are atomic"), and yield/resume on the async probe: the resume
+//! payload limit, two resumes in one block, a resume after the timeout and
+//! a resume of another account's yield ("Yield and resume (NEP-519)",
+//! "N-yield-payload").
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
-use near_contract_sim::{AccessKey, TxOutcome};
+use near_contract_sim::{AccessKey, CryptoHash, TxOutcome};
 use near_tla_conformance::probe_wasm;
 use serde_json::{Value, json};
 
@@ -180,4 +183,115 @@ fn delete_key_batch_is_atomic() {
     assert!(o.receipts.iter().all(|r| r.failure().is_none()), "{o}");
     assert!(sim.access_key(P, &k3).is_none());
     assert_eq!(get(&sim, "t").as_deref(), Some("1"));
+}
+
+const Y: &str = "y-probe.near";
+const Y2: &str = "y2-probe.near";
+
+fn yield_world() -> Sim {
+    let (wasm, _) = probe_wasm("async_probe");
+    Fixture::new()
+        .account(ALICE, Balance::from_near(100))
+        .account(BOB, Balance::from_near(100))
+        .contract(Y, wasm.clone())
+        .contract(Y2, wasm)
+        .build()
+}
+
+/// y.yield_create (callback static 5 Tgas, weight 1), left parked.
+fn park(sim: &mut Sim) -> CryptoHash {
+    let o = sim.call(ALICE, Y, "yield_create").args_json(json!({ "cb_ggas": 5000, "cb_weight": 1 })).transact();
+    o.assert_success();
+    assert_eq!(sim.yields().len(), 1);
+    o.hash
+}
+
+fn resume<'a>(sim: &'a mut Sim, signer: &str, bytes: u32) -> Tx<'a> {
+    sim.call(signer, Y, "resume").args_json(json!({ "bytes": bytes }))
+}
+
+/// The logs of the yield callback of transaction `tx`, if it ran.
+fn on_yield_logs(sim: &Sim, tx: CryptoHash) -> Option<Vec<String>> {
+    sim.outcome(tx).receipts.iter().find(|r| r.method_names == ["on_yield"]).map(|r| r.logs.clone())
+}
+
+/// The resume payload limit is 1024 bytes (not KiB): 1024 is delivered; 1025,
+/// and 1 MiB, fail the resumer with a host error, and the yield stays
+/// parked (it then times out). nearcore: host.rs:4505-4510 compares the
+/// payload's length in bytes with max_yield_payload_size = 1024.
+#[test]
+fn yield_payload_limit_is_1024_bytes() {
+    let mut base = yield_world();
+    let tx = park(&mut base);
+    let mut sim = base.clone();
+    let r = resume(&mut sim, ALICE, 1024).transact();
+    println!("resume 1024 bytes: {:?}, callback logs {:?}", r.failure(), on_yield_logs(&sim, tx));
+    r.assert_success();
+    assert!(r.json::<bool>());
+    assert_eq!(on_yield_logs(&sim, tx), Some(vec!["payload 1024".to_owned()]));
+    for n in [1025u32, 1024 * 1024] {
+        let mut sim = base.clone();
+        let r = resume(&mut sim, ALICE, n).transact();
+        let f = format!("{:?}", r.failure());
+        println!("resume {n} bytes: {f}");
+        assert!(r.is_failure());
+        assert!(f.contains(&format!("Yield resume payload is {n} bytes which exceeds the 1024 byte limit")), "{f}");
+        assert_eq!(sim.yields().len(), 1, "the yield stays parked");
+        assert_eq!(on_yield_logs(&sim, tx), None);
+        let y = sim.yields().pop().unwrap();
+        sim.expire(&y);
+        assert_eq!(on_yield_logs(&sim, tx), Some(vec!["timeout".to_owned()]));
+    }
+}
+
+/// Two resumes that run in one block: both return true, the callback runs
+/// once, with the first payload (runtime/runtime/src/lib.rs:1616-1622
+/// drops the later one).
+#[test]
+fn two_resumes_in_one_block() {
+    let mut sim = yield_world();
+    let tx = park(&mut sim);
+    let a = resume(&mut sim, ALICE, 10).submit();
+    let b = resume(&mut sim, BOB, 20).submit();
+    sim.settle();
+    let (oa, ob) = (sim.outcome(a), sim.outcome(b));
+    let h = |o: &TxOutcome| o.receipts.iter().find(|r| r.method_names == ["resume"]).unwrap().block_height;
+    println!("resumes at #{} and #{}: {} {}; callback logs {:?}", h(&oa), h(&ob), oa.json::<bool>(), ob.json::<bool>(), on_yield_logs(&sim, tx));
+    assert_eq!(h(&oa), h(&ob), "one block");
+    assert!(oa.json::<bool>() && ob.json::<bool>(), "both return true");
+    let n = sim.outcome(tx).receipts.iter().filter(|r| r.method_names == ["on_yield"]).count();
+    assert_eq!(n, 1, "one callback");
+    assert_eq!(on_yield_logs(&sim, tx), Some(vec!["payload 10".to_owned()]), "with the first payload");
+}
+
+/// After the timeout ran the callback (with `Failed`), a resume returns
+/// false and sends nothing (runtime/runtime/src/ext.rs:406-430).
+#[test]
+fn resume_after_timeout_returns_false() {
+    let mut sim = yield_world();
+    let tx = park(&mut sim);
+    let y = sim.yields().pop().unwrap();
+    sim.expire(&y);
+    let r = resume(&mut sim, ALICE, 10).transact();
+    println!("late resume: {}; callback logs {:?}", r.json::<bool>(), on_yield_logs(&sim, tx));
+    r.assert_success();
+    assert!(!r.json::<bool>());
+    assert_eq!(on_yield_logs(&sim, tx), Some(vec!["timeout".to_owned()]));
+    assert!(sim.is_idle());
+}
+
+/// Only the yielding account can resume: another contract resuming the
+/// same data id gets false, and the yield stays parked.
+#[test]
+fn resume_by_another_account_returns_false() {
+    let mut sim = yield_world();
+    let tx = park(&mut sim);
+    let y = sim.yields().pop().unwrap();
+    let hex: String = y.data_id.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let r = sim.call(ALICE, Y2, "resume").args_json(json!({ "bytes": 10, "data_id": hex })).transact();
+    println!("resume by {Y2}: {}", r.json::<bool>());
+    r.assert_success();
+    assert!(!r.json::<bool>());
+    assert_eq!(sim.yields().len(), 1, "still parked");
+    assert_eq!(on_yield_logs(&sim, tx), None);
 }
