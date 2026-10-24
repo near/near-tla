@@ -85,11 +85,16 @@ Anti-vacuity checks (run with --anti-vacuity, after the plain runs; always valid
   class = "failure branch skips rollback"
   runs = ["model_ok"]         # optional, as for witnesses; expect = "pass" runs only
   # equivalent = "why"        # an accepted survivor must say why
+  # killed_by = ["Books"]     # optional: the kills that count (invariant names, "assert",
+  #                           # "deadlock"); default: any invariant violation
   The runner copies the spec dir's (or library dir's) .tla files into the job's temp
   dir, patches the copy and puts it in the copied dir's place on -DTLA-Library; the
   originals are never touched. Each listed run is checked with its own invariants and
-  properties. Killed: some run reports a violation (an Assert or a deadlock is reported
-  as "killed (assert)" / "killed (deadlock)"). Survived (every run passes) fails unless
+  properties. Killed: some run violates an invariant (one listed in killed_by, if given).
+  An Assert or a deadlock alone is reported as "killed (assert)" / "killed (deadlock)" and
+  fails unless killed_by lists it: it shows the mutant broke the model, not that an
+  invariant covers it. A library mutant whose module also sits beside runs.toml is refused
+  (TLC would load that copy, not the patched one). Survived (every run passes) fails unless
   `equivalent` is given; a mutant marked equivalent that is killed fails too. A timeout
   or an error is its own result, never "survived", and fails. Each job has its run's
   budget_s and is stopped at it.
@@ -170,7 +175,8 @@ RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window"
                  "allow_no_invariants"}
 RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant"}) | RUN_ONLY_KEYS
 WITNESS_KEYS = {"id", "expr", "about", "runs", "expect", "reason"}
-MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "library", "equivalent"}
+MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "library", "equivalent",
+               "killed_by"}
 WITNESS_EXPECTS = ("reached", "unreachable")
 
 # Standard and community modules that declare no CONSTANTS.
@@ -247,6 +253,7 @@ class Mutant:
     count: int = 1
     library: bool = False
     equivalent: str | None = None
+    killed_by: list[str] | None = None  # accepted kills: invariant names, "assert", "deadlock"
 
 
 # ---------------------------------------------------------------- loading
@@ -494,6 +501,14 @@ def load_checks(path: Path, doc: dict, runs: list[Run]) -> tuple[list[Witness], 
                 if not library and not (path.parent / file).is_file():
                     raise ConfigError(f"{where}: {file} not found beside runs.toml (library = true for a "
                                       f"library module)")
+                if library and (path.parent / file).is_file():
+                    # TLC finds the spec dir's copy first, so the patched library copy would never load
+                    raise ConfigError(f"{where}: {file} is beside runs.toml, which shadows the library "
+                                      f"module; patch it there (library = false) or remove it")
+                killed_by = _typed(where, raw, "killed_by", list, None)
+                if killed_by is not None and (not killed_by or not all(isinstance(k, str) and k for k in killed_by)):
+                    raise ConfigError(f"{where}: killed_by must be a non-empty list of invariant names, "
+                                      f'"assert" or "deadlock"')
                 count = _typed(where, raw, "count", int, 1)
                 if count < 1:
                     raise ConfigError(f"{where}: count must be at least 1")
@@ -504,7 +519,8 @@ def load_checks(path: Path, doc: dict, runs: list[Run]) -> tuple[list[Witness], 
                 if find == replace:
                     raise ConfigError(f"{where}: replace equals find")
                 muts.append(Mutant(wid, path, file, find, replace, _nonempty(where, raw, "class"), names,
-                                   count, library, _nonempty(where, raw, "equivalent", required=False)))
+                                   count, library, _nonempty(where, raw, "equivalent", required=False),
+                                   killed_by))
     return wits, muts
 
 
@@ -1137,9 +1153,20 @@ def do_mutant(m: Mutant, runs: list[Run], jar: str, workers: int | None, keep: b
             a.res.verdict == "pass" and not a.res.distinct)
     actual = mutant_verdict([a.res for _, a in attempts])
     if m.equivalent is None:
-        ok = actual.startswith("killed") and not bad
+        # what caught it, over every run: violated invariants, and "assert" / "deadlock"
+        kills = {a.res.name if a.res.verdict == "violation" else a.res.verdict
+                 for _, a in attempts if a.res.verdict in ("violation", "assert", "deadlock")}
+        accepted = kills & set(m.killed_by) if m.killed_by else kills - {"assert", "deadlock"}
+        ok = bool(accepted) and not bad
+        if accepted:
+            k = sorted(accepted)[0]
+            actual = f"killed ({k})" if k in ("assert", "deadlock") else f"killed {k}"
         if actual == "survived":
             notes.append(f"survived: no run caught mutant {m.id} ({m.cls})")
+        elif kills and not accepted:
+            notes.append(f"caught only by {', '.join(sorted(kills))}, not by "
+                         + (f"killed_by {m.killed_by}" if m.killed_by else
+                            'an invariant (list "assert" / "deadlock" in killed_by to accept that)'))
     else:
         ok = actual == "survived"
         if actual.startswith("killed"):

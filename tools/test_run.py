@@ -132,6 +132,9 @@ class ParseTest(unittest.TestCase):
                 "Finished in 00s at (2026-01-01 00:00:00)\n")
         r = tlcparse.parse(text, 151)
         self.assertEqual((r.verdict, r.name), ("violation", "FeesOk"))
+        # a non-Boolean value that merely starts with FALSE is not a violation
+        r = tlcparse.parse(text.replace("FALSE\n", "FALSELY\n"), 151)
+        self.assertNotEqual(r.verdict, "violation")
 
     def test_action_property_and_temporal(self):
         r = tlcparse.parse("Error: Action property Mono is violated.\n", 13)
@@ -773,9 +776,18 @@ class AntiVacuityFakeTLCTest(unittest.TestCase):
         self.assertIn("Guard == FALSE", mods[lib[1]]["Lib.tla"])
         self.assertIn("Guard == TRUE", (self.d / "lib" / "Lib.tla").read_text())
 
+    def test_library_mutant_shadowed_by_spec_dir(self):
+        write(self.d, "Lib.tla", "---- MODULE Lib ----\nGuard == TRUE\n====\n")
+        with self.assertRaisesRegex(run.ConfigError, "shadows the library module"):
+            self.load(MUT.replace('"Toy.tla"', '"Lib.tla"').replace('"x + 1"', '"Guard == TRUE"')
+                      .replace('replace = "x"', 'replace = "Guard == FALSE"') + "library = true\n")
+
     def test_mutant_verdicts(self):
         cases = [
-            ("", [(ASSERT, 14)], True, "killed (assert)"),
+            ("", [(ASSERT, 14)], False, "killed (assert)"),       # not an invariant: no coverage
+            ('killed_by = ["assert"]\n', [(ASSERT, 14)], True, "killed (assert)"),
+            ('killed_by = ["Other"]\n', [(INV, 12)], False, "killed Small"),  # the wrong invariant
+            ('killed_by = ["Small"]\n', [(INV, 12)], True, "killed Small"),
             ("", [(PASS, 0)], False, "survived"),
             ('equivalent = "x is never read"\n', [(PASS, 0)], True, "equivalent"),
             ('equivalent = "x is never read"\n', [(INV, 12)], False, "killed Small"),
@@ -793,7 +805,7 @@ class AntiVacuityFakeTLCTest(unittest.TestCase):
 
     def test_mutant_deadlock_reported_separately(self):
         dl = TOY_RUNS.replace('name = "t_ok"\nexpect = "pass"\n', 'name = "t_ok"\nexpect = "pass"\ndeadlock = true\n')
-        by, wits, muts = self.load(MUT, dl)
+        by, wits, muts = self.load(MUT + 'killed_by = ["deadlock"]\n', dl)
         self.outputs = [(DEADLOCK, 11)]
         (o,) = self.checks(by, wits, muts)
         self.assertEqual((o.ok, o.actual), (True, "killed (deadlock)"))

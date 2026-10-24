@@ -366,8 +366,9 @@ Each entry ends with its migration.
   and requires a violation; a pass fails as `vacuous: witness <id> never reached`
   (`expect = "unreachable"` with a `reason` documents an exception). A `[[mutant]]` patches a
   copy of the spec or library directory (`find`, `replace`, `count`, checked before any TLC
-  process starts) and must be killed by a listed run; Assert and deadlock kills are reported
-  apart, a survivor fails unless marked `equivalent = "<why>"`, and a timeout is its own
+  process starts) and must be killed by a listed run's invariant (`killed_by` names the
+  invariants, or `"assert"` / `"deadlock"`, that count; an Assert or deadlock alone fails
+  otherwise; a library module shadowed by one beside `runs.toml` is refused), a survivor fails unless marked `equivalent = "<why>"`, and a timeout is its own
   result. Each job has its run's budget. Off by default; CI runs it in a separate job. The
   tables are validated on every run. Conventions: docs/USAGE.md, Witnesses and mutants. The
   method comes from a mutation audit of the examples, in which a dropped `.then` left a result

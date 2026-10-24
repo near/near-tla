@@ -128,7 +128,7 @@ def parse(text: str, exit_code: int | None) -> Result:
         return r
     m = (found(r"^Error: Invariant (\S+) is violated") or found(r"^Error: Action property (\S+) is violated")
          # an invariant that reads no variable is evaluated once, before the search
-         or found(r"^Error: The invariant of (\S+) is equal to FALSE"))
+         or found(r"^Error: The invariant of (\S+) is equal to FALSE\s*$"))
     if m:
         r.verdict, r.name = "violation", m.group(1).rstrip(".")
         return r

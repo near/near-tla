@@ -1318,7 +1318,13 @@ of the spec's directory (or, with `library = true`, of the library directory hol
 into the job's temporary directory, replaces `find` with `replace` in the copy and runs TLC
 with the copy in the original's place. Your files are never touched. The number of
 occurrences of `find` must equal `count` (default 1); the runner checks every mutant before
-it starts any TLC process.
+it starts any TLC process. A library module that also sits beside `runs.toml` is refused:
+TLC would load that copy, not the patched one.
+
+By default only an invariant violation kills a mutant: an `Assert` (a missing gas key, say)
+or a deadlock shows that the mutation broke the model, not that an invariant covers the bug.
+`killed_by = ["Books", "assert"]` names the kills that count; list `"assert"` or
+`"deadlock"` only when that is the intended detection.
 
 ```toml
 [[mutant]]
@@ -1336,8 +1342,8 @@ Each listed run is checked with its own invariants. The results:
 
 | result | meaning | verdict |
 |---|---|---|
-| `killed <inv>` | some run violated an invariant | ok |
-| `killed (assert)`, `killed (deadlock)` | some run stopped on an `Assert`, or (with `deadlock = true`) a deadlock | ok, reported apart |
+| `killed <inv>` | some run violated an invariant (one in `killed_by`, if given) | ok |
+| `killed (assert)`, `killed (deadlock)` | a run stopped on an `Assert`, or (with `deadlock = true`) a deadlock, and no invariant caught the mutant | fails, unless `killed_by` lists `"assert"` / `"deadlock"` |
 | `survived` | every run passed | fails, unless `equivalent` is given |
 | `equivalent` | survived, as `equivalent` says | ok |
 | `timeout` | a job ran past its run's `budget_s` | fails; never counted as survived |
