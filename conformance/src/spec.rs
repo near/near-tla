@@ -32,6 +32,23 @@ pub struct Spec {
     /// flow does not fix (a resolver refunds at some grid points only).
     #[serde(default, rename = "path_rule")]
     pub path_rules: Vec<PathRule>,
+    /// Where a key's storage size comes from (`calibrate --stor`; default
+    /// 0). Apart from `[[size]]`: burns grow per KB, bytes per byte.
+    #[serde(default, rename = "stor_size")]
+    pub stor_sizes: Vec<StorSizeSrc>,
+}
+
+/// `key` is `"<receiver>.<method>"`; `from` is `"arg_len:<f1>[+<f2>...]"`
+/// (the summed byte lengths of those string arguments of the call),
+/// `"predecessor_len"` (the length of its predecessor's account id) or
+/// `"arg:<field>"` (a numeric argument); the size is that over `div`.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct StorSizeSrc {
+    pub key: String,
+    pub from: String,
+    #[serde(default = "one")]
+    pub div: u64,
 }
 
 /// A receipt of `call` (`"<receiver>.<method>"`, one method) whose logs

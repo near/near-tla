@@ -60,7 +60,9 @@ VARIABLE tk
 \* storage_balance_bounds min is priced at the longest id, StdRegBytes(64) =
 \* 125 bytes x 1e19 = 1.25e21 yocto (storage_impl.rs:107-111, measured at
 \* init); TokStorageMin is that price, not a per-holder one.  Default 0: no
-\* bytes.
+\* bytes.  Measured in the sim at ids of 8 and 64 bytes (conformance/tests/
+\* semantics.rs, storage_std_registration_bytes); StorStd holds the same
+\* line (storage_deposit/new, near_deposit/new: base 61, per 1).
 StdRegBytes(idLen) == 1 + 4 + idLen + 16 + 40
 TokRegBytes == [t \in TokenAccts |-> [h \in TokHolders[t] |-> 0]]
 RegBytes(t, h) ==

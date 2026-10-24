@@ -1559,7 +1559,13 @@ Each rule has four fields:
     (N-storage).
   - `TRUE`: the platform variable `stor` holds each account's bytes, from `StorageInit`.
     Handlers declare what they write with `OStor(O, d)` (the outcome field `sb`; helper
-    `RecordBytes(k, v)`); `Affordable` checks `StorageCovers` (an exact integer comparison at
+    `RecordBytes(k, v)`), or read it from a measured table with `OStorKey(O, key, size)`:
+    `StorBytes`, overridable like `GasBurn` (default empty), maps a key
+    `"acct.method[/path]"` to `[base, per]`, the bytes being `base + per * size`, and a
+    missing key is an `Assert`; without `StoragePerByte` `OStorKey` reads nothing. The
+    calibrator writes such tables (`calibrate --stor`); `StorStd` holds the standard FT's and
+    wNEAR's (a registration `61 + len(id)`, an unregistration its negative, transfers 0).
+    `Affordable` checks `StorageCovers` (an exact integer comparison at
     `StorageByteCost`, and the 770-byte exemption `ZeroBalanceBytes`) and `Commit` updates
     `stor`. `NearKeys` counts `KeyBytes(p)` in `ExecKeyAct` (an AddKey the balance cannot cover
     fails) and folds the key bytes into the call's in `WithKeyActs`, so a bundled receipt is
@@ -1582,11 +1588,19 @@ Each rule has four fields:
   byte counts of full-access and function-call keys, with and without an allowance
   (`storage_key_bytes`); the signer refused at conversion
   (`storage_signer_checked_at_conversion`); 182 / 132 bytes for created NEAR-implicit and
-  eth-implicit accounts (`storage_implicit_account_bytes`); and the locked part of the
-  balance (`conformance/tests/accounts.rs`, `storage_counts_locked_balance`: past 770 bytes,
-  a liquid balance below the cover passes with 5 N locked and fails without).
-  <!-- conformance --> No probe flow checks storage: every flow's sweep is
-  bound to the flows file's sha256, so adding one means sweeping and recalibrating all of them.
+  eth-implicit accounts (`storage_implicit_account_bytes`); a near-contract-standards
+  registration at holder ids of 8 and 64 bytes, `61 + len(id)` (`StdRegBytes`; the
+  `storage_balance_bounds` minimum is the price of 125 bytes), nothing on a repeat, and its
+  bytes freed by `storage_unregister` (`storage_std_registration_bytes`); and the locked part
+  of the balance (`conformance/tests/accounts.rs`, `storage_counts_locked_balance`: past 770
+  bytes, a liquid balance below the cover passes with 5 N locked and fails without). The calibrator's storage table is nearcore's
+  `storage_usage` before and after each successful receipt of `conformance/flows/storage.toml`
+  (each flow run once, at 300 Tgas): every key lies exactly on its line, and the receipts'
+  changes add up to each account's change over the flow (`tests/smoke.rs`
+  `storage_bytes_table` checks the lines `StorStd` and `examples/storage-stake`'s `StorKv`
+  hold). <!-- conformance --> No probe flow compares the model's storage with the sim's: every
+  sweep is bound to the sha256 of `flows/probes.toml`, so adding one means sweeping and
+  recalibrating all of them; `flows/storage.toml` is a separate file and is not swept.
 
 ---
 
@@ -2025,7 +2039,13 @@ against the current module code; some may be fixed in the modules later.
   storage grows may fail in nearcore and not in the model (`examples/storage-stake`,
   `vault_floor_misses_it`). With `StoragePerByte` the rule is exact, but:
   - the byte counts are the model's: a handler that understates its `OStor` bytes, or a
-    `StorageInit` below the real usage (code included), hides failures;
+    `StorageInit` below the real usage (code included), hides failures. A measured table
+    (`OStorKey`, `StorBytes`) takes the counting out of the model, not the choices: which key
+    and path a handler's outcome reads, and its size (TLC has no string length, so an id's or
+    a value's length is a constant the model states). A table holds only the paths its flows
+    ran, under their state: bytes that depend on state the flows did not set up (a collection's
+    first insert writing a length record, an overwrite by a value of another length, a
+    removal) are measured only if a flow covers them, and are hand counts otherwise;
   - function-call key bytes take the receiver id's length from `IdBytes` (default 10), count
     method names as written (or as `WithMethodBytes` states) and assume no allowance (16 bytes
     more with one): override `IdBytes` or `KeyBytes`;

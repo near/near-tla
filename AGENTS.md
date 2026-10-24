@@ -21,6 +21,7 @@ modules/              the library, one flat directory (passed to TLC as -DTLA-Li
   Nep145.tla  Nep141.tla  WNear.tla  Tokens.tla   fungible tokens (EXTEND Tokens)
   Nep245.tla          external multi-token contract
   CalibStd.tla        measured gas tables for the standard FT and wNEAR (generated; do not edit)
+  StorStd.tla         measured storage bytes for the standard FT and wNEAR (generated; do not edit)
 examples/<name>/      toy contracts + runs.toml (must-pass and must-fail runs)
 examples/minimal/     the complete minimal model of docs/USAGE.md
 examples/platform-selftest/   deterministic scenarios with known nearcore outcomes
@@ -33,7 +34,7 @@ tools/test_run.py     the runner's self-tests (python3 -m unittest tools/test_ru
 tools/tlcparse.py     TLC output parsing shared by the tools
 conformance/          Rust conformance + calibration crate (standalone; CI does not build it)
 conformance/probes/   probe contracts (Rust -> wasm), committed with their hashes
-conformance/flows/    flow specs (probes.toml, actions.toml, example.toml)
+conformance/flows/    flow specs (probes.toml, actions.toml, storage.toml, example.toml)
 conformance/tla/      the model side of conformance runs
 conformance/scripts/  gen_probes.py, mkconf.py, tlc.sh, conform.py
 docs/                 SEMANTICS.md (rules, citations, trust), USAGE.md (modelling a contract),

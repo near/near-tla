@@ -353,6 +353,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `StoragePerByte` | `FALSE` | the model tracks storage in bytes: `TRUE` replaces the fixed `StorageFloor` with `stor` priced per byte ([section 15](#15-storage-staking-per-byte)) |
 | `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
+| `StorBytes` | empty | handlers read measured bytes with `OStorKey(O, key, size)`: the calibrator's table, `[key -> [base, per]]` keyed like `GasBurn` (a missing key is an `Assert`; unread without `StoragePerByte`) ([section 15](#bytes-from-the-calibrator)) |
 | `InstantFirst` | `TRUE` | never, unless you want the over-approximation without instant receipts ([S5](SEMANTICS.md#s5-instant-receipts)): `FALSE` lets other receipts, transactions and blocks run between a receipt and the lone DeleteAccount it creates |
 | `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
 | `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
@@ -366,7 +367,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
-| `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
+| `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
@@ -1059,6 +1060,9 @@ THEN OStor(Outcome({}, {}, RVal(0), 0, 0), RecordBytes(1 + 4 + 64, 16))
 ELSE Outcome({}, {}, RVal(0), 0, 0)                     \* an overwrite of the same length: 0
 ```
 
+Or measure them and read them from a table with `OStorKey`
+([Bytes from the calibrator](#bytes-from-the-calibrator)).
+
 The library adds the rest itself:
 
 - AddKey (`KeyBytes(p)`: 82 for a full-access key) and DeleteKey, in `ExecKeyAct` and, for
@@ -1070,7 +1074,8 @@ The library adds the rest itself:
 - Token registrations, when you set `TokRegBytes` (`Nep145`, per token and holder):
   `storage_deposit`,
   `storage_unregister`, `near_deposit`, and `"autoRegister"` transfers, which add bytes with
-  no deposit.
+  no deposit. For near-contract-standards, `StdRegBytes(len)` = 61 + the holder id's length,
+  measured in the sim (`StorStd` holds the same line, `storage_deposit/new`).
 
 Give every account its real usage at the start in `StorageInit`: 100 bytes for the account
 record, its keys, the contract code (the wasm size) and its data. For a deployed contract,
@@ -1090,6 +1095,36 @@ balances below 2^31 / `den` and bytes below 2^31 / `num`. At `<<1, 100>>` that i
 million units (21,000 NEAR) and 2 GB. A transaction whose deposit would leave its signer
 uncovered cannot be submitted. A scripted model that must go on should test `CanSubmit(r, a)`
 before `Submit`, since an uncovered `Submit` is a disabled step.
+
+### Bytes from the calibrator
+
+Instead of counting, measure. `calibrate --stor` runs each flow of a flow spec once, reads
+nearcore's `storage_usage` of every successful call's receiver before and after it, and writes
+a `StorBytes` table keyed like `GasBurn` (`"acct.method[/path]"`): bytes = `base + per * size`,
+the size coming from the spec's `[[stor_size]]` (for example the key + value length of a write).
+Give the table to the library and read it with `OStorKey(O, key, size)`, which adds that key's
+bytes to the outcome's:
+
+```tla
+Kv == INSTANCE StorKv                        \* generated, beside the spec
+VaultStor == Kv!KvStorBytes(V)               \* "v.put/new" :> [base |-> 40, per |-> 1], ...
+Rec(O) == OStorKey(O, V \o ".put/new", RecLen)
+```
+
+```toml
+[constants]
+StorBytes = 'VaultStor'
+```
+
+A key missing from the table stops TLC with an `Assert`, as `GasBurn` does. Without
+`StoragePerByte`, `OStorKey` leaves the outcome as it is and reads no table, so the default,
+empty `StorBytes` is fine there. The table counts; you still choose the key and path each
+handler reads and state its size, since TLC has no string length. A table holds only what its
+flows ran, under their state ([N-storage](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
+Measure the paths your handlers take, with state like production, as for burns
+([Calibrating](#calibrating)). `examples/storage-stake` runs its vault both ways: the
+`vault_measured_*` runs read the record's bytes from `StorKv`, measured on the generic probe's
+`put`, and an invariant (`BytesBooked`) checks that the library applied the table's line.
 
 ## 16. Creating and deleting accounts
 
@@ -1291,6 +1326,11 @@ The tool writes the table only if every check passed:
 - nearcore's leftover split reproduces from your declared statics and weights at every point;
 - every child has a declared static;
 - every action-only fee is priced.
+
+With `--stor` the same spec gives storage bytes instead: each flow runs once, and the tool
+writes a `StorBytes` table for `OStorKey` ([section 15](#bytes-from-the-calibrator)). Declare
+what the bytes grow with in `[[stor_size]]`, and give each path that writes differently (a new
+key, an overwrite) a flow of its own with its `path`.
 
 The table's header records the wasm sha256, the crate version, the sim and nearcore revisions
 and the protocol version. The details, including every option and the flow-spec format, are in

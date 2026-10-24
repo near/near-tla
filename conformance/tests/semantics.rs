@@ -893,3 +893,48 @@ fn delegate_signature_sender_and_nonce_bound() {
     assert!(o.receipts.is_empty(), "an invalid transaction");
     check(&mut sim, "two delegates in one transaction", o, "DelegateActionMustBeOnlyOne");
 }
+
+/// A near-contract-standards 5.29.1 registration stores the holder's
+/// balance under prefix + borsh(AccountId) as a u128: 1 + 4 + len(id) + 16
+/// + 40 = 61 + len(id) bytes (fungible_token/core_impl.rs:41-57; the 40
+/// is storage_num_extra_bytes_record), Nep145's StdRegBytes. Measured on
+/// the wNEAR-like probe at two holder-id lengths, 8 and 64 bytes; the
+/// storage_balance_bounds minimum is the price of the longest id,
+/// StdRegBytes(64) = 125 bytes x 1e19 yocto (storage_impl.rs:107-111).
+/// A repeat registers nothing, and storage_unregister frees as many bytes.
+#[test]
+fn storage_std_registration_bytes() {
+    const W: &str = "wnear-probe.near";
+    let (wasm, _) = probe_wasm("wrap");
+    let mut sim = Fixture::new()
+        .account(ALICE, Balance::from_near(100))
+        .account(BOB, Balance::from_near(100))
+        .account(W, Balance::from_near(10))
+        .contract(W, wasm)
+        .init("new", json!({}))
+        .build();
+    let min: Value = sim.view(W, "storage_balance_bounds", json!({})).json();
+    let min: u128 = min["min"].as_str().unwrap().parse().unwrap();
+    println!("storage_balance_bounds min: {min} yocto");
+    assert_eq!(min, 125 * 10u128.pow(19));
+    let reg = |sim: &mut Sim, id: &str| -> i64 {
+        let u = usage(sim, W) as i64;
+        sim.call(ALICE, W, "storage_deposit")
+            .args_json(json!({ "account_id": id }))
+            .deposit(Balance::from_yoctonear(min))
+            .transact()
+            .assert_success();
+        usage(sim, W) as i64 - u
+    };
+    let long = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    for id in [BOB, long] {
+        let d = reg(&mut sim, id);
+        println!("storage_deposit({id}, {} bytes): +{d} bytes", id.len());
+        assert_eq!(d, 61 + id.len() as i64, "StdRegBytes({})", id.len());
+        assert_eq!(reg(&mut sim, id), 0, "a repeat registers nothing");
+    }
+    let u = usage(&sim, W) as i64;
+    sim.call(BOB, W, "storage_unregister").args_json(json!({})).deposit(Balance::from_yoctonear(1)).transact().assert_success();
+    println!("storage_unregister by {BOB}: {} bytes", usage(&sim, W) as i64 - u);
+    assert_eq!(usage(&sim, W) as i64 - u, -(61 + BOB.len() as i64));
+}

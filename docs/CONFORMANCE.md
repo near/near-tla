@@ -4,7 +4,9 @@ The conformance suite checks the model against nearcore. It runs generic probe c
 near-contract-sim, which executes receipts with nearcore's own `Runtime::apply`, sweeps each
 transaction over a grid of prepaid gas, and compares every receipt with what the model predicts
 at the same point. The same crate measures the calibrated gas tables the library ships
-(`modules/CalibStd.tla`) and the tables you build for your own contract.
+(`modules/CalibStd.tla`) and the tables you build for your own contract, and, with `--stor`,
+the storage bytes each call adds (`modules/StorStd.tla`; [Storage
+bytes](../conformance/README.md#storage-bytes)).
 
 This page explains how to run the suite, what it compares, and how to read a mismatch. The
 crate's own [README](../conformance/README.md) is the reference for its pins, layout, commands,

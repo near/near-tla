@@ -783,6 +783,22 @@ LockedOf(a) == IF a = StakingAcct THEN locked ELSE 0
 \* frees bytes).  Without StoragePerByte it is ignored.
 OStor(O, d)  == [sb |-> d] @@ O
 StorDelta(O) == IF "sb" \in DOMAIN O THEN O.sb ELSE 0
+\* Measured bytes (docs/SEMANTICS.md, B2): StorBytes is a table the
+\* calibrator writes (conformance/, `calibrate --stor`), keyed like GasBurn
+\* ("acct.method/path"): [key -> [base |-> Int, per |-> Int]], the receiver's
+\* storage_usage after a successful receipt less before it, base + per *
+\* size bytes (size: what the table's header says the bytes grow with, e.g.
+\* the key + value length of a write).  Overridable, like GasBurn: give your
+\* contract's measured table (StorStd has the standard tokens').  Default:
+\* empty.  OStorKey(O, k, n) adds key k's bytes at size n to O's (OStor
+\* replaces them), so several writes compose; a missing key stops TLC with
+\* an Assert.  Without StoragePerByte it leaves O as it is and reads no
+\* table.
+StorBytes == [k \in {} |-> [base |-> 0, per |-> 0]]
+StorOf(k, n) ==
+    IF k \in DOMAIN StorBytes THEN StorBytes[k].base + StorBytes[k].per * n
+    ELSE Assert(FALSE, <<"no StorBytes entry for", k>>)
+OStorKey(O, k, n) == IF StoragePerByte THEN OStor(O, StorDelta(O) + StorOf(k, n)) ELSE O
 \* Does bal (liquid + locked) cover bytes?  check_storage_stake: amount +
 \* locked >= bytes x storage_amount_per_byte, or at most 770 bytes
 \* (verifier.rs:54-79, :88-90).  Exact integer arithmetic.  (IF, not \/:

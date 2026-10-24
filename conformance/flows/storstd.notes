@@ -1,0 +1,12 @@
+Tables: StdFtStorBytes(ft) for a plain near-contract-standards FT and
+StdWNearStorBytes(wnear) for wNEAR; the parameter is the token's model
+account (measured on ft-probe.near and wnear-probe.near).  Keys as in
+CalibStd: <acct>.<method>/<path> where the bytes depend on the path
+(storage_deposit and near_deposit /new and /registered; no method key,
+since the paths differ), else <acct>.<method>.  size: the holder's
+account id length in bytes (storage_deposit's account_id; the caller
+for near_deposit and storage_unregister).  A registration is 1 (prefix)
++ 4 + len(id) + 16 (u128) + 40 = 61 + len(id) bytes, Nep145's
+StdRegBytes; storage_unregister (no balance left) frees as many;
+transfers and withdrawals overwrite balances in place, 0 bytes.
+Probe contracts built with --cfg near (probes/build.sh).

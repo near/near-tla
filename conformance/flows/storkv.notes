@@ -1,0 +1,7 @@
+Table: KvStorBytes(app) for a contract whose put(key, value) writes
+value under key with env::storage_write (the generic probe, measured on
+p-probe.near).  size: len(key) + len(value) in bytes.  put/new: a new
+key, key + value + 40 bytes (40: nearcore's per-record overhead,
+storage_num_extra_bytes_record); put/same: an overwrite with a value of
+the same length, 0.  Used by examples/storage-stake (Vault.tla).
+Probe contracts built with --cfg near (probes/build.sh).

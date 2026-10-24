@@ -2,7 +2,9 @@
 //! flows/probes.toml on the smoke grid (5-130 Tgas every 2.5, and 300),
 //! nearcore's leftover split checked against the declared statics and
 //! weights (0 mismatches), a few window edges on a 0.1 Tgas grid, and the
-//! standard-token burns that modules/CalibStd.tla holds.
+//! standard-token burns that modules/CalibStd.tla holds; and the storage
+//! bytes of flows/storage.toml that modules/StorStd.tla and
+//! examples/storage-stake/StorKv.tla hold (`calibrate --stor`).
 //!
 //!   cargo test --release --test smoke -- --test-threads 1
 //!
@@ -110,4 +112,46 @@ fn window_edges() {
     // 5 Tgas; the receiver runs out of gas below 8.8.
     assert_eq!(edge_points(&res, &base, "ft_call_return", 80, 92), [8.0, 8.4, 8.8]);
     assert_eq!(edge_points(&res, &base, "wnear_batch_DSC", 430, 440), [43.0, 43.6]);
+}
+
+/// Every flow of flows/storage.toml once at 300 Tgas: the receipts'
+/// storage changes add up to view_account's, every key lies on a
+/// whole-byte line, and the lines are the ones the generated tables hold.
+#[test]
+fn storage_bytes_table() {
+    let res = Resolved::new(&crate_dir().join("flows/storage.toml"), None);
+    let base = res.world();
+    let mut st = calib::Stor::default();
+    for flow in &res.spec.flows {
+        let top = *spec::parse_grid(&flow.grid).iter().max().unwrap();
+        let w = res.flow_world(&base, flow);
+        let mut sim = w.clone();
+        let os = spec::run_flow(&mut sim, flow, near_contract_sim::prelude::Gas::from_gas(top));
+        calib::collect_stor(&res, flow, &os, &w, &sim, &mut st);
+    }
+    let (rows, errors, _) = calib::stor_rows(&st, &["ft_probe".into(), "wnear_probe".into()]);
+    assert!(st.errors.is_empty() && errors.is_empty(), "{:?} {errors:?}", st.errors);
+    let got: Vec<String> = rows.iter().map(|r| format!("{}.{} {} {}", r.acct, r.key, r.base, r.per)).collect();
+    println!("{}", got.join("\n"));
+    for want in [
+        "p.put/new 40 1",
+        "p.put/same 0 0",
+        "ft_probe.storage_deposit/new 61 1",
+        "ft_probe.storage_deposit/registered 0 0",
+        "ft_probe.storage_unregister -61 -1",
+        "ft_probe.ft_transfer 0 0",
+        "wnear_probe.storage_deposit/new 61 1",
+        "wnear_probe.near_deposit/new 61 1",
+        "wnear_probe.near_deposit/registered 0 0",
+        "wnear_probe.storage_unregister -61 -1",
+        "wnear_probe.near_withdraw 0 0",
+    ] {
+        assert!(got.iter().any(|g| g == want), "{want} not in the table");
+    }
+    // the committed tables say the same
+    let std = std::fs::read_to_string(crate_dir().join("../modules/StorStd.tla")).unwrap();
+    assert!(std.contains("ft \\o \".storage_deposit/new\" :> [base |-> 61, per |-> 1]"));
+    assert!(std.contains("wnear \\o \".storage_unregister\" :> [base |-> -61, per |-> -1]"));
+    let kv = std::fs::read_to_string(crate_dir().join("../examples/storage-stake/StorKv.tla")).unwrap();
+    assert!(kv.contains("app \\o \".put/new\" :> [base |-> 40, per |-> 1]"));
 }

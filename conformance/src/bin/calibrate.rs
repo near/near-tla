@@ -8,7 +8,13 @@
 //!             [--merge-accts a,..] [--accts a,..]
 //!             [--tla OUT.tla [--module NAME] [--prefix P] [--params a,..]
 //!              [--group acct:Prefix[:param]]... [--note TEXT]... [--notes FILE]
-//!              [--allow-partial]] [--batch-actions]
+//!              [--allow-partial]] [--batch-actions] [--stor]
+//!
+//! `--stor` measures storage bytes instead of burns: it runs each flow
+//! once, at the top of its grid, reads every successful call receipt's
+//! change of its receiver's `storage_usage`, fits `base + per * size`
+//! exactly (sizes from `[[stor_size]]`) and writes `<prefix>StorBytes`
+//! tables. No sweep, no `data/`.
 //!
 //! A table is written only if every check passed: every function-call
 //! child's attached gas reproduced (single-call parents directly,
@@ -39,7 +45,7 @@ fn usage() -> ! {
         "usage: calibrate --flows FILE [--wasm PATH] [--flow NAME]... [--grid standard|smoke|lo:hi:step]\n\
          \x20                [--data DIR] [--from-data [--force-data]] [--merge-accts a,b] [--accts a,b]\n\
          \x20                [--tla OUT.tla [--module NAME] [--prefix P] [--params a,b] [--group acct:Prefix[:param]]...\n\
-         \x20                 [--note TEXT]... [--notes FILE] [--allow-partial]] [--batch-actions]"
+         \x20                 [--note TEXT]... [--notes FILE] [--allow-partial]] [--batch-actions] [--stor]"
     );
     std::process::exit(2)
 }
@@ -155,7 +161,7 @@ fn main() {
     let mut a = std::env::args().skip(1);
     let (mut flows_path, mut wasm, mut only, mut grid, mut data, mut tla, mut module, mut prefix, mut params) =
         (None, None, vec![], None, None, None, None, String::new(), vec![]);
-    let (mut from_data, mut force_data, mut allow_partial, mut batch_actions) = (false, false, false, false);
+    let (mut from_data, mut force_data, mut allow_partial, mut batch_actions, mut stor) = (false, false, false, false, false);
     let (mut merge, mut accts, mut groups, mut notes): (Vec<String>, Vec<String>, Vec<String>, Vec<String>) = (vec![], vec![], vec![], vec![]);
     while let Some(x) = a.next() {
         let mut val = || a.next().unwrap_or_else(|| usage());
@@ -173,6 +179,7 @@ fn main() {
             "--force-data" => force_data = true,
             "--allow-partial" => allow_partial = true,
             "--batch-actions" => batch_actions = true,
+            "--stor" => stor = true,
             "--merge-accts" => merge = list(val()),
             "--group" => groups.push(val()),
             "--note" => notes.push(val()),
@@ -199,6 +206,15 @@ fn main() {
     println!("flows {flows_name} sha256 {flows_sha}");
     for (id, file, sha, src) in &wasms {
         println!("  {id}: {file} sha256 {sha} {src}");
+    }
+
+    if stor {
+        if from_data || force_data || batch_actions {
+            eprintln!("--stor runs each flow once and reads no sweep: drop --from-data, --force-data and --batch-actions");
+            std::process::exit(2);
+        }
+        let o = StorOpts { only, grid, merge, accts, groups, tla, module, prefix, params, notes, allow_partial, flows_name, flows_sha };
+        std::process::exit(run_stor(&res, &base, &prov, &wasms, &o));
     }
 
     let mut split = SplitReport::default();
@@ -435,6 +451,108 @@ fn main() {
     let text = calib::emit_tla(&module, &prov, &wasms, &tables, &command_line(), &data_lines, &notes, if failed.is_empty() { &[] } else { &failed });
     std::fs::write(&out, text).unwrap();
     println!("\nwrote {}{}", out.display(), if failed.is_empty() { "" } else { " (PARTIAL)" });
+}
+
+struct StorOpts {
+    only: Vec<String>,
+    grid: Option<String>,
+    merge: Vec<String>,
+    accts: Vec<String>,
+    groups: Vec<String>,
+    tla: Option<PathBuf>,
+    module: Option<String>,
+    prefix: String,
+    params: Vec<String>,
+    notes: Vec<String>,
+    allow_partial: bool,
+    flows_name: String,
+    flows_sha: String,
+}
+
+/// `--stor`: each flow once at the top of its grid; the storage table.
+/// Returns the exit status.
+fn run_stor(res: &Resolved, base: &near_contract_sim::Sim, prov: &Provenance, wasms: &[(String, String, String, String)], o: &StorOpts) -> i32 {
+    let mut st = calib::Stor::default();
+    let mut flows = 0;
+    for flow in &res.spec.flows {
+        if !o.only.is_empty() && !o.only.contains(&flow.name) {
+            continue;
+        }
+        let gname = o.grid.clone().unwrap_or_else(|| flow.grid.clone());
+        let top = *spec::parse_grid(&gname).iter().max().expect("empty grid");
+        let w = res.flow_world(base, flow);
+        let mut sim = w.clone();
+        let os = spec::run_flow(&mut sim, flow, near_contract_sim::prelude::Gas::from_gas(top));
+        let n0 = st.receipts;
+        calib::collect_stor(res, flow, &os, &w, &sim, &mut st);
+        println!("{}: {} call receipts measured at {:.1} Tgas", flow.name, st.receipts - n0, top as f64 / 1e12);
+        flows += 1;
+    }
+    let (rows, errors, notes) = calib::stor_rows(&st, &o.merge);
+    println!("\n| key | base bytes | per (bytes/size) | points | sizes | flows |");
+    println!("|---|---:|---:|---:|---|---|");
+    for r in &rows {
+        println!("| {}.{} | {} | {} | {} | {}-{} | {} |", r.acct, r.key, r.base, r.per, r.n, r.sizes.0, r.sizes.1, r.flows.join(" "));
+    }
+    if !st.action_only.is_empty() {
+        println!("\naction-only receipts (the library counts these; not emitted), bytes:");
+        for (k, b) in &st.action_only {
+            println!("  {k}: {}", b.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / "));
+        }
+    }
+    if !st.never_ok.is_empty() {
+        println!("\nnever succeeded (nothing to measure): {}", st.never_ok.iter().cloned().collect::<Vec<_>>().join(", "));
+    }
+    for n in &notes {
+        println!("  note: {n}");
+    }
+    let mut failed: Vec<String> = st.errors.clone();
+    failed.extend(errors);
+    if flows == 0 {
+        failed.push("no flow ran".into());
+    }
+    if failed.is_empty() {
+        println!("\nall checks passed");
+    } else {
+        println!("\nchecks FAILED:");
+        for f in &failed {
+            println!("  - {f}");
+        }
+    }
+    let Some(out) = &o.tla else { return if failed.is_empty() { 0 } else { 1 } };
+    if !failed.is_empty() && !o.allow_partial {
+        eprintln!("not writing {}: {} check(s) failed (see above; --allow-partial writes it with them in the header)", out.display(), failed.len());
+        return 1;
+    }
+    let module = o.module.clone().unwrap_or_else(|| out.file_stem().unwrap().to_string_lossy().into_owned());
+    let rows: Vec<_> = rows.into_iter().filter(|r| o.accts.is_empty() || o.accts.contains(&r.acct)).collect();
+    let mut tables = vec![];
+    if o.groups.is_empty() {
+        tables.push(calib::StorTable { prefix: o.prefix.clone(), params: o.params.clone(), rows: rows.clone() });
+    }
+    for g in &o.groups {
+        let mut it = g.splitn(3, ':');
+        let (Some(acct), Some(pre)) = (it.next(), it.next()) else { usage() };
+        let param = it.next().unwrap_or(acct);
+        tables.push(calib::StorTable {
+            prefix: pre.to_owned(),
+            params: vec![param.to_owned()],
+            rows: rows.iter().filter(|r| r.acct == acct).map(|r| calib::StorRow { acct: param.to_owned(), ..r.clone() }).collect(),
+        });
+    }
+    let mut data_lines = vec![
+        format!("flows: {} sha256 {}", o.flows_name, o.flows_sha),
+        format!("{flows} flows, each run once at the top of its grid; {} call receipts", st.receipts),
+    ];
+    // the sizes of the emitted accounts' keys
+    let shown: BTreeSet<&str> = if o.groups.is_empty() { rows.iter().map(|r| r.acct.as_str()).collect() } else { o.groups.iter().filter_map(|g| g.split(':').next()).collect() };
+    for z in res.spec.stor_sizes.iter().filter(|z| z.key.rsplit_once('.').is_some_and(|(rx, _)| shown.contains(res.name(rx)))) {
+        data_lines.push(format!("size of {}: {}{}", z.key, z.from, if z.div > 1 { format!(" / {}", z.div) } else { String::new() }));
+    }
+    let text = calib::emit_stor_tla(&module, prov, wasms, &tables, &command_line(), &data_lines, &o.notes, &failed);
+    std::fs::write(out, text).unwrap();
+    println!("\nwrote {}{}", out.display(), if failed.is_empty() { "" } else { " (PARTIAL)" });
+    if failed.is_empty() { 0 } else { 1 }
 }
 
 /// With `--batch-actions`: the burn of each call in a multi-call receipt

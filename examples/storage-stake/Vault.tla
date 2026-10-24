@@ -21,6 +21,15 @@
 (*    at Cost.  The second record needs more than V has left.              *)
 (* Units: 1 unit = 1 milliNEAR, so 1e19 yocto per byte is 100 bytes per    *)
 (* unit (Cost = <<1, 100>>).  V starts with V0 = 13 units and 1000 bytes.  *)
+(* Where a record's bytes come from, Measured picks:                       *)
+(*  FALSE: RecBytes (100), counted by hand.                                *)
+(*  TRUE: measured.  The record is a key-value write, key "paid:<user>"    *)
+(*    and the payout in yocto as its value, RecLen = 7 + 22 bytes, and     *)
+(*    its bytes are the "put/new" line of StorKv, the table the            *)
+(*    calibrator measured on the generic probe's put (40 + key + value;    *)
+(*    conformance/README.md, "Storage bytes"), read with OStorKey.         *)
+(*    runs.toml gives it to the library as StorBytes.  The lengths are     *)
+(*    still the model's to state: TLC has no string length.                *)
 (*                                                                         *)
 (* Books     once idle, the NEAR each user received equals the payouts     *)
 (*           recorded for them.                                            *)
@@ -28,10 +37,13 @@
 (* NobodyPaid  (must fail) some payout commits: the correct vault's pass   *)
 (*           is not vacuous.                                               *)
 (* VaultCovered  V's balance covers its bytes (per byte only).            *)
+(* BytesBooked  (Measured runs) V's bytes are its initial bytes plus one   *)
+(*           record's, read from the table itself, per recorded user: the  *)
+(*           library applied the table's line.                             *)
 (***************************************************************************)
 EXTENDS NearAsync
 
-CONSTANTS Users, V, MaxTx, Wrong, RecBytes, V0
+CONSTANTS Users, V, MaxTx, Wrong, RecBytes, V0, Measured, RecLen
 
 VARIABLES lockd, rec, ntx
 mine == <<lockd, rec, ntx>>
@@ -44,8 +56,16 @@ Cost   == <<1, 100>>
 VFloor == [a \in Accts |-> IF a = V THEN 10 ELSE 0]
 VStor  == [a \in Accts |-> IF a = V THEN 1000 ELSE 0]
 
-\* A handler's outcome that writes u's record: RecBytes new bytes.
-Rec(O) == OStor(O, RecBytes)
+\* The measured table (generated: StorKv.tla beside this file), for V.
+Kv == INSTANCE StorKv
+VaultStor == Kv!KvStorBytes(V)
+\* A handler's outcome that writes u's record: RecBytes new bytes, or the
+\* table's bytes for a new key of RecLen key + value bytes.
+Rec(O) == IF Measured THEN OStorKey(O, V \o ".put/new", RecLen) ELSE OStor(O, RecBytes)
+\* A record's bytes, read from the table directly (not through the library).
+RecB == IF Measured
+        THEN VaultStor[V \o ".put/new"].base + VaultStor[V \o ".put/new"].per * RecLen
+        ELSE RecBytes
 Out0 == Outcome({}, {}, RVal(0), 0, 0)
 
 Ask == /\ ntx < MaxTx
@@ -90,6 +110,7 @@ NobodyPaid == \A u \in Users : rec[u] = 0
 \* V's balance covers its bytes at Cost, written out here: StorageCovered uses
 \* the library's own check, so it cannot see that check go missing.
 VaultCovered == StoragePerByte => near[V] * Cost[2] >= stor[V] * Cost[1]
+BytesBooked  == StoragePerByte => stor[V] = VStor[V] + RecB * Cardinality({u \in Users : rec[u] > 0})
 \* Library sanity: NEAR conserved; with StoragePerByte, every balance covers its
 \* bytes; no orphans (the wrong vault's on_paid waits on the Transfer's result).
 Sane       == NearConserved(V0) /\ StorageCovered /\ NoOrphans

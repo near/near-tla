@@ -388,6 +388,27 @@ fn size_of(res: &Resolved, flow: &Flow, p: &Value) -> Result<u64, String> {
     Ok(raw / src.div.max(1))
 }
 
+/// The model account, method key and path of function-call receipt `p` in
+/// `flow`: the method key is the spec's or the flow's name for the method
+/// list (`keys`), else the list; the path is the flow's (`path`, for the
+/// calls in `path_for`), else a `[[path_rule]]`'s, else empty.
+fn key_parts(res: &Resolved, flow: &Flow, p: &Value) -> (String, String, String) {
+    let acct = res.name(s(&p["receiver"])).to_owned();
+    let raw = methods(p).join("+");
+    let mkey = flow.keys.get(&raw).or_else(|| res.spec.world.keys.get(&raw)).cloned().unwrap_or_else(|| raw.clone());
+    let ck = call_key(p);
+    let path = if !flow.path.is_empty() && (flow.path_for.is_empty() || flow.path_for.contains(&ck)) {
+        flow.path.clone()
+    } else if mkey == raw {
+        // (not for a receipt the spec renames, e.g. a one-call token batch)
+        let logs: Vec<&str> = p["logs"].as_array().map(|a| a.iter().map(s).collect()).unwrap_or_default();
+        res.spec.path_rules.iter().find_map(|r| r.path_of(&ck, logs.iter().copied())).unwrap_or("").to_owned()
+    } else {
+        String::new()
+    };
+    (acct, mkey, path)
+}
+
 /// Burn of every ok function-call receipt: `burnt - exec_fees - send fees
 /// of its action-only children` (the creator pays those children's send fees
 /// out of its gas: docs/SEMANTICS.md, "Who pays action send and exec
@@ -400,19 +421,7 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
             if is_refund(p) || methods(p).is_empty() {
                 continue;
             }
-            let acct = res.name(s(&p["receiver"])).to_owned();
-            let raw = methods(p).join("+");
-            let mkey = flow.keys.get(&raw).or_else(|| res.spec.world.keys.get(&raw)).cloned().unwrap_or_else(|| raw.clone());
-            let ck = call_key(p);
-            let path = if !flow.path.is_empty() && (flow.path_for.is_empty() || flow.path_for.contains(&ck)) {
-                flow.path.clone()
-            } else if mkey == raw {
-                // (not for a receipt the spec renames, e.g. a one-call token batch)
-                let logs: Vec<&str> = p["logs"].as_array().map(|a| a.iter().map(s).collect()).unwrap_or_default();
-                res.spec.path_rules.iter().find_map(|r| r.path_of(&ck, logs.iter().copied())).unwrap_or("").to_owned()
-            } else {
-                String::new()
-            };
+            let (acct, mkey, path) = key_parts(res, flow, p);
             let size = match size_of(res, flow, p) {
                 Ok(z) => z,
                 Err(e) => {
@@ -699,23 +708,7 @@ pub fn emit_tla(
     line(&mut o, "the tables never understate what they were measured on; \"max");
     line(&mut o, "residual\" is the most a key overstates one measurement (Ggas).");
     line(&mut o, "");
-    line(&mut o, "Provenance:");
-    line(&mut o, &format!("  sim rev          {}", prov.sim_rev));
-    line(&mut o, &format!("  nearcore         {} ({})", prov.nearcore_tag, prov.nearcore_rev));
-    line(&mut o, &format!("  protocol version {}", prov.protocol_version));
-    for (id, file, sha, src) in wasms {
-        line(&mut o, &format!("  {id}: {file}"));
-        if !src.is_empty() {
-            line(&mut o, &format!("    {src}"));
-        }
-        line(&mut o, &format!("    sha256 {}", &sha[..32]));
-        line(&mut o, &format!("           {}", &sha[32..]));
-    }
-    wrap_line(&mut o, &format!("  command: {command}"));
-    for d in data {
-        wrap_line(&mut o, &format!("  {d}"));
-    }
-    line(&mut o, "");
+    provenance_block(&mut o, prov, wasms, command, data);
     if !warnings.is_empty() {
         line(&mut o, "WARNING: PARTIAL CALIBRATION (--allow-partial). These checks failed,");
         line(&mut o, "so some entries below are not backed by a passing split check:");
@@ -737,6 +730,33 @@ pub fn emit_tla(
     }
     let _ = writeln!(o, "{}", "=".repeat(77));
     o
+}
+
+/// A header comment line, padded to 72 columns.
+fn hline(o: &mut String, t: &str) {
+    let _ = writeln!(o, "(* {t:<72}*)");
+}
+
+/// The header's provenance: sim, nearcore, protocol, every wasm's sha256,
+/// the command as run and the data lines, then an empty line.
+fn provenance_block(o: &mut String, prov: &Provenance, wasms: &[(String, String, String, String)], command: &str, data: &[String]) {
+    hline(o, "Provenance:");
+    hline(o, &format!("  sim rev          {}", prov.sim_rev));
+    hline(o, &format!("  nearcore         {} ({})", prov.nearcore_tag, prov.nearcore_rev));
+    hline(o, &format!("  protocol version {}", prov.protocol_version));
+    for (id, file, sha, src) in wasms {
+        hline(o, &format!("  {id}: {file}"));
+        if !src.is_empty() {
+            hline(o, &format!("    {src}"));
+        }
+        hline(o, &format!("    sha256 {}", &sha[..32]));
+        hline(o, &format!("           {}", &sha[32..]));
+    }
+    wrap_line(o, &format!("  command: {command}"));
+    for d in data {
+        wrap_line(o, &format!("  {d}"));
+    }
+    hline(o, "");
 }
 
 /// A header comment line, wrapped at 72 columns (continuations indented).
@@ -812,6 +832,322 @@ fn emit_table(o: &mut String, t: &Table) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Storage bytes (`calibrate --stor`)
+
+/// One storage measurement: the bytes a successful receipt added to its
+/// receiver's `storage_usage` (negative: freed), at storage size `size`.
+#[derive(Debug, Clone)]
+pub struct StorObs {
+    pub flow: String,
+    pub path: String,
+    pub size: u64,
+    pub bytes: i64,
+}
+
+#[derive(Default, Debug)]
+pub struct Stor {
+    /// (model account, method key, shape) -> measurements.
+    pub obs: BTreeMap<(String, String, String), Vec<StorObs>>,
+    /// Action-only receipts, `receiver[actions]` -> bytes seen (reported,
+    /// not emitted: the library counts those itself).
+    pub action_only: BTreeMap<String, BTreeSet<i64>>,
+    /// Keys whose receipt never succeeded where measured.
+    pub never_ok: BTreeSet<String>,
+    /// Receipts measured.
+    pub receipts: usize,
+    /// Problems that block a table.
+    pub errors: Vec<String>,
+}
+
+/// The storage size of call receipt `p` (JSON, as `dump` writes it) whose
+/// full first argument is `args` (see `spec::StorSizeSrc`; default 0).
+pub fn stor_size_of(res: &Resolved, p: &Value, args: &[u8]) -> Result<u64, String> {
+    let ck = call_key(p);
+    let Some(src) = res.spec.stor_sizes.iter().find(|z| z.key == ck) else { return Ok(0) };
+    let parsed = || -> Result<Value, String> { serde_json::from_slice(args).map_err(|e| format!("{ck}: args not JSON: {e}")) };
+    let raw = if let Some(fields) = src.from.strip_prefix("arg_len:") {
+        let a = parsed()?;
+        let mut n = 0u64;
+        for f in fields.split('+') {
+            n += a[f].as_str().ok_or(format!("{ck}: no string arg {f}"))?.len() as u64;
+        }
+        n
+    } else if src.from == "predecessor_len" {
+        s(&p["predecessor"]).len() as u64
+    } else if let Some(field) = src.from.strip_prefix("arg:") {
+        let a = parsed()?;
+        let x = &a[field];
+        x.as_u64().or_else(|| x.as_str().and_then(|t| t.parse().ok())).ok_or(format!("{ck}: no numeric arg {field}"))?
+    } else {
+        return Err(format!("{ck}: unknown storage size source {}", src.from));
+    };
+    Ok(raw / src.div.max(1))
+}
+
+/// Every account's `storage_usage` in `sim` (0 if absent), for `ids`.
+fn usages(sim: &Sim, ids: &BTreeSet<String>) -> BTreeMap<String, i64> {
+    ids.iter().map(|a| (a.clone(), sim.account(a.as_str()).map_or(0, |v| v.storage_usage as i64))).collect()
+}
+
+/// Storage measurements of one run of `flow` (its outcomes `os`), from
+/// nearcore's `storage_usage` before and after each receipt (the sim's
+/// `ReceiptOutcome::storage`). Checks that the receipts' changes add up to
+/// each account's change over the run (`before` and `after` are the world
+/// either side of it): a change no receipt accounts for fails the table.
+pub fn collect_stor(res: &Resolved, flow: &Flow, os: &[near_contract_sim::TxOutcome], before: &Sim, after: &Sim, st: &mut Stor) {
+    use near_contract_sim::ReceiptOutcome;
+    let all: Vec<&ReceiptOutcome> = os.iter().flat_map(|o| o.transaction.iter().chain(&o.receipts)).collect();
+    // Per account: the receipts' changes, summed.
+    let mut sum: BTreeMap<String, i64> = BTreeMap::new();
+    for r in &all {
+        for c in &r.storage {
+            *sum.entry(c.account.to_string()).or_default() += c.bytes;
+        }
+    }
+    let mut ids: BTreeSet<String> = sum.keys().cloned().collect();
+    ids.extend(res.spec.accounts.iter().map(|a| a.id.clone()));
+    ids.extend(res.spec.contracts.iter().map(|c| c.id.clone()));
+    ids.extend(all.iter().map(|r| r.executor_id.to_string()));
+    let (u0, u1) = (usages(before, &ids), usages(after, &ids));
+    for a in &ids {
+        let (seen, want) = (sum.get(a).copied().unwrap_or(0), u1[a] - u0[a]);
+        if seen != want {
+            push_once(&mut st.errors, format!("{}: {a}: receipts changed its storage by {seen} bytes, view_account by {want}", flow.name));
+        }
+    }
+    let by_id: HashMap<String, &ReceiptOutcome> = all.iter().map(|r| (r.id.to_string(), *r)).collect();
+    let v = crate::dump_all(os);
+    let rs: Vec<&Value> = v["receipts"].as_array().unwrap().iter().filter(|r| !r["conversion"].as_bool().unwrap()).collect();
+    for p in &rs {
+        if is_refund(p) {
+            continue;
+        }
+        let r = by_id[s(&p["id"])];
+        let rx = r.executor_id.as_str();
+        let bytes: i64 = r.storage.iter().filter(|c| c.account.as_str() == rx).map(|c| c.bytes).sum();
+        for c in r.storage.iter().filter(|c| c.account.as_str() != rx) {
+            push_once(&mut st.errors, format!("{}: a receipt to {rx} changed {}'s storage by {} bytes", flow.name, c.account, c.bytes));
+        }
+        if methods(p).is_empty() {
+            st.action_only.entry(format!("{rx}[{}]", actions(p).join(","))).or_default().insert(bytes);
+            continue;
+        }
+        let (acct, mkey, path) = key_parts(res, flow, p);
+        if s(&p["status"]) != "ok" {
+            if bytes != 0 {
+                push_once(&mut st.errors, format!("{}: {acct}.{mkey} failed but changed its storage by {bytes} bytes", flow.name));
+            }
+            st.never_ok.insert(format!("{acct}.{mkey} ({})", flow.name));
+            continue;
+        }
+        let size = match stor_size_of(res, p, r.args.first().map_or(&[][..], |a| a.as_slice())) {
+            Ok(z) => z,
+            Err(e) => {
+                push_once(&mut st.errors, format!("{}: {e}", flow.name));
+                0
+            }
+        };
+        st.receipts += 1;
+        st.obs.entry((acct, mkey, shape(&rs, p))).or_default().push(StorObs { flow: flow.name.clone(), path, size, bytes });
+    }
+    let ok: BTreeSet<String> = st.obs.keys().map(|(a, m, _)| format!("{a}.{m} ")).collect();
+    st.never_ok.retain(|k| !ok.iter().any(|o| k.starts_with(o.as_str())));
+}
+
+/// A storage key: bytes = `base + per * size`, exactly on every
+/// measurement.
+#[derive(Debug, Clone)]
+pub struct StorRow {
+    pub acct: String,
+    pub key: String,
+    pub base: i64,
+    pub per: i64,
+    pub n: usize,
+    /// Smallest and largest size measured.
+    pub sizes: (u64, u64),
+    pub flows: Vec<String>,
+}
+
+/// The line through every measurement, in whole bytes: `(base, per)`.
+/// Bytes are counted exactly (key + value + 40 per record, and so on), so
+/// a key whose measurements are not on one line with a whole slope is an
+/// error (a size source that misses something, or two paths under one key).
+pub fn fit_exact(obs: &[StorObs]) -> Result<(i64, i64), String> {
+    let lo = obs.iter().min_by_key(|o| o.size).ok_or("no measurement")?;
+    let hi = obs.iter().max_by_key(|o| o.size).unwrap();
+    let per = if hi.size == lo.size {
+        0
+    } else {
+        let (num, den) = (hi.bytes - lo.bytes, (hi.size - lo.size) as i64);
+        if num % den != 0 {
+            return Err(format!("{} bytes over {den} size units: not a whole slope", num));
+        }
+        num / den
+    };
+    let base = lo.bytes - per * lo.size as i64;
+    if let Some(o) = obs.iter().find(|o| base + per * o.size as i64 != o.bytes) {
+        return Err(format!("{} bytes at size {} ({}) is off the line {base} + {per} * size", o.bytes, o.size, o.flow));
+    }
+    Ok((base, per))
+}
+
+fn stor_row(acct: &str, key: String, obs: &[StorObs], errors: &mut Vec<String>) -> Option<StorRow> {
+    match fit_exact(obs) {
+        Ok((base, per)) => {
+            let flows: BTreeSet<String> = obs.iter().map(|o| o.flow.clone()).collect();
+            Some(StorRow {
+                acct: acct.to_owned(),
+                key,
+                base,
+                per,
+                n: obs.len(),
+                sizes: (obs.iter().map(|o| o.size).min().unwrap(), obs.iter().map(|o| o.size).max().unwrap()),
+                flows: flows.into_iter().collect(),
+            })
+        }
+        Err(e) => {
+            errors.push(format!("{acct}.{key}: {e}"));
+            None
+        }
+    }
+}
+
+/// The storage keys, named as `burn_rows` names burn keys. With `merge`,
+/// those accounts get `method/path` per path, and the bare `method` only
+/// if every path and shape of it lies on one line (no "largest" for
+/// bytes: a registration and a repeat cannot share a key). Returns the
+/// rows, errors (block a table) and notes.
+pub fn stor_rows(st: &Stor, merge: &[String]) -> (Vec<StorRow>, Vec<String>, Vec<String>) {
+    let (mut rows, mut errors, mut notes) = (vec![], vec![], vec![]);
+    let mut shapes: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    let mut merged: BTreeMap<(String, String), Vec<StorObs>> = BTreeMap::new();
+    for ((a, m, sh), obs) in &st.obs {
+        shapes.entry((a.clone(), m.clone())).or_default().insert(sh.clone());
+        if merge.contains(a) {
+            merged.entry((a.clone(), m.clone())).or_default().extend(obs.iter().cloned());
+        }
+    }
+    for ((a, m), obs) in &merged {
+        let mut by_path: BTreeMap<String, Vec<StorObs>> = BTreeMap::new();
+        for o in obs {
+            by_path.entry(o.path.clone()).or_default().push(o.clone());
+        }
+        for (path, os) in by_path.iter().filter(|(p, _)| !p.is_empty()) {
+            rows.extend(stor_row(a, format!("{m}/{path}"), os, &mut errors));
+        }
+        if fit_exact(obs).is_ok() {
+            rows.extend(stor_row(a, m.clone(), obs, &mut errors));
+        } else if by_path.contains_key("") {
+            errors.push(format!("{a}.{m}: receipts without a path are not on the line of its other paths; give them a path"));
+        } else {
+            notes.push(format!("{a}.{m}: no method key (its paths differ): {}", by_path.keys().map(|p| format!("{m}/{p}")).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    for ((a, m, sh), obs) in &st.obs {
+        if merge.contains(a) {
+            continue;
+        }
+        let multi = shapes[&(a.clone(), m.clone())].len() > 1;
+        let mut by_path: BTreeMap<String, Vec<StorObs>> = BTreeMap::new();
+        for o in obs {
+            by_path.entry(o.path.clone()).or_default().push(o.clone());
+        }
+        for (path, os) in by_path {
+            let mut key = m.clone();
+            if multi {
+                key = format!("{key}/{}", if sh.is_empty() { "-" } else { sh.as_str() });
+            }
+            if !path.is_empty() {
+                key = format!("{key}/{path}");
+            }
+            rows.extend(stor_row(a, key, &os, &mut errors));
+        }
+    }
+    rows.sort_by(|x, y| (&x.acct, &x.key).cmp(&(&y.acct, &y.key)));
+    (rows, errors, notes)
+}
+
+/// One operator `<prefix>StorBytes`; with `params`, those model accounts
+/// become its parameters, as for `Table`.
+pub struct StorTable {
+    pub prefix: String,
+    pub params: Vec<String>,
+    pub rows: Vec<StorRow>,
+}
+
+/// Writes a TLA+ module of storage tables with its provenance header.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_stor_tla(
+    module: &str,
+    prov: &Provenance,
+    wasms: &[(String, String, String, String)],
+    tables: &[StorTable],
+    command: &str,
+    data: &[String],
+    notes: &[String],
+    warnings: &[String],
+) -> String {
+    let mut o = String::new();
+    let _ = writeln!(o, "{} MODULE {module} {}", "-".repeat(28), "-".repeat(28));
+    let _ = writeln!(o, "(***************************************************************************)");
+    for t in [
+        "Measured storage bytes, generated by conformance/ (bin `calibrate`,",
+        "--stor): do not edit by hand.  bytes = base + per * size: what a",
+        "successful receipt adds to its receiver's storage_usage (negative:",
+        "frees), read before and after the receipt in near-contract-sim, which",
+        "runs nearcore's Runtime::apply.  Each flow ran once, at the top of its",
+        "grid (bytes do not depend on gas), and every measurement lies on its",
+        "key's line exactly.  Read with OStorKey (modules/NearAsync.tla).",
+        "",
+    ] {
+        hline(&mut o, t);
+    }
+    provenance_block(&mut o, prov, wasms, command, data);
+    if !warnings.is_empty() {
+        hline(&mut o, "WARNING: PARTIAL CALIBRATION (--allow-partial). These checks failed,");
+        hline(&mut o, "so some entries below are not measured exactly:");
+        for w in warnings {
+            wrap_line(&mut o, &format!("  ! {w}"));
+        }
+        hline(&mut o, "");
+    }
+    for n in notes {
+        hline(&mut o, n);
+    }
+    hline(&mut o, "Bytes depend on the contract's code and state: recalibrate for a real");
+    hline(&mut o, "deployment (conformance/README.md).");
+    let _ = writeln!(o, "(***************************************************************************)");
+    let _ = writeln!(o, "EXTENDS Integers, Sequences, TLC");
+    for t in tables {
+        let kexpr = |acct: &str, k: &str| -> String {
+            if t.params.iter().any(|p| p == acct) { format!("{acct} \\o \".{k}\"") } else { format!("\"{acct}.{k}\"") }
+        };
+        let args = if t.params.is_empty() { String::new() } else { format!("({})", t.params.join(", ")) };
+        let _ = writeln!(o);
+        let _ = writeln!(o, "{}StorBytes{args} ==", t.prefix);
+        if t.rows.is_empty() {
+            let _ = writeln!(o, "    [k \\in {{}} |-> [base |-> 0, per |-> 0]]");
+        }
+        for (i, r) in t.rows.iter().enumerate() {
+            let sep = if i + 1 < t.rows.len() { " @@" } else { "" };
+            let sizes = if r.sizes.0 == r.sizes.1 { format!("size {}", r.sizes.0) } else { format!("sizes {}-{}", r.sizes.0, r.sizes.1) };
+            let _ = writeln!(
+                o,
+                "    {} :> [base |-> {}, per |-> {}]{sep}  \\* {} pt{}; {sizes}; {}",
+                kexpr(&r.acct, &r.key),
+                r.base,
+                r.per,
+                r.n,
+                if r.n == 1 { "" } else { "s" },
+                r.flows.join(" ")
+            );
+        }
+    }
+    let _ = writeln!(o, "{}", "=".repeat(77));
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,5 +1182,24 @@ mod tests {
         }
         let (base, _, resid) = fit(&obs(&[(5, 416_000_000_000), (5, 859_000_000_000)]));
         assert_eq!((base, resid), (859e9, 443e9));
+    }
+
+    fn sobs(points: &[(u64, i64)]) -> Vec<StorObs> {
+        points.iter().map(|&(size, bytes)| StorObs { flow: "f".into(), path: String::new(), size, bytes }).collect()
+    }
+
+    /// Storage bytes fit a whole-byte line exactly, or the key is an error.
+    #[test]
+    fn fit_exact_lines() {
+        assert_eq!(fit_exact(&sobs(&[(9, 70), (64, 125)])), Ok((61, 1)));
+        assert_eq!(fit_exact(&sobs(&[(9, -70), (30, -91)])), Ok((-61, -1)));
+        assert_eq!(fit_exact(&sobs(&[(2, 42), (102, 142), (42, 82)])), Ok((40, 1)));
+        assert_eq!(fit_exact(&sobs(&[(5, 0), (5, 0)])), Ok((0, 0)));
+        // one size, two byte counts: two paths under one key
+        assert!(fit_exact(&sobs(&[(9, 70), (9, 0)])).is_err());
+        // a point off the line through the extremes
+        assert!(fit_exact(&sobs(&[(0, 40), (10, 50), (20, 60), (5, 46)])).is_err());
+        // not a whole slope
+        assert!(fit_exact(&sobs(&[(0, 0), (2, 3)])).is_err());
     }
 }
