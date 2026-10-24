@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the TLC model-checking runs declared in runs.toml files and check their expectations.
+r"""Run the TLC model-checking runs declared in runs.toml files and check their expectations.
 
 usage: tools/run.py [options] [paths...] [run names...]
 
@@ -62,10 +62,42 @@ runs.toml format
 Every key except name/expect/invariant/expect_*/window_step/allow_no_invariants may also
 be given at the top level as a default for all runs of the file.
 
+Anti-vacuity checks (run with --anti-vacuity, after the plain runs; always validated)
+  [[witness]]                 # a situation that must be reachable
+  id = "refund_seen"          # [A-Za-z][A-Za-z0-9_]*, unique in the file
+  expr = '~(\E r \in Runnable : r.m = "on_done" /\ ~r.res.ok)'
+  about = "on_done sees Failed"   # optional
+  runs = ["*_ok"]             # optional globs over this file's runs; default: every
+                              # expect = "pass" run without expect_window
+  # expect = "unreachable"    # documented exception (default "reached"); needs
+  # reason = "why"            # a reason
+  The wrapper defines Wit_<id> == <expr> and TLC checks it alone, once per listed run.
+  It must be violated (the situation is reached). A pass is "vacuous: witness <id>
+  never reached" and fails; with expect = "unreachable" a pass is required instead.
+
+  [[mutant]]                  # a deliberate bug some listed run must catch
+  id = "skip_rollback"
+  file = "Model.tla"          # a .tla beside runs.toml; with library = true, a module of
+  # library = true            # the run's library (the first library dir that has it)
+  find = 'ELSE rollback(S)'   # exact text; must occur `count` times (default 1),
+  replace = 'ELSE S'          # checked for every mutant before any JVM starts
+  count = 1
+  class = "failure branch skips rollback"
+  runs = ["model_ok"]         # optional, as for witnesses; expect = "pass" runs only
+  # equivalent = "why"        # an accepted survivor must say why
+  The runner copies the spec dir's (or library dir's) .tla files into the job's temp
+  dir, patches the copy and puts it in the copied dir's place on -DTLA-Library; the
+  originals are never touched. Each listed run is checked with its own invariants and
+  properties. Killed: some run reports a violation (an Assert or a deadlock is reported
+  as "killed (assert)" / "killed (deadlock)"). Survived (every run passes) fails unless
+  `equivalent` is given; a mutant marked equivalent that is killed fails too. A timeout
+  or an error is its own result, never "survived", and fails. Each job has its run's
+  budget_s and is stopped at it.
+
 Checks
 - "pass" needs TLC's exit code 0, its "No error has been found" line, and at least one
-  distinct state; expect = "pass" needs at least one invariant or property (or
-  allow_no_invariants).
+  distinct state; expect = "pass" needs at least one invariant (properties alone do not
+  count), or allow_no_invariants.
 - Constant names must be CONSTANTs declared by the spec or a module it EXTENDS, or
   zero-arity definitions there (TLC's `<-` overrides a definition too; the library uses
   that for overridable defaults). A `Mod!Name` key must name a zero-arity definition or
@@ -86,6 +118,10 @@ other expectation requires that nothing was peeled. Peel mode checks verdicts, b
 and vacuity only, not expect_output or expect_window.
 
 A temporal formula goes in `specification` (not `spec`, which names the module).
+
+--anti-vacuity: after the plain runs, check every [[witness]] and [[mutant]] of the
+selected runs (a check of a run that did not match its expectation is skipped) and print
+a table and a per-file summary. Off by default; peel mode and windows are unaffected.
 
 Environment: TLA2TOOLS_JAR (if tools/tla2tools.jar is missing), NEAR_TLA_LIBRARY
 (like --library), TLC_JAVA_OPTS (extra JVM options, e.g. -Xmx4g).
@@ -129,10 +165,13 @@ NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 FILE_KEYS = {"spec", "workers", "library", "budget_s", "init", "next", "specification",
-             "invariants", "properties", "deadlock", "tags", "constants", "run"}
+             "invariants", "properties", "deadlock", "tags", "constants", "run", "witness", "mutant"}
 RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step",
                  "allow_no_invariants"}
-RUN_KEYS = (FILE_KEYS - {"run"}) | RUN_ONLY_KEYS
+RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant"}) | RUN_ONLY_KEYS
+WITNESS_KEYS = {"id", "expr", "about", "runs", "expect", "reason"}
+MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "library", "equivalent"}
+WITNESS_EXPECTS = ("reached", "unreachable")
 
 # Standard and community modules that declare no CONSTANTS.
 NO_CONSTANT_MODULES = {
@@ -179,6 +218,37 @@ class Run:
         return self.dir / "build"
 
 
+@dataclass
+class Witness:
+    """A [[witness]]: `expr` must be violated (the situation reached) by each run in `runs`."""
+    id: str
+    toml: Path
+    expr: str
+    runs: list[str]
+    about: str = ""
+    expect: str = "reached"
+    reason: str | None = None
+
+    @property
+    def op(self) -> str:
+        return f"Wit_{self.id}"
+
+
+@dataclass
+class Mutant:
+    """A [[mutant]]: `find` -> `replace` in `file`; some run in `runs` must catch it."""
+    id: str
+    toml: Path
+    file: str
+    find: str
+    replace: str
+    cls: str
+    runs: list[str]
+    count: int = 1
+    library: bool = False
+    equivalent: str | None = None
+
+
 # ---------------------------------------------------------------- loading
 
 
@@ -218,6 +288,11 @@ def _str_list(where: str, d: dict, key: str) -> list[str]:
 
 
 def load_file(path: Path) -> list[Run]:
+    return load_doc(path)[0]
+
+
+def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
+    """The runs, witnesses and mutants of one runs.toml, validated."""
     path = path.resolve()
     try:
         with open(path, "rb") as f:
@@ -317,9 +392,11 @@ def load_file(path: Path) -> list[Run]:
             raise ConfigError(f"{where}: invariant is only meaningful with expect = \"violation\"")
         if r.allow_no_invariants is not None and not r.allow_no_invariants.strip():
             raise ConfigError(f"{where}: allow_no_invariants must say why (a non-empty string)")
-        if r.expect == "pass" and not r.invariants and not r.properties and not r.allow_no_invariants:
-            raise ConfigError(f"{where}: expect = \"pass\" with no invariants or properties checks nothing; "
-                              f"add one, or set allow_no_invariants = \"<why>\"")
+        if r.expect == "pass" and not r.invariants and not r.allow_no_invariants:
+            what = "only properties" if r.properties else "no invariants or properties"
+            raise ConfigError(f"{where}: expect = \"pass\" with an empty INVARIANTS section ({what}) can "
+                              f"pass without checking a state; add an invariant, or set "
+                              f"allow_no_invariants = \"<why>\"")
         if r.expect == "deadlock" and not r.deadlock:
             raise ConfigError(f"{where}: expect = \"deadlock\" needs deadlock = true")
         if r.expect_window is not None:
@@ -337,7 +414,98 @@ def load_file(path: Path) -> list[Run]:
             except re.error as e:
                 raise ConfigError(f"{where}: bad expect_output regex: {e}") from e
         out.append(r)
-    return out
+    wits, muts = load_checks(path, doc, out)
+    return out, wits, muts
+
+
+def _check_runs(where: str, d: dict, runs: list[Run], mutant: bool) -> list[str]:
+    """The run names a check applies to: its `runs` globs, or the default set."""
+    if "runs" in d:
+        globs = _str_list(where, d, "runs")
+        if not globs:
+            raise ConfigError(f"{where}: runs is empty")
+        names: list[str] = []
+        for g in globs:
+            hit = [r.name for r in runs if fnmatch.fnmatchcase(r.name, g)]
+            if not hit:
+                raise ConfigError(f"{where}: runs entry {g!r} matches no run of this file")
+            names += [n for n in hit if n not in names]
+    else:
+        # print-only window runs check no real invariant: listed explicitly or not at all
+        names = [r.name for r in runs if r.expect == "pass" and r.expect_window is None]
+        if not names:
+            raise ConfigError(f"{where}: no expect = \"pass\" run to apply to; give runs = [...]")
+    if mutant:
+        by = {r.name: r for r in runs}
+        for n in names:
+            if by[n].expect != "pass":
+                raise ConfigError(f"{where}: run {n} is expect = \"{by[n].expect}\"; a mutant needs runs "
+                                  f"that pass unmutated")
+            if not by[n].invariants and not by[n].properties:
+                raise ConfigError(f"{where}: run {n} checks no invariant, so it cannot kill a mutant")
+    return names
+
+
+def _nonempty(where: str, d: dict, key: str, required: bool = True) -> str | None:
+    v = _typed(where, d, key, str)
+    if v is None and not required:
+        return None
+    if v is None or not v.strip():
+        raise ConfigError(f"{where}: {key} must be a non-empty string")
+    return v
+
+
+def load_checks(path: Path, doc: dict, runs: list[Run]) -> tuple[list[Witness], list[Mutant]]:
+    """Validate the [[witness]] and [[mutant]] tables of one runs.toml."""
+    wits: list[Witness] = []
+    muts: list[Mutant] = []
+    for kind, keys in (("witness", WITNESS_KEYS), ("mutant", MUTANT_KEYS)):
+        raw_list = doc.get(kind, [])
+        if not isinstance(raw_list, list) or not all(isinstance(x, dict) for x in raw_list):
+            raise ConfigError(f"{rel(path)}: {kind} must be an array of tables ([[{kind}]])")
+        seen: set[str] = set()
+        for i, raw in enumerate(raw_list):
+            where = f"{rel(path)} {kind} #{i + 1}"
+            unknown = set(raw) - keys
+            if unknown:
+                raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
+            wid = _typed(where, raw, "id", str)
+            if not wid or not NAME_RE.match(wid):
+                raise ConfigError(f"{where}: id must match {NAME_RE.pattern}")
+            where = f"{rel(path)} {kind} {wid}"
+            if wid in seen:
+                raise ConfigError(f"{where}: duplicate id")
+            seen.add(wid)
+            names = _check_runs(where, raw, runs, kind == "mutant")
+            if kind == "witness":
+                expect = _typed(where, raw, "expect", str, "reached")
+                if expect not in WITNESS_EXPECTS:
+                    raise ConfigError(f"{where}: expect must be one of {WITNESS_EXPECTS}")
+                reason = _nonempty(where, raw, "reason", required=expect == "unreachable")
+                if reason is not None and expect != "unreachable":
+                    raise ConfigError(f"{where}: reason is only meaningful with expect = \"unreachable\"")
+                wits.append(Witness(wid, path, _nonempty(where, raw, "expr"), names,
+                                    _typed(where, raw, "about", str, ""), expect, reason))
+            else:
+                file = _nonempty(where, raw, "file")
+                if "/" in file or "\\" in file or not file.endswith(".tla"):
+                    raise ConfigError(f"{where}: file must be a bare module file name such as Model.tla")
+                library = _typed(where, raw, "library", bool, False)
+                if not library and not (path.parent / file).is_file():
+                    raise ConfigError(f"{where}: {file} not found beside runs.toml (library = true for a "
+                                      f"library module)")
+                count = _typed(where, raw, "count", int, 1)
+                if count < 1:
+                    raise ConfigError(f"{where}: count must be at least 1")
+                replace = _typed(where, raw, "replace", str)
+                if replace is None:
+                    raise ConfigError(f"{where}: replace is required (it may be empty)")
+                find = _nonempty(where, raw, "find")
+                if find == replace:
+                    raise ConfigError(f"{where}: replace equals find")
+                muts.append(Mutant(wid, path, file, find, replace, _nonempty(where, raw, "class"), names,
+                                   count, library, _nonempty(where, raw, "equivalent", required=False)))
+    return wits, muts
 
 
 # ------------------------------------------------- declared CONSTANTS (light TLA+ parse)
@@ -508,13 +676,20 @@ def select(args: list[str]) -> list[Run]:
     - names only: matching runs under the repo's examples/;
     - paths and names: matching runs within the given paths only.
     """
+    return select_checks(args)[0]
+
+
+def select_checks(args: list[str]) -> tuple[list[Run], list[Witness], list[Mutant]]:
+    """As select(), with the witnesses and mutants of the chosen runs (each narrowed to
+    its chosen runs; a check none of whose runs was chosen is left out)."""
     paths = [a for a in args if os.path.exists(a)]
     names = [a for a in args if not os.path.exists(a)]
     tomls: list[Path] = []
     for a in paths or [str(ROOT / "examples")]:
         tomls += [t.resolve() for t in find_tomls(Path(a))]
     pool = list(dict.fromkeys(tomls))
-    loaded = {t: load_file(t) for t in pool}
+    docs = {t: load_doc(t) for t in pool}
+    loaded = {t: d[0] for t, d in docs.items()}
     seen: dict[str, Path] = {}
     for t, rs in loaded.items():
         for r in rs:
@@ -522,16 +697,24 @@ def select(args: list[str]) -> list[Run]:
                 raise ConfigError(f"run name {r.name} is used in {rel(seen[r.name])} and {rel(t)}")
             seen[r.name] = t
     everything = [r for t in pool for r in loaded[t]]
-    if not names:
-        return everything
-    chosen: list[Run] = []
+    chosen: list[Run] = [] if names else everything
     where = "the given paths" if paths else "examples/"
     for n in names:
         hit = [r for r in everything if fnmatch.fnmatchcase(r.name, n)]
         if not hit:
             raise ConfigError(f"no path, and no run named {n!r} in {where}")
         chosen += [r for r in hit if r not in chosen]
-    return chosen
+    picked = {r.name for r in chosen}
+    wits: list[Witness] = []
+    muts: list[Mutant] = []
+    for t in pool:
+        for w in docs[t][1]:
+            if set(w.runs) & picked:
+                wits.append(Witness(**{**asdict(w), "toml": w.toml, "runs": [n for n in w.runs if n in picked]}))
+        for m in docs[t][2]:
+            if set(m.runs) & picked:
+                muts.append(Mutant(**{**asdict(m), "toml": m.toml, "runs": [n for n in m.runs if n in picked]}))
+    return chosen, wits, muts
 
 
 # ---------------------------------------------------------------- generation
@@ -558,14 +741,16 @@ def _definition(name: str, expr: str) -> str:
     return f"{name} ==\n" + textwrap.indent(textwrap.dedent(expr.strip("\n")), "    ")
 
 
-def wrapper(run: Run, mod: str, invariants=None, properties=None) -> tuple[str, str]:
-    """(wrapper module text, cfg text) for `run`, module name `mod`."""
+def wrapper(run: Run, mod: str, invariants=None, properties=None, defs=()) -> tuple[str, str]:
+    """(wrapper module text, cfg text) for `run`, module name `mod`; `defs` are extra
+    (name, expression) definitions, such as a witness."""
     invs = run.invariants if invariants is None else invariants
     props = run.properties if properties is None else properties
     tla = [f"---- MODULE {mod} ----",
            f"\\* Generated by tools/run.py for run {run.name}; do not edit.",
            f"EXTENDS {run.spec}"]
     tla += [_definition(const_def_name(k), v) for k, v in run.constants.items()]
+    tla += [_definition(n, e) for n, e in defs]
     tla.append("====")
     cfg = [f"\\* Generated by tools/run.py for run {run.name}; do not edit."]
     if run.specification:
@@ -642,6 +827,8 @@ class Outcome:
     notes: list[str] = field(default_factory=list)
     log: str = ""
     peeled: list[str] | None = None
+    kind: str = "run"  # "run", "witness" or "mutant"
+    check: str = ""    # the witness or mutant id
 
 
 @dataclass
@@ -655,25 +842,65 @@ class Attempt:
     log_path: Path
 
 
-def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int) -> Attempt:
-    """Generate the wrapper + cfg in a fresh temp dir, run TLC there, write build/<log>."""
-    tla, cfg = wrapper(run, mod, invs, props)
+def mutant_target(run: Run, m: Mutant) -> tuple[int, Path]:
+    """(index in [spec dir, *library], path) of the file mutant `m` patches for `run`."""
+    if not m.library:
+        return 0, run.dir / m.file
+    for i, d in enumerate(run.library, start=1):
+        if (Path(d) / m.file).is_file():
+            return i, Path(d) / m.file
+    raise ConfigError(f"{rel(m.toml)} mutant {m.id}: {m.file} is in none of run {run.name}'s library dirs")
+
+
+def patched_text(run: Run, m: Mutant) -> str:
+    """The patched module text; ConfigError unless `find` occurs exactly `count` times."""
+    _, path = mutant_target(run, m)
+    text = path.read_text(encoding="utf-8")
+    n = text.count(m.find)
+    if n != m.count:
+        raise ConfigError(f"{rel(m.toml)} mutant {m.id}: find occurs {n} times in {rel(path)}, "
+                          f"count = {m.count}")
+    return text.replace(m.find, m.replace)
+
+
+def stage(work: str, run: Run, m: Mutant) -> list[str]:
+    """Copy the .tla files of the dir `m` patches into `work`, patch the copy, and return
+    the module search path with the copy in the original's place."""
+    dirs = [str(run.dir), *run.library]
+    i, path = mutant_target(run, m)
+    copy = Path(work, "spec" if i == 0 else f"lib{i}")
+    copy.mkdir()
+    for f in Path(dirs[i]).glob("*.tla"):
+        shutil.copyfile(f, copy / f.name)
+    (copy / m.file).write_text(patched_text(run, m), encoding="utf-8")
+    dirs[i] = str(copy)
+    return dirs
+
+
+def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int, defs=(), patch: Mutant | None = None,
+             hard: float | None = None) -> Attempt:
+    """Generate the wrapper + cfg in a fresh temp dir, run TLC there, write build/<log>.
+    `defs` go into the wrapper; `patch` runs TLC on a patched copy of the spec or library
+    dir; `hard` (default 3 x budget_s) is when TLC is stopped."""
+    tla, cfg = wrapper(run, mod, invs, props, defs)
     work = tempfile.mkdtemp(prefix=f"tlc-{mod}-", dir="/tmp" if os.path.isdir("/tmp") else None)
-    libpath = os.pathsep.join([str(run.dir)] + run.library)
-    # TLC unpacks its standard modules into java.io.tmpdir; a private one per run keeps
-    # concurrent TLC processes from parsing each other's half-written copies.
-    jtmp = os.path.join(work, "jtmp")
-    os.makedirs(jtmp)
-    cmd = ["java", "-XX:+UseParallelGC", f"-Djava.io.tmpdir={jtmp}",
-           *shlex.split(os.environ.get("TLC_JAVA_OPTS", "")),
-           f"-DTLA-Library={libpath}", "-cp", jar, "tlc2.TLC",
-           *([] if run.deadlock else ["-deadlock"]),
-           "-workers", str(workers), "-metadir", os.path.join(work, "states"),
-           "-config", f"{mod}.cfg", f"{mod}.tla"]
-    hard = max(HARD_TIMEOUT_FACTOR * run.budget_s, run.budget_s + 30)
+    if hard is None:
+        hard = max(HARD_TIMEOUT_FACTOR * run.budget_s, run.budget_s + 30)
     timed_out = False
     t0 = time.monotonic()
     try:
+        dirs = stage(work, run, patch) if patch else [str(run.dir), *run.library]
+        libpath = os.pathsep.join(dirs)
+        # TLC unpacks its standard modules into java.io.tmpdir; a private one per run keeps
+        # concurrent TLC processes from parsing each other's half-written copies.
+        jtmp = os.path.join(work, "jtmp")
+        os.makedirs(jtmp)
+        cmd = ["java", "-XX:+UseParallelGC", f"-Djava.io.tmpdir={jtmp}",
+               *shlex.split(os.environ.get("TLC_JAVA_OPTS", "")),
+               f"-DTLA-Library={libpath}", "-cp", jar, "tlc2.TLC",
+               *([] if run.deadlock else ["-deadlock"]),
+               "-workers", str(workers), "-metadir", os.path.join(work, "states"),
+               "-config", f"{mod}.cfg", f"{mod}.tla"]
         Path(work, f"{mod}.tla").write_text(tla)
         Path(work, f"{mod}.cfg").write_text(cfg)
         try:
@@ -692,8 +919,11 @@ def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int) -> Attempt
     if timed_out:
         res.verdict, res.message = "timeout", f"killed after {hard:.0f}s"
     shown = [rel(jar) if c == jar else c for c in cmd]
+    head = f"# run {run.name} ({rel(run.toml)})\n"
+    if patch:
+        head += f"# mutant {patch.id}: {patch.file}{' (library)' if patch.library else ''}\n"
     log = home_rewrite(
-        f"# run {run.name} ({rel(run.toml)})\n# {' '.join(shlex.quote(c) for c in shown)}\n" + text
+        head + f"# {' '.join(shlex.quote(c) for c in shown)}\n" + text
         + f"\n# runner: wall={wall:.1f}s exit={code} verdict={res.label()}\n")
     run.build.mkdir(exist_ok=True)
     log_path = run.build / f"{mod.removeprefix('MC_')}.log"
@@ -742,10 +972,8 @@ def check(run: Run, res, wall: float, tlc_text: str) -> tuple[bool, list[str]]:
     return ok, notes
 
 
-def finish(run: Run, attempts: list[Attempt], ok: bool, actual: str, notes: list[str],
-           keep: bool, peeled=None) -> Outcome:
-    """Build the Outcome; keep wrapper/cfg/log in build/ on a mismatch or with --keep."""
-    last = attempts[-1]
+def keep_or_clean(run: Run, attempts: list[Attempt], ok: bool, keep: bool) -> None:
+    """Keep wrapper/cfg/log in build/ on a mismatch or with --keep; else remove the logs."""
     if ok and not keep:
         for a in attempts:
             a.log_path.unlink(missing_ok=True)
@@ -757,6 +985,13 @@ def finish(run: Run, attempts: list[Attempt], ok: bool, actual: str, notes: list
         for a in attempts:
             (run.build / f"{a.mod}.tla").write_text(a.tla)
             (run.build / f"{a.mod}.cfg").write_text(a.cfg)
+
+
+def finish(run: Run, attempts: list[Attempt], ok: bool, actual: str, notes: list[str],
+           keep: bool, peeled=None) -> Outcome:
+    """Build the Outcome; keep wrapper/cfg/log in build/ on a mismatch or with --keep."""
+    last = attempts[-1]
+    keep_or_clean(run, attempts, ok, keep)
     expect = run.expect if run.expect != "violation" else f"violation {run.invariant}"
     return Outcome(run.name, rel(run.dir), expect, actual, ok, sum(a.wall for a in attempts), run.budget_s,
                    last.res.generated, last.res.distinct, last.res.depth, last.res.tlc_seconds, notes,
@@ -820,6 +1055,169 @@ def do_peel(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bo
     return finish(run, attempts, ok, actual, notes, keep, peeled)
 
 
+# ---------------------------------------------------------------- anti-vacuity
+
+
+def preflight(muts: list[Mutant], by_name: dict[str, Run]) -> None:
+    """Every mutant's find text occurs `count` times in the file each of its runs would
+    patch. One ConfigError listing every mismatch; called before any JVM starts."""
+    errs = []
+    for m in muts:
+        done: set[Path] = set()
+        for n in m.runs:
+            try:
+                path = mutant_target(by_name[n], m)[1]
+                if path not in done:
+                    done.add(path)
+                    patched_text(by_name[n], m)
+            except ConfigError as e:
+                errs.append(str(e))
+    if errs:
+        raise ConfigError("mutant patch check failed:\n  " + "\n  ".join(errs))
+
+
+def _job_note(run: Run, a: Attempt) -> str:
+    return f"{run.name}: {a.res.label()} ({fmt_n(a.res.distinct)} distinct, {a.wall:.1f}s)"
+
+
+def do_witness(w: Witness, run: Run, jar: str, workers: int | None, keep: bool) -> Outcome:
+    """Check Wit_<id> alone on `run`: violated = reached."""
+    a = tlc_once(run, f"MC_{run.name}__w_{w.id}", [w.op], [], jar, effective_workers(run, workers),
+                 defs=[(w.op, w.expr)], hard=run.budget_s)
+    res = a.res
+    notes = [res.message] if res.message and res.verdict not in ("violation", "pass") else []
+    if res.verdict == "violation" and res.name == w.op:
+        actual = "reached"
+    elif res.verdict == "pass" and res.distinct:
+        actual = "never reached"
+    elif res.verdict == "pass":
+        actual = "error"
+        notes.append("vacuous: TLC explored no distinct states")
+    else:
+        actual = res.label()
+    ok = actual == ("reached" if w.expect == "reached" else "never reached")
+    if actual == "never reached" and w.expect == "reached":
+        notes.append(f"vacuous: witness {w.id} never reached")
+    if actual == "reached" and w.expect == "unreachable":
+        notes.append(f"witness {w.id} reached, but marked unreachable ({w.reason})")
+    keep_or_clean(run, [a], ok, keep)
+    return Outcome(run.name, rel(run.dir), w.expect, actual, ok, a.wall, run.budget_s, res.generated,
+                   res.distinct, res.depth, res.tlc_seconds, notes, "" if ok and not keep else rel(a.log_path),
+                   kind="witness", check=w.id)
+
+
+def mutant_verdict(results: list[tlcparse.Result]) -> str:
+    """One mutant's result over its runs: killed <inv> | killed (assert|deadlock) |
+    timeout | error | survived."""
+    for res in results:
+        if res.verdict == "violation":
+            return f"killed {res.name}"
+    for kind in ("assert", "deadlock"):
+        if any(res.verdict == kind for res in results):
+            return f"killed ({kind})"
+    if any(res.verdict == "timeout" for res in results):
+        return "timeout"
+    if all(res.verdict == "pass" and res.distinct for res in results):
+        return "survived"
+    return "error"
+
+
+def do_mutant(m: Mutant, runs: list[Run], jar: str, workers: int | None, keep: bool) -> Outcome:
+    """Check every listed run on the patched copy, each with its own invariants."""
+    attempts = []
+    notes = []
+    bad = False  # a job that timed out or errored fails the mutant, whatever the others said
+    for run in runs:
+        a = tlc_once(run, f"MC_{run.name}__m_{m.id}", None, None, jar, effective_workers(run, workers),
+                     patch=m, hard=run.budget_s)
+        attempts.append((run, a))
+        notes.append(_job_note(run, a) + (f": {a.res.message}" if a.res.verdict not in ("violation", "pass")
+                                          and a.res.message else ""))
+        bad = bad or a.res.verdict not in ("violation", "assert", "deadlock", "pass") or (
+            a.res.verdict == "pass" and not a.res.distinct)
+    actual = mutant_verdict([a.res for _, a in attempts])
+    if m.equivalent is None:
+        ok = actual.startswith("killed") and not bad
+        if actual == "survived":
+            notes.append(f"survived: no run caught mutant {m.id} ({m.cls})")
+    else:
+        ok = actual == "survived"
+        if actual.startswith("killed"):
+            notes.append(f"marked equivalent ({m.equivalent}), but {actual}")
+    if bad and actual.startswith("killed"):
+        notes.append("a job timed out or failed")
+    for run, a in attempts:
+        keep_or_clean(run, [a], ok, keep)
+    last = attempts[-1][1]
+    logs = [rel(a.log_path) for _, a in attempts]
+    return Outcome(",".join(r.name for r in runs), rel(runs[0].dir),
+                   "equivalent" if m.equivalent is not None else "killed",
+                   "equivalent" if ok and m.equivalent is not None else actual, ok,
+                   sum(a.wall for _, a in attempts), runs[0].budget_s, last.res.generated, last.res.distinct,
+                   last.res.depth, last.res.tlc_seconds, notes, "" if ok and not keep else " ".join(logs),
+                   kind="mutant", check=m.id)
+
+
+def run_checks(wits: list[Witness], muts: list[Mutant], by_name: dict[str, Run], failed: set[str],
+               jar: str, workers: int | None, keep: bool) -> list[Outcome]:
+    """Every witness x run and every mutant; checks of runs in `failed` are skipped."""
+    outs = []
+
+    def skipped(kind, cid, names, example, budget):
+        return Outcome(",".join(names), example, "-", "skipped", False, 0.0, budget,
+                       notes=[f"skipped: run {', '.join(names)} did not match its expectation"],
+                       kind=kind, check=cid)
+
+    for w in wits:
+        for n in w.runs:
+            run = by_name[n]
+            if n in failed:
+                outs.append(skipped("witness", w.id, [n], rel(run.dir), run.budget_s))
+                continue
+            print(f"witness {w.id} on {n} ...", file=sys.stderr, flush=True)
+            outs.append(do_witness(w, run, jar, workers, keep))
+    for m in muts:
+        runs = [by_name[n] for n in m.runs if n not in failed]
+        if not runs:
+            outs.append(skipped("mutant", m.id, m.runs, rel(by_name[m.runs[0]].dir), by_name[m.runs[0]].budget_s))
+            continue
+        print(f"mutant {m.id} on {', '.join(r.name for r in runs)} ...", file=sys.stderr, flush=True)
+        outs.append(do_mutant(m, runs, jar, workers, keep))
+    return outs
+
+
+def check_table(outs: list[Outcome]) -> str:
+    head = ("check", "run", "expect", "actual", "secs", "result")
+    rows = [(f"{o.kind} {o.check}", o.run, o.expect, o.actual, f"{o.seconds:.1f}", "ok" if o.ok else "FAIL")
+            for o in outs]
+    return _table(head, rows, outs)
+
+
+def summary(outs: list[Outcome]) -> str:
+    """One line per example directory: what the mutants and witnesses gave."""
+    lines = []
+    for ex in dict.fromkeys(o.example for o in outs):
+        mo = [o for o in outs if o.example == ex and o.kind == "mutant"]
+        wo = [o for o in outs if o.example == ex and o.kind == "witness"]
+        parts = []
+        if mo:
+            killed = [o for o in mo if o.actual.startswith("killed")]
+            by_ad = sum(1 for o in killed if o.actual in ("killed (assert)", "killed (deadlock)"))
+            parts.append(f"mutants {len(mo)}: killed {len(killed)}" + (f" ({by_ad} by assert/deadlock)" if by_ad else "")
+                         + f", equivalent {sum(o.actual == 'equivalent' for o in mo)}"
+                         + f", survived {sum(o.actual == 'survived' for o in mo)}"
+                         + f", timeout {sum(o.actual == 'timeout' for o in mo)}"
+                         + f", other {sum(o.actual in ('error', 'skipped') for o in mo)}")
+        if wo:
+            parts.append(f"witnesses {len({o.check for o in wo})} ({len(wo)} jobs): "
+                         f"reached {sum(o.actual == 'reached' for o in wo)}, "
+                         f"unreachable as documented {sum(o.ok and o.expect == 'unreachable' for o in wo)}, "
+                         f"never reached {sum(o.actual == 'never reached' and o.expect == 'reached' for o in wo)}, "
+                         f"other {sum(o.actual not in ('reached', 'never reached') for o in wo)}")
+        lines.append(f"{ex}: " + "; ".join(parts))
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------- output
 
 
@@ -831,6 +1229,10 @@ def table(outs: list[Outcome]) -> str:
     head = ("run", "expect", "actual", "generated", "distinct", "depth", "secs", "result")
     rows = [(o.run, o.expect, o.actual, fmt_n(o.generated), fmt_n(o.distinct), fmt_n(o.depth),
              f"{o.seconds:.1f}", "ok" if o.ok else "FAIL") for o in outs]
+    return _table(head, rows, outs)
+
+
+def _table(head, rows, outs: list[Outcome]) -> str:
     wid = [max(len(str(x[i])) for x in [head, *rows]) for i in range(len(head))]
 
     def line(r):
@@ -858,11 +1260,15 @@ def main(argv=None) -> int:
     ap.add_argument("--print-trace", action="store_true", help="print a counterexample summary on a violation")
     ap.add_argument("--peel", action="store_true", help="peel mode: drop violated invariants and rerun")
     ap.add_argument("--json", metavar="PATH", help="also write the results as JSON")
+    ap.add_argument("--anti-vacuity", action="store_true",
+                    help="after the runs, check every [[witness]] and [[mutant]] of the selected runs")
     a = ap.parse_args(argv)
     try:
         if a.workers is not None and a.workers < 1:
             raise ConfigError("--workers must be at least 1")
-        runs = select(a.targets)
+        runs, wits, muts = select_checks(a.targets)
+        if not a.anti_vacuity:
+            wits, muts = [], []
         lib = a.library or os.environ.get("NEAR_TLA_LIBRARY")
         if lib:
             for r in runs:
@@ -875,24 +1281,41 @@ def main(argv=None) -> int:
             for r in runs:
                 exp = r.expect + (f" {r.invariant}" if r.invariant else "")
                 print(f"{r.name:26} {rel(r.dir):38} {exp:26} {' '.join(r.tags)}")
+            for w in wits:
+                print(f"witness {w.id:18} {rel(w.toml.parent):38} {w.expect:26} {' '.join(w.runs)}")
+            for m in muts:
+                exp = "equivalent" if m.equivalent is not None else "killed"
+                print(f"mutant  {m.id:18} {rel(m.toml.parent):38} {exp:26} {' '.join(m.runs)}")
             return 0
         if not runs:
             print("no runs selected", file=sys.stderr)
             return 2
         jar = find_jar(a.jar)
+        by_name = {r.name: r for r in runs}
+        preflight(muts, by_name)
         outs = []
         for r in runs:
             print(f"running {r.name} ({rel(r.dir)}) ...", file=sys.stderr, flush=True)
             outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace))
+        failed = {o.run for o in outs if not o.ok}
+        checks = run_checks(wits, muts, by_name, failed, jar, a.workers, a.keep) if a.anti_vacuity else []
     except ConfigError as e:
         print(f"run.py: {e}", file=sys.stderr)
         return 2
     print(table(outs))
     bad = [o.run for o in outs if not o.ok]
     print(f"\n{len(outs) - len(bad)}/{len(outs)} runs as expected" + (f"; FAILED: {' '.join(bad)}" if bad else ""))
+    bad_checks = []
+    if a.anti_vacuity:
+        print("\n" + check_table(checks) if checks else "\nno witnesses or mutants for the selected runs")
+        if checks:
+            print("\n" + summary(checks))
+        bad_checks = [f"{o.kind}:{o.check}@{o.run}" for o in checks if not o.ok]
+        print(f"\n{len(checks) - len(bad_checks)}/{len(checks)} checks as expected"
+              + (f"; FAILED: {' '.join(bad_checks)}" if bad_checks else ""))
     if a.json:
-        Path(a.json).write_text(json.dumps([asdict(o) for o in outs], indent=2) + "\n")
-    return 1 if bad else 0
+        Path(a.json).write_text(json.dumps([asdict(o) for o in outs + checks], indent=2, default=str) + "\n")
+    return 1 if bad or bad_checks else 0
 
 
 if __name__ == "__main__":

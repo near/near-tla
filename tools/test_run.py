@@ -6,6 +6,7 @@ Canned TLC 2.19 output snippets, toy module names; no TLC needed.
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -280,6 +281,7 @@ class LoadAndWrapperTest(unittest.TestCase):
             name = "s"
             expect = "pass"
             specification = "Spec"
+            invariants = ["Inv"]
             properties = ["Live"]
             """)
         _, cfg = run.wrapper(r, "MC_s")
@@ -318,6 +320,18 @@ class LoadAndWrapperTest(unittest.TestCase):
         (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\n'
                          'allow_no_invariants = "print-only window run"\nexpect_window = "1"\n')
         self.assertEqual(r.allow_no_invariants, "print-only window run")
+
+    def test_pass_needs_an_invariant_not_only_properties(self):
+        """An empty INVARIANTS section is refused for a pass run, properties or not."""
+        with self.assertRaisesRegex(run.ConfigError, "empty INVARIANTS"):
+            self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\nproperties = ["Live"]\n')
+        (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\nproperties = ["Live"]\n'
+                         'allow_no_invariants = "a liveness-only check"\n')
+        self.assertEqual(r.properties, ["Live"])
+        # a must-fail run on a property alone stays allowed
+        (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "violation"\ninvariant = "Live"\n'
+                         'properties = ["Live"]\n')
+        self.assertEqual(r.invariant, "Live")
 
     def test_zero_distinct_states_is_not_a_pass(self):
         (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n')
@@ -558,6 +572,284 @@ class FakeTLCTest(unittest.TestCase):
                 o = self.go(r, peel=True)
                 self.assertEqual(o.ok, want, (o.actual, o.notes))
                 self.assertEqual(self.outputs, [])
+
+
+TOY_RUNS = """\
+spec = "Toy"
+library = "lib"
+invariants = ["Small"]
+[[run]]
+name = "t_ok"
+expect = "pass"
+[[run]]
+name = "t_win"
+expect = "pass"
+expect_window = "1"
+[[run]]
+name = "t_bad"
+expect = "violation"
+invariant = "Small"
+"""
+
+WIT = "[[witness]]\nid = \"seen\"\nexpr = '~(x > 0)'\n"
+MUT = ("[[mutant]]\nid = \"m\"\nfile = \"Toy.tla\"\nfind = \"x + 1\"\nreplace = \"x\"\n"
+       "class = \"dropped step\"\n")
+WIT_INV = INV.replace("Invariant Small", "Invariant Wit_seen")
+
+
+class AntiVacuityLoadTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\nStep == x' = x + 1\n====\n")
+        (self.d / "lib").mkdir()
+        write(self.d / "lib", "Lib.tla", "---- MODULE Lib ----\nGuard == TRUE\n====\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def load(self, extra: str):
+        return run.load_doc(write(self.d, "runs.toml", TOY_RUNS + extra))
+
+    def test_defaults_and_fields(self):
+        _, (w, u), (m,) = self.load(
+            WIT + 'about = "x moves"\n'
+            + "[[witness]]\nid = \"never\"\nexpr = 'x # 9'\nexpect = \"unreachable\"\nreason = \"bounded\"\n"
+            + 'runs = ["t_*"]\n' + MUT)
+        # default: every pass run without expect_window
+        self.assertEqual((w.runs, w.op, w.expect, w.about), (["t_ok"], "Wit_seen", "reached", "x moves"))
+        self.assertEqual((u.runs, u.reason), (["t_ok", "t_win", "t_bad"], "bounded"))
+        self.assertEqual((m.runs, m.count, m.library, m.equivalent, m.cls),
+                         (["t_ok"], 1, False, None, "dropped step"))
+
+    def test_validation(self):
+        bad = {
+            "unknown witness key": WIT + "exp = 'x'\n",
+            "bad id": WIT.replace('"seen"', '"a-b"'),
+            "empty expr": WIT.replace("'~(x > 0)'", "' '"),
+            "duplicate id": WIT + WIT,
+            "unreachable without reason": WIT + 'expect = "unreachable"\n',
+            "reason without unreachable": WIT + 'reason = "x"\n',
+            "unknown expect": WIT + 'expect = "maybe"\n',
+            "glob matches nothing": WIT + 'runs = ["nope*"]\n',
+            "empty runs": WIT + "runs = []\n",
+            "mutant on a must-fail run": MUT + 'runs = ["t_bad"]\n',
+            "mutant file with a path": MUT.replace('"Toy.tla"', '"../Toy.tla"'),
+            "mutant file missing": MUT.replace('"Toy.tla"', '"Nope.tla"'),
+            "mutant without class": MUT.replace('class = "dropped step"\n', ""),
+            "mutant without replace": MUT.replace('replace = "x"\n', ""),
+            "mutant no-op": MUT.replace('replace = "x"', 'replace = "x + 1"'),
+            "mutant count 0": MUT + "count = 0\n",
+            "empty equivalent": MUT + 'equivalent = ""\n',
+            "unknown mutant key": MUT + "lib = 0\n",
+            "string library flag": MUT + 'library = "true"\n',
+        }
+        for why, body in bad.items():
+            with self.subTest(why), self.assertRaises(run.ConfigError):
+                self.load(body)
+        # a library mutant's file is looked up at preflight, not at load
+        self.load(MUT.replace('"Toy.tla"', '"Lib.tla"') + "library = true\n")
+
+    def test_no_default_run(self):
+        with self.assertRaises(run.ConfigError):
+            run.load_doc(write(self.d, "runs.toml", 'spec = "Toy"\ninvariants = ["A"]\n[[run]]\nname = "v"\n'
+                               'expect = "violation"\ninvariant = "A"\n' + WIT))
+
+    def test_selection_narrows_checks(self):
+        write(self.d, "runs.toml", TOY_RUNS + WIT + 'runs = ["t_ok", "t_bad"]\n'
+              + "[[witness]]\nid = \"v\"\nexpr = 'TRUE'\nruns = [\"t_bad\"]\n")
+        runs, wits, muts = run.select_checks([str(self.d), "t_ok"])
+        self.assertEqual([r.name for r in runs], ["t_ok"])
+        self.assertEqual([(w.id, w.runs) for w in wits], [("seen", ["t_ok"])])
+        self.assertEqual(muts, [])
+        self.assertEqual([r.name for r in run.select([str(self.d)])], ["t_ok", "t_win", "t_bad"])
+
+    def test_witness_wrapper(self):
+        (r, *_), (w,), _ = self.load("[[witness]]\nid = \"seen\"\nexpr = '''\n  ~(/\\ x > 0\n    /\\ x < 3)\n'''\n")
+        tla, cfg = run.wrapper(r, "MC_t_ok__w_seen", [w.op], [], defs=[(w.op, w.expr)])
+        self.assertIn("Wit_seen ==\n    ~(/\\ x > 0\n      /\\ x < 3)\n====", tla)
+        self.assertIn("INVARIANTS\n  Wit_seen\n", cfg)
+        self.assertNotIn("Small", cfg)  # checked alone
+
+
+class AntiVacuityFakeTLCTest(unittest.TestCase):
+    """Witness and mutant jobs end to end, with canned TLC output."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name).resolve()
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\nStep == x' = x + 1\n====\n")
+        write(self.d, "Other.tla", "---- MODULE Other ----\n====\n")
+        (self.d / "lib").mkdir()
+        write(self.d / "lib", "Lib.tla", "---- MODULE Lib ----\nGuard == TRUE\n====\n")
+        self.calls = []
+        self.outputs = []
+        self._orig = run.subprocess.run
+        run.subprocess.run = self.fake
+
+    def tearDown(self):
+        run.subprocess.run = self._orig
+        self.tmp.cleanup()
+
+    def fake(self, cmd, cwd=None, timeout=None, **kw):
+        lib = next(c for c in cmd if c.startswith("-DTLA-Library=")).split("=", 1)[1].split(os.pathsep)
+        mods = {d: {f: Path(d, f).read_text() for f in sorted(os.listdir(d)) if f.endswith(".tla")}
+                for d in lib if os.path.isdir(d)}
+        cfg = Path(cwd, cmd[cmd.index("-config") + 1]).read_text()
+        self.calls.append((cmd, cwd, lib, mods, timeout, cfg))
+        text, code = self.outputs.pop(0)
+        if text is None:
+            raise subprocess.TimeoutExpired(cmd, timeout, output=b"Starting...\n")
+        return subprocess.CompletedProcess(cmd, code, stdout=text.encode())
+
+    def load(self, extra: str, runs_toml: str = TOY_RUNS):
+        runs, wits, muts = run.load_doc(write(self.d, "runs.toml", runs_toml + extra))
+        return {r.name: r for r in runs}, wits, muts
+
+    def checks(self, by, wits, muts, failed=()):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return run.run_checks(wits, muts, by, set(failed), "tla2tools.jar", None, keep=False)
+
+    def test_witness_verdicts(self):
+        cases = [
+            ("", WIT_INV, 12, True, "reached"),
+            ("", PASS, 0, False, "never reached"),
+            ('expect = "unreachable"\nreason = "bounded"\n', PASS, 0, True, "never reached"),
+            ('expect = "unreachable"\nreason = "bounded"\n', WIT_INV, 12, False, "reached"),
+            ("", ASSERT, 14, False, "assert"),
+            ("", None, None, False, "timeout"),
+        ]
+        for extra, text, code, ok, actual in cases:
+            with self.subTest(extra=extra, actual=actual):
+                by, wits, muts = self.load(WIT + extra)
+                self.outputs = [(text, code)]
+                (o,) = self.checks(by, wits, muts)
+                self.assertEqual((o.ok, o.actual, o.kind, o.check), (ok, actual, "witness", "seen"), o.notes)
+                if actual == "never reached" and not ok:
+                    self.assertIn("vacuous: witness seen never reached", o.notes)
+        cmd, cwd, lib, mods, timeout, cfg = self.calls[0]
+        self.assertEqual(timeout, by["t_ok"].budget_s)  # a job is stopped at its run's budget
+        self.assertEqual(lib[0], str(self.d))           # the spec dir, unpatched
+        self.assertIn("INVARIANTS\n  Wit_seen\n", cfg)
+        self.assertNotIn("Small", cfg)
+
+    def test_witness_runs_on_each_listed_run(self):
+        by, wits, muts = self.load(WIT + 'runs = ["t_ok", "t_bad"]\n')
+        self.outputs = [(WIT_INV, 12), (PASS, 0)]
+        outs = self.checks(by, wits, muts)
+        self.assertEqual([(o.run, o.ok) for o in outs], [("t_ok", True), ("t_bad", False)])
+
+    def test_mutant_patches_a_copy(self):
+        by, wits, muts = self.load(MUT)
+        self.outputs = [(INV, 12)]
+        (o,) = self.checks(by, wits, muts)
+        self.assertEqual((o.ok, o.actual, o.expect, o.kind), (True, "killed Small", "killed", "mutant"))
+        cmd, cwd, lib, mods, _, cfg = self.calls[0]
+        self.assertTrue(lib[0].startswith(cwd), lib)                 # the patched copy comes first
+        self.assertEqual(sorted(mods[lib[0]]), ["Other.tla", "Toy.tla"])
+        self.assertIn("Step == x' = x\n", mods[lib[0]]["Toy.tla"])
+        self.assertIn("x + 1", (self.d / "Toy.tla").read_text())    # the original is untouched
+        self.assertNotIn(str(self.d), lib)
+        self.assertIn("INVARIANTS\n  Small\n", cfg)                  # the run's own invariants
+        self.assertFalse(os.path.exists(cwd))
+
+    def test_library_mutant(self):
+        by, wits, muts = self.load(MUT.replace('"Toy.tla"', '"Lib.tla"').replace('"x + 1"', '"Guard == TRUE"')
+                                   .replace('replace = "x"', 'replace = "Guard == FALSE"') + "library = true\n")
+        self.outputs = [(INV, 12)]
+        (o,) = self.checks(by, wits, muts)
+        self.assertTrue(o.ok, o.notes)
+        _, cwd, lib, mods, _, _ = self.calls[0]
+        self.assertEqual(lib[0], str(self.d))                        # the spec dir as is
+        self.assertTrue(lib[1].startswith(cwd))                      # the library copy in its place
+        self.assertIn("Guard == FALSE", mods[lib[1]]["Lib.tla"])
+        self.assertIn("Guard == TRUE", (self.d / "lib" / "Lib.tla").read_text())
+
+    def test_mutant_verdicts(self):
+        cases = [
+            ("", [(ASSERT, 14)], True, "killed (assert)"),
+            ("", [(PASS, 0)], False, "survived"),
+            ('equivalent = "x is never read"\n', [(PASS, 0)], True, "equivalent"),
+            ('equivalent = "x is never read"\n', [(INV, 12)], False, "killed Small"),
+            ("", [(None, None)], False, "timeout"),                  # never "survived"
+            ("", [(SEMANTIC, 150)], False, "error"),
+        ]
+        for extra, outs, ok, actual in cases:
+            with self.subTest(extra=extra, actual=actual):
+                by, wits, muts = self.load(MUT + extra)
+                self.outputs = list(outs)
+                (o,) = self.checks(by, wits, muts)
+                self.assertEqual((o.ok, o.actual), (ok, actual), o.notes)
+                if actual == "survived":
+                    self.assertIn("survived: no run caught mutant m (dropped step)", o.notes)
+
+    def test_mutant_deadlock_reported_separately(self):
+        dl = TOY_RUNS.replace('name = "t_ok"\nexpect = "pass"\n', 'name = "t_ok"\nexpect = "pass"\ndeadlock = true\n')
+        by, wits, muts = self.load(MUT, dl)
+        self.outputs = [(DEADLOCK, 11)]
+        (o,) = self.checks(by, wits, muts)
+        self.assertEqual((o.ok, o.actual), (True, "killed (deadlock)"))
+        self.assertNotIn("-deadlock", self.calls[0][0])
+
+    def test_killed_by_any_run_but_a_timeout_fails(self):
+        by, wits, muts = self.load(MUT + 'runs = ["t_ok", "t_win"]\n')
+        self.outputs = [(PASS, 0), (INV, 12)]
+        (o,) = self.checks(by, wits, muts)
+        self.assertEqual((o.ok, o.actual, o.run), (True, "killed Small", "t_ok,t_win"))
+        self.outputs = [(None, None), (INV, 12)]
+        (o,) = self.checks(by, wits, muts)
+        self.assertEqual((o.ok, o.actual), (False, "killed Small"))
+
+    def test_checks_of_a_failed_run_are_skipped(self):
+        by, wits, muts = self.load(WIT + MUT)
+        outs = self.checks(by, wits, muts, failed=["t_ok"])
+        self.assertEqual([(o.kind, o.ok, o.actual) for o in outs],
+                         [("witness", False, "skipped"), ("mutant", False, "skipped")])
+        self.assertEqual(self.calls, [])
+
+    def test_preflight_counts_before_any_jvm(self):
+        write(self.d, "runs.toml", TOY_RUNS + MUT.replace('find = "x + 1"', 'find = "x"')
+              .replace('replace = "x"', 'replace = "y"'))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = run.main([str(self.d), "--anti-vacuity", "--jar", str(self.d / "Toy.tla")])
+        self.assertEqual(rc, 2)
+        self.assertIn("find occurs 2 times", err.getvalue())
+        self.assertEqual(self.calls, [])  # no JVM started, not even for the plain runs
+        # without --anti-vacuity the count is not checked
+        self.outputs = [(PASS, 0), (PASS + '<<"WIN", "B", 1>>', 0), (INV, 12)]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(run.main([str(self.d), "--jar", str(self.d / "Toy.tla")]), 0)
+
+    def test_main_off_by_default_and_on_with_flag(self):
+        write(self.d, "runs.toml", TOY_RUNS + WIT)
+        jar = str(self.d / "Toy.tla")
+        base = [(PASS, 0), (PASS + '<<"WIN", "B", 1>>', 0), (INV, 12)]
+        self.outputs = list(base)
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            rc = run.main([str(self.d), "--jar", jar])
+        self.assertEqual((rc, len(self.calls)), (0, 3))
+        self.assertNotIn("witness", out.getvalue())
+        self.outputs = base + [(PASS, 0)]
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            rc = run.main([str(self.d), "--jar", jar, "--anti-vacuity", "--json", str(self.d / "r.json")])
+        self.assertEqual((rc, len(self.calls)), (1, 7))
+        self.assertIn("vacuous: witness seen never reached", out.getvalue())
+        self.assertIn("witnesses 1 (1 jobs): reached 0", out.getvalue())
+        kinds = [o["kind"] for o in json.loads((self.d / "r.json").read_text())]
+        self.assertEqual(kinds, ["run", "run", "run", "witness"])
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            run.main([str(self.d), "--list", "--anti-vacuity"])
+        self.assertIn("witness seen", out.getvalue())
+
+    def test_job_log_rewrites_home(self):
+        by, wits, muts = self.load(WIT)
+        home = os.path.expanduser("~")
+        self.outputs = [(f"Parsing file {home}/models/Toy.tla\n" + PASS, 0)]
+        (o,) = self.checks(by, wits, muts)
+        self.assertFalse(o.ok)
+        log = (self.d / "build" / "t_ok__w_seen.log").read_text()
+        self.assertIn("~/models/Toy.tla", log)
+        self.assertNotIn(home + "/", log)
 
 
 class SelectionAndLibraryTest(unittest.TestCase):
