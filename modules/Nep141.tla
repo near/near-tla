@@ -10,7 +10,9 @@
 (*   returns the resolver's promise (its value: used amount)               *)
 (* ft_resolve_transfer (private), NEP-141 and the reference                *)
 (*   implementation:                                                       *)
-(*     unused = Failed or unparsable -> amount ; U128 v -> min(v, amount)  *)
+(*     unused = Failed, unparsable, or longer than TokResolveMaxLen[t]     *)
+(*              bytes (42; near-contract-standards >= 5.24.0) -> amount ;  *)
+(*              U128 v -> min(v, amount)                                   *)
 (*     refund = min(unused, receiver balance) moved back to the sender;    *)
 (*              burnt if the sender is no longer registered (it called     *)
 (*              storage_unregister(force) meanwhile, Nep145)               *)
@@ -34,6 +36,8 @@
 (* Overrides (overridable definitions; -1 = the shape's default):          *)
 (*   TokOnTransferStatic[t], TokOnTransferWeight[t]  ft_on_transfer        *)
 (*   TokResolveStatic[t]     resolver static (both shapes)                 *)
+(*   TokResolveMaxLen[t]     resolver's byte bound on the result (default  *)
+(*                           42; -1 = unbounded, 5.23.0 and older)         *)
 (* A GasCall entry "t.ft_resolve_transfer" (or "ft_resolve_transfer")      *)
 (* wins for the resolver in both shapes; its .fee is the exec fee.         *)
 (* Burn keys: "<t>.<method>"; ft_resolve_transfer uses                     *)
@@ -68,6 +72,12 @@ TokFtGasShape       == [t \in TokenAccts |-> "standard"]
 TokOnTransferWeight == [t \in TokenAccts |-> -1]
 TokOnTransferStatic == [t \in TokenAccts |-> -1]
 TokResolveStatic    == [t \in TokenAccts |-> 5000]
+\* Byte bound of the resolver's read of the ft_on_transfer result: a longer
+\* result counts as all unused.  42 (FtMaxResultLen) for near-contract-standards
+\* 5.24.0 and later; -1 = unbounded (5.23.0 and older, so 3.x/4.x tokens).
+\* Independent of TokFtGasShape (5.23.0 has the standard shape and no bound).
+TokResolveMaxLen    == [t \in TokenAccts |-> FtMaxResultLen]
+ResolveMaxLen(t) == IF t \in DOMAIN TokResolveMaxLen THEN TokResolveMaxLen[t] ELSE FtMaxResultLen
 FtShape(t) == IF t \in DOMAIN TokFtGasShape THEN TokFtGasShape[t] ELSE "standard"
 ReserveShape(r) == FtShape(r.to) = "reserve"
 TokKnob(f, t) == IF t \in DOMAIN f THEN f[t] ELSE -1
@@ -104,7 +114,7 @@ FtTransferCallAct(acc, r, rc, amt, msg) ==
 FtResolveAct(acc, r) ==
     LET s == r.a.s  rc == r.a.rc  amt == r.a.amt  L == acc.L
         rb     == IF rc \in DOMAIN L.bal THEN L.bal[rc] ELSE 0
-        refund == ResolveRefund(r.res, amt, rb, TokDev[r.to])
+        refund == ResolveRefundLim(r.res, amt, rb, TokDev[r.to], ResolveMaxLen(r.to))
         sReg   == s \in L.reg
         L1 == IF refund = 0 THEN L
               ELSE IF sReg THEN [L EXCEPT !.bal[rc] = @ - refund, !.bal[s] = @ + refund]

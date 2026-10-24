@@ -41,12 +41,21 @@ near-contract-sim: <rev>          near-contract-standards (token gas defaults): 
 - **near-contract-sim:** the sim revision the conformance suite and the shipped calibrations ran
   on.
 - **near-contract-standards:** the version whose `ft_transfer_call` gas behaviour the token
-  defaults encode.
+  defaults encode. The other version-dependent token default, the resolver's 42-byte read
+  bound (`TokResolveMaxLen`), holds from 5.24.0 (SEMANTICS T2).
 
 ## What `FeeProtocol` does and does not change
 
 `FeeProtocol` selects **fees only**. The rules in `NearAsync` and `NearKeys` are protocol 88's,
 whatever `FeeProtocol` says. Setting `FeeProtocol == 86` gives 86's fees on top of 88's rules.
+The one rule of 84-88 the model can switch is universal accounts, through its own overridable
+definition `UniversalOn` (default TRUE, 87+), not through `FeeProtocol`. So with
+`FeeProtocol == 86` and the default `UniversalOn`, a Transfer to an absent universal (`0u`)
+account still creates it (88's rule), and its creator pays 86's fee for that receiver, which is
+the named-account Transfer fee (`NearFees.tla` `TransferSendAt` / `TransferExecAt`: the
+create_account part is charged for universal ids from 87 only). To model the rule before 87 as
+well, add `UniversalOn <- FALSE`: the Transfer then fails and refunds, as to a missing named
+account.
 These behaviours are gated by version between 83 and 88 (`core/primitives-core/src/version.rs`
 `ProtocolFeature::protocol_version` at `:511-655` @ b7b4737, and the parameter yamls):
 
@@ -60,13 +69,14 @@ These behaviours are gated by version between 83 and 88 (`core/primitives-core/s
 | 86 | per-receipt storage-proof limit (`EnforcePerReceiptStorageProofLimit`) | not modelled |
 | 87 | gas rewards to contracts 30% → 0 (`RemoveGasRewards`, `87.yaml:1-7`) | the model pays no reward, which is right for 87+ and wrong for 84-86 |
 | 87 | promise-input size limit `ReceiptPromiseInputSizeLimit` (4,194,944 bytes) | not modelled |
-| 87 | universal (`0u`) accounts, `RejectEmptyMethodName`, `EnforceStorageProofLimitForAllActions`, `FixContractLoadingError` | universal: fee kind only; the rest not modelled |
+| 87 | universal (`0u`) accounts, `RejectEmptyMethodName`, `EnforceStorageProofLimitForAllActions`, `FixContractLoadingError` | universal: fee kind by `FeeProtocol`; creation by Transfer by `UniversalOn` (default on, independent of `FeeProtocol`); the rest not modelled |
 | 88 | promise-input size limit lifted to `u32::MAX` (`88.yaml`) | n/a |
 | 88 | canonical universal state init; universal state-init fees (`88.yaml:14-45`) | not modelled |
 
 So a model of mainnet at 86 differs from the library's rules at least in gas rewards (N-reward
-in `docs/SEMANTICS.md`) and in the 87 rules listed above. Check that list against your contract
-before trusting a verdict at another version.
+in `docs/SEMANTICS.md`), in universal-account creation unless it sets `UniversalOn <- FALSE`,
+and in the other 87 rules listed above. Check that list against your contract before trusting a
+verdict at another version.
 
 ## Procedure for a protocol bump
 

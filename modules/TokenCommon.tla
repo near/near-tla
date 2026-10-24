@@ -75,23 +75,38 @@ Deviations == {"retBytes", "resolveIgnoresResult", "resolveNoCap",
 ----------------------------------------------------------------------------
 (* Resolver arithmetic (NEP-141 ft_resolve_transfer, NEP-245               *)
 (* mt_resolve_transfer, one token id).  Standard:                          *)
-(*   unused = Failed or unparsable -> amt ; U128 v -> min(v, amt)          *)
+(*   unused = Failed, unparsable, or longer than max bytes -> amt ;        *)
+(*            U128 v -> min(v, amt)                                        *)
 (*   refund = min(unused, receiver's current balance)                      *)
-ResolveUnused(res, amt, dev) ==
+(* max is the bound of the resolver's checked read (NumOrChecked; < 0 =    *)
+(* unbounded).  near-contract-standards 5.24.0 and later read the result   *)
+(* with promise_result_checked(0, 42), 42 bytes being the length of the   *)
+(* JSON string "+340282366920938463463374607431768211455" (u128::MAX with  *)
+(* a sign, quotes included), so a longer result counts as all unused      *)
+(* (5.29.1 fungible_token/core_impl.rs:175-183; the same in 5.24.0-5.29.1  *)
+(* and 5.30.0-rc.1); 5.23.0 reads it unbounded (core_impl.rs:177).         *)
+(* ResolveUnused / ResolveRefund are the unbounded forms.                  *)
+FtMaxResultLen == 42
+ResolveUnusedLim(res, amt, dev, max) ==
     IF "resolveIgnoresResult" \in dev THEN 0
-    ELSE IF "resolveNoCap" \in dev THEN NumOr(res, amt)
-    ELSE TMin(NumOr(res, amt), amt)
-ResolveRefund(res, amt, rcvBal, dev) ==
-    LET u == ResolveUnused(res, amt, dev) IN
+    ELSE IF "resolveNoCap" \in dev THEN NumOrChecked(res, max, amt)
+    ELSE TMin(NumOrChecked(res, max, amt), amt)
+ResolveRefundLim(res, amt, rcvBal, dev, max) ==
+    LET u == ResolveUnusedLim(res, amt, dev, max) IN
     IF u > 0 /\ rcvBal > 0 THEN TMin(rcvBal, u) ELSE 0
+ResolveUnused(res, amt, dev)         == ResolveUnusedLim(res, amt, dev, -1)
+ResolveRefund(res, amt, rcvBal, dev) == ResolveRefundLim(res, amt, rcvBal, dev, -1)
 
 ----------------------------------------------------------------------------
 (* An arbitrary receiver contract (environment actor).  resp:              *)
 (*   "keep" -> "0", "return" -> amt, "over" -> amt+1, "mal" -> MAL,        *)
-(*   "nonempty" -> NONEMPTY, "empty" -> EMPTY, "panic" -> fails.           *)
-RecvResps == {"keep", "return", "over", "mal", "nonempty", "empty", "panic"}
+(*   "nonempty" -> NONEMPTY, "empty" -> EMPTY, "panic" -> fails,           *)
+(*   "keepbig" -> "0" padded with 40 spaces to 43 bytes (valid JSON, one   *)
+(*   byte over FtMaxResultLen).                                            *)
+RecvResps == {"keep", "return", "over", "mal", "nonempty", "empty", "panic", "keepbig"}
 RecvValue(amt, resp) ==
     CASE resp = "keep"     -> 0
+      [] resp = "keepbig"  -> 0
       [] resp = "return"   -> amt
       [] resp = "over"     -> amt + 1
       [] resp = "mal"      -> MAL
@@ -99,6 +114,8 @@ RecvValue(amt, resp) ==
       [] resp = "empty"    -> EMPTY
       [] OTHER             -> 0
 RecvOutcome(amt, resp) ==
-    LET O == Outcome({}, {}, RVal(RecvValue(amt, resp)), 0, 0) IN
+    LET ret == IF resp = "keepbig" THEN RValLen(0, FtMaxResultLen + 1)
+               ELSE RVal(RecvValue(amt, resp))
+        O == Outcome({}, {}, ret, 0, 0) IN
     IF resp = "panic" THEN OErr(O, "receiver panicked") ELSE O
 =============================================================================

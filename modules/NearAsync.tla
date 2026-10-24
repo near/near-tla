@@ -192,7 +192,13 @@ KindOf(a) == IF a \in DOMAIN AcctKind THEN AcctKind[a] ELSE "named"
 \* only action; universal accounts (from protocol 87) also inside a batch.
 \* A refund never creates an account.  The model's Transfer receipts are
 \* single-action, so all of them qualify.
-UniversalOn == NearFeeTable!UniversalAccountsOn(NearFeeTable!FeeProtocol)
+\* UniversalOn: universal accounts exist (the protocol-87 `universal_accounts`
+\* feature, core/primitives-core/src/version.rs:639).  A behaviour switch,
+\* independent of NearFees.FeeProtocol (which selects fees only): TRUE is the
+\* pinned protocol 88's rule.  Overridable (`UniversalOn <- FALSE` for the
+\* rules before 87, where a universal id is an ordinary named id:
+\* get_account_type, runtime/runtime/src/actions.rs:918-924).
+UniversalOn == TRUE
 IsImplicit(a) ==
     \/ KindOf(a) \in {"near_implicit", "eth_implicit", "deterministic"}
     \/ KindOf(a) = "universal" /\ UniversalOn
@@ -201,7 +207,7 @@ IsImplicit(a) ==
 DefaultKey == "default"
 
 ----------------------------------------------------------------------------
-(* Promise results.  A callback sees r.res = [ok, v, sz]:                  *)
+(* Promise results.  A callback sees r.res = [ok, v, sz, len]:             *)
 (*   ok = FALSE           Failed                                           *)
 (*   v >= 0               Successful, a well-formed JSON number            *)
 (*   v = EMPTY            Successful, empty bytes (Transfer, `()` return)  *)
@@ -211,12 +217,14 @@ DefaultKey == "default"
 (*                        (promise_results_count() = 0,                    *)
 (*                        runtime/near-vm-runner/src/logic/host.rs:4583)   *)
 (*   sz                   result size in KB (rounded up); 0 when unknown   *)
+(*   len                  result size in bytes; 0 when not stated (then    *)
+(*                        sz is all the model knows)                       *)
 EMPTY    == -1
 MAL      == -2
 NONEMPTY == -3
 NOPR     == -4
 
-NoRes == [ok |-> TRUE, v |-> NOPR, sz |-> 0]
+NoRes == [ok |-> TRUE, v |-> NOPR, sz |-> 0, len |-> 0]
 
 IsNum(res)    == res.ok /\ res.v >= 0
 IsEmpty(res)  == res.ok /\ res.v = EMPTY
@@ -224,6 +232,20 @@ IsFailed(res) == ~res.ok
 NoResults(res) == res.ok /\ res.v = NOPR
 \* The "parse a U128 or fall back" pattern: Failed or not a number => dflt.
 NumOr(res, dflt) == IF IsNum(res) THEN res.v ELSE dflt
+\* Bounded reads.  near-sdk's env::promise_result_checked(idx, max_len) fails
+\* with PromiseError::TooLong when the result is longer than max_len bytes
+\* (read_register_bounded: `len > max_len`; near-sdk 5.28.1
+\* src/environment/env.rs:129-137, :1833-1837, as read).  ResMinBytes is the
+\* smallest byte length the record allows: len when stated, else what sz
+\* implies (n KB, rounded up, is more than 1000 * (n - 1) bytes; sz = 1 alone
+\* never counts as long).  max < 0 means an unbounded read.
+ResMinBytes(res) ==
+    IF "len" \in DOMAIN res /\ res.len > 0 THEN res.len
+    ELSE IF res.sz > 1 THEN 1000 * (res.sz - 1) + 1
+    ELSE 0
+ResTooLong(res, max) == res.ok /\ max >= 0 /\ ResMinBytes(res) > max
+\* NumOr after a bounded read: a too-long result counts as unparsable.
+NumOrChecked(res, max, dflt) == IF ResTooLong(res, max) THEN dflt ELSE NumOr(res, dflt)
 
 \* Built-in (non function-call) receipt kinds.
 XFER  == "XFER"     \* Transfer action (may carry a callback)
@@ -287,15 +309,16 @@ LastGas(r) == IF r.g = <<>> THEN 0 ELSE r.g[Len(r.g)]     \* env::prepaid_gas() 
 
 \* Receipts that can run now: ready ones, and postponed ones whose data arrived.
 Runnable ==
-    rq \cup { [pd[1] EXCEPT !.res = [ok |-> pd[2].ok, v |-> pd[2].v, sz |-> pd[2].sz]] :
+    rq \cup { [pd[1] EXCEPT !.res = [ok |-> pd[2].ok, v |-> pd[2].v, sz |-> pd[2].sz, len |-> pd[2].len]] :
                 pd \in {xy \in post \X data : xy[2].to = xy[1].id} }
 
 RemR(r) == {x \in rq   : x.id # r.id}
 RemP(r) == {x \in post : x.id # r.id}
 RemD(r) == {d \in data : d.to # r.id}
 
-DataOfSz(r, ok, v, sz) ==
-    IF r.cb = 0 THEN {} ELSE {[to |-> r.cb, ok |-> ok, v |-> v, sz |-> sz, tx |-> r.tx]}
+DataOfLen(r, ok, v, sz, len) ==
+    IF r.cb = 0 THEN {} ELSE {[to |-> r.cb, ok |-> ok, v |-> v, sz |-> sz, len |-> len, tx |-> r.tx]}
+DataOfSz(r, ok, v, sz) == DataOfLen(r, ok, v, sz, 0)
 DataOf(r, ok, v) == DataOfSz(r, ok, v, 0)
 
 Sum(S) == LET F[T \in SUBSET S] == IF T = {} THEN 0
@@ -325,7 +348,8 @@ SignerKey(r) == txsig[r.tx].k          \* env::signer_account_pk()
 (* Outcome record a contract handler returns:                              *)
 (*   ready : set of new ready receipts                                     *)
 (*   post  : set of new postponed callbacks                                *)
-(*   ret   : [k |-> "val"|"prom", v |-> value, sz |-> size in KB]          *)
+(*   ret   : [k |-> "val"|"prom", v |-> value, sz |-> size in KB,          *)
+(*            len |-> size in bytes, 0 = not stated]                       *)
 (*   out   : sum of deposits attached to new receipts (debited from r.to)  *)
 (*   ids   : number of fresh ids consumed                                  *)
 (*   err   : "" or the panic message                                       *)
@@ -342,11 +366,15 @@ SignerKey(r) == txsig[r.tx].k          \* env::signer_account_pk()
 (*           panic is always "fail".                                       *)
 (*   pi    : with pa, the index of the action that panics (default the     *)
 (*           last one; OPanicAt).                                          *)
-RVal(v)       == [k |-> "val", v |-> v, sz |-> 0]
-RValSz(v, n)  == [k |-> "val", v |-> v, sz |-> n]
-RProm         == [k |-> "prom", v |-> 0, sz |-> 0]
-\* Size of a returned value; hand-built ret records without sz count as 0.
-RetSz(O) == IF "sz" \in DOMAIN O.ret THEN O.ret.sz ELSE 0
+RVal(v)       == [k |-> "val", v |-> v, sz |-> 0, len |-> 0]
+RValSz(v, n)  == [k |-> "val", v |-> v, sz |-> n, len |-> 0]
+\* A value of b bytes (b >= 1): also sets sz, rounded up (1 KB = 1000 bytes).
+\* E.g. the JSON string "0" padded with 40 spaces is RValLen(0, 43).
+RValLen(v, b) == [k |-> "val", v |-> v, sz |-> (b + 999) \div 1000, len |-> b]
+RProm         == [k |-> "prom", v |-> 0, sz |-> 0, len |-> 0]
+\* Size of a returned value; hand-built ret records without sz / len count as 0.
+RetSz(O)  == IF "sz" \in DOMAIN O.ret THEN O.ret.sz ELSE 0
+RetLen(O) == IF "len" \in DOMAIN O.ret THEN O.ret.len ELSE 0
 
 \* A complete outcome record (contracts may add their own fields).
 Outcome(rd, ps, ret, out, ids) ==
@@ -523,7 +551,7 @@ Label == IF fails > 0 THEN "forced" ELSE IF oog # {} THEN "caller-gas" ELSE "no-
 Commit(r, O) ==
     /\ rq'   = RemR(r) \cup Give(r, O, O.ready)
     /\ post' = RemP(r) \cup Give(r, O, O.post)
-    /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfSz(r, TRUE, O.ret.v, RetSz(O)) ELSE {})
+    /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
     /\ near' = [near EXCEPT ![r.to] = @ + r.dep - O.out]
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")

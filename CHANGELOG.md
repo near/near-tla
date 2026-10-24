@@ -4,11 +4,11 @@ All notable changes to the `modules/` library are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 `docs/VERSIONING.md`.
 
-The 0.1.0 entries are relative to the pre-release module set that existing
+The entries below are relative to the pre-release module set that existing
 models were written against (NearAsync, TokenCommon, Nep145, Nep141, WNear,
 Tokens, Nep245, plus a separate NearKeys).
 
-## [0.1.0] - 2026-10-24
+## [Unreleased]
 
 ```
 nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, covered 84-88
@@ -46,10 +46,23 @@ Each entry ends with its migration.
   and `IsNum(NoRes)` is now FALSE. Migration: code that read `r.res` on a
   receipt that is not a callback must test `NoResults(r.res)` (or `r.res.v = NOPR`)
   instead of expecting `Successful(0)`.
-- **Result records have a size field `sz`** (KB): `r.res`, data records,
-  `RVal(v)` and `RProm`. `RVal(v)` keeps size 0. Migration: code that compares
-  whole result records (`r.res = [ok |-> .., v |-> ..]`) must compare `.ok` and `.v`.
-  Hand-built `ret` records without `sz` still work (`RetSz` counts them as 0).
+- **Result records have size fields `sz` (KB) and `len` (bytes, 0 = not
+  stated)**: `r.res`, data records, `RVal(v)` and `RProm`. `RVal(v)` keeps both
+  0. Migration: code that compares whole result records
+  (`r.res = [ok |-> .., v |-> ..]`) must compare `.ok` and `.v`. Hand-built `ret`
+  records without `sz` or `len` still work (`RetSz` / `RetLen` count them as 0).
+- **The NEP-141 resolver applies the 42-byte read bound of near-contract-standards
+  5.24.0 and later** (5.29.1 `fungible_token/core_impl.rs:175-183`): a receiver
+  result longer than 42 bytes counts as all unused, so the transfer is refunded
+  up to the receiver's balance even when the bytes are a valid number (a `"0"`
+  padded with 40 spaces). A result's length is `r.res.len` when stated
+  (`RValLen`), else what `r.res.sz` implies (`sz >= 2` is over 1000 bytes). The
+  resolver used to honour any number whatever its size. `Nep245` keeps an
+  unbounded read. Migration: for a token on near-contract-standards 5.23.0 or
+  older (3.x/4.x), set `TokResolveMaxLen <- Unbounded` with
+  `Unbounded == [t \in TokenAccts |-> -1]`; a model whose receiver returns a
+  number as `RValSz(v, n)` with `n >= 2` must do the same, or state the real
+  length with `RValLen`.
 - **Receipt records have a field `loc`** (TRUE for a local receipt, set by
   `Submit`). Migration: code that compares a whole receipt in `rq` with a value
   built by `Rcpt(...)` for a submitted receipt must compare by `id`.
@@ -174,7 +187,8 @@ Each entry ends with its migration.
   argument records built by hand instead of from `TA0` add `force |-> FALSE`.
 - **New exported names may clash with names a model defines** (SANY reports a
   "multiply-defined symbol"). New in `NearAsync`: `NOPR`, `IsFailed`, `NoResults`,
-  `RValSz`, `RetSz`, `OSz`, `DataOfSz`, `HasCallDef`, `XferFee`, `StakeFee`,
+  `RValSz`, `RetSz`, `OSz`, `DataOfSz`, `RValLen`, `RetLen`, `DataOfLen`,
+  `ResMinBytes`, `ResTooLong`, `NumOrChecked`, `HasCallDef`, `XferFee`, `StakeFee`,
   `BuiltinFee`, `DefaultFee`, `IsBuiltin`, `ExecBuiltin`, `AcctKind`, `AcctKinds`,
   `KindOf`, `IsImplicit`, `AcctExists`, `DefaultKey`, `SignerOf`, `Signer`,
   `SignerKey`, `SubmitAs`, `LocalPriorityOK`, `Schedulable`, `PlatformInit`,
@@ -193,6 +207,8 @@ Each entry ends with its migration.
   `OPanicAt`, `HasPanicKey`, `PanicBurn`, `PanicAct`, `PAOK`, `PoolCheck`,
   `PooledGasOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
   `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
+  `FtMaxResultLen`, `ResolveUnusedLim`, `ResolveRefundLim`, `TokResolveMaxLen`,
+  `ResolveMaxLen`,
   `ResolveGas`, `SuAct`, `SuArgs`, `TokBatchPerAction`, `BatchPA`, `MtOnStatic`,
   `MtReserveShort`, `BatchCallKey`, `PathKey`.
   Migration: rename the model's own definition. A model-local local-receipt rule
@@ -220,7 +236,15 @@ Each entry ends with its migration.
   Transfer to a missing implicit account creates it (`created`); a Transfer to a
   missing named account fails and refunds, as before.
 - Result size: `RValSz(v, n)`, `DataOfSz`, `OSz(O, n)`; `r.res.sz` can be used as
-  the burn size.
+  the burn size. Byte length: `RValLen(v, b)` (sets `len = b` and `sz` rounded
+  up), `DataOfLen`, `RetLen`.
+- Bounded result reads (near-sdk `promise_result_checked`, `env.rs:129-137` and
+  `:1833-1837` in near-sdk 5.28.1): `ResTooLong(res, max)`, `ResMinBytes(res)`,
+  `NumOrChecked(res, max, dflt)`. Token side: `FtMaxResultLen` (42),
+  `ResolveUnusedLim` / `ResolveRefundLim` (the resolver arithmetic with a bound;
+  `ResolveUnused` / `ResolveRefund` are the unbounded forms), and the per-token
+  overridable `TokResolveMaxLen` (default 42, -1 = unbounded). The arbitrary
+  receiver has a response `"keepbig"`: a valid `"0"` of 43 bytes.
 - `NOPR` and `NoResults(res)`, `IsFailed(res)`.
 - `ExecBuiltin(r)` / `IsBuiltin(r)`: Transfer, refund and Stake receipts as one step.
 - Init helpers `PlatformInit(near0, txIds)`, `PlatformInitStaked(near0, locked0, txIds)`,
@@ -256,7 +280,11 @@ Each entry ends with its migration.
   `"deterministic"`): a Transfer may create them (`actions.rs:929-946`;
   universal from protocol 87, also inside a batch). An account created by a
   Transfer has no code unless it is eth-implicit (`actions.rs:221-290`; universal
-  ones are also uninitialised, `:880-887`), so calls to it fail.
+  ones are also uninitialised, `:880-887`), so calls to it fail. Whether
+  universal accounts exist is `UniversalOn`, an overridable definition, default
+  TRUE (88's rule). It does not follow `NearFees.FeeProtocol`, which selects fees
+  only: `FeeProtocol == 86` keeps the creation and charges 86's fee;
+  `UniversalOn <- FALSE` gives the rule before 87 (`actions.rs:918-924`).
 - `NoOrphans` (no callback waits on nothing, no data without a waiting
   callback) and `ExecNoCode(r)`.
 - `examples/platform-selftest`: 49 deterministic scenarios (receipts, results,
@@ -268,9 +296,20 @@ Each entry ends with its migration.
 - Examples with must-pass and must-fail runs: `revert-scope`,
   `callback-after-failure`, `weight-split`, `local-priority`,
   `signer-propagation`, `deletekey-atomicity`, `eth-implicit-fee`,
-  `nep141-refund-cap`, `nep145-refund-to-predecessor`.
+  `nep141-refund-cap`, `nep145-refund-to-predecessor`. `nep141-refund-cap` also
+  covers the oversized result: `refund_cap_oversized` (a 43-byte `"0"` is fully
+  refunded) and `refund_cap_oversized_unbounded` (an unbounded resolver honours
+  it; `OversizedRefunded` fails).
 - `examples/minimal`: the walkthrough model from `docs/USAGE.md` (`Tally`), in
   fault and gas mode, with a must-fail variant and a printed gas window.
+- Conformance: `conform.py` requires each sweep to hold its flow's declared grid exactly
+  once and to match a `.meta.json` bound to it by sha256 and point count; empty,
+  truncated or duplicated sweeps and model points outside the grid fail. Status and
+  attached gas are compared jointly per receipt (label, status and gas, with
+  multiplicity). `calibrate` removes the old provenance before sweeping, writes the
+  JSONL atomically and the provenance last, and `--from-data` checks the data against
+  its provenance. The checker's self-tests (`conformance/scripts/test_conform.py`) run
+  in CI.
 
 ### Changed
 

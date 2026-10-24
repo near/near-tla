@@ -15,6 +15,14 @@
 (* the receiver's answer at the amount.  X holds 1 token of its own and    *)
 (* answers amt + 1; the resolver pulls amt + 1 back from X, so U gains one *)
 (* of X's tokens and RefundCapped fails.                                   *)
+(*                                                                         *)
+(* Oversized results (the refund_cap_oversized runs): X may answer        *)
+(* "keepbig", a valid "0" padded to 43 bytes.  near-contract-standards     *)
+(* 5.24.0 and later read the result with a 42-byte bound, so the resolver  *)
+(* treats it as all unused and refunds min(amt, X's balance):              *)
+(* OversizedRefunded holds.  Wrong: TokResolveMaxLen = -1, a resolver that *)
+(* reads the result unbounded (the 5.23.0 code) and honours the "0", so it *)
+(* refunds nothing.                                                        *)
 (***************************************************************************)
 EXTENDS Tokens
 
@@ -36,7 +44,9 @@ PTokMin     == [a \in {FT} |-> 1]
 PTokDev     == [a \in {FT} |-> Dev]
 PTokReserve == [a \in {FT} |-> 0]
 NoGasTable  == [x \in {} |-> 0]
-G0 == [amt |-> 0, refund |-> 0, done |-> FALSE]
+\* big: X answered "keepbig"; full: the resolver then refunded min(amt, X's
+\* balance).  Both stay constant unless XResps has "keepbig".
+G0 == [amt |-> 0, refund |-> 0, done |-> FALSE, big |-> FALSE, full |-> TRUE]
 
 \* U sends amt to X with ft_transfer_call.
 Send == /\ ntx < MaxTx
@@ -57,13 +67,16 @@ RunTok(r) ==
         LET O == TokHandle(r, ch) IN
         /\ TokStep(r, O)
         /\ gT' = IF Ok(r, O) /\ r.m = "ft_resolve_transfer"
-                 THEN [gT EXCEPT ![r.tx].refund = O.ev.refund, ![r.tx].done = TRUE]
+                 THEN [gT EXCEPT ![r.tx].refund = O.ev.refund, ![r.tx].done = TRUE,
+                                 ![r.tx].full = ~gT[r.tx].big \/
+                                     O.ev.refund = TMin(gT[r.tx].amt, tk[FT].bal[X])]
                  ELSE gT
         /\ UNCHANGED ntx
 
 RunX(r) == \E resp \in XResps :
              /\ Exec(r, RecvOutcome(r.a.amt, resp))
-             /\ UNCHANGED <<tk, ntx, gT>>
+             /\ gT' = IF resp = "keepbig" THEN [gT EXCEPT ![r.tx].big = TRUE] ELSE gT
+             /\ UNCHANGED <<tk, ntx>>
 
 Run == \E r \in Runnable :
          IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED <<tk, ntx, gT>>
@@ -81,6 +94,8 @@ Spec == Init /\ [][Next]_vars
 
 \* No resolution refunds more than its transfer moved.
 RefundCapped == \A t \in TxIds : gT[t].refund <= gT[t].amt
+\* An oversized answer counts as all unused: the refund is min(amt, X's balance).
+OversizedRefunded == \A t \in TxIds : gT[t].full
 \* Supply = sum of balances; balances are never negative (the balance cap).
 Sane == TokSupplyOK /\ TokTypeOK /\ NearConserved(0)
 =============================================================================

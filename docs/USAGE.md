@@ -310,6 +310,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `Contracts` | `Accounts` | some accounts have no code: a function call to an account outside `Contracts` fails |
 | `CallsNeedCode` | `TRUE` | never, unless you are keeping an older model's behaviour (calls run whatever the receiver) |
 | `AcctKind` | every account `"named"` | an account is NEAR-implicit, eth-implicit, deterministic or universal; toy ids cannot match the real patterns, so you state the kind. `AcctKinds(eth, nearImp)` builds the common case |
+| `UniversalOn` | `TRUE` (protocol 87+) | you model the rules before protocol 87, where a universal id is named and a Transfer to an absent one fails: `FALSE`. It is independent of `NearFees.FeeProtocol`, which selects fees only ([VERSIONING](VERSIONING.md#what-feeprotocol-does-and-does-not-change)) |
 | `TrackSigner` | `TRUE` | the model never reads the signer: `FALSE` saves states. Do not read the signer with `FALSE`: with `PlatformInit` (`txsig` starts empty) that is a TLC error, but with an `Init` that pre-sizes `txsig` it silently returns the initial value |
 | `BurnLostRefunds` | `TRUE` | never, unless keeping older behaviour (a refund to a missing account stays in flight) |
 | `DefaultKey` | `"default"` | your key ids differ and you use `Submit` |
@@ -317,6 +318,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TokFtGasShape` | `"standard"` per token | the token is near-contract-standards 3.x/4.x style: `"reserve"`. This can change verdicts, not only gas windows; tokens built on 3.x/4.x (many older deployments) use the reserve shape, so check your token's version |
 | `TokOnTransferStatic`, `TokOnTransferWeight` | -1 per token (the shape's default) | the token gives `ft_on_transfer` a different static or weight |
 | `TokResolveStatic` | 5000 Ggas per token | the token's resolver has a different static gas |
+| `TokResolveMaxLen` | 42 bytes per token (`FtMaxResultLen`) | the token is near-contract-standards 5.23.0 or older (3.x/4.x) and reads the receiver's result unbounded: -1. With 42, a longer result counts as all unused ([T2](SEMANTICS.md#t2-ft_resolve_transfer)) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`.
@@ -419,7 +421,7 @@ Outcome(ready, post, ret, out, ids)
 |---|---|
 | `ready` | new receipts that can run (calls, Transfers, key actions) |
 | `post` | new postponed callbacks |
-| `ret` | the return value: `RVal(v)`, `RValSz(v, n)` (a value of `n` KB), or `RProm` |
+| `ret` | the return value: `RVal(v)`, `RValSz(v, n)` (a value of `n` KB), `RValLen(v, b)` (a value of `b` bytes), or `RProm` |
 | `out` | the total deposit attached to new receipts (debited from the receiver) |
 | `ids` | how many fresh ids the handler used |
 
@@ -437,6 +439,12 @@ Adjust an outcome with:
 Return values carry a size in KB, rounded up (1 KB = 1000 bytes): `RValSz(v, n)`. The callback
 that reads it sees `r.res.sz = n` and can pass it on as its burn size with `OSz`. Sizes in KB
 are a model unit; the fee operators in `NearFees` take bytes ([Units](SEMANTICS.md#units)).
+When a byte count matters, use `RValLen(v, b)`: it sets `r.res.len = b` and `sz` to `b` in KB,
+rounded up. A reader with a byte bound (near-sdk's `promise_result_checked`) treats a longer
+result as unreadable: `NumOrChecked(r.res, max, dflt)` is `NumOr` after such a read, and
+`ResTooLong(r.res, max)` tests the bound. The standard FT resolver reads with a 42-byte bound,
+so a receiver that pads a valid `"0"` past 42 bytes gets the whole amount refunded
+([T2](SEMANTICS.md#t2-ft_resolve_transfer)).
 
 Run the handler with `Exec(r, O)`. It computes the verdict and does the platform part:
 

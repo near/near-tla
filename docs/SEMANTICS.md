@@ -14,7 +14,8 @@ After that comes everything the library does **not** model, and what each omissi
   because there is no `86.yaml` (`core/parameters/src/config_store.rs:238-246` @ b7b4737).
   The rule changes between 84 and 88 are noted where they matter. `NearFees.FeeProtocol`
   selects fees only; the behaviour encoded in `NearAsync`/`NearKeys` is protocol 88's (see
-  `docs/VERSIONING.md`).
+  `docs/VERSIONING.md`). The one behaviour switch for those versions, `UniversalOn` (A2), is
+  separate from `FeeProtocol`.
 - **Token standards:** the NEP texts at `neps/nep-0141.md`, `nep-0145.md` and `nep-0245.md` in
   the NEPs repo, and near-contract-standards. The locally available versions of
   near-contract-standards are 5.23.0, 5.24.0, 5.25.0, 5.28.1, 5.29.0 and 5.29.1. See
@@ -187,8 +188,9 @@ Each rule has four fields:
   any other `Ok` gives `Some(vec![])`, `Err` gives `None`), `:894-895`;
   `runtime/near-vm-runner/src/logic/host.rs:4616-4646` (`promise_result`), `:4583`
   (`promise_results_count`).
-- **Model:** `r.res = [ok, v, sz]` with `v` a number, `EMPTY`, `MAL` or `NONEMPTY`, built by
-  `RVal`; helpers `IsNum`, `IsEmpty`, `IsFailed`, `NumOr`. No results: `NoRes` with
+- **Model:** `r.res = [ok, v, sz, len]` with `v` a number, `EMPTY`, `MAL` or `NONEMPTY`, built by
+  `RVal`; helpers `IsNum`, `IsEmpty`, `IsFailed`, `NumOr`, and for a bounded read
+  (`promise_result_checked`, C4) `ResTooLong` and `NumOrChecked`. No results: `NoRes` with
   `NoRes.v = NOPR` (`NoResults(r.res)`), and `IsNum(NoRes) = FALSE`.
 - **Validated:** nearcore reading. <!-- conformance --> The flows produce every shape (empty,
   numeric, non-numeric, failed), but the comparison does not see what a callback reads, and
@@ -211,8 +213,22 @@ Each rule has four fields:
 - **Model:** a size field on data receipts and `r.res.sz`, **in KB** (see [Units](#units)):
   `RVal(v)` has size 0 and `RValSz(v, n)` carries `n` KB (also `DataOfSz`, `RetSz`, `OSz`).
   Handlers may use `r.res.sz` as the burn size. Fee: `NearFeeTable!DataBytesFee(sir, bytes)`, which
-  takes **bytes**.
-- **Validated:** nearcore reading.
+  takes **bytes**. A second field, `len`, holds the size in **bytes** when the model states it:
+  `RValLen(v, b)` sets `len = b` and `sz = ⌈b / 1000⌉` (also `DataOfLen`, `RetLen`); `RVal` and
+  `RValSz` leave `len = 0` (not stated).
+
+  **Bounded reads (SDK, not nearcore).** near-sdk's `env::promise_result_checked(idx, max_len)`
+  returns `Err(PromiseError::TooLong)` when the result is longer than `max_len` bytes (strictly
+  longer, so a result of exactly `max_len` bytes is read). `ResTooLong(res, max)` models that
+  test with the smallest length the record allows (`ResMinBytes`): `len` when stated, else
+  `1000 × (sz − 1) + 1` for `sz ≥ 2`, else 0. So `sz = 1` alone never counts as too long; use
+  `RValLen` when a sub-KB bound matters. `NumOrChecked(res, max, dflt)` is `NumOr` after such a
+  read (a too-long result gives `dflt`); `max < 0` is an unbounded read.
+- **SDK source:** near-sdk 5.28.1 (the closest locally available version to the `~5.29.1` that
+  near-contract-standards 5.29.1 requires; as read) `src/environment/env.rs:1833-1837`
+  (`promise_result_checked`), `:129-137` (`read_register_bounded`: `len > max_len` is an error).
+  The same code is in 5.24.0 and 5.25.0.
+- **Validated:** nearcore reading; the bounded read: SDK source read.
 
 ### C5. Returning a promise forwards its result
 
@@ -400,7 +416,13 @@ Each rule has four fields:
 - **Model:** `NearFees.RcvKinds` = `{"named", "near_implicit", "eth_implicit",
   "deterministic", "universal"}`. `AcctKinds`, `AcctKind`/`KindOf` and `IsImplicit` assign kinds
   to model accounts; `IsImplicit` covers NEAR-implicit, eth-implicit, deterministic and (when
-  `UniversalOn`, 87+) universal.
+  `UniversalOn`) universal. `UniversalOn` is an overridable definition, default TRUE (protocol
+  87+, so the pinned 88). It does not follow `NearFees.FeeProtocol`: set `UniversalOn <- FALSE`
+  for the rules before 87, where a universal id is named (`get_account_type`,
+  `runtime/runtime/src/actions.rs:918-924`), so a Transfer to an absent one fails. The fee
+  table gates universal fees on the fee version on its own (`NearFees.UniversalAccountsOn`), so
+  `FeeProtocol == 86` with the default `UniversalOn` creates the account but charges 86's fee
+  for a named receiver (see `docs/VERSIONING.md`).
 - **Validated:** nearcore reading. The fee-by-pattern rule for named, NEAR-implicit and
   eth-implicit receivers, existing and absent: sim (`send_named`, `send_nimp`, `send_nimp_new`,
   `send_eth`, `send_eth_new`; an existing eth-implicit receiver puts the edge at 8.5 Tgas, as
@@ -698,21 +720,39 @@ locally.
 ### T2. `ft_resolve_transfer`
 
 - **Rule:** It must be callable only by the token itself. `unused` = `amount` if the result is
-  Failed or does not parse as a U128, else `min(v, amount)`. `refund = min(unused, receiver
-  balance)` moves back to the sender. If the sender has unregistered, the refund is burnt (total
-  supply drops). It returns the amount used.
+  Failed, longer than 42 bytes, or does not parse as a U128, else `min(v, amount)`.
+  `refund = min(unused, receiver balance)` moves back to the sender. If the sender has
+  unregistered, the refund is burnt (total supply drops). It returns the amount used.
+
+  **The 42-byte bound is version-dependent.** 5.24.0 and later read the receiver's result with
+  `env::promise_result_checked(0, MAX_RESULT_LENGTH)`, where `MAX_RESULT_LENGTH` is the length
+  of `"+340282366920938463463374607431768211455"` with its quotes (u128::MAX with a sign): 42
+  bytes. A longer result is an error, and `.ok()` then falls back to `amount`: the whole amount
+  counts as unused, even if the bytes are valid JSON. So a receiver that keeps the tokens but
+  returns `"0"` followed by 40 or more spaces (43+ bytes) gets them refunded (up to its
+  balance). 5.23.0 reads with the unbounded `env::promise_result(0)` and honours the `"0"`.
 
   **Private-ness is the integrator's job.** `FungibleToken::internal_ft_resolve_transfer` does
   no caller check. The `#[private]` attribute comes from the `impl_fungible_token_core!` macro
   (`macros.rs:46`); a contract that implements `FungibleTokenResolver` by hand must add it.
-- **Sources:** NEP-141 `:306-325`; near-contract-standards 5.29.1 `core_impl.rs:169-235`,
-  `macros.rs:46-56`. 5.24.0 and later read the result with
-  `promise_result_checked(0, MAX_RESULT_LENGTH)`, so an oversized result counts as all unused;
-  5.23.0 uses `promise_result(0)`.
-- **Model:** `TokenCommon.ResolveRefund`, `NumOr`. The model's resolver accepts calls from the
-  token only. The burn path is reached when the sender calls `storage_unregister(force)`
+- **Sources:** NEP-141 `:306-325`; near-contract-standards 5.29.1 `core_impl.rs:169-235`
+  (the bound: `:175-183`), `macros.rs:46-56`. The bounded read is the same in 5.24.0, 5.25.0,
+  5.28.1, 5.29.0, 5.29.1 and 5.30.0-rc.1 (`core_impl.rs:175-183` in each); 5.23.0 uses
+  `promise_result(0)` (`core_impl.rs:177`). The SDK's overflow test: C4.
+- **Model:** `TokenCommon.ResolveRefundLim(res, amt, rcvBal, dev, max)`, `NumOrChecked`,
+  `FtMaxResultLen` (42). The bound is per token, `TokResolveMaxLen[t]` (an overridable
+  definition, default 42 for every token, wNEAR accounts included); set it to -1 (unbounded)
+  for a token built on 5.23.0 or older (3.x/4.x). It is independent of `TokFtGasShape` (T3):
+  5.23.0 has the standard gas shape and no bound. A result's byte length is `r.res.len` when
+  stated (`RValLen`), else what `r.res.sz` implies (C4), so `RValSz(0, 2)` already counts as
+  too long. The receiver response `"keepbig"` (`RecvOutcome`) is `RValLen(0, 43)`.
+  `ResolveRefund` (4 arguments) is the unbounded form. The model's resolver accepts calls from
+  the token only. The burn path is reached when the sender calls `storage_unregister(force)`
   between the transfer and the resolver (T4).
-- **Validated:** near-contract-standards source read (5.23.0-5.29.1). <!-- conformance -->
+- **Validated:** near-contract-standards source read (5.23.0-5.30.0-rc.1). The oversized
+  result: `examples/nep141-refund-cap` (`refund_cap_oversized` must pass,
+  `refund_cap_oversized_unbounded` must fail), model only; no conformance flow returns an
+  oversized numeric result. <!-- conformance -->
   The flows run the resolver after every receiver outcome (keep, return, over, panic, out of
   gas, a non-numeric result), but the comparison sees only its status and gas, not the refund.
 
@@ -771,9 +811,14 @@ locally.
 
 - **Rule:** The same transfer, resolve and refund rules as T1/T2, per token id. Every transfer
   needs 1 yocto.
-- **Sources:** NEP-245 `:88`, `:124`, `:164-179`, `:304-330`.
+- **Sources:** NEP-245 `:88`, `:124`, `:164-179`, `:304-330`; for the result read,
+  near-sdk-contract-tools-macros 4.0.0 `src/standard/nep245/mod.rs:283-289`.
 - **Model:** `Nep245`. Single-id transfers only; no batch, no approvals, no storage management.
-- **Validated:** NEP text read; no reference implementation checked.
+  The resolver reads the receiver's result **unbounded** (`ResolveRefund`): unlike T2 there is
+  no byte limit, because the one NEP-245 implementation read (near-sdk-contract-tools 4.0.0)
+  uses `env::promise_result(0)`.
+- **Validated:** NEP text read; the result read: near-sdk-contract-tools 4.0.0 source read.
+  Other implementations may bound the read.
 
 ### T6. wNEAR
 
