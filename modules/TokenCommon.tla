@@ -113,6 +113,85 @@ ResolveUnused(res, amt, dev)         == ResolveUnusedLim(res, amt, dev, -1)
 ResolveRefund(res, amt, rcvBal, dev) == ResolveRefundLim(res, amt, rcvBal, dev, -1)
 
 ----------------------------------------------------------------------------
+(* Event logs (NEP-297; docs/SEMANTICS.md T8, R6).  The token handlers     *)
+(* emit the standard events of the implementations they encode, one log    *)
+(* each, whose byte length is computed from the event's content and        *)
+(* declared on the outcome (OLog's fields lgn, lgb), so nearcore's per-call *)
+(* log limits (100 logs, 16384 bytes) apply on their own: a call over them *)
+(* fails with NumberOfLogsExceeded or TotalLogLengthExceeded (HostLimitErr),*)
+(* the cause OwedOK reports for an owed resolver.                          *)
+(*                                                                         *)
+(* The log is `EVENT_JSON:` and the compact JSON                           *)
+(*   {"standard":S,"version":"1.0.0","event":E,"data":[item,..]}           *)
+(* (near-contract-standards 5.29.1 src/event.rs:5-30,                      *)
+(* fungible_token/events.rs:98-123; near-sdk-contract-tools 4.0.0          *)
+(* src/standard/nep297.rs:41-89).  Items, every string quoted, amounts as  *)
+(* decimal strings (U128), memo omitted when None:                         *)
+(*   ft_transfer  {"old_owner_id","new_owner_id","amount","memo"?}         *)
+(*   ft_mint, ft_burn  {"owner_id","amount","memo"?}  (events.rs:21-96)    *)
+(*   mt_transfer  {"old_owner_id","new_owner_id","token_ids":[..],         *)
+(*                 "amounts":[..],"memo"?}                                 *)
+(*   mt_mint, mt_burn  {"owner_id","token_ids":[..],"amounts":[..],        *)
+(*                 "memo"?}  (contract-tools src/standard/nep245/          *)
+(*                 event.rs:39-90; authorized_id is always None in the     *)
+(*                 core, nep245/mod.rs:810, :859)                          *)
+(* Lengths are UTF-8 bytes after JSON escaping (a '"' or '\' takes two).   *)
+(* Account ids are ASCII without either, so their length is Len(id);       *)
+(* memos and token ids are given as their escaped byte length.             *)
+(*                                                                         *)
+(* Knobs (overridable zero-arity definitions):                             *)
+(*   TokEvents   TRUE (default): the handlers declare their logs; FALSE:   *)
+(*               none (the 0.2 behaviour)                                  *)
+(*   EvAcctLen   a partial function account -> its real id length in       *)
+(*               bytes; an account outside its domain counts Len(a), the  *)
+(*               model's own string                                        *)
+(*   EvAmtExp    a partial function token account -> e: a model amount x   *)
+(*               stands for x * 10^e base units, so it prints with         *)
+(*               Digits(x) + e digits (0 prints "0"); default e = 0        *)
+(* A call's memo is the optional field memo of its arguments (WithMemo):   *)
+(* its escaped byte length, absent = None.                                 *)
+TokEvents == TRUE
+EvAcctLen == [a \in {} |-> 0]
+EvAmtExp  == [t \in {} |-> 0]
+AcctLen(a) == IF a \in DOMAIN EvAcctLen THEN EvAcctLen[a] ELSE Len(a)
+AmtExp(t)  == IF t \in DOMAIN EvAmtExp THEN EvAmtExp[t] ELSE 0
+\* Decimal digits of x >= 0 (TLC's integers are below 2^31: at most 10).
+Digits(x) == IF x >= 1000000000 THEN 10
+             ELSE CHOOSE k \in 1..9 : x < 10 ^ k /\ (k = 1 \/ x >= 10 ^ (k - 1))
+AmtLen(t, x) == IF x = 0 THEN 1 ELSE Digits(x) + AmtExp(t)
+\* The memo of a call's arguments, -1 for None; WithMemo(args, m) gives one
+\* of m bytes (escaped).
+MemoOf(a) == IF "memo" \in DOMAIN a THEN a.memo ELSE -1
+WithMemo(args, m) == [memo |-> m] @@ args
+\* The formulas, on byte lengths (sim: conformance/tests/events.rs).
+\* EvLen(s, e, items): the log of event e of standard s whose data holds
+\* items of the given byte lengths: EVENT_JSON: (11) {"standard":" (13) s
+\* ","version":" (13) 1.0.0 (5) ","event":" (11) e ","data":[ (10) the
+\* items with a comma between each two, ]} (2).
+EvLen(s, e, items) == 65 + Len(s) + Len(e) + SumSeq(items) + Len(items) - 1
+\* ,"memo":"m" for a memo of m >= 0 bytes, nothing for None (m < 0).
+EvMemo(m) == IF m < 0 THEN 0 ELSE 10 + m
+\* A JSON array of n strings of b bytes in all, without its brackets.
+EvList(n, b) == IF n = 0 THEN 0 ELSE b + 3 * n - 1
+FtXferItem(o, n, d, m)        == 49 + o + n + d + EvMemo(m)
+FtOwnerItem(o, d, m)          == 27 + o + d + EvMemo(m)
+\* n ids of ib bytes in all, their amounts ab digits in all.
+MtXferItem(o, rc, n, ib, ab, m) == 65 + o + rc + EvList(n, ib) + EvList(n, ab) + EvMemo(m)
+MtOwnerItem(o, n, ib, ab, m)  == 43 + o + EvList(n, ib) + EvList(n, ab) + EvMemo(m)
+\* The NEP-141 events a token t emits, for model accounts and amounts.
+FtTransferLog(t, s, rc, x, m) == EvLen("nep141", "ft_transfer", <<FtXferItem(AcctLen(s), AcctLen(rc), AmtLen(t, x), m)>>)
+FtMintLog(t, o, x, m)         == EvLen("nep141", "ft_mint", <<FtOwnerItem(AcctLen(o), AmtLen(t, x), m)>>)
+FtBurnLog(t, o, x, m)         == EvLen("nep141", "ft_burn", <<FtOwnerItem(AcctLen(o), AmtLen(t, x), m)>>)
+\* near-contract-standards' plain (non-event) logs (fungible_token/
+\* core_impl.rs:221, storage_impl.rs:61, :33).
+LogSenderDeleted      == 37   \* "The account of the sender was deleted"
+LogAlreadyRegistered  == 56   \* "The account is already registered, refunding the deposit"
+LogNotRegistered(a)   == 30 + AcctLen(a)   \* "The account <a> is not registered"
+\* A handler's accumulator acc carries lgn / lgb; ALog adds one log of b
+\* bytes (nothing with TokEvents off).
+ALog(acc, b) == IF TokEvents THEN [acc EXCEPT !.lgn = @ + 1, !.lgb = @ + b] ELSE acc
+
+----------------------------------------------------------------------------
 (* An arbitrary receiver contract (environment actor).  resp:              *)
 (*   "keep" -> "0", "return" -> amt, "over" -> amt+1, "mal" -> MAL,        *)
 (*   "nonempty" -> NONEMPTY, "empty" -> EMPTY, "panic" -> fails,           *)

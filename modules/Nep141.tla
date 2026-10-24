@@ -59,9 +59,10 @@ FtXferAct(acc, r, s, rc, amt) ==
     ELSE IF rc \notin DOMAIN L.bal
          THEN Assert(FALSE, <<"transfer to an account outside TokHolders", r.to, rc>>)
     ELSE IF L.bal[s] < amt THEN AE(acc, "The account doesn't have enough balance")
-    ELSE [acc EXCEPT !.L = [L EXCEPT !.bal[s] = @ - amt, !.bal[rc] = @ + amt,
-                                     !.reg = @ \cup {rc}],
-                     !.ev.s = s, !.ev.rc = rc, !.ev.moved = @ + amt]
+    ELSE [ALog(acc, FtTransferLog(r.to, s, rc, amt, MemoOf(r.a)))
+            EXCEPT !.L = [L EXCEPT !.bal[s] = @ - amt, !.bal[rc] = @ + amt,
+                                   !.reg = @ \cup {rc}],
+                   !.ev.s = s, !.ev.rc = rc, !.ev.moved = @ + amt]
 
 \* ch \in TokChoices(r): the success bytes (EMPTY, or NONEMPTY under "retBytes")
 FtTransferAct(acc, r, rc, amt, ch) ==
@@ -132,9 +133,15 @@ FtResolveAct(acc, r) ==
               ELSE IF sReg THEN [L EXCEPT !.bal[rc] = @ - refund, !.bal[s] = @ + refund]
               ELSE [L EXCEPT !.bal[rc] = @ - refund, !.sup = @ - refund]
         used == IF refund > 0 /\ sReg THEN amt - refund ELSE amt
+        \* the refund's log: an ft_transfer back, or for an unregistered
+        \* sender a plain log and an ft_burn, both with memo "refund"
+        \* (core_impl.rs:204-210, :221-227)
+        lg == IF refund = 0 THEN acc
+              ELSE IF sReg THEN ALog(acc, FtTransferLog(r.to, rc, s, refund, 6))
+              ELSE ALog(ALog(acc, LogSenderDeleted), FtBurnLog(r.to, rc, refund, 6))
     IN IF ~Live(acc) THEN acc
        ELSE IF r.fr # r.to THEN AE(acc, "Method ft_resolve_transfer is private")
-       ELSE [acc EXCEPT !.L = L1, !.ret = RVal(TMax(used, 0)),   \* "resolveNoCap" may refund > amount
+       ELSE [lg EXCEPT !.L = L1, !.ret = RVal(TMax(used, 0)),   \* "resolveNoCap" may refund > amount
                         !.ev.s = s, !.ev.rc = rc, !.ev.refund = refund, !.ev.credited = sReg,
                         !.key = PathKey(r, "ft_resolve_transfer", IF refund > 0 THEN "refund" ELSE "norefund")]
 \* Views.

@@ -202,6 +202,9 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   deterministic-account state init and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and other
   NEP-245 implementations than near-sdk-contract-tools 4.0.0.
+- **More event logs:** the events of other token implementations (wNEAR's, NEP-171's), a
+  mint or burn method of the library's own, and id classes whose ids differ (a part of a
+  class transferred, or answered differently by a receiver; N-mtclass).
 - **NEP-245's resolver read:** declare `mt_resolve_transfer`'s read of the receiver's
   result (`OReadRes`, SEMANTICS C4) with the implementation's bound, as `Tokens` does for
   `ft_resolve_transfer`.

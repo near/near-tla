@@ -1,0 +1,105 @@
+# An owed resolver that fails on its own log: the library's NEP-141 events with a lowered
+# log limit.  ft_transfer_call's event is 134 bytes, its resolver's refund event 150 (memo
+# "refund"); with MaxLogBytes between them the call commits and the resolver fails with
+# TotalLogLengthExceeded.  At the protocol's 16384 neither comes close.  See ResolverLog.tla.
+#
+#   python3 tools/run.py examples/event-logs/resolver-log
+#
+# OwedOK   no owed resolver fails (the trace's last state shows the cause in ofail).
+# Honored  once settled, U holds what it started with less what X kept.
+# Sane     NEAR conserved, no orphans.
+
+spec = "ResolverLog"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["OwedOK", "Honored", "Sane"]
+tags = ["tokens:events", "semantics:owed-effect"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"ft"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+TokenAccts = '{"ft"}'
+WNearAccts = "{}"
+TokHolders = "PTokHolders"
+TokStorageMin = "PTokMin"
+TokDev = "PTokDev"
+TokCallReserve = "PTokReserve"
+U = '"u"'
+X = '"x"'
+FT = '"ft"'
+Amt = "1"
+XResps = '{"keep", "return"}'
+
+# The protocol's limit: both events fit.
+[[run]]
+name = "resolver_log_ok"
+expect = "pass"
+
+# Room for exactly the refund event.
+[[run]]
+name = "resolver_log_edge"
+expect = "pass"
+[run.constants]
+MaxLogBytes = "150"
+
+# Room for the transfer's event, not the refund's: the owed resolver fails on its log.
+[[run]]
+name = "resolver_log_over"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "TotalLogLengthExceeded"'
+[run.constants]
+MaxLogBytes = "140"
+
+# ---- anti-vacuity: python3 tools/run.py examples/event-logs/resolver-log --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# Honored's antecedent, and the resolver's refund arm at the edge.
+[[witness]]
+id = "transfer_settles"
+expr = '~(ntx = 1 /\ TxSettled(1))'
+runs = ["resolver_log_ok", "resolver_log_edge"]
+
+[[witness]]
+id = "resolver_refunds"
+expr = '~(\E r \in Runnable : r.m = "ft_resolve_transfer" /\ IsNum(r.res) /\ r.res.v = r.a.amt)'
+runs = ["resolver_log_ok", "resolver_log_edge"]
+
+# The refund event one byte longer (its memo): at the edge it no longer fits.
+[[mutant]]
+id = "refund_memo_long"
+file = "Nep141.tla"
+library = true
+find = 'ELSE IF sReg THEN ALog(acc, FtTransferLog(r.to, rc, s, refund, 6))'
+replace = 'ELSE IF sReg THEN ALog(acc, FtTransferLog(r.to, rc, s, refund, 7))'
+class = "off-by-one guard"
+runs = ["resolver_log_edge"]
+killed_by = ["OwedOK"]
+
+# ---- sweeps: python3 tools/run.py examples/event-logs/resolver-log --sweep ----
+
+# The log limit around the refund event's 150 bytes: below it the resolver fails; from it,
+# both fit.  At 1 and 2 the transfer's own event does not fit: the call fails and nothing
+# moves, so nothing is owed.
+[[sweep]]
+id = "log_limit"
+kind = "size"
+run = "resolver_log_ok"
+knob = "MaxLogBytes"
+form = "%d"
+limit = 150
+floor = 1
+expect = { "1" = "pass", "2" = "pass", "149" = "violation OwedOK", "150" = "pass", "151" = "pass" }

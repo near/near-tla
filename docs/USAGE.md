@@ -28,6 +28,8 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [7. Reading promise results](#7-reading-promise-results)
   - [Reading a large result costs gas](#reading-a-large-result-costs-gas)
 - [8. Calling tokens](#8-calling-tokens)
+  - [Event logs](#event-logs)
+  - [Batches of hundreds of ids: id classes](#batches-of-hundreds-of-ids-id-classes)
 - [9. Receiving tokens](#9-receiving-tokens)
 - [10. Signer and keys](#10-signer-and-keys)
 - [11. Local-receipt priority](#11-local-receipt-priority)
@@ -374,6 +376,9 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); another key type (a key with an allowance, `WithAllowance`, already counts its 16 bytes) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
 | `ResultReadGas` | `TRUE` | never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
+| `TokEvents` | `TRUE` | never, unless keeping older behaviour or the model declares the token's events itself: `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
+| `EvAcctLen`, `EvAmtExp`, `MtIdLen` | each model value's own length | the events' byte lengths matter: the real length of account ids and token ids, a token's decimal exponent ([section 8](#event-logs)) |
+| `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
 | `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at its worst-case trie-node gas ([section 12](#worst-case-storage-gas-trie-depth)) |
 | `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
@@ -563,7 +568,8 @@ its `promise_and` calls. Without `pa`, a receipt whose children could pass 1024 
 Logs count only if the handler declares them: `OLog(O, b)` adds one log of `b` bytes (UTF-8)
 to the outcome (`OLogs(O, b, n)` adds `n` of them), and more than 100 logs or 16384 bytes of them fail the call, as in nearcore.
 Declare them when a handler's logs grow with its input (an event per item, say); a model
-that declares none never hits the limit.
+that declares none never hits the limit. The library's token handlers declare their own
+events ([section 8](#event-logs)).
 
 ## 6. The dispatcher and Next
 
@@ -713,6 +719,51 @@ behaviours per token: `resolveIgnoresResult`, `resolveNoCap`, `retBytes`,
 takes `zeroAmountSkipped` and `selfTransferCredits`: near-sdk-contract-tools 4.0.0 skips a
 zero amount and lets a transfer to oneself raise one's balance, where the model panics on
 both by default ([N-mt](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
+
+### Event logs
+
+The token handlers log what the standard implementations log: an `ft_transfer`,
+`ft_burn` or `mt_transfer` event (`EVENT_JSON:` + NEP-297 JSON) for each transfer and each
+resolver refund, and near-contract-standards' few plain logs
+([T8](SEMANTICS.md#t8-event-logs-nep-297)). Each one's byte length is computed from its
+content and declared on the outcome, as `OLog` would, so the per-call limits (100 logs,
+16384 bytes; R6) apply with nothing to declare: a batch whose event is too long fails with
+`TotalLogLengthExceeded` and moves nothing, and an owed resolver that does shows that cause in
+`OwedOK`'s `ofail`. The lengths use the model's values, so make them the real ones where it
+matters:
+
+- `EvAcctLen`: the real byte length of account ids (a partial function; an account outside
+  its domain counts its model string, `Len(a)`), e.g.
+  `EvAcctLen = '[a \in {"d", "r"} |-> IF a = "d" THEN 16 ELSE 14]'`;
+- `EvAmtExp`: per token, the decimal exponent of a model amount: with `e`, the amount `x`
+  prints with `Digits(x) + e` digits (`x` stands for `x × 10^e`), e.g. 18 or 24 for a token
+  of that many decimals and amounts in whole tokens;
+- `MtIdLen`: the byte length of NEP-245 token ids, else `Len(id)`;
+- a memo: `WithMemo(FtArgs(rc, amt, msg), m)` gives the call a memo of `m` bytes (JSON-escaped:
+  a `"` or `\` counts two); without it the memo is `None`.
+
+A handler of your own that mints or burns with the standard events adds them the same way:
+`OLog(O, FtMintLog(t, owner, amt, -1))`, `MtMintLog(t, owner, ids, amts, -1)`,
+`MtBurnLog(...)` (the last argument is the memo's bytes, -1 for none); `EvLen` and the item
+operators take raw byte lengths. Do not also `OLog` a token's own events: they would count
+twice. `TokEvents <- FALSE` (`TokEvents = "FALSE"` in `runs.toml`) turns the token logs off.
+`examples/event-logs` checks the lengths against the sim and shows both failures.
+
+### Batches of hundreds of ids: id classes
+
+`MtBatchArgs` vectors stay short in the model (a receiver's answer travels as one integer,
+fewer than 16 entries), but a real batch can carry hundreds of ids, and its event and gas
+grow with every one. An id class gives that size without the vectors: with
+`MtIdCount = '[i \in {"ca", "cb"} |-> 200]'`, the model ids `"ca"` and `"cb"` each stand for
+200 distinct ids, and `MtBatchArgs(R, <<"ca", "cb">>, <<1, 25>>, "")` is a batch of 400 ids,
+1 of each of the first 200 and 25 of each of the others. `mtk`'s balance of a class is each
+of its ids' balance, a receiver answers one value per class (`MtRet(<<u1, u2>>)`), and the
+resolver caps and refunds per id as before; the event and the burn size count 400. Set
+`MtIdLen` for the ids' byte length. This covers only behaviours in which the ids of a class
+stay alike: a transfer of part of a class, or a receiver answering differently for ids of
+one class, cannot be written (T5 has the exact boundary; N-mtclass). `mt_transfer` on a class
+of more than one id is an `Assert`. `examples/event-logs/batch-payout` pays two classes and
+sweeps their size for the edge at 16384 bytes.
 
 ## 9. Receiving tokens
 
@@ -1975,6 +2026,13 @@ the base run's invariants (or `success`), and its verdict is reported; a value l
 from the run's library. `examples/owed-effect` has both kinds; `examples/limits` sweeps joint
 inputs around 128.
 
+`least_gas` bisects any knob, not only gas, wherever success is monotone in it. To find the
+size at which something stops fitting, make success the failure you are looking for:
+`examples/event-logs/batch-payout`'s `payout_edge` sweeps a batch's size with `success =
+["NeverPaid"]` (the recipient never receives the batch), which fails while the batch's event
+fits and holds from the first size whose event is over 16384 bytes, so `need` is that size
+(217 ids per class there).
+
 ## Worked material
 
 All examples are toy contracts written for this repo.
@@ -2017,3 +2075,4 @@ All examples are toy contracts written for this repo.
   | `result-read-gas` | an owed token resolver that reads its receiver's result unbounded runs out of gas on a 4 MiB answer; the 42-byte bound does not |
   | `trie-gas` | worst-case storage gas: an owed callback whose fixed budget fits its calibrated burn but not the trie-node gas of its writes in a deep trie (`TrieGasWorst`) |
   | `limits` | protocol limits at the last value nearcore accepts and the first it refuses: actions per receipt, promises per call, joint inputs, returned bytes, AddKey method names, logs |
+  | `event-logs` | the token handlers' NEP-297 event lengths against the sim's, and an id class at the 16384-byte edge; `batch-payout/`: a batch payout whose event grows with the batch (sweep `payout_edge` finds the first size over the limit), an owed callback that marks it paid regardless; `resolver-log/`: an owed token resolver over a lowered log limit, reported by `OwedOK` |

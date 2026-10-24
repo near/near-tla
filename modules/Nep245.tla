@@ -146,7 +146,8 @@ MtTools(r) == MtShape(r.to) = "tools"
 MEv0 == [m |-> "", s |-> "", rc |-> "", tid |-> "", moved |-> 0, call |-> FALSE, refund |-> 0,
          tids |-> <<>>, moves |-> <<>>, refunds |-> <<>>]
 MAcc0(r) == [L |-> mtk[r.to], n |-> nid, rd |-> {}, ps |-> {}, out |-> 0,
-             ret |-> RVal(EMPTY), err |-> "", ev |-> MEv0, key |-> r.m, sz |-> 0]
+             ret |-> RVal(EMPTY), err |-> "", ev |-> MEv0, key |-> r.m, sz |-> 0,
+             lgn |-> 0, lgb |-> 0]
 MLive(acc) == acc.err = ""
 MAE(acc, e) == IF acc.err = "" THEN [acc EXCEPT !.err = e] ELSE acc
 MYocto(acc, dep) ==
@@ -157,6 +158,63 @@ MGasFloor(acc, r) ==
     THEN MAE(acc, "Insufficient gas attached.") ELSE acc
 \* The burn key "<t>.<m>/<p>" when GasBurn has it, else "<t>.<m>".
 MtPathKey(r, m, p) == IF CallKey(r.to, m \o "/" \o p) \in DOMAIN GasBurn THEN m \o "/" \o p ELSE m
+
+----------------------------------------------------------------------------
+(* Id classes: batches of protocol size (docs/SEMANTICS.md T5, T8).        *)
+(* MtIdCount[c] = k > 1 makes the model id c a class of k distinct real    *)
+(* token ids that the model moves, caps and refunds alike: mtk's balance   *)
+(* of c at a holder is the balance of each of the k ids, and an entry      *)
+(* (c, x) of token_ids / amounts stands for k consecutive entries, x of    *)
+(* each id.  The vectors stay one entry per class (a receiver's answer     *)
+(* too: one value per class, MtVecCode's bound counting classes), while    *)
+(* the events, the gas size and the counts below use the k ids.  So a      *)
+(* batch of 200 ids of two amounts is <<"c1", "c2">> with MtIdCount =      *)
+(* [c1 |-> 100, c2 |-> 100], whatever 16-entry bound the vector code has.  *)
+(* Soundness boundary: the model represents exactly the real behaviours in *)
+(* which (1) every id of a class has the same balance at every holder at   *)
+(* every step, (2) every operation names whole classes, one amount per id, *)
+(* (3) a receiver answers one value for all the ids of a class, and (4)    *)
+(* the ids of a class have the same byte length (MtIdLen).  The resolver's *)
+(* per-id cap and refund, the batch's balance checks and its atomicity are *)
+(* exact there (they are per id, and the ids of a class are alike);        *)
+(* repeated entries of one class are repeated ids, as in nearcore.  A      *)
+(* behaviour that sets the ids of a class apart (a transfer of some of     *)
+(* them, a receiver keeping some and returning others, a contract's own    *)
+(* handler crediting one) is not represented: an under-approximation;      *)
+(* split the class to cover it.  A model reading mtk reads per-id balances *)
+(* (a class's total is balance * count, MtTotal is per id).  A single-id   *)
+(* method (mt_transfer[_call], its resolver) on a class of more than one   *)
+(* id is an Assert.                                                        *)
+(*   MtIdCount  partial function id -> count (default 1)                   *)
+(*   MtIdLen    partial function id -> byte length of each of its ids,     *)
+(*              escaped (default Len(id), the model's own string)          *)
+MtIdCount == [i \in {} |-> 1]
+MtIdLen   == [i \in {} |-> 0]
+MtCnt(i)   == IF i \in DOMAIN MtIdCount THEN MtIdCount[i] ELSE 1
+MtIdB(i)   == IF i \in DOMAIN MtIdLen THEN MtIdLen[i] ELSE Len(i)
+\* The real ids of an entry sequence, their bytes, and their amounts' digits.
+MtCount(ids)  == SeqSum(LAMBDA i : MtCnt(i), ids)
+MtIdsBytes(ids) == SeqSum(LAMBDA i : MtCnt(i) * MtIdB(i), ids)
+MtAmtsBytes(t, ids, amts) == SumSeq([k \in 1..Len(ids) |-> MtCnt(ids[k]) * AmtLen(t, amts[k])])
+\* The NEP-245 events of token t for model entries (ids, amts), memo m
+\* (TokenCommon, "Event logs"; contract-tools nep245/mod.rs:791-869).
+MtTransferLog(t, s, rc, ids, amts, m) ==
+    EvLen("nep245", "mt_transfer",
+          <<MtXferItem(AcctLen(s), AcctLen(rc), MtCount(ids), MtIdsBytes(ids), MtAmtsBytes(t, ids, amts), m)>>)
+MtMintLog(t, o, ids, amts, m) ==
+    EvLen("nep245", "mt_mint", <<MtOwnerItem(AcctLen(o), MtCount(ids), MtIdsBytes(ids), MtAmtsBytes(t, ids, amts), m)>>)
+MtBurnLog(t, o, ids, amts, m) ==
+    EvLen("nep245", "mt_burn", <<MtOwnerItem(AcctLen(o), MtCount(ids), MtIdsBytes(ids), MtAmtsBytes(t, ids, amts), m)>>)
+\* A transfer's event: one mt_transfer of the entries it moved (ev.tids,
+\* ev.moves: the nonzero ones, in order), none if it moved nothing
+\* (core :791-822).
+MtXferLog(acc, r, m) ==
+    IF MLive(acc) /\ acc.ev.tids # <<>>
+    THEN ALog(acc, MtTransferLog(r.to, acc.ev.s, acc.ev.rc, acc.ev.tids, acc.ev.moves, m))
+    ELSE acc
+\* A single-id method on a class of several ids is a modelling error.
+MtOneId(r, tid) ==
+    Assert(MtCnt(tid) = 1, <<"a single-id NEP-245 method on an id class of several ids (MtIdCount)", r.m, tid>>)
 
 \* x of id moved from s to rc on ledger L.  s = rc: nothing, or with
 \* "selfTransferCredits" what contract-tools writes, the balance read
@@ -217,13 +275,13 @@ MtCallAct(a1, r, onA, resA) ==
 MtTransferCallAct(acc, r) ==
     LET a == r.a
         a1 == IF MtReserveShort(r) /\ MLive(acc) THEN MAE(acc, "prepaid gas overflow")
-              ELSE MtXferAct(acc, r, r.fr, a.rc, a.tid, a.amt)
+              ELSE MtXferLog(MtXferAct(acc, r, r.fr, a.rc, a.tid, a.amt), r, MemoOf(a))
     IN MtCallAct(a1, r, MtOnArgs(r.fr, a.rc, a.tid, a.amt, a.msg), MtResArgs(r.fr, a.rc, a.tid, a.amt))
 
 MtBatchTransferCallAct(acc, r) ==
     LET a == r.a
         a1 == IF MtReserveShort(r) /\ MLive(acc) THEN MAE(acc, "prepaid gas overflow")
-              ELSE MtBatchXferAct(acc, r, r.fr, a.rc, a.tids, a.amts)
+              ELSE MtXferLog(MtBatchXferAct(acc, r, r.fr, a.rc, a.tids, a.amts), r, MemoOf(a))
     IN MtCallAct(a1, r, MtBatchOnArgs(r.fr, a.rc, a.tids, a.amts, a.msg),
                  MtBatchResArgs(r.fr, a.rc, a.tids, a.amts))
 
@@ -231,9 +289,11 @@ MtResolveAct(acc, r) ==
     LET a == r.a  L == acc.L
         refund == ResolveRefund(r.res, a.amt, L.bal[a.rc][a.tid], MtDev[r.to])
         L1 == MtMove(L, a.rc, a.s, a.tid, refund, MtDev[r.to])
+        \* the refund's event, receiver to sender, no memo (core :580-599)
+        lg == IF refund > 0 THEN ALog(acc, MtTransferLog(r.to, a.rc, a.s, <<a.tid>>, <<refund>>, -1)) ELSE acc
     IN IF ~MLive(acc) THEN acc
        ELSE IF r.fr # r.to THEN MAE(acc, "Method mt_resolve_transfer is private")
-       ELSE [acc EXCEPT !.L = L1, !.ret = RVal(TMax(a.amt - refund, 0)),
+       ELSE [lg EXCEPT !.L = L1, !.ret = RVal(TMax(a.amt - refund, 0)),
                         !.ev.s = a.s, !.ev.rc = a.rc, !.ev.tid = a.tid, !.ev.refund = refund,
                         !.ev.tids = <<a.tid>>, !.ev.refunds = <<refund>>, !.sz = 1,
                         !.key = MtPathKey(r, "mt_resolve_transfer", IF refund > 0 THEN "refund" ELSE "norefund")]
@@ -261,11 +321,17 @@ MtBatchResolveAct(acc, r) ==
                      cap |-> [c EXCEPT ![id] = @ - refund],
                      rf |-> F[i - 1].rf \o <<refund>>]
         used == [i \in 1..n |-> TMax(a.amts[i] - F[n].rf[i], 0)]
+        \* the refunds' event: one mt_transfer, receiver to sender, no memo,
+        \* of the entries refunded (core :580-599, :791-822)
+        rix == SelectSeq([i \in 1..n |-> i], LAMBDA i : F[n].rf[i] > 0)
+        lg == IF rix = <<>> THEN acc
+              ELSE ALog(acc, MtTransferLog(r.to, a.rc, a.s, [k \in DOMAIN rix |-> a.tids[rix[k]]],
+                                           [k \in DOMAIN rix |-> F[n].rf[rix[k]]], -1))
     IN IF ~MLive(acc) THEN acc
        ELSE IF r.fr # r.to THEN MAE(acc, "Method mt_resolve_transfer is private")
-       ELSE [acc EXCEPT !.L = F[n].L, !.ret = RVal(MtVecCode(used)),
+       ELSE [lg EXCEPT !.L = F[n].L, !.ret = RVal(MtVecCode(used)),
                         !.ev.s = a.s, !.ev.rc = a.rc, !.ev.tids = SubSeq(a.tids, 1, n), !.ev.refunds = F[n].rf,
-                        !.sz = Len(a.tids),
+                        !.sz = MtCount(a.tids),
                         !.key = MtPathKey(r, "mt_resolve_transfer",
                                           IF \E i \in 1..n : F[n].rf[i] > 0 THEN "refund" ELSE "norefund")]
 
@@ -275,20 +341,23 @@ IsMtBatchRes(r) == r.a.tid = ""
 
 MtHandle(r) ==
     LET acc == MAcc0(r)  a == r.a
-        f == CASE r.m = "mt_transfer"         -> LET b == MtXferAct(MYocto(acc, r.dep), r, r.fr, a.rc, a.tid, a.amt)
+        f == CASE r.m = "mt_transfer"         -> LET b == MtXferLog(MtXferAct(MYocto(acc, r.dep), r, r.fr, a.rc, a.tid, a.amt), r, MemoOf(a))
                                                  IN IF MLive(b) THEN [b EXCEPT !.ret = RVal(EMPTY)] ELSE b
-               [] r.m = "mt_batch_transfer"   -> LET b == MtBatchXferAct(MYocto(acc, r.dep), r, r.fr, a.rc, a.tids, a.amts)
-                                                 IN IF MLive(b) THEN [b EXCEPT !.ret = RVal(EMPTY), !.sz = Len(a.tids)]
-                                                    ELSE [b EXCEPT !.sz = Len(a.tids)]
+               [] r.m = "mt_batch_transfer"   -> LET b == MtXferLog(MtBatchXferAct(MYocto(acc, r.dep), r, r.fr, a.rc, a.tids, a.amts), r, MemoOf(a))
+                                                 IN IF MLive(b) THEN [b EXCEPT !.ret = RVal(EMPTY), !.sz = MtCount(a.tids)]
+                                                    ELSE [b EXCEPT !.sz = MtCount(a.tids)]
                [] r.m = "mt_transfer_call"    -> MtTransferCallAct(MYocto(MGasFloor(acc, r), r.dep), r)
                [] r.m = "mt_batch_transfer_call" ->
-                    [MtBatchTransferCallAct(MYocto(MGasFloor(acc, r), r.dep), r) EXCEPT !.sz = Len(a.tids)]
+                    [MtBatchTransferCallAct(MYocto(MGasFloor(acc, r), r.dep), r) EXCEPT !.sz = MtCount(a.tids)]
                [] r.m = "mt_resolve_transfer" /\ ~IsMtBatchRes(r) -> MtResolveAct(acc, r)
                [] r.m = "mt_resolve_transfer" /\ IsMtBatchRes(r)  -> MtBatchResolveAct(acc, r)
                [] OTHER                       -> MAE(acc, "method not found")
-    IN [ready |-> f.rd, post |-> f.ps, ret |-> f.ret, out |-> f.out,
-        ids |-> f.n - nid, err |-> f.err, gk |-> CallKey(r.to, f.key), sz |-> f.sz,
-        mtk |-> [mtk EXCEPT ![r.to] = f.L], ev |-> [f.ev EXCEPT !.m = r.m]]
+        one == r.m \in {"mt_transfer", "mt_transfer_call"} \/ (r.m = "mt_resolve_transfer" /\ ~IsMtBatchRes(r))
+        O == [ready |-> f.rd, post |-> f.ps, ret |-> f.ret, out |-> f.out,
+              ids |-> f.n - nid, err |-> f.err, gk |-> CallKey(r.to, f.key), sz |-> f.sz,
+              lgn |-> f.lgn, lgb |-> f.lgb,
+              mtk |-> [mtk EXCEPT ![r.to] = f.L], ev |-> [f.ev EXCEPT !.m = r.m]]
+    IN IF one => MtOneId(r, a.tid) THEN O ELSE O
 
 IsMtRcpt(r) == r.to \in MtAccts /\ IsCall(r)
 

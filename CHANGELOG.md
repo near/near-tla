@@ -474,8 +474,40 @@ them. A model that lists platform variables one by one must add each.
   any entry of 64 or more stopped TLC, even for a valid call such as amounts 100 and 20), so
   the integer a given vector encodes to differs. Migration: compare vectors through
   `MtVecOf(res).v` or build them with `MtRet(vec)`, never by a literal code.
+- **The token handlers log their standard events** (`TokEvents == TRUE`; SEMANTICS T8, R6).
+  `TokHandle` and `MtHandle` declare, on their outcome, the NEP-297 events and plain logs that
+  near-contract-standards and near-sdk-contract-tools write: a transfer's `ft_transfer` /
+  `mt_transfer` event, a resolver's refund event, the storage logs. Each one's byte length is
+  computed from its content, so the per-call log limits now apply to token calls: a batch
+  whose event is over 16384 bytes fails, moving nothing, and an owed resolver that does is
+  reported by `OwedOK` with `TotalLogLengthExceeded`. The outcomes of `TokHandle` and
+  `MtHandle` (and `TokOut`, `TAcc0`, `MAcc0`) have two more fields, `lgn` and `lgb`, as
+  `Outcome` already had. Every example run that was in the repo before keeps its verdict
+  and state counts: their events are a few hundred bytes. Migration: a model that already
+  declares a token's own events with `OLog` on top of the handler's outcome counts them
+  twice; drop its `OLog`, or set `TokEvents <- FALSE` to turn the library's off. A model that
+  builds the handlers' accumulators by hand adds `lgn |-> 0, lgb |-> 0`.
 
 ### Added
+
+- **Event-log lengths and NEP-245 id classes** (SEMANTICS T8, T5, N-mtclass;
+  `examples/event-logs`). `TokenCommon` computes the exact byte length of an `ft_transfer`,
+  `ft_mint`, `ft_burn`, `mt_transfer`, `mt_mint` or `mt_burn` event from its content
+  (`FtTransferLog`, `FtMintLog`, `FtBurnLog`, `MtTransferLog`, `MtMintLog`, `MtBurnLog`; the
+  envelope `EvLen` and the item operators on raw byte lengths), cited from
+  near-contract-standards 5.29.1 and near-sdk-contract-tools 4.0.0 and checked against the
+  sim (`conformance/tests/events.rs`: 4 tests, among them the edge at which a batch's event
+  crosses 16384 bytes). Knobs give the model's values their real lengths: `EvAcctLen` (account
+  ids), `EvAmtExp` (a token's decimal exponent), `MtIdLen` (token ids), and `WithMemo(args,
+  m)` gives a call a memo of `m` bytes. `MtIdCount[c] = k` makes the model id `c` stand for
+  `k` distinct ids that the model moves alike, so a batch of hundreds of ids needs short
+  vectors only: the event, the burn size and the balances count every id (`MtCount`,
+  `MtIdsBytes`); a single-id method on a class of several ids is an `Assert`. The examples:
+  `event-logs` (every sim length, eight mutants of the formulas), `event-logs/batch-payout`
+  (a two-class batch payout whose event grows by 75 bytes per id, and a `least_gas` sweep over
+  the class size, `payout_edge`, that finds 217 as the first size over the limit) and
+  `event-logs/resolver-log` (an owed resolver over a lowered log limit, and a size sweep of
+  the limit).
 
 - **A 16 MB TLC thread stack, and sums that do not recurse per element.** Every TLC process
   the repo starts gets `-Xss16m` (`tools/run.py`, `tools/sany.py`,

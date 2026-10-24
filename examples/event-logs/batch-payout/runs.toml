@@ -1,0 +1,159 @@
+# A batch payout whose event grows with the batch: D pays R two classes of N ids each with
+# one mt_batch_transfer; its mt_transfer event is 175 + 75 N bytes, over nearcore's 16384
+# from N = 217 (434 ids), where the batch fails with TotalLogLengthExceeded.  See
+# BatchPayout.tla.
+#
+#   python3 tools/run.py examples/event-logs/batch-payout
+#   python3 tools/run.py examples/event-logs/batch-payout --sweep    # finds that N
+#
+# Books    whenever no payout is in flight, D's record matches the ledger.
+# Settles  once idle, no payout is left in flight.
+# OwedOK   on_payout (owed) never fails.
+# Sane     NEAR conserved, no orphans.
+
+spec = "BatchPayout"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["Books", "Settles", "OwedOK", "Sane"]
+tags = ["tokens:events", "tokens:nep245"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"d"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+MtAccts = '{"mt"}'
+MtIds = '{"ca", "cb"}'
+MtHolders = "PMtHolders"
+MtDev = "PMtDev"
+MtCallReserve = "PMtReserve"
+MtIdCount = "PIdCount"
+MtIdLen = "PIdLen"
+EvAmtExp = "PAmtExp"
+EvAcctLen = "PAcctLen"
+U = '"u"'
+D = '"d"'
+R = '"r"'
+MT = '"mt"'
+N = "216"
+AmtA = "1"
+AmtB = "25"
+MaxTx = "2"
+Bug = '"none"'
+
+# 432 ids: the event is 16375 bytes and the batch goes through.
+[[run]]
+name = "payout_fits"
+expect = "pass"
+
+# 434 ids: 16450 bytes; the batch fails, on_payout sees Failed and keeps the reward owed.
+[[run]]
+name = "payout_over"
+expect = "pass"
+[run.constants]
+N = "217"
+
+# The same with on_payout recording the payout as done whatever the batch did.
+[[run]]
+name = "payout_unchecked"
+expect = "violation"
+invariant = "Books"
+[run.constants]
+N = "217"
+Bug = '"ignore"'
+
+# A small batch, for the anti-vacuity checks below.
+[[run]]
+name = "payout_small"
+expect = "pass"
+[run.constants]
+N = "3"
+
+# ---- anti-vacuity: python3 tools/run.py examples/event-logs/batch-payout --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+
+# on_payout's arms, and Books' "paid" arm.
+[[witness]]
+id = "on_payout_sees_ok"
+expr = '~(\E r \in Runnable : r.m = "on_payout" /\ r.res.ok)'
+runs = ["payout_fits", "payout_small"]
+
+[[witness]]
+id = "on_payout_sees_failed"
+expr = '~(\E r \in Runnable : r.m = "on_payout" /\ ~r.res.ok)'
+runs = ["payout_over"]
+
+[[witness]]
+id = "paid"
+expr = 'st # "paid"'
+runs = ["payout_fits", "payout_small"]
+
+# A second payout call after the batch failed: the reward is still owed and sent again.
+[[witness]]
+id = "retry_after_failure"
+expr = '~(st = "sending" /\ ntx = 2 /\ \E r \in Runnable : r.m = "mt_batch_transfer" /\ r.tx = 2)'
+runs = ["payout_over"]
+
+[[mutant]]
+id = "failure_marked_paid"
+file = "BatchPayout.tla"
+find = 'IF r.res.ok \/ Bug = "ignore" THEN "paid" ELSE "owed"'
+replace = 'IF TRUE THEN "paid" ELSE "owed"'
+class = "failure branch skips rollback"
+runs = ["payout_over"]
+killed_by = ["Books"]
+
+[[mutant]]
+id = "inverted_result"
+file = "BatchPayout.tla"
+find = 'IF r.res.ok \/ Bug = "ignore" THEN "paid" ELSE "owed"'
+replace = 'IF ~r.res.ok THEN "paid" ELSE "owed"'
+class = "inverted result check"
+runs = ["payout_small"]
+killed_by = ["Books"]
+
+# The callback never scheduled: nothing consumes the batch's result.
+[[mutant]]
+id = "dropped_then"
+file = "BatchPayout.tla"
+find = 'Outcome({b}, {cb}, RProm, 0, 2)'
+replace = 'Outcome({b}, {}, RProm, 0, 2)'
+class = "dropped .then"
+runs = ["payout_small"]
+
+# payout() sends whatever the state: a second call pays twice (or fails on D's balance).
+[[mutant]]
+id = "no_owed_check"
+file = "BatchPayout.tla"
+find = 'IN IF st # "owed" THEN [O |-> Out0, st |-> st]'
+replace = 'IN IF FALSE THEN [O |-> Out0, st |-> st]'
+class = "removed precondition"
+runs = ["payout_small"]
+
+# ---- sweeps: python3 tools/run.py examples/event-logs/batch-payout --sweep ----
+
+# The batch size at which the event no longer fits: the least N (ids per class) at which R
+# never receives the reward.  least_gas bisects any knob whose success is monotone, here the
+# batch size: the batch commits below the edge and fails with TotalLogLengthExceeded from
+# it.  175 + 75 N > 16384 from N = 217.
+[[sweep]]
+id = "payout_edge"
+kind = "least_gas"
+run = "payout_fits"
+knob = "N"
+form = "%d"
+lo = 1
+hi = 1000
+success = ["NeverPaid"]
+expect_need = 217

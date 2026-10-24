@@ -94,7 +94,8 @@ TEv0 == [m |-> "", s |-> "", rc |-> "", moved |-> 0, call |-> FALSE,
 \*   unreg, unregBurnt   storage_unregister: the account removed and the
 \*                  tokens burnt with it
 TAcc0(r) == [L |-> tk[r.to], n |-> nid, rd |-> {}, ps |-> {}, out |-> 0,
-             ret |-> RVal(EMPTY), err |-> "", ev |-> TEv0, key |-> r.m, pa |-> <<>>]
+             ret |-> RVal(EMPTY), err |-> "", ev |-> TEv0, key |-> r.m, pa |-> <<>>,
+             lgn |-> 0, lgb |-> 0]
 
 \* Overridable: account a "batch" receipt per action (Tokens header).
 \* TRUE (nearcore's behaviour): each call has its own gas and burn key
@@ -128,10 +129,12 @@ TokBytes(r, acc) ==
     THEN RegBytesSum(r.to, acc.L.reg \ tk[r.to].reg) - RegBytesSum(r.to, tk[r.to].reg \ acc.L.reg)
     ELSE 0
 
-\* Outcome record of a token receipt (gas burn key "acct.method[/path]", size 0).
+\* Outcome record of a token receipt (gas burn key "acct.method[/path]", size 0),
+\* with the logs the receipt wrote (lgn, lgb: TokenCommon, "Event logs").
 TokOut(r, acc) ==
     [ready |-> acc.rd, post |-> acc.ps, ret |-> acc.ret, out |-> acc.out,
      ids |-> acc.n - nid, err |-> acc.err, gk |-> CallKey(r.to, acc.key), sz |-> 0,
+     lgn |-> acc.lgn, lgb |-> acc.lgb,
      pa |-> IF TokBatchPerAction THEN acc.pa ELSE <<>>, sb |-> TokBytes(r, acc),
      tk |-> [tk EXCEPT ![r.to] = acc.L], ev |-> [acc.ev EXCEPT !.m = r.m]]
 
@@ -145,7 +148,7 @@ SdAct(acc, r, acct0, x) ==
        ELSE IF a \notin DOMAIN acc.L.bal
             THEN Assert(FALSE, <<"storage_deposit for an account outside TokHolders", r.to, a>>)
        ELSE IF a \in acc.L.reg
-            THEN [TokRefund(acc, r, to, x) EXCEPT !.ret = RVal(NONEMPTY),
+            THEN [TokRefund(ALog(acc, LogAlreadyRegistered), r, to, x) EXCEPT !.ret = RVal(NONEMPTY),
                     !.ev.stoRefund = @ + x, !.ev.stoTo = to, !.ev.stoAcct = a,
                     !.key = PathKey(r, "storage_deposit", "registered")]
        ELSE IF x < min
@@ -165,7 +168,7 @@ SbAct(acc, r, acct0) ==
 SuAct(acc, r, force) ==
     LET p == r.fr  L == acc.L  min == TokStorageMin[r.to] IN
     IF ~Live(acc) THEN acc
-    ELSE IF p \notin L.reg THEN [acc EXCEPT !.ret = RVal(NONEMPTY)]       \* false
+    ELSE IF p \notin L.reg THEN [ALog(acc, LogNotRegistered(p)) EXCEPT !.ret = RVal(NONEMPTY)]   \* false
     ELSE IF L.bal[p] > 0 /\ ~force
          THEN AE(acc, "Can't unregister the account with the positive balance without force")
     ELSE [TokRefund([acc EXCEPT !.L = [L EXCEPT !.reg = @ \ {p}, !.bal[p] = 0,

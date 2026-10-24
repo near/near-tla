@@ -1,0 +1,152 @@
+# Event-log lengths: the model's NEP-297 event lengths (TokenCommon, Nep245) against the
+# lengths nearcore logged in the sim (conformance/tests/events.rs).  See EventLens.tla.
+# The two subdirectories use them: batch-payout (an event that grows with a batch, and the
+# size sweep that finds where it stops fitting) and resolver-log (an owed resolver failing
+# on its log).
+#
+#   python3 tools/run.py examples/event-logs
+#
+# LensOK  every case's length is the one observed (BadF / BadH name the ones that are not).
+# EdgeOK  a batch of the class "big" (K ids) is over the 16384-byte limit iff K > 162.
+# Sane    NEAR conserved, no orphans.
+
+spec = "EventLens"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["LensOK", "EdgeOK", "Sane"]
+deadlock = true
+tags = ["tokens:events"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"ft"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+TokYocto = "0"
+TokenAccts = '{"ft"}'
+WNearAccts = "{}"
+TokHolders = "PTokHolders"
+TokStorageMin = "PTokMin"
+TokDev = "PTokDev"
+TokCallReserve = "PTokReserve"
+MtAccts = '{"mt"}'
+MtIds = '{"big"}'
+MtHolders = "PMtHolders"
+MtDev = "PMtDev"
+MtCallReserve = "PMtReserve"
+EvAcctLen = "PAcctLen"
+EvAmtExp = "PAmtExp"
+MtIdCount = "PIdCount"
+MtIdLen = "PIdLen"
+K = "162"
+
+# The sim's last batch that fits: 162 entries of a 64-byte id, 16362 bytes.
+[[run]]
+name = "event_lens_162"
+expect = "pass"
+
+# One more entry: 16462 bytes, over the limit (EdgeOK: HostLimitErr gives TotalLogLengthExceeded).
+[[run]]
+name = "event_lens_163"
+expect = "pass"
+[run.constants]
+K = "163"
+
+# ---- anti-vacuity: python3 tools/run.py examples/event-logs --anti-vacuity ----
+# Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
+# No behaviour, so no witnesses: every case is evaluated in the one state.  Each mutant
+# changes a piece of the formulas or of the handlers' logs and LensOK must catch it.
+
+[[mutant]]
+id = "ft_item_constant"
+file = "TokenCommon.tla"
+library = true
+find = 'FtXferItem(o, n, d, m)        == 49 +'
+replace = 'FtXferItem(o, n, d, m)        == 48 +'
+class = "off-by-one guard"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+[[mutant]]
+id = "memo_quotes"
+file = "TokenCommon.tla"
+library = true
+find = 'EvMemo(m) == IF m < 0 THEN 0 ELSE 10 + m'
+replace = 'EvMemo(m) == IF m < 0 THEN 0 ELSE 8 + m'
+class = "off-by-one guard"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+[[mutant]]
+id = "list_separators"
+file = "TokenCommon.tla"
+library = true
+find = 'EvList(n, b) == IF n = 0 THEN 0 ELSE b + 3 * n - 1'
+replace = 'EvList(n, b) == IF n = 0 THEN 0 ELSE b + 2 * n'
+class = "off-by-one guard"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+[[mutant]]
+id = "envelope"
+file = "TokenCommon.tla"
+library = true
+find = 'EvLen(s, e, items) == 65 +'
+replace = 'EvLen(s, e, items) == 64 +'
+class = "off-by-one guard"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+# An id class counted as one id in the event.
+[[mutant]]
+id = "class_count_ignored"
+file = "Nep245.tla"
+library = true
+find = 'MtIdsBytes(ids) == SeqSum(LAMBDA i : MtCnt(i) * MtIdB(i), ids)'
+replace = 'MtIdsBytes(ids) == SeqSum(LAMBDA i : MtIdB(i), ids)'
+class = "removed precondition"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+# The resolver's refund event without its memo "refund".
+[[mutant]]
+id = "refund_memo_dropped"
+file = "Nep141.tla"
+library = true
+find = 'ELSE IF sReg THEN ALog(acc, FtTransferLog(r.to, rc, s, refund, 6))'
+replace = 'ELSE IF sReg THEN ALog(acc, FtTransferLog(r.to, rc, s, refund, -1))'
+class = "removed precondition"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+# The token outcome not declaring its logs: nothing reaches the R6 limits.
+[[mutant]]
+id = "logs_not_declared"
+file = "Nep145.tla"
+library = true
+find = 'lgn |-> acc.lgn, lgb |-> acc.lgb,'
+replace = 'lgn |-> 0, lgb |-> 0,'
+class = "removed precondition"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]
+
+# A resolver that logs a refund event with nothing refunded.
+[[mutant]]
+id = "empty_refund_event"
+file = "Nep245.tla"
+library = true
+find = 'rix == SelectSeq([i \in 1..n |-> i], LAMBDA i : F[n].rf[i] > 0)'
+replace = 'rix == SelectSeq([i \in 1..n |-> i], LAMBDA i : F[n].rf[i] >= 0)'
+class = "off-by-one guard"
+runs = ["event_lens_162"]
+killed_by = ["LensOK"]

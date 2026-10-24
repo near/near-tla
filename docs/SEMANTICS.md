@@ -254,7 +254,12 @@ Each rule has four fields:
     4195 KB, which may be either, is an `Assert`.
   - Logs: a handler declares each log it writes with `OLog(O, b)` (b bytes), and
     `HostLimitErr` fails the call past 100 logs or 16384 bytes. Undeclared logs count
-    nothing. The limits are per function-call action, and the outcome's logs are the
+    nothing. The library's token handlers declare their own: the standard events and the
+    plain logs of the implementations they encode, with lengths computed from the content
+    (T8; `TokEvents`, on by default). A failing call's `FailWhy` is the error name
+    (`NumberOfLogsExceeded`, `TotalLogLengthExceeded`), which `OwedOK` shows in `ofail` when
+    the call is an owed resolver (F2). The limits are per function-call action, and the
+    outcome's logs are the
     receipt's, so logs over a limit in a receipt of several function calls are an `Assert`.
     The model keeps no logs, so the ones a failed call keeps are not represented (N-events).
 
@@ -293,7 +298,11 @@ Each rule has four fields:
   logs each succeeds with 120 logs, and one of two calls writing 9000 bytes each, in two
   logs per call, succeeds with 18000 bytes, so both limits are per call; 100 then 101 logs
   fails with `NumberOfLogsExceeded`, keeping 200 logs, and 16384 then 16385 bytes fails
-  with `TotalLogLengthExceeded`, keeping the first call's two logs and the second's first).
+  with `TotalLogLengthExceeded`, keeping the first call's two logs and the second's first;
+  `conformance/tests/events.rs`, `mt_event_crosses_log_limit`: a standard NEP-245 batch whose
+  one event is 16362 bytes passes and one entry more, 16462 bytes, fails with
+  `TotalLogLengthExceeded` and moves nothing, at the entry count the model's event length
+  predicts, T8).
   Each test reads the value from the sim's config and asserts protocol 88's. The
   delegate's inner actions, 4 MiB of code, the yields' promises and the count of nested
   `promise_and` calls: nearcore reading. `examples/limits` checks the model's side at each
@@ -1930,8 +1939,8 @@ Each rule has four fields:
 
 Sources: `neps/nep-0141.md` (fungible token core; `ft_resolve_transfer` requirements at
 `:292-330`), `neps/nep-0145.md` (storage management; interface at `:378-415`),
-`neps/nep-0245.md` (multi token; `mt_resolve_transfer` at `:304-330`), and NEP-297 (events, not
-modelled). The reference implementation is near-contract-standards, in
+`neps/nep-0245.md` (multi token; `mt_resolve_transfer` at `:304-330`), and NEP-297 (events;
+their lengths, T8). The reference implementation is near-contract-standards, in
 `fungible_token/core_impl.rs`, `fungible_token/storage_impl.rs` and `fungible_token/macros.rs`.
 near-contract-standards has no NEP-245 implementation; the one read is
 near-sdk-contract-tools 4.0.0 (`src/standard/nep245/mod.rs`, "core" below, and the
@@ -2128,8 +2137,26 @@ is available locally.
     `MtMinCallGas` (30 Tgas), `MtOnTransferWeight` (10), `MtResolveStatic` (5 Tgas),
     `MtResolveWeight` (1); a `GasCall` entry for the resolver wins.
   - Burn keys are `"<t>.<method>"`. The batch methods and the resolver burn with size =
-    the number of ids, and the resolver uses `/refund` or `/norefund` when `GasBurn` has
-    them.
+    the number of ids (real ids: an id class counts its `MtIdCount`), and the resolver uses
+    `/refund` or `/norefund` when `GasBurn` has them. The per-id slopes of `CalibStdMt` were
+    measured at 1-3 ids; at hundreds of ids the burn is their linear extrapolation.
+  - **Id classes** (batches of protocol size): `MtIdCount[c] = k > 1` makes the model id `c`
+    a class of `k` distinct real ids that every operation moves, caps and refunds alike.
+    `mtk`'s balance of `c` at a holder is the balance of each of its ids; an entry `(c, x)`
+    of `token_ids`/`amounts` stands for `k` entries, `x` of each id. The vectors, a
+    receiver's answer included, keep one entry per class, so `MtVecCode`'s 16-entry bound
+    counts classes, not ids; the events (T8) and the burn size count the `k` ids. The
+    soundness boundary: the model represents exactly the real behaviours in which (1) every
+    id of a class has the same balance at every holder, (2) every operation names whole
+    classes with one amount per id, (3) a receiver answers one value for all the ids of a
+    class, and (4) the ids of a class have one byte length (`MtIdLen`). There the batch's
+    balance checks and atomicity, the resolver's per-id cap and refund, and a repeated
+    entry (a repeated id) are exact, since all of them are per id. Behaviours that set the
+    ids of a class apart (a transfer of some of them, a receiver keeping some and returning
+    others, a model's own handler crediting one) are not represented (N-mtclass). A
+    model reading `mtk` reads per-id balances (a class holds balance × count; `MtTotal` is
+    per id). `mt_transfer`, `mt_transfer_call` and the single-id resolver on a class of
+    several ids are an `Assert`.
   - By default the model panics on sender = receiver and on a zero amount, as T1 does.
     `MtDev[t]` with `"zeroAmountSkipped"` and `"selfTransferCredits"` gives
     near-sdk-contract-tools 4.0.0's behaviour instead (`MtMove`); see N-mt.
@@ -2207,6 +2234,72 @@ is available locally.
   (B2).
 - **Model:** `TokenCommon.Deviations`, `TokDev`, `MtDev`.
 - **Validated:** model-only (they are deliberate departures from the standard).
+
+### T8. Event logs (NEP-297)
+
+- **Rule:** The standard tokens log one `EVENT_JSON:` line per event, the compact JSON
+  `{"standard":S,"version":"1.0.0","event":E,"data":[items]}`, every string quoted, amounts
+  as decimal strings, `memo` left out when `None`, strings JSON-escaped (UTF-8 bytes; `"`
+  and `\` take two). Its byte length, with account ids `o`, `n` (bytes), amount digits `d`,
+  memo `m` (bytes; none adds 0, else `10 + m`), and a list of `k` strings of `b` bytes in
+  all costing `b + 3k − 1` (0 when empty):
+  - envelope: `65 + len(S) + len(E) + Σ items + (number of items − 1)`;
+  - `ft_transfer` item `49 + o + n + d + memo`; `ft_mint`, `ft_burn` item `27 + o + d + memo`;
+  - `mt_transfer` item `65 + o + n + list(ids) + list(amounts) + memo`; `mt_mint`, `mt_burn`
+    item `43 + o + list(ids) + list(amounts) + memo`.
+
+  Where they are emitted, one event per call, `data` of one item:
+  - near-contract-standards 5.29.1 (NEP-141): `ft_transfer` and `ft_transfer_call` log an
+    `ft_transfer` with the call's memo; `ft_resolve_transfer` refunding logs an `ft_transfer`
+    from the receiver with memo `"refund"`, or, for an unregistered sender, the plain log
+    `The account of the sender was deleted` (37 bytes) and an `ft_burn` with memo
+    `"refund"`. `storage_deposit` for a registered account logs `The account is already
+    registered, refunding the deposit` (56), `storage_unregister` by an unregistered caller
+    `The account <id> is not registered` (30 + id). Nothing else in the core logs; mints
+    (`ft_mint`) and a contract's own hooks are the contract's.
+  - near-sdk-contract-tools 4.0.0 (NEP-245): every transfer (the four methods) logs one
+    `mt_transfer` of the entries of nonzero amount, in order (a repeated id once per entry),
+    with the call's memo, and nothing when every amount is 0; the resolver's refunds are one
+    `mt_transfer` from the receiver to the sender, without memo, of the entries it refunds,
+    or nothing. `authorized_id` is never set. `mint` and `burn` log `mt_mint` / `mt_burn`.
+
+  So a batch's event grows with its entries: past 16384 bytes the call fails with
+  `TotalLogLengthExceeded` (R6) and moves nothing. A resolver's refund event lists a
+  subset of the call's entries with amounts no larger and no memo, so a standard NEP-245
+  resolver never logs more than its call did (`resolveNoCap` can refund more than the
+  amount, in more digits); a NEP-141 refund event is 16 bytes longer than a
+  memo-less transfer's (its `"refund"`), but at most 314 bytes.
+- **Sources:** near-contract-standards 5.29.1 `src/event.rs:5-30`,
+  `src/fungible_token/events.rs:21-123` (the items, the envelope), `fungible_token/core_impl.rs:94-112`,
+  `:204-210`, `:221-227`, `fungible_token/storage_impl.rs:33`, `:61`; near-sdk-contract-tools
+  4.0.0 `src/standard/nep297.rs:41-89` (the envelope), `src/standard/nep245/event.rs:39-90`
+  (the items), `src/standard/nep245/mod.rs:791-869` (`transfer`, `mint`, `burn`), `:580-599`
+  (the resolver's refund transfer), and its macros crate's `src/standard/event.rs:41-45`,
+  `src/standard/nep297.rs:98-127` (snake-cased event names).
+- **Model:** `TokenCommon` ("Event logs"): `EvLen`, `FtXferItem`, `FtOwnerItem`,
+  `MtXferItem`, `MtOwnerItem`, `EvMemo`, `EvList` on byte lengths; `FtTransferLog`,
+  `FtMintLog`, `FtBurnLog` (and `Nep245`'s `MtTransferLog`, `MtMintLog`, `MtBurnLog`) on
+  model accounts and amounts. A handler's accumulator collects its logs (`ALog`) and the
+  outcome declares them (`lgn`, `lgb`, the fields of `OLog`), so `HostLimitErr` applies.
+  `TokEvents` (default `TRUE`) turns this off. Lengths of model values: an account counts
+  `EvAcctLen[a]` bytes, else `Len(a)`; a token's amount `x` prints with `Digits(x) +
+  EvAmtExp[t]` digits (`x` stands for `x × 10^e` base units; 0 prints `"0"`); a token id
+  `MtIdLen[i]` bytes, else `Len(i)`; a call's memo is the field `memo` of its arguments
+  (`WithMemo(args, m)`, its escaped bytes), absent for `None`. `ft_mint`, `mt_mint` and
+  `mt_burn` have no library method: a model's own mint or burn handler adds them with
+  `ALog` or `OLog`. WNear's `near_deposit` / `near_withdraw` log nothing (no source; T6).
+- **Validated:** sim (`conformance/tests/events.rs`): every log of these, on the `ft` and
+  `mt` probes, is the formula's length: `ft_transfer` with no memo, an empty one, 6, 12 bytes
+  escaped (a quote and a backslash) and 500 bytes, account ids of 7 to 55 bytes and amounts
+  of 1 to 38 digits; `ft_transfer_call`'s; the resolver's refund and its burn (the plain log
+  and `ft_burn`); the two NEP-145 plain logs; `mt_mint` from `new` for ids of 1, 2, 22 bytes
+  and an escaped one; `mt_batch_transfer` of 1, 2 and 3 entries (a repeated id, a quoted
+  memo), with zero entries left out and none at all for an all-zero batch; `mt_transfer`;
+  `mt_batch_transfer_call` and its resolver's refund events (two refunds, one, none);
+  and the batch at the limit (R6). `ft_mint` and `mt_burn`, which no probe emits: against
+  the crates' own test strings (`events.rs:137`, `:156`; `nep245/event.rs:168`; the
+  `mt_burn` one with generic ids of the same lengths), source only. `examples/event-logs` checks the model's operators and handlers on the same cases
+  (`EventLens`).
 
 ---
 
@@ -2643,6 +2736,11 @@ against the current module code; some may be fixed in the modules later.
   them (`examples/mt-batch`: `mt_batch_zero_skipped`, `mt_batch_self_credits`). The
   default stays, so existing models keep their state spaces. Approvals (NEP-245's approval
   management) are not modelled.
+- **N-mtclass. NEP-245 id classes.** An id with `MtIdCount > 1` stands for that many ids
+  that are always alike (T5): balances, amounts, a receiver's answer and byte length. A
+  behaviour that sets them apart is not explored, though nearcore allows it: a transfer of
+  some of a class, a receiver keeping some ids and returning others, a model's own handler
+  touching one. Split a class into smaller ones (or into single ids) where that matters.
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
   touched. A model whose accounts can be deleted and created again must reset them, with
@@ -2697,7 +2795,8 @@ against the current module code; some may be fixed in the modules later.
   contract. Wasm-level behaviour (panics on overflow, serialization, unexpected host errors) is
   covered only by replaying counterexamples in the sim.
 - **N-events. Logs and events (NEP-297).** Not modelled, apart from their count and bytes
-  against the protocol limits (`OLog`, R6). A failed receipt keeps its logs
+  against the protocol limits (`OLog`, R6): the token handlers declare theirs (T8), a
+  model's own handlers what they declare. A failed receipt keeps its logs
   (`runtime/runtime/src/lib.rs:535-541`), so a log is not proof of a committed write.
 - **N-views. View calls.** Views are pure reads outside receipts (`ProhibitedInView` for every
   promise host function). `ft_balance_of`/`ft_total_supply` are modelled as reads of the
