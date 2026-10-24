@@ -57,7 +57,7 @@ ReserveShapes == [t \in {FT} |-> "reserve"]
 \* Per-byte storage (selftest_storage): bytes at the start, 1 unit per 100 bytes.
 SStor     == [a \in Accts |-> CASE a = V -> 900 [] a \in {C, D} -> 700 [] a = FT -> 1000 [] OTHER -> 0]
 SCost     == <<1, 100>>
-STokBytes == [t \in {FT} |-> 200]
+STokBytes == [t \in {FT} |-> [h \in STokHolders[t] |-> IF h = W THEN 180 ELSE 150]]   \* ids of different lengths
 Tok0 == [t \in {FT} |-> Ledger([h \in {U, W, C, D} |-> CASE h = U -> 5 [] h = C -> 3 [] OTHER -> 0],
                                {U, C, D})]
 
@@ -832,9 +832,10 @@ Expect(s) ==
     [] s = "stor_signer" ->       \* a transaction whose deposit would leave the signer uncovered
          \* is refused.  verifier.rs:375-386
          acc = <<FALSE, TRUE>> /\ near[V] = 9 /\ near[C] = 6
-    [] s = "stor_tokens" ->       \* a registration adds TokRegBytes, kept from the deposit;
-         \* unregistering frees them.  storage_impl.rs:8-36, :51-78; core_impl.rs:51-57
-         stor[FT] = 1200 /\ L.reg = {U, C, D, W} /\ near[FT] = 12 /\ near[U] = 8
+    [] s = "stor_tokens" ->       \* a registration adds its holder's TokRegBytes (w 180, u 150),
+         \* kept from the deposit; unregistering frees them.  storage_impl.rs:8-36, :51-78;
+         \* core_impl.rs:51-57
+         stor[FT] = 1180 /\ L.reg = {U, C, D, W} /\ near[FT] = 12 /\ near[U] = 8
 
 Check == Done => Expect(scn)
 \* zero_gas_left0, zero_gas_heavy: whether the creator (tx 1's spawn0) committed.  Under "up"

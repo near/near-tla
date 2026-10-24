@@ -30,8 +30,8 @@
 (*   happened.  The NEP-141 resolver's burn path needs this method.        *)
 (* Storage bytes (with StoragePerByte): a registration is the only change  *)
 (* in a standard FT's storage (balances are fixed-width u128 values), so   *)
-(* every token receipt declares TokRegBytes[t] bytes per account it        *)
-(* registers and frees as many per account it unregisters (TokOut's sb):   *)
+(* every token receipt declares TokRegBytes[t][h] bytes per holder h it    *)
+(* registers and frees as many when h unregisters (TokOut's sb):           *)
 (* storage_deposit, storage_unregister, near_deposit, and transfers under  *)
 (* the "autoRegister" deviation, which adds bytes with no deposit.         *)
 (***************************************************************************)
@@ -50,15 +50,25 @@ CONSTANTS
 
 VARIABLE tk
 
-\* Storage bytes of one registration, per token (used with StoragePerByte;
-\* overridable).  near-contract-standards stores an account's balance under
-\* prefix + borsh(AccountId) as a u128: 1 + 4 + len(id) + 16 + 40 bytes for a
-\* one-byte prefix (fungible_token/core_impl.rs:41-57, measured at init with
-\* a 64-character id), so 125 for the longest id, and storage_balance_bounds
-\* min = 125 bytes x 1e19 = 1.25e21 yocto (storage_impl.rs:107-111).  Keep
-\* TokStorageMin[t] = TokRegBytes[t] priced at StorageByteCost.  Default 0:
-\* no bytes.
-TokRegBytes == [t \in TokenAccts |-> 0]
+\* Storage bytes of holder h's registration at token t, TokRegBytes[t][h]
+\* for h \in TokHolders[t] (used with StoragePerByte; overridable).
+\* near-contract-standards stores a balance under prefix + borsh(AccountId)
+\* as a u128: StdRegBytes(len(id)) = 1 + 4 + len(id) + 16 + 40 bytes for a
+\* one-byte prefix (fungible_token/core_impl.rs:41-57).  The bytes depend on
+\* the holder's real id: a registration and its removal move the same count,
+\* and a short id takes fewer bytes than the deposit pays for.
+\* storage_balance_bounds min is priced at the longest id, StdRegBytes(64) =
+\* 125 bytes x 1e19 = 1.25e21 yocto (storage_impl.rs:107-111, measured at
+\* init); TokStorageMin is that price, not a per-holder one.  Default 0: no
+\* bytes.
+StdRegBytes(idLen) == 1 + 4 + idLen + 16 + 40
+TokRegBytes == [t \in TokenAccts |-> [h \in TokHolders[t] |-> 0]]
+RegBytes(t, h) ==
+    IF h \in DOMAIN TokRegBytes[t] THEN TokRegBytes[t][h]
+    ELSE Assert(FALSE, <<"TokRegBytes has no entry for holder", t, h>>)
+RECURSIVE RegBytesSum(_, _)
+RegBytesSum(t, S) == IF S = {} THEN 0
+                     ELSE LET h == CHOOSE x \in S : TRUE IN RegBytes(t, h) + RegBytesSum(t, S \ {h})
 
 \* Initial ledger helper: balances b (a function on TokHolders[a]), registered set.
 Ledger(b, reg) ==
@@ -113,11 +123,11 @@ YoctoAct(acc, dep) ==
     IF TokYocto > 0 /\ dep # TokYocto
     THEN AE(acc, "Requires attached deposit of exactly 1 yoctoNEAR") ELSE acc
 
-\* Storage bytes a token receipt adds: TokRegBytes per account registered
-\* (negative when it unregisters).
+\* Storage bytes a token receipt adds: the registered holders' bytes, less
+\* the unregistered holders' bytes.
 TokBytes(r, acc) ==
-    IF StoragePerByte /\ TokRegBytes[r.to] # 0
-    THEN TokRegBytes[r.to] * (Cardinality(acc.L.reg) - Cardinality(tk[r.to].reg))
+    IF StoragePerByte
+    THEN RegBytesSum(r.to, acc.L.reg \ tk[r.to].reg) - RegBytesSum(r.to, tk[r.to].reg \ acc.L.reg)
     ELSE 0
 
 \* Outcome record of a token receipt (gas burn key "acct.method[/path]", size 0).

@@ -330,7 +330,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
-| `TokRegBytes` | 0 per token | with `StoragePerByte`: the bytes one registration adds to the token (125 for near-contract-standards with a 64-character id; keep `TokStorageMin` equal to it priced at `StorageByteCost`) |
+| `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
@@ -1016,8 +1016,7 @@ added, negative when freed. Count them with nearcore's rule (`RecordBytes(k, v)`
 
 ```tla
 \* deposit(): a new entry under "d" + borsh(AccountId) (4 + 64 bytes) holding a u128 (16)
-IF u 
-otin DOMAIN book
+IF u \notin DOMAIN book
 THEN OStor(Outcome({}, {}, RVal(0), 0, 0), RecordBytes(1 + 4 + 64, 16))
 ELSE Outcome({}, {}, RVal(0), 0, 0)                     \* an overwrite of the same length: 0
 ```
@@ -1029,7 +1028,8 @@ The library adds the rest itself:
   receiver and method names: give the receiver id's length with `IdBytes`, and placeholder
   method names their real byte count with `WithMethodBytes`.
 - Implicit-account creation (`CreatedBytes`: 182, 132 or 100 bytes).
-- Token registrations, when you set `TokRegBytes` (`Nep145`): `storage_deposit`,
+- Token registrations, when you set `TokRegBytes` (`Nep145`, per token and holder):
+  `storage_deposit`,
   `storage_unregister`, `near_deposit`, and `"autoRegister"` transfers, which add bytes with
   no deposit.
 

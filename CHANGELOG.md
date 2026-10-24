@@ -341,7 +341,7 @@ Each entry ends with its migration.
   `KeysWithNonce`, `SignedDelegate`, `DelegRcpt`, `SubmitDelegate`, `DelegMayExpire`,
   `DelegMustExpire`, `DelegInner`, `DelegErr`, `ExecDelegate`, `IdBytes`, `KeyBytes`,
   `KeyMapBytes`, `KeyActBytes`, `KeyActsBytes`; and in the token modules: `TokRegBytes`,
-  `TokBytes`,
+  `StdRegBytes`, `RegBytes`, `RegBytesSum`, `TokBytes`,
   `OnTransferStatic`, `ReserveShort`,
   `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
   `FtMaxResultLen`, `ResolveUnusedLim`, `ResolveRefundLim`, `TokResolveMaxLen`,
@@ -365,8 +365,8 @@ Each entry ends with its migration.
   their bytes with `OStor(O, d)` (`RecordBytes(k, v)` = key + value + 40); key actions
   (`NearKeys.KeyBytes`: 82 bytes for a full-access key, the borsh formula for a function-call
   key with `IdBytes` for the receiver and the AddKey fee's method-name bytes), bundled key actions (`WithKeyActs`), implicit-account creation
-  (`CreatedBytes`: 182, 132 or 100) and token registrations (`Nep145.TokRegBytes`, 125 bytes for
-  near-contract-standards) are counted by the library. A transaction that would leave its
+  (`CreatedBytes`: 182, 132 or 100) and token registrations (`Nep145.TokRegBytes`, per token and holder:
+  `StdRegBytes(len(id))` = 61 + the id's length for near-contract-standards) are counted by the library. A transaction that would leave its
   signer uncovered cannot be submitted (`CanSubmit`). The fixed `StorageFloor` stays the
   default and is not checked with `StoragePerByte`: both encode the same rule. The invariant
   `StorageCovered` holds from a covered initial state, which `PlatformInit` asserts.

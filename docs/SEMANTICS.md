@@ -1138,7 +1138,7 @@ Each rule has four fields:
     fails) and folds the key bytes into the call's in `WithKeyActs`, so a bundled receipt is
     checked once, at its end. `ExecTransfer` gives a created account `CreatedBytes`.
     `CanSubmit` refuses a transaction that would leave its signer uncovered. `Nep145`'s
-    `TokRegBytes` adds a token's bytes per registration. `StorageFloor` is not checked.
+    `TokRegBytes` adds a holder's bytes per registration at a token. `StorageFloor` is not checked.
     `PlatformInit` asserts that every initial balance covers its bytes, and the library checks
     every step that can lower liquid + locked or raise bytes: function calls, AddKey,
     submission. Transfers, refunds, Stake, Delegate and DeleteKey receipts never do, so
@@ -1275,12 +1275,14 @@ locally.
   falling back to `"<t>.storage_deposit"`), `SuAct` (`SuArgs(force)`; both booleans are `NONEMPTY` bytes,
   `ev.unreg` / `ev.unregBurnt` say what happened), `SbAct` (`Some` is the number `total` = min,
   `null` is `NONEMPTY`). Deviation `sdRefundToAccount` refunds to `account_id` instead. With
-  `StoragePerByte`, every token receipt declares `TokRegBytes[t]` bytes per account it
-  registers and frees as many per account it unregisters (`TokBytes`; balances are fixed-width,
-  so a registration is the only change). near-contract-standards stores 1 + 4 + len(id) + 16 +
-  40 bytes per account and prices `min` at a 64-character id, 125 bytes (1.25e21 yocto,
-  `fungible_token/core_impl.rs:41-57`, `storage_impl.rs:107-111`); keep `TokStorageMin` equal to
-  `TokRegBytes` at `StorageByteCost`. `Nep245` has no storage management: its bytes are the
+  `StoragePerByte`, every token receipt declares `TokRegBytes[t][h]` bytes per holder `h` it
+  registers and frees as many when `h` unregisters (`TokBytes`; balances are fixed-width, so a
+  registration is the only change). near-contract-standards stores `StdRegBytes(len(id))` = 1 + 4
+  + len(id) + 16 + 40 bytes per holder and prices `min` at a 64-character id, 125 bytes
+  (1.25e21 yocto, `fungible_token/core_impl.rs:41-57`, `storage_impl.rs:107-111`).
+  `TokStorageMin` is that price for every holder, while a shorter id's registration takes fewer
+  bytes, so the bytes must follow the holder's real id: a token whose balance just covers its
+  bytes can fail a `storage_unregister` that frees fewer bytes than the minimum it repays. `Nep245` has no storage management: its bytes are the
   model's.
 - **Validated:** source read.
 
