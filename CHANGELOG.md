@@ -80,7 +80,9 @@ Each entry ends with its migration.
   creators. No other example run changes verdict or state count. Migration: a model with a
   static-0 weighted child and a small or zero model leftover gets the extra successor; an
   invariant that assumed the creator fails (or commits) must accept both, or the model must
-  give the child static gas. A custom `Verdict` consumer must handle `"either"`.
+  give the child static gas. A model that reads `Verdict` itself must handle `"either"` by
+  taking both branches, as `Exec` does: a test like `IF Verdict(..) = "commit" THEN .. ELSE`
+  silently turns it into a failure, and TLC reports nothing.
 - **Gas mode: `NearKeys.KeyFee` charges a function-call AddKey its per-byte fee**
   (`AddKeyFcBytesFee`, self-directed) on `Σ (len(name) + 1)` bytes over the permission's method
   names (`utils.rs:4-6`; `host.rs:4078-4091`); it used to charge only the base fee (2,000
