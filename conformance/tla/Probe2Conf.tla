@@ -4,38 +4,44 @@
 (* the flow set probes2 of scripts/flowsets.py): ProbeConf's driver and    *)
 (* world, plus the account "z" running the second generic probe            *)
 (* (conformance/probes/probe2) and the plain account "bob".  The generated *)
-(* cfg replaces ProbeConf's Accts, ConfContracts and Run by Accts2,        *)
-(* ConfContracts2 and Run2 (TLC's `<-`), so ProbeConf and every probes run *)
-(* stay as they are.  Run2 is ProbeConf's Run with z's handlers (PZ).      *)
+(* cfg replaces ProbeConf's Accts, ConfContracts and Report by Accts2,     *)
+(* ConfContracts2 and Report2 (TLC's `<-`) and runs Init2 and Next2, so    *)
+(* ProbeConf and every probes run stay as they are.  Run2 is ProbeConf's   *)
+(* Run with z's handlers (PZ), and it records each receipt's deposit       *)
+(* (dlog, by receipt id), which Report2 adds to every record of rlog as    *)
+(* dep: scripts/conform.py compares deposits in this set.                  *)
 (*                                                                         *)
 (* probe2, on account "z" (payload Z0; a result size n is in KB):          *)
-(*   refund_call  one call (kids[1]), its refund target rto ("" unset: z,   *)
+(*   refund_call  one call (kids[1]), its refund target rto ("" unset: z,  *)
 (*           the predecessor); the call's deposit leaves z                 *)
 (*   paid    panics ("paid fail"): its deposit is refunded to its rto      *)
 (*   join    kids joined with promise_and, flat or nested (nest), then cb; *)
 (*           the joint callback's inputs are the kids flattened in         *)
 (*           argument order: "inner" ((k1 & k2) & k0) gives k1, k2, k0     *)
 (*   on_expect  fails unless result i (0-based) is n KB, -1 for Failed     *)
-(*   yield_id  yields on_yield (static st, weight 1) under the custom id  *)
+(*   yield_id  yields on_yield (static st, weight 1) under the custom id   *)
 (*           `id` ("" : a plain promise_yield_create) with deposit dep,    *)
 (*           unless a yield of z with that id is pending (then nothing is  *)
 (*           created: the host's u64::MAX); with twice, a second create in *)
 (*           the same call (always a duplicate); with ret, the yield is    *)
-(*           returned (its callback's result is the caller's)              *)
+(*           returned (its callback's result is the caller's); key, a      *)
+(*           marker probe2 only logs, picks the burn key's path            *)
 (*   resume  resumes z's pending yield with custom id `id` ("" : the plain *)
 (*           yield) with n bytes, if any (OResume)                         *)
 (*   on_yield  the yield callback: returns the payload (empty on a         *)
-(*           timeout); with again, re-creates its own id (static          *)
+(*           timeout); with again, re-creates its own id (static           *)
 (*           AgainGgas, weight 1) unless pending                           *)
 (*   stake_then  a Stake of amt by z itself, then cb on its result         *)
 (* The custom-id duplicate check is the handler's (NearAsync's             *)
 (* PendingYieldRcpts; docs/SEMANTICS.md C7, "Left to the handler"): the id *)
 (* is kept in each yield's payload.                                        *)
 (* Burn keys follow the calibration's (CalibProbes2.tla): a method that    *)
-(* shows several child shapes is keyed "<method>/<shape>/<path>" ("-": no *)
-(* children); the handlers pick the shape and path by what they do.       *)
+(* shows several child shapes is keyed "<method>/<shape>/<path>" ("-": no  *)
+(* children); the handlers pick the shape and path by what they do.        *)
 (***************************************************************************)
-EXTENDS ProbeConf
+EXTENDS ProbeConf, TLC
+
+VARIABLE dlog   \* receipt id -> its deposit (model units), each receipt run
 
 Accts2 == {"alice", "dave", "p", "q", "y", "nobody", "nimp", "nimp_new", "eth", "eth_new", "z", "bob"} \cup Toks
 ConfContracts2 == {"p", "q", "y", "z"} \cup Toks
@@ -44,7 +50,7 @@ ConfContracts2 == {"p", "q", "y", "z"} \cup Toks
 AgainGgas == 5000
 
 Z0 == [kids |-> <<>>, cb |-> <<>>, gk |-> "", rto |-> "", nest |-> "flat", i |-> 0, n |-> 0,
-       id |-> "", dep |-> 0, st |-> 0, twice |-> FALSE, ret |-> FALSE, again |-> FALSE, amt |-> 0]
+       id |-> "", dep |-> 0, st |-> 0, twice |-> FALSE, ret |-> FALSE, again |-> FALSE, amt |-> 0, key |-> ""]
 ZA(f) == CxArgs(f)
 
 ZKey(r, k) == r.to \o "." \o k
@@ -90,13 +96,13 @@ HYieldId(r) ==
         ys1 == IF made1 THEN {Y(nid, x.ret)} ELSE {}
         made2 == x.twice /\ (x.id = "" \/ ~IdPending(r, ys1, x.id))
         ys == ys1 \cup (IF made2 THEN {Y(nid + Cardinality(ys1), FALSE)} ELSE {})
-        dup == ~made1 \/ (x.twice /\ ~made2)
         O == Outcome({}, ys, IF x.ret /\ made1 THEN RProm ELSE RVal(EMPTY), x.dep * Cardinality(ys), Cardinality(ys))
-        \* a flow's path names the whole key (mkconf.py); two yields would
-        \* be shape "on_yield,on_yield", which the table lacks (TLC stops)
+        \* a flow's path names the whole key (mkconf.py); else the path is
+        \* the marker key's ("reuse"), or "new". Two yields would be shape
+        \* "on_yield,on_yield", which the table lacks (TLC stops).
         k == IF x.gk # "" THEN x.gk
              ELSE "yield_id/" \o (IF ys = {} THEN "-" ELSE IF Cardinality(ys) = 1 THEN "on_yield" ELSE "on_yield,on_yield")
-                  \o (IF dup THEN "/dup" ELSE "/new")
+                  \o "/" \o (IF x.key # "" THEN x.key ELSE "new")
     IN OKey(O, ZKey(r, k))
 
 HResume2(r) ==
@@ -134,12 +140,21 @@ PZ(r) ==
 
 PH2(r) == IF r.to = "z" THEN PZ(r) ELSE PH(r)
 
-\* ProbeConf's Run, with PH2.
+\* ProbeConf's Run, with PH2; it records the receipt's deposit.
 Run2 ==
     \E r \in Runnable :
        /\ IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED <<tk, keyVars>>
           ELSE IF IsDeleg(r) THEN ExecDelegate(r) /\ UNCHANGED tk
           ELSE IF IsTokRcpt(r) THEN \E ch \in TokChoices(r) : TokStep(r, TokHandle(r, ch)) /\ UNCHANGED keyVars
           ELSE Exec(r, PH2(r)) /\ UNCHANGED <<tk, keyVars>>
+       /\ dlog' = dlog @@ (r.id :> r.dep)
        /\ UNCHANGED confVars
+
+Init2 == Init /\ dlog = [i \in {} |-> 0]
+Next2 == ((Start \/ AfterStep) /\ UNCHANGED dlog) \/ Run2
+
+\* ProbeConf's Report, each record with the receipt's deposit (-1: none
+\* recorded, which conform.py fails).
+DepOf(i) == IF i \in DOMAIN dlog THEN dlog[i] ELSE -1
+Report2 == Done => PrintT(<<"CONF", pp, Parked, {[dep |-> DepOf(e.id)] @@ e : e \in rlog}>>)
 =============================================================================

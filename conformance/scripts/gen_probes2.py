@@ -46,8 +46,9 @@ wasm = "../probes/res/probe2.wasm"
 source = "conformance/probes/probe2 (near-sdk 5.29.1)"
 
 # probe2's paths, from its logs: a resume the host accepted or not; a yield
-# callback that got a payload or timed out; a yield_id that met a pending
-# custom id (in the same call or an earlier one) or not.
+# callback that got a payload or timed out; a yield_id with the marker
+# `key = "reuse"` (logged, nothing else: a calibration-key choice, see
+# yid_reuse) or not.
 [[path_rule]]
 call = "z-probe.near.resume"
 log = "resume ok"
@@ -62,8 +63,8 @@ else = "payload"
 
 [[path_rule]]
 call = "z-probe.near.yield_id"
-log = "yield duplicate"
-path = "dup"
+log = "key reuse"
+path = "reuse"
 else = "new"
 
 # Burn sizes: ret(bytes) by its argument, in KB (1000 bytes).
@@ -82,7 +83,7 @@ def call(rx, m, args="", st=0, wt=0, dep=0):
 def tomlmap(d):
     return "{ " + ", ".join(f'"{k}" = "{v}"' for k, v in d.items()) + " }"
 
-def flow(name, about, rx, m, args, statics=(), path="", path_for=(), signer="alice.near", grid="standard", keys=None, comment="", after=(), setup=()):
+def flow(name, about, rx, m, args, statics=(), path="", path_for=(), signer="alice.near", grid="standard", keys=None, comment="", after=()):
     s = comment + f'''[[flow]]
 name = "{name}"
 about = "{about}"
@@ -95,13 +96,6 @@ grid = "{grid}"
         if path_for: s += f"path_for = {json.dumps(list(path_for))}\n"
     a = args if isinstance(args, str) else json.dumps(args)
     s += f'''tx = {{ signer = "{signer}", receiver = "{rx}", method = "{m}", args = '{a}', deposit = "" }}
-'''
-    for srx, sm, sargs in setup:
-        s += f'''[[flow.setup]]
-signer = "{signer}"
-receiver = "{srx}"
-method = "{sm}"
-args = '{json.dumps(sargs)}'
 '''
     for child, acts in statics:
         s += f'''[[flow.static]]
@@ -146,16 +140,20 @@ def idx(name, about, kids, nest, i, n):
     cb = call(Z, "on_expect", {"i": i, "len": n}, 10050, 1)
     statics = [(f"{Q}.{m}", [[10000, 0]]) for m in sorted({k["method"] for k in kids})] + [(f"{Z}.on_expect", [[10050, 1]])]
     flow(name, about, Z, "join", {"kids": kids, "nest": nest, "cb": cb}, statics=statics, path=nest, path_for=[f"{Z}.join"])
-for nest, i, n in (("flat", 0, 1000), ("flat", 1, 2000), ("flat", 2, 4000), ("left", 2, 4000), ("right", 0, 1000),
-                   ("inner", 0, 2000), ("inner", 2, 1000)):
-    idx(f"idx_{nest}_{i}", f"z.join(q.ret 1000, 2000, 4000 bytes; {nest}), then z.on_expect({i}, {n} bytes)", RET, nest, i, n)
-idx("idx_fail_mid_1", "z.join(q.ret(1000), q.fail, q.ret(4000); flat), then z.on_expect(1, Failed)", FAILMID, "flat", 1, -1)
-idx("idx_fail_mid_2", "z.join(q.ret(1000), q.fail, q.ret(4000); flat), then z.on_expect(2, 4000 bytes): the result after a failed one", FAILMID, "flat", 2, 4000)
+# Every nesting at every index; the inputs' sizes in flattened order:
+ORDER = {"flat": (1000, 2000, 4000), "left": (1000, 2000, 4000), "right": (1000, 2000, 4000), "inner": (2000, 4000, 1000)}
+for nest, sizes in ORDER.items():
+    for i, n in enumerate(sizes):
+        idx(f"idx_{nest}_{i}", f"z.join(q.ret 1000, 2000, 4000 bytes; {nest}), then z.on_expect({i}, {n} bytes)", RET, nest, i, n)
+for i, n in enumerate((1000, -1, 4000)):
+    idx(f"idx_fail_mid_{i}", f"z.join(q.ret(1000), q.fail, q.ret(4000); flat), then z.on_expect({i}, {'Failed' if n < 0 else f'{n} bytes'})",
+        FAILMID, "flat", i, n)
 
 # C7, promise_yield_create_with_id: z.yield_id yields z.on_yield (static
 # 5000 w1) under a custom id; the after steps (alice, 300 Tgas) create it
 # again, resume it by id (10 bytes) or let it time out. A pending id makes
-# a create return u64::MAX and park nothing (the yield_id path "dup").
+# a create return u64::MAX and park nothing (no children: the burn key's
+# shape "-").
 ONY = [(f"{Z}.on_yield", [[5000, 1]])]
 def yid(name, about, args, after=(), **kw):
     a = {"cb_ggas": 5000}
@@ -163,17 +161,16 @@ def yid(name, about, args, after=(), **kw):
     flow(name, about, Z, "yield_id", a, statics=ONY, after=after, **kw)
 def resume(i, n=10):
     return (Z, "resume", {"id": i, "bytes": n})
-yid("yid_twice", "z.yield_id(t) creating t twice in one call: the second is a duplicate; then the yield times out", {"id": "t", "twice": True}, ["expire"])
+yid("yid_twice", "z.yield_id(t) creating t twice in one call: the second is a duplicate; then the yield times out", {"id": "t", "twice": True}, ["expire"],
+    path="twice", path_for=[f"{Z}.yield_id"])
 yid("yid_dup_later", "z.yield_id(d), then z.yield_id(d) again (a duplicate: nothing parked), then z.resume(d)", {"id": "d"},
     [(Z, "yield_id", {"id": "d", "cb_ggas": 5000}), resume("d")])
-# yid_reuse: the first yield of r and its resume are the flow's setup (its
-# callback runs there), so the swept create is the one after it. A create
-# of an id used before burns about 17 Ggas more than a first one (the
-# runtime has written and removed the id's mapping): its own key (path
-# "reuse"). The model starts from the world, as the setup leaves it: no
-# yield pending.
-yid("yid_reuse", "after a setup that yields r and resumes it (its callback runs), z.yield_id(r) again: a new yield, which times out", {"id": "r"},
-    ["expire"], setup=[(Z, "yield_id", {"id": "r", "cb_ggas": 5000}), resume("r")], path="reuse", path_for=[f"{Z}.yield_id"])
+# yid_reuse: a create of an id used before burns about 17 Ggas more than a
+# first one (the runtime has written and removed the id's mapping), so the
+# second create carries the marker key = "reuse", which probe2 only logs:
+# its own burn key (path "reuse"), a calibration-key choice, not semantics.
+yid("yid_reuse", "z.yield_id(r), z.resume(r) (its callback runs), then z.yield_id(r) again: a new yield, which times out", {"id": "r"},
+    [resume("r"), (Z, "yield_id", {"id": "r", "cb_ggas": 5000, "key": "reuse"}), "expire"])
 yid("yid_again", "z.yield_id(a) whose callback re-creates a (static 5000 w1); z.resume(a) twice: each callback runs", {"id": "a", "again": True},
     [resume("a"), resume("a")])
 flow("yid_resume_none", "z.resume(n) with no yield of that id: the host returns false (the resume path none)", Z, "resume",

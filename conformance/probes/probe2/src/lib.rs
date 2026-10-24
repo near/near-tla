@@ -341,7 +341,10 @@ impl Probe2 {
     /// (from this account), and with `twice` once more with the same id;
     /// without, by `promise_yield_create`, its data id stored. Logs "yield
     /// created" or "yield duplicate" per attempt. With `ret`, returns the
-    /// first yield. `again` is passed to the callback.
+    /// first yield. `again` is passed to the callback. `key` is only
+    /// logged ("key <key>"), first: a marker a flow's `[[path_rule]]` reads
+    /// to give this call its own burn key, with no effect on what it does.
+    #[allow(clippy::too_many_arguments)]
     pub fn yield_id(
         &mut self,
         id: Option<String>,
@@ -350,7 +353,11 @@ impl Probe2 {
         twice: Option<bool>,
         ret: Option<bool>,
         again: Option<bool>,
+        key: Option<String>,
     ) {
+        if let Some(k) = key {
+            log!("key {}", k);
+        }
         let again = again.unwrap_or(false);
         let first = match &id {
             Some(t) => {

@@ -268,10 +268,58 @@ class Conform(unittest.TestCase):
         self.assertEqual(conform.sim_records(line, names, refunds=True), want)
         self.assertEqual(conform.model_records(model, "", refunds=True), want)
 
+    def deposit_flow(self, sim_yocto, model_dep, model_has_dep=True):
+        """A sweep and model where z.paid (2 NEAR attached) fails and its
+        deposit is refunded to bob: the sim refunds `sim_yocto`, the model
+        `model_dep` (model units)."""
+        names = {"z-probe.near": "z", "bob.near": "bob"}
+        flows = FLOWS.replace('names = { "q-probe.near" = "q" }',
+                              'names = { "q-probe.near" = "q", "z-probe.near" = "z", "bob.near" = "bob" }')
+        with open(self.flows, "w") as f:
+            f.write(flows)
+        sha = hashlib.sha256(flows.encode()).hexdigest()
+        lines = ""
+        for pp in GRID:
+            rs = [dict(tx=0, conversion=False, refund=None, receiver="z-probe.near", methods=["paid"],
+                       actions=["FunctionCall"], attached=10000 * 10**9, status="failed", deposit=str(2 * 10**24)),
+                  dict(tx=0, conversion=False, refund="Deposit", receiver="bob.near", methods=[], actions=["Transfer"],
+                       attached=0, status="ok", deposit=str(sim_yocto)),
+                  dict(tx=0, conversion=False, refund="Gas", receiver="alice.near", methods=[], actions=["Transfer"],
+                       attached=0, status="ok", deposit="12345")]
+            lines += json.dumps(dict(flow="f", gas=pp * 10**9, tx_ok=True, receipts=rs, yields=0)) + "\n"
+        self.write_sim(lines, flows_sha256=sha)
+        d = lambda x: f"dep |-> {x}, " if model_has_dep else ""  # noqa: E731
+        with open(os.path.join(self.build, "f.log"), "w") as f:
+            for pp in GRID:
+                f.write(f'<< "CONF", {pp}, 0, {{[{d(2000)}to |-> "z", m |-> "paid", st |-> "fail", tx |-> 1, id |-> 1, g |-> 10000], '
+                        f'[{d(model_dep)}to |-> "bob", m |-> "REFUND", st |-> "ok", tx |-> 1, id |-> 2, g |-> 0]}} >>\n')
+            f.write(OK_LOG)
+        spec = conform.tomllib.loads(flows)
+        return conform.compare("f", spec, conform.TOL, False, sha, self.data, self.build, refunds=True,
+                               flows_file="probes.toml", deposits=True)
+
+    def test_deposit_amounts_compared(self):
+        res = self.deposit_flow(2 * 10**24, 2000)
+        self.assertEqual(res["problems"], [])
+        self.assertIn("tx1:bob[REFUND](2000)", res["sedges"][0][1])
+        self.assertIn("tx1:z::paid(2000)", res["sedges"][0][1])
+        # only the refund's amount differs: 1 yocto in the sim, 2 NEAR in the model
+        res = self.deposit_flow(1, 2000)
+        self.assertProblem(res, "statuses differ at 3 points")
+        # the model's 1 for an amount under a milliNEAR matches the sim's 1 yocto
+        self.assertEqual(self.deposit_flow(1, 1)["problems"], [])
+        # a model whose report carries no deposits fails
+        self.assertProblem(self.deposit_flow(2 * 10**24, 2000, model_has_dep=False), "no deposit in the model's record")
+
+    def test_deposit_units(self):
+        from mkconf import dep
+        self.assertEqual([dep("0"), dep("1"), dep(str(10**21 - 1)), dep(str(10**21)), dep(str(2 * 10**24))], [0, 1, 1, 1, 2000])
+
     def test_flow_sets(self):
         fs, rest = flowsets.take(["--tol", "3", "f"])
         self.assertEqual((fs.name, rest), ("probes", ["--tol", "3", "f"]))
-        self.assertEqual((fs.rel_flows, fs.rel_data, fs.rel_build, fs.refunds), ("flows/probes.toml", "data/probes", "tla/build", False))
+        self.assertEqual((fs.rel_flows, fs.rel_data, fs.rel_build, fs.refunds, fs.deposits, fs.init, fs.next),
+                         ("flows/probes.toml", "data/probes", "tla/build", False, False, "Init", "Next"))
         fs2, rest = flowsets.take(["f", "--set", "probes2"])
         self.assertEqual((fs2.name, rest), ("probes2", ["f"]))
         # a flow name may recur across sets: nothing of one set is the other's

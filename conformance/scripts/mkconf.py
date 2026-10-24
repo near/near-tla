@@ -190,6 +190,9 @@ def zargs(ctx, flow, rx, m, a):
         for b in ("twice", "ret", "again"):
             if a.get(b):
                 f[b] = "TRUE"
+        if a.get("key"):
+            # probe2 only logs it: the burn key's path (a [[path_rule]])
+            f["key"] = q(a["key"])
         if path:
             f["gk"] = q(path_key(ctx, flow, here, m, path))
     elif m == "resume":
@@ -247,16 +250,7 @@ def after(ctx, flow):
     return "<<" + ", ".join(steps) + ">>"
 
 
-# A flow's own setup the model does not run: it starts from the world, so
-# the setup must leave the model's state as it found it. These calls do,
-# in pairs: a yield created, then resumed (its callback runs in the setup).
-NEUTRAL_SETUP = [("z", "yield_id"), ("z", "resume")]
-
-
 def first(ctx, flow):
-    setup = [(ctx.n(c["receiver"]), c["method"]) for c in flow.get("setup", [])]
-    if setup and setup != NEUTRAL_SETUP:
-        raise SystemExit(f"{flow['name']}: no model for the flow's setup {setup}")
     tx = flow["tx"]
     rx, m = tx["receiver"], tx["method"]
     a = json.loads(tx["args"]) if tx.get("args") else {}
@@ -369,10 +363,11 @@ INVARIANTS
 
 
 def cfg(fs):
-    """The cfg of set `fs`: its table's operators, and its replacements of
-    the driver's definitions (TLC rejects a replaced definition on the
+    """The cfg of set `fs`: its INIT and NEXT, its table's operators, and its
+    replacements of the driver's definitions (TLC rejects a replaced definition on the
     right of another `<-`: those take the replacement directly)."""
     t = CFG.replace("<- ProbeGas", f"<- {fs.prefix}Gas")
+    t = t.replace("INIT Init\n", f"INIT {fs.init}\n").replace("NEXT Next\n", f"NEXT {fs.next}\n")
     for k, v in fs.over.items():
         t = re.sub(rf"<- {k}$", f"<- {v}", t, flags=re.M)
     over = "".join(f"  {k} <- {v}\n" for k, v in fs.over.items())

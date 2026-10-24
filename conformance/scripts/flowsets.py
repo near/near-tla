@@ -14,8 +14,12 @@ other's data, and a flow name may recur across sets.
            --prefix <prefix>`): <prefix>GasCall, <prefix>GasBurn
   conf     the driver module the MC files extend
   staking  StakingAcct (one account per run, NearAsync's ExecStake)
+  init, next  the cfg's INIT and NEXT
   over     cfg replacements of the driver's definitions (TLC's `<-`)
   refunds  conform.py also compares deposit refund receipts (by receiver)
+  deposits conform.py also compares each receipt's deposit, in model units
+           (mkconf.dep: 1 NEAR = 1000, under a milliNEAR 1); the model's
+           report must carry it (Probe2Conf's Report2)
 """
 import os
 
@@ -23,11 +27,13 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SETS = {
     "probes": dict(flows="flows/probes.toml", data="data/probes", build="tla/build", calib="CalibProbes",
-                   prefix="Probe", conf="ProbeConf", staking="p", over={}, refunds=False),
+                   prefix="Probe", conf="ProbeConf", staking="p", init="Init", next="Next", over={}, refunds=False,
+                   deposits=False),
     # probe2's rule parts (Probe2Conf.tla): the world adds z (probe2) and bob.
     "probes2": dict(flows="flows/probes2.toml", data="data/probes2", build="tla/build/probes2", calib="CalibProbes2",
-                    prefix="Probe2", conf="Probe2Conf", staking="z",
-                    over={"Accts": "Accts2", "ConfContracts": "ConfContracts2", "Run": "Run2"}, refunds=True),
+                    prefix="Probe2", conf="Probe2Conf", staking="z", init="Init2", next="Next2",
+                    over={"Accts": "Accts2", "ConfContracts": "ConfContracts2", "Report": "Report2"}, refunds=True,
+                    deposits=True),
 }
 DEFAULT = "probes"
 
@@ -49,8 +55,11 @@ class FlowSet:
         self.prefix = s["prefix"]
         self.conf = s["conf"]
         self.staking = s["staking"]
+        self.init = s["init"]
+        self.next = s["next"]
         self.over = s["over"]
         self.refunds = s["refunds"]
+        self.deposits = s["deposits"]
 
 
 def take(args):

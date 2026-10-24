@@ -53,7 +53,9 @@ repo. Use plain `cargo`.
 
    Each takes `--set probes2` for the second set (`scripts/flowsets.py`; default `probes`),
    which has its own sweeps, table (`tla/CalibProbes2.tla`), driver (`tla/Probe2Conf.tla`) and
-   build directory, so the two sets never read each other's data.
+   build directory, so the two sets never read each other's data. In `probes2` the comparison
+   also covers deposit refunds, by receiver, and each receipt's deposit amount, the sim's
+   yoctoNEAR converted to the model's unit, 1 mNEAR (`mkconf.dep`).
 
    The exact invocations are in [Running](../conformance/README.md#running).
 5. **Calibration.** `calibrate` with `--tla` writes a TLA+ table; see
@@ -128,13 +130,13 @@ Stake), on the same pins:
 
 | | |
 |---|---|
-| flows | 22, all match |
-| prepaid points per flow | 1313 (28,886 points in all) |
-| receipts compared | 90,296 sim receipts (deposit refunds included, by receiver) |
+| flows | 28, all match |
+| prepaid points per flow | 1313 (36,764 points in all) |
+| receipts compared | 122,825 sim receipts (deposit refunds included, by receiver; deposit amounts compared, in mNEAR) |
 | status mismatches | 0 |
 | edge mismatches | 0 |
-| attached-gas differences above tolerance | 0 (largest 4 Ggas) |
-| split-check mismatches | 0 of 48,732 children (largest difference 0 gas) |
+| attached-gas differences above tolerance | 0 (largest 5 Ggas) |
+| split-check mismatches | 0 of 70,757 children (largest difference 0 gas) |
 
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
 burns, `ft_transfer_call`'s gas behaviour) are in

@@ -22,14 +22,14 @@
 (*            dc44a8edc6e0eb690d5290f027c6cf77                             *)
 (*   z-probe.near: probe2.wasm                                             *)
 (*     conformance/probes/probe2 (near-sdk 5.29.1)                         *)
-(*     sha256 665516c481ffbb878cc1eb436bb592f0                             *)
-(*            3f550c2e0ac12af2b4ab9a284d3a993a                             *)
+(*     sha256 a8e55d38012108cf4b64536e1bef3f85                             *)
+(*            0a5f7ec1e0d08a691f2dc4085cb26926                             *)
 (* command: calibrate --flows flows/probes2.toml --from-data --tla         *)
 (*     tla/CalibProbes2.tla --prefix Probe2                                *)
 (* flows: probes2.toml sha256                                              *)
-(*     bd0381c50c7281c8ec97be926bc4edf11d4f17d3e948c327183f786d13588d68    *)
-(* grid: standard (1313 points), 22 flows                                  *)
-(* split check: 48732 children, 0 mismatches; 0 per action                 *)
+(*     1aecd0ce427cc8b33118f981c7b594eab1b02920c5e159f56e92241de0295e70    *)
+(* grid: standard (1313 points), 28 flows                                  *)
+(* split check: 70757 children, 0 mismatches; 0 per action                 *)
 (*                                                                         *)
 (* Burns depend on the contract's code and state: recalibrate for a real   *)
 (* deployment (conformance/README.md).                                     *)
@@ -38,31 +38,31 @@ EXTENDS TLC, Sequences
 
 Probe2GasBurn ==
     "p.chain/on_expect,yield_id" :> [base |-> 1038, per |-> 0] @@  \* 2 pts; spread 1.037-1.037 Tgas
-    "q.fail" :> [base |-> 355, per |-> 0] @@  \* 2 pts; spread 0.355-0.355 Tgas; burn up to the failure (never succeeds)
-    "q.ret" :> [base |-> 271, per |-> 70] @@  \* 25 pts; spread 0.340-0.549 Tgas; per exact 69.5198; max residual 1.4
-    "z.join/fail,on_expect,ret,ret/flat" :> [base |-> 1847, per |-> 0] @@  \* 2 pts; spread 1.846-1.846 Tgas
-    "z.join/on_expect,ret,ret,ret/flat" :> [base |-> 1846, per |-> 0] @@  \* 3 pts; spread 1.845-1.845 Tgas
-    "z.join/on_expect,ret,ret,ret/inner" :> [base |-> 1852, per |-> 0] @@  \* 2 pts; spread 1.851-1.851 Tgas
-    "z.join/on_expect,ret,ret,ret/left" :> [base |-> 1852, per |-> 0] @@  \* 1 pt; spread 1.851-1.851 Tgas
-    "z.join/on_expect,ret,ret,ret/right" :> [base |-> 1852, per |-> 0] @@  \* 1 pt; spread 1.851-1.851 Tgas
-    "z.on_expect" :> [base |-> 265, per |-> 0] @@  \* 13 pts; spread 0.251-0.264 Tgas; max residual 12.6
-    "z.on_yield/-/payload" :> [base |-> 474, per |-> 0] @@  \* 4 pts; spread 0.427-0.473 Tgas; max residual 46.0
-    "z.on_yield/-/timeout" :> [base |-> 419, per |-> 0] @@  \* 3 pts; spread 0.414-0.418 Tgas; max residual 3.9
-    "z.on_yield/on_yield/payload" :> [base |-> 1127, per |-> 0] @@  \* 1 pt; spread 1.127-1.127 Tgas
-    "z.paid/bob" :> [base |-> 315, per |-> 0] @@  \* 1 pt; spread 0.314-0.314 Tgas; burn up to the failure (never succeeds)
-    "z.paid/none" :> [base |-> 316, per |-> 0] @@  \* 1 pt; spread 0.315-0.315 Tgas; burn up to the failure (never succeeds)
-    "z.refund_call/bob" :> [base |-> 605, per |-> 0] @@  \* 1 pt; spread 0.605-0.605 Tgas
-    "z.refund_call/none" :> [base |-> 594, per |-> 0] @@  \* 1 pt; spread 0.593-0.593 Tgas
-    "z.resume/none" :> [base |-> 1547, per |-> 0] @@  \* 1 pt; spread 1.547-1.547 Tgas
-    "z.resume/ok" :> [base |-> 1687, per |-> 0] @@  \* 5 pts; spread 1.563-1.686 Tgas; max residual 123.6
-    "z.stake_then" :> [base |-> 707, per |-> 0] @@  \* 2 pts; spread 0.706-0.706 Tgas
-    "z.yield_id/-/dup" :> [base |-> 664, per |-> 0] @@  \* 1 pt; spread 0.663-0.663 Tgas
-    "z.yield_id/-/over" :> [base |-> 942, per |-> 0] @@  \* 1 pt; spread 0.942-0.942 Tgas; burn up to the failure (never succeeds)
-    "z.yield_id/on_yield/dep" :> [base |-> 1033, per |-> 0] @@  \* 1 pt; spread 1.032-1.032 Tgas
-    "z.yield_id/on_yield/dup" :> [base |-> 1348, per |-> 0] @@  \* 1 pt; spread 1.347-1.347 Tgas
-    "z.yield_id/on_yield/new" :> [base |-> 1029, per |-> 0] @@  \* 2 pts; spread 1.027-1.029 Tgas; max residual 1.3
-    "z.yield_id/on_yield/ret" :> [base |-> 969, per |-> 0] @@  \* 2 pts; spread 0.969-0.969 Tgas
-    "z.yield_id/on_yield/reuse" :> [base |-> 1044, per |-> 0]  \* 1 pt; spread 1.044-1.044 Tgas
+    "q.fail" :> [base |-> 355, per |-> 0] @@  \* 3 pts; spread 0.355-0.355 Tgas; burn up to the failure (never succeeds)
+    "q.ret" :> [base |-> 271, per |-> 70] @@  \* 42 pts; spread 0.340-0.549 Tgas; per exact 69.5198; max residual 1.4
+    "z.join/fail,on_expect,ret,ret/flat" :> [base |-> 1847, per |-> 0] @@  \* 3 pts; spread 1.847-1.847 Tgas
+    "z.join/on_expect,ret,ret,ret/flat" :> [base |-> 1847, per |-> 0] @@  \* 3 pts; spread 1.846-1.846 Tgas
+    "z.join/on_expect,ret,ret,ret/inner" :> [base |-> 1852, per |-> 0] @@  \* 3 pts; spread 1.852-1.852 Tgas
+    "z.join/on_expect,ret,ret,ret/left" :> [base |-> 1852, per |-> 0] @@  \* 3 pts; spread 1.852-1.852 Tgas
+    "z.join/on_expect,ret,ret,ret/right" :> [base |-> 1852, per |-> 0] @@  \* 3 pts; spread 1.852-1.852 Tgas
+    "z.on_expect" :> [base |-> 265, per |-> 0] @@  \* 19 pts; spread 0.252-0.265 Tgas; max residual 12.6
+    "z.on_yield/-/payload" :> [base |-> 475, per |-> 0] @@  \* 5 pts; spread 0.428-0.474 Tgas; max residual 46.0
+    "z.on_yield/-/timeout" :> [base |-> 419, per |-> 0] @@  \* 3 pts; spread 0.415-0.419 Tgas; max residual 3.9
+    "z.on_yield/on_yield/payload" :> [base |-> 1128, per |-> 0] @@  \* 1 pt; spread 1.127-1.127 Tgas
+    "z.paid/bob" :> [base |-> 315, per |-> 0] @@  \* 1 pt; spread 0.315-0.315 Tgas; burn up to the failure (never succeeds)
+    "z.paid/none" :> [base |-> 317, per |-> 0] @@  \* 1 pt; spread 0.316-0.316 Tgas; burn up to the failure (never succeeds)
+    "z.refund_call/bob" :> [base |-> 606, per |-> 0] @@  \* 1 pt; spread 0.605-0.605 Tgas
+    "z.refund_call/none" :> [base |-> 594, per |-> 0] @@  \* 1 pt; spread 0.594-0.594 Tgas
+    "z.resume/none" :> [base |-> 1548, per |-> 0] @@  \* 1 pt; spread 1.548-1.548 Tgas
+    "z.resume/ok" :> [base |-> 1688, per |-> 0] @@  \* 6 pts; spread 1.563-1.687 Tgas; max residual 123.6
+    "z.stake_then" :> [base |-> 707, per |-> 0] @@  \* 2 pts; spread 0.706-0.707 Tgas
+    "z.yield_id/-/new" :> [base |-> 664, per |-> 0] @@  \* 1 pt; spread 0.664-0.664 Tgas
+    "z.yield_id/-/over" :> [base |-> 943, per |-> 0] @@  \* 1 pt; spread 0.943-0.943 Tgas; burn up to the failure (never succeeds)
+    "z.yield_id/on_yield/dep" :> [base |-> 1034, per |-> 0] @@  \* 1 pt; spread 1.033-1.033 Tgas
+    "z.yield_id/on_yield/new" :> [base |-> 1030, per |-> 0] @@  \* 3 pts; spread 1.028-1.029 Tgas; max residual 1.3
+    "z.yield_id/on_yield/ret" :> [base |-> 970, per |-> 0] @@  \* 2 pts; spread 0.970-0.970 Tgas
+    "z.yield_id/on_yield/reuse" :> [base |-> 1061, per |-> 0] @@  \* 1 pt; spread 1.061-1.061 Tgas
+    "z.yield_id/on_yield/twice" :> [base |-> 1348, per |-> 0]  \* 1 pt; spread 1.348-1.348 Tgas
 
 Probe2GasCall ==
     "q.fail" :> [st |-> <<10000>>, wt |-> <<0>>, fee |-> 889] @@  \* static/weight as the probe flows' caller declared them

@@ -20,7 +20,7 @@ the runtime allows.
 - **Gas semantics and fees are checked per receipt against nearcore**, through
   near-contract-sim, which runs nearcore's own `Runtime::apply`. Probe contracts are swept over
   a grid of prepaid gas, and every receipt's status, attached gas and failure edge is compared
-  with the model: **74 flows × 1313 prepaid points, all matching, and 22 more for a second
+  with the model: **74 flows × 1313 prepaid points, all matching, and 28 more for a second
   probe's rule parts; 108,986 child gas splits, 0 mismatches**. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md).
 - **What is not modelled** is listed, item by item, with what each omission could hide:
   [Not modelled](docs/SEMANTICS.md#not-modelled).
@@ -159,10 +159,11 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   (S3), the `_with_id` yield, a yield's deposit, a returned yield and its signer (C7),
   interleaved appends (G3), a callback after a Stake (B1). None was refuted.
 - Model-vs-sim flows for `probe2`, in a flow set of their own (`conformance/flows/probes2.toml`,
-  `scripts/flowsets.py`), so the 74 sweeps stay valid: 22 flows, all matching, for `refund_to`
-  (R5, with deposit refunds compared by receiver), one joint result by index over nested joins
-  (C6), the `_with_id` yield's duplicate check, resume by id and reuse, a yield's deposit and a
-  returned yield (C7), and a callback after a Stake (B1). No library change was needed.
+  `scripts/flowsets.py`), so the 74 sweeps stay valid: 28 flows, all matching, for `refund_to`
+  (R5, with deposit refunds compared by receiver and deposit amounts compared), one joint result
+  by index 0, 1 and 2 over flat and nested joins and a failed middle input (C6), the `_with_id`
+  yield's duplicate check, resume by id and reuse, a yield's deposit and a returned yield (C7),
+  and a callback after a Stake (B1). No library change was needed.
 - Storage bytes from the calibrator (SEMANTICS B2, `examples/storage-stake`): `calibrate --stor`
   measures what each (method, path) adds to its receiver's `storage_usage` at every point of
   each flow's gas grid (the bytes checked the same at all of them), and writes a `StorBytes`

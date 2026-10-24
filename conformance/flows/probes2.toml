@@ -37,8 +37,9 @@ wasm = "../probes/res/probe2.wasm"
 source = "conformance/probes/probe2 (near-sdk 5.29.1)"
 
 # probe2's paths, from its logs: a resume the host accepted or not; a yield
-# callback that got a payload or timed out; a yield_id that met a pending
-# custom id (in the same call or an earlier one) or not.
+# callback that got a payload or timed out; a yield_id with the marker
+# `key = "reuse"` (logged, nothing else: a calibration-key choice, see
+# yid_reuse) or not.
 [[path_rule]]
 call = "z-probe.near.resume"
 log = "resume ok"
@@ -53,8 +54,8 @@ else = "payload"
 
 [[path_rule]]
 call = "z-probe.near.yield_id"
-log = "yield duplicate"
-path = "dup"
+log = "key reuse"
+path = "reuse"
 else = "new"
 
 # Burn sizes: ret(bytes) by its argument, in KB (1000 bytes).
@@ -128,6 +129,34 @@ child = "z-probe.near.on_expect"
 actions = [[10050, 1]]
 
 [[flow]]
+name = "idx_left_0"
+about = "z.join(q.ret 1000, 2000, 4000 bytes; left), then z.on_expect(0, 1000 bytes)"
+grid = "standard"
+path = "left"
+path_for = ["z-probe.near.join"]
+tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 2000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "left", "cb": {"method": "on_expect", "args": "{\"i\": 0, \"len\": 1000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.ret"
+actions = [[10000, 0]]
+[[flow.static]]
+child = "z-probe.near.on_expect"
+actions = [[10050, 1]]
+
+[[flow]]
+name = "idx_left_1"
+about = "z.join(q.ret 1000, 2000, 4000 bytes; left), then z.on_expect(1, 2000 bytes)"
+grid = "standard"
+path = "left"
+path_for = ["z-probe.near.join"]
+tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 2000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "left", "cb": {"method": "on_expect", "args": "{\"i\": 1, \"len\": 2000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.ret"
+actions = [[10000, 0]]
+[[flow.static]]
+child = "z-probe.near.on_expect"
+actions = [[10050, 1]]
+
+[[flow]]
 name = "idx_left_2"
 about = "z.join(q.ret 1000, 2000, 4000 bytes; left), then z.on_expect(2, 4000 bytes)"
 grid = "standard"
@@ -156,6 +185,34 @@ child = "z-probe.near.on_expect"
 actions = [[10050, 1]]
 
 [[flow]]
+name = "idx_right_1"
+about = "z.join(q.ret 1000, 2000, 4000 bytes; right), then z.on_expect(1, 2000 bytes)"
+grid = "standard"
+path = "right"
+path_for = ["z-probe.near.join"]
+tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 2000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "right", "cb": {"method": "on_expect", "args": "{\"i\": 1, \"len\": 2000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.ret"
+actions = [[10000, 0]]
+[[flow.static]]
+child = "z-probe.near.on_expect"
+actions = [[10050, 1]]
+
+[[flow]]
+name = "idx_right_2"
+about = "z.join(q.ret 1000, 2000, 4000 bytes; right), then z.on_expect(2, 4000 bytes)"
+grid = "standard"
+path = "right"
+path_for = ["z-probe.near.join"]
+tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 2000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "right", "cb": {"method": "on_expect", "args": "{\"i\": 2, \"len\": 4000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.ret"
+actions = [[10000, 0]]
+[[flow.static]]
+child = "z-probe.near.on_expect"
+actions = [[10050, 1]]
+
+[[flow]]
 name = "idx_inner_0"
 about = "z.join(q.ret 1000, 2000, 4000 bytes; inner), then z.on_expect(0, 2000 bytes)"
 grid = "standard"
@@ -170,12 +227,43 @@ child = "z-probe.near.on_expect"
 actions = [[10050, 1]]
 
 [[flow]]
+name = "idx_inner_1"
+about = "z.join(q.ret 1000, 2000, 4000 bytes; inner), then z.on_expect(1, 4000 bytes)"
+grid = "standard"
+path = "inner"
+path_for = ["z-probe.near.join"]
+tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 2000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "inner", "cb": {"method": "on_expect", "args": "{\"i\": 1, \"len\": 4000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.ret"
+actions = [[10000, 0]]
+[[flow.static]]
+child = "z-probe.near.on_expect"
+actions = [[10050, 1]]
+
+[[flow]]
 name = "idx_inner_2"
 about = "z.join(q.ret 1000, 2000, 4000 bytes; inner), then z.on_expect(2, 1000 bytes)"
 grid = "standard"
 path = "inner"
 path_for = ["z-probe.near.join"]
 tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 2000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "inner", "cb": {"method": "on_expect", "args": "{\"i\": 2, \"len\": 1000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.ret"
+actions = [[10000, 0]]
+[[flow.static]]
+child = "z-probe.near.on_expect"
+actions = [[10050, 1]]
+
+[[flow]]
+name = "idx_fail_mid_0"
+about = "z.join(q.ret(1000), q.fail, q.ret(4000); flat), then z.on_expect(0, 1000 bytes)"
+grid = "standard"
+path = "flat"
+path_for = ["z-probe.near.join"]
+tx = { signer = "alice.near", receiver = "z-probe.near", method = "join", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "fail", "args": "{\"key\": \"k\"}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}, {"method": "ret", "args": "{\"bytes\": 4000}", "static_ggas": 10000, "weight": 0, "receiver": "q-probe.near"}], "nest": "flat", "cb": {"method": "on_expect", "args": "{\"i\": 0, \"len\": 1000}", "static_ggas": 10050, "weight": 1, "receiver": "z-probe.near"}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.fail"
+actions = [[10000, 0]]
 [[flow.static]]
 child = "q-probe.near.ret"
 actions = [[10000, 0]]
@@ -202,7 +290,7 @@ actions = [[10050, 1]]
 
 [[flow]]
 name = "idx_fail_mid_2"
-about = "z.join(q.ret(1000), q.fail, q.ret(4000); flat), then z.on_expect(2, 4000 bytes): the result after a failed one"
+about = "z.join(q.ret(1000), q.fail, q.ret(4000); flat), then z.on_expect(2, 4000 bytes)"
 grid = "standard"
 path = "flat"
 path_for = ["z-probe.near.join"]
@@ -221,6 +309,8 @@ actions = [[10050, 1]]
 name = "yid_twice"
 about = "z.yield_id(t) creating t twice in one call: the second is a duplicate; then the yield times out"
 grid = "standard"
+path = "twice"
+path_for = ["z-probe.near.yield_id"]
 tx = { signer = "alice.near", receiver = "z-probe.near", method = "yield_id", args = '{"cb_ggas": 5000, "id": "t", "twice": true}', deposit = "" }
 [[flow.static]]
 child = "z-probe.near.on_yield"
@@ -243,24 +333,16 @@ call = { signer = "alice.near", receiver = "z-probe.near", method = "resume", ar
 
 [[flow]]
 name = "yid_reuse"
-about = "after a setup that yields r and resumes it (its callback runs), z.yield_id(r) again: a new yield, which times out"
+about = "z.yield_id(r), z.resume(r) (its callback runs), then z.yield_id(r) again: a new yield, which times out"
 grid = "standard"
-path = "reuse"
-path_for = ["z-probe.near.yield_id"]
 tx = { signer = "alice.near", receiver = "z-probe.near", method = "yield_id", args = '{"cb_ggas": 5000, "id": "r"}', deposit = "" }
-[[flow.setup]]
-signer = "alice.near"
-receiver = "z-probe.near"
-method = "yield_id"
-args = '{"id": "r", "cb_ggas": 5000}'
-[[flow.setup]]
-signer = "alice.near"
-receiver = "z-probe.near"
-method = "resume"
-args = '{"id": "r", "bytes": 10}'
 [[flow.static]]
 child = "z-probe.near.on_yield"
 actions = [[5000, 1]]
+[[flow.after]]
+call = { signer = "alice.near", receiver = "z-probe.near", method = "resume", args = '{"id": "r", "bytes": 10}' }
+[[flow.after]]
+call = { signer = "alice.near", receiver = "z-probe.near", method = "yield_id", args = '{"id": "r", "cb_ggas": 5000, "key": "reuse"}' }
 [[flow.after]]
 expire = true
 

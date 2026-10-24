@@ -15,7 +15,12 @@ probes):
 Refund receipts are left out on both sides, except in a set with
 `refunds` (probes2), whose deposit refunds are compared too, each as an
 action-only receipt `tx<n>:<receiver>[REFUND]` (gas refunds, which the
-model does not make, stay out). A receipt's label carries
+model does not make, stay out); and in a set with `deposits` (probes2)
+every receipt's deposit, in model units: the sim's yocto through
+mkconf.dep (whole milliNEAR, rounded down: 1 NEAR = 1000; a nonzero
+amount under a milliNEAR, and the storage minimum, are 1), appended to the label when
+not 0 (`tx1:bob[REFUND](2000)`, `tx1:z::on_yield(2000)`), so an amount
+that differs is a status mismatch. A receipt's label carries
 its transaction (1 for the swept one, then the `after` transactions in
 order; the sweep's `tx` + 1), so receipts of different transactions never
 pair, in the statuses, the gas or the edges.
@@ -45,7 +50,7 @@ import collections, hashlib, json, math, os, sys, tomllib
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 import flowsets  # noqa: E402
-from mkconf import grid_points  # noqa: E402
+from mkconf import dep, grid_points  # noqa: E402
 from tlcparse import parse  # noqa: E402
 
 TOL = 5
@@ -63,9 +68,15 @@ def label(tx, body):
     return f"tx{tx}:{body}"
 
 
-def sim_records(v, names, refunds=False):
+def with_dep(lbl, d):
+    """A label with deposit `d` (model units) appended, when not 0."""
+    return f"{lbl}({d})" if d else lbl
+
+
+def sim_records(v, names, refunds=False, deposits=False):
     """(label, status, attached Ggas or None) of every non-refund receipt
-    of one sweep line, and with `refunds` of every deposit refund. The
+    of one sweep line, and with `refunds` of every deposit refund; with
+    `deposits` each label carries the receipt's deposit (`with_dep`). The
     sweep numbers transactions from 0."""
     recs = []
     for r in v["receipts"]:
@@ -84,7 +95,8 @@ def sim_records(v, names, refunds=False):
         else:
             body = f"{to}[{','.join(r['actions'])}]"
             g = None
-        recs.append((label(tx + 1, body), r["status"], g))
+        lbl = label(tx + 1, body)
+        recs.append((with_dep(lbl, dep(r["deposit"])) if deposits else lbl, r["status"], g))
     return recs
 
 
@@ -96,7 +108,7 @@ def parked_of(v):
     return n
 
 
-def load_sweep(flow, gname, data_dir, flows_sha, names, refunds=False, flows_file=None):
+def load_sweep(flow, gname, data_dir, flows_sha, names, refunds=False, flows_file=None, deposits=False):
     """The sweep of `flow` as {prepaid Ggas: (records, parked)}, and what is wrong
     with it: its meta must be bound to it (to the flows file `flows_file`,
     when given) and it must hold the declared grid `gname`, every point
@@ -142,7 +154,7 @@ def load_sweep(flow, gname, data_dir, flows_sha, names, refunds=False, flows_fil
             v = json.loads(line)
             gas = v["gas"]
             assert v["flow"] == flow and isinstance(gas, int) and gas % 10**9 == 0
-            recs = sim_records(v, names, refunds)
+            recs = sim_records(v, names, refunds, deposits)
             parked = parked_of(v)
         except (ValueError, KeyError, TypeError, AssertionError):
             bad += 1
@@ -185,10 +197,14 @@ def model_label(r, batch_methods, refunds=False):
 STAT = {"ok": "ok", "oog": "oog", "fail": "failed", "forced": "forced"}
 
 
-def model_records(recs, batch_methods, refunds=False):
+def model_records(recs, batch_methods, refunds=False, deposits=False):
     out = []
     for r in recs:
         l = model_label(r, batch_methods, refunds)
+        if l and deposits:
+            if not isinstance(r.get("dep"), int) or r["dep"] < 0:
+                raise ValueError(f"no deposit in the model's record {r}")
+            l = with_dep(l, r["dep"])
         if l:
             out.append((l, STAT[r["st"]], r["g"] if r["m"] not in ACTION_ONLY and r["m"] != "REFUND" else None))
     return out
@@ -244,7 +260,8 @@ def empty_row(flow, problem):
                 problems=[problem])
 
 
-def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD, refunds=False, flows_file=None):
+def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD, refunds=False, flows_file=None,
+            deposits=False):
     names = spec["world"].get("names", {})
     fl = next(f for f in spec["flow"] if f["name"] == flow)
     gname = fl.get("grid", "standard")
@@ -260,7 +277,7 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD, 
         text = f.read()
     if not tlc_ok(text):
         res["problems"].append("TLC did not finish without error")
-    sim, sweep_problems = load_sweep(flow, gname, data_dir, flows_sha, names, refunds, flows_file)
+    sim, sweep_problems = load_sweep(flow, gname, data_dir, flows_sha, names, refunds, flows_file, deposits)
     res["problems"] += sweep_problems
     model, nondet = parse(text)
     if nondet:
@@ -281,7 +298,12 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD, 
             sm = MISSING
             mrecs = []
         else:
-            mrecs = model_records(model[pp][0], bm, refunds)
+            try:
+                mrecs = model_records(model[pp][0], bm, refunds, deposits)
+            except ValueError as e:
+                if not any("deposit" in p for p in res["problems"]):
+                    res["problems"].append(f"{e} (the set compares deposits: the driver must report them)")
+                mrecs = []
             sm = sig(mrecs, model[pp][1])
         res["n"] += 1
         res["receipts"] += len(srecs)
@@ -346,7 +368,8 @@ def main(argv=None, flows_path=None, data_dir=None, build_dir=None):
             rows.append(empty_row(f, problem))
             print(f"\n== {f}: FAIL: {problem}")
             continue
-        c = compare(f, spec, tol, subset, flows_sha, data_dir, build_dir, fs.refunds, os.path.basename(flows_path))
+        c = compare(f, spec, tol, subset, flows_sha, data_dir, build_dir, fs.refunds, os.path.basename(flows_path),
+                    fs.deposits)
         rows.append(c)
         print(f"\n== {f}: {'PASS' if not c['problems'] else 'FAIL: ' + '; '.join(c['problems'])}")
         print(f"   {c['n']} points compared ({c['missing']} missing in the model{', skipped: --subset' if subset and c['missing'] else ''}), "
