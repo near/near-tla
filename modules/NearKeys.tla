@@ -65,8 +65,9 @@ KeysWith(a, k, p)  == [keys EXCEPT ![a] = (k :> p) @@ keys[a]]
 \* method names of (length + 1) (runtime/near-vm-runner/src/logic/utils.rs:4-6,
 \* paid at host.rs:4078-4091); the receiver id and allowance are not charged
 \* per byte.  An empty list (any method) is 0 bytes.  The model's names count
-\* as written; WithMethodBytes(p, n) states the real byte count n instead,
-\* for a model whose names are placeholders or abbreviated.
+\* as written, one byte per character (nearcore counts UTF-8 bytes);
+\* WithMethodBytes(p, n) states the real byte count n instead, for a model
+\* whose names are placeholders, abbreviated or not ASCII.
 RECURSIVE NameBytes(_)
 NameBytes(M) == IF M = {} THEN 0
                 ELSE LET m == CHOOSE x \in M : TRUE IN Len(m) + 1 + NameBytes(M \ {m})

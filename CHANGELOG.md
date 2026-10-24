@@ -84,12 +84,13 @@ Each entry ends with its migration.
 - **Gas mode: `NearKeys.KeyFee` charges a function-call AddKey its per-byte fee**
   (`AddKeyFcBytesFee`, self-directed) on `Σ (len(name) + 1)` bytes over the permission's method
   names (`utils.rs:4-6`; `host.rs:4078-4091`); it used to charge only the base fee (2,000
-  bytes: 424 Ggas against nearcore's 428.26; now 432). The names are counted as written;
+  bytes: 424 Ggas against nearcore's 428.26; now 432). The names are counted as written, one
+  byte per character (nearcore counts UTF-8 bytes);
   `WithMethodBytes(p, n)` states a real byte count (it adds an `mb` field to the permission,
   which the added key keeps: compare permission fields, not whole records). Only `AddKeyRcpt` uses `KeyFee`; no
   example or conformance flow does. Migration: a model whose `AddKeyRcpt` budgets sat within
   a few Ggas of an edge may now run out of gas at creation; give the real byte count with
-  `WithMethodBytes` if the names are placeholders.
+  `WithMethodBytes` if the names are placeholders or not ASCII.
 - **The fee table's self-checks now run for every model.** TLC ignores the `ASSUME`s of an
   INSTANCEd module, so `NearFees`' own checks never ran for models that reach it through
   `NearAsync`'s `NearFeeTable`. `NearAsync` now carries `ASSUME NearFeeTable!FeeSelfChecks`:

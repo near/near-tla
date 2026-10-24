@@ -677,7 +677,8 @@ Your contract can change its own keys with child receipts built by
 - Adding a key that is present, or deleting one that is absent, fails the receipt.
 - In gas mode, these constructors give the receipt its fee-table fee (`KeyFee`). For a
   function-call permission that includes the per-byte fee on its method names, counted as
-  written (`Σ (len + 1)`); if your names are placeholders, give the real byte count with
+  written (`Σ (len + 1)`, one byte per character); if your names are placeholders or not
+  ASCII, give the real UTF-8 byte count with
   `WithMethodBytes(perm, n)` ([N-keyfee](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
   A key-action receipt built with plain `Rcpt(..., ADDK, ...)` costs its creator nothing
   unless you add `WithFee`.

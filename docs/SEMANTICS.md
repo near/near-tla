@@ -1555,8 +1555,9 @@ against the current module code; some may be fixed in the modules later.
   a function-call AddKey its base fee and its per-byte part (`NearFeeTable!AddKeyFcBytesFee`,
   about 3.9 Ggas per KB on the creator's own account) for `Σ (len(name) + 1)` bytes over the
   permission's method names (`runtime/near-vm-runner/src/logic/utils.rs:4-6`, charged at
-  `host.rs:4078-4091`). The model's names are counted as written: a model whose names stand
-  for longer real ones under-charges the creator, so an out-of-gas at creation can be missed
+  `host.rs:4078-4091`). The model's names are counted as written, one byte per character
+  (TLC cannot measure a string in UTF-8; nearcore counts `name.as_bytes().len()`): a model whose
+  names stand for longer real ones, or are not ASCII, under-charges the creator, so an out-of-gas at creation can be missed
   and a weighted sibling's share can exceed nearcore's. State the real count with
   `WithMethodBytes(p, n)`. Before this release the per-byte part was dropped altogether (a
   self-directed AddKey with 2,000 bytes of method names: 424 Ggas against nearcore's
