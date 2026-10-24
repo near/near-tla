@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Run the TLC model-checking runs declared in runs.toml files and check their expectations.
 
-usage: tools/run.py [options] [paths or run names...]
+usage: tools/run.py [options] [paths...] [run names...]
 
-Arguments are runs.toml files, directories (searched recursively for runs.toml), or run
-names (shell-style globs such as 'pay_*' work; names are looked up under examples/).
-With no arguments every run under examples/ is checked.
+Arguments are runs.toml files, directories (searched recursively for runs.toml), and
+run names (shell-style globs such as 'pay_*' work). Names filter the runs of the given
+paths; with names only, they are looked up under the repo's examples/. With no
+arguments every run under examples/ is checked. Example, one run of your own model:
+  tools/run.py path/to/model/ my_run --print-trace
 
 For each run the runner generates
   MC_<run>.tla   a wrapper that EXTENDS the spec and defines const_<C> == <expr>
@@ -20,7 +22,10 @@ runs.toml format
 ----------------
   spec = "Pay"                # default module (a .tla beside runs.toml)
   workers = 2                 # TLC workers (default 2, max 4); --workers can only lower it
-  library = "../../modules"   # relative to runs.toml (default ../../modules)
+  library = "../../modules"   # relative to runs.toml. Default ../../modules, and if that
+                              # does not exist (a model outside examples/<name>/), the
+                              # modules/ dir of the repo this runner lives in. An explicit
+                              # library, --library or $NEAR_TLA_LIBRARY always wins
   [constants]                 # optional: file-level constants shared by every run
   U = '"u"'
 
@@ -109,6 +114,7 @@ import tlctrace  # noqa: E402
 import windows  # noqa: E402
 
 MAX_WORKERS = 4
+DEFAULT_LIBRARY = "../../modules"
 HARD_TIMEOUT_FACTOR = 3
 EXPECTS = ("pass", "violation", "assert", "deadlock")
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -237,8 +243,11 @@ def load_file(path: Path) -> list[Run]:
         expect = _typed(where, m, "expect", str)
         if expect not in EXPECTS:
             raise ConfigError(f"{where}: expect must be one of {EXPECTS}")
-        lib = _typed(where, m, "library", (str, list), "../../modules")
+        lib = _typed(where, m, "library", (str, list), DEFAULT_LIBRARY)
         libs = [lib] if isinstance(lib, str) else _str_list(where, m, "library")
+        libs = [str((path.parent / x).resolve()) for x in libs]
+        if "library" not in m and not os.path.isdir(libs[0]):
+            libs = [str(ROOT / "modules")]  # a model outside examples/<name>/
         consts = {}
         for src in (file_consts, raw.get("constants", {})):
             if not isinstance(src, dict):
@@ -255,7 +264,7 @@ def load_file(path: Path) -> list[Run]:
             raise ConfigError(f"{where}: budget_s must be positive")
         r = Run(
             name=name, toml=path, spec=spec, expect=expect,
-            library=[str((path.parent / x).resolve()) for x in libs],
+            library=libs,
             workers=workers, budget_s=float(budget),
             specification=_typed(where, m, "specification", str),
             invariants=_str_list(where, m, "invariants"),
@@ -425,13 +434,19 @@ def find_tomls(p: Path) -> list[Path]:
 
 
 def select(args: list[str]) -> list[Run]:
-    """Runs named by `args` (paths and/or run names); no args = everything under examples/."""
+    """Runs named by `args`.
+
+    - no args: every run under the repo's examples/;
+    - paths only: every run in those runs.toml files / directories;
+    - names only: matching runs under the repo's examples/;
+    - paths and names: matching runs within the given paths only.
+    """
     paths = [a for a in args if os.path.exists(a)]
     names = [a for a in args if not os.path.exists(a)]
     tomls: list[Path] = []
-    for a in paths or ([] if names else [str(ROOT / "examples")]):
+    for a in paths or [str(ROOT / "examples")]:
         tomls += [t.resolve() for t in find_tomls(Path(a))]
-    pool = list(dict.fromkeys(tomls + ([t.resolve() for t in find_tomls(ROOT / "examples")] if names else [])))
+    pool = list(dict.fromkeys(tomls))
     loaded = {t: load_file(t) for t in pool}
     seen: dict[str, Path] = {}
     for t, rs in loaded.items():
@@ -439,12 +454,15 @@ def select(args: list[str]) -> list[Run]:
             if r.name in seen:
                 raise ConfigError(f"run name {r.name} is used in {rel(seen[r.name])} and {rel(t)}")
             seen[r.name] = t
-    chosen = [r for t in dict.fromkeys(tomls) for r in loaded[t]]
-    everything = [r for rs in loaded.values() for r in rs]
+    everything = [r for t in pool for r in loaded[t]]
+    if not names:
+        return everything
+    chosen: list[Run] = []
+    where = "the given paths" if paths else "examples/"
     for n in names:
         hit = [r for r in everything if fnmatch.fnmatchcase(r.name, n)]
         if not hit:
-            raise ConfigError(f"no run or path named {n!r}")
+            raise ConfigError(f"no path, and no run named {n!r} in {where}")
         chosen += [r for r in hit if r not in chosen]
     return chosen
 

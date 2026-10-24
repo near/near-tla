@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Self-tests for the runner: python3 -m unittest tools/test_run.py
 
 Canned TLC 2.19 output snippets, toy module names; no TLC needed.
@@ -492,6 +493,56 @@ class FakeTLCTest(unittest.TestCase):
                 o = self.go(r, peel=True)
                 self.assertEqual(o.ok, want, (o.actual, o.notes))
                 self.assertEqual(self.outputs, [])
+
+
+class SelectionAndLibraryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name).resolve()
+        for sub, names in (("m1", ["a1", "a2"]), ("m2", ["b1"])):
+            (self.d / sub).mkdir()
+            write(self.d / sub, "Toy.tla", "---- MODULE Toy ----\n====\n")
+            body = "".join(f'[[run]]\nname = "{n}"\nexpect = "pass"\ninvariants = ["I"]\n' for n in names)
+            write(self.d / sub, "runs.toml", f'spec = "Toy"\n{body}')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def names(self, *args):
+        return [r.name for r in run.select([str(a) for a in args])]
+
+    # 2. names filter within the given paths
+    def test_names_filter_given_paths(self):
+        self.assertEqual(self.names(self.d), ["a1", "a2", "b1"])
+        self.assertEqual(self.names(self.d, "a2"), ["a2"])
+        self.assertEqual(self.names(self.d, "a*"), ["a1", "a2"])
+        self.assertEqual(self.names(self.d / "m1" / "runs.toml", "a1"), ["a1"])
+        self.assertEqual(self.names(self.d / "m1", self.d / "m2", "b1", "a1"), ["b1", "a1"])
+        with self.assertRaises(run.ConfigError):
+            self.names(self.d / "m1", "b1")  # b1 exists, but not in the given path
+
+    @unittest.skipUnless((run.ROOT / "examples" / "pay" / "runs.toml").is_file(), "needs examples/pay")
+    def test_bare_names_use_repo_examples(self):
+        self.assertEqual(self.names("pay_std"), ["pay_std"])
+
+    # 1. library fallback for models outside examples/<name>/
+    def test_default_library_falls_back_to_repo_modules(self):
+        (r,) = run.load_file(self.d / "m2" / "runs.toml")
+        self.assertEqual(r.library, [str(run.ROOT / "modules")])
+        # ../../modules is used when it exists
+        nested = self.d / "x" / "y"
+        nested.mkdir(parents=True)
+        (self.d / "modules").mkdir()
+        write(nested, "Toy.tla", "---- MODULE Toy ----\n====\n")
+        write(nested, "runs.toml", 'spec = "Toy"\n[[run]]\nname = "n"\nexpect = "pass"\ninvariants = ["I"]\n')
+        (r,) = run.load_file(nested / "runs.toml")
+        self.assertEqual(r.library, [str(self.d / "modules")])
+
+    def test_explicit_library_wins(self):
+        write(self.d / "m2", "runs.toml",
+              'spec = "Toy"\nlibrary = "nowhere"\n[[run]]\nname = "b1"\nexpect = "pass"\ninvariants = ["I"]\n')
+        (r,) = run.load_file(self.d / "m2" / "runs.toml")
+        self.assertEqual(r.library, [str(self.d / "m2" / "nowhere")])
 
 
 class ParsePrintTTest(unittest.TestCase):
