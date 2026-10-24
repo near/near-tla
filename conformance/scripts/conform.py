@@ -50,7 +50,7 @@ import collections, hashlib, json, math, os, sys, tomllib
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
 import flowsets  # noqa: E402
-from mkconf import dep, grid_points  # noqa: E402
+from mkconf import REG, dep, grid_points  # noqa: E402
 from tlcparse import parse  # noqa: E402
 
 TOL = 5
@@ -66,6 +66,17 @@ def label(tx, body):
     """A receipt's label: its transaction (1, 2, ... in the flow) and what
     it is (`receiver::methods` or `receiver[actions]`)."""
     return f"tx{tx}:{body}"
+
+
+def sim_dep(d):
+    """A sim deposit (yocto) as the model writes it: whole milliNEAR exactly; a
+    nonzero amount under 1 mNEAR, and the storage minimum, as `mkconf.dep`'s 1.
+    Any other amount is labelled in yocto (`2000000000000000000000001y`), which
+    no model deposit equals, so a deposit off by less than 1 mNEAR still fails."""
+    d = int(d or 0)
+    if d >= 10**21 and d != REG and d % 10**21:
+        return f"{d}y"
+    return dep(d)
 
 
 def with_dep(lbl, d):
@@ -96,7 +107,7 @@ def sim_records(v, names, refunds=False, deposits=False):
             body = f"{to}[{','.join(r['actions'])}]"
             g = None
         lbl = label(tx + 1, body)
-        recs.append((with_dep(lbl, dep(r["deposit"])) if deposits else lbl, r["status"], g))
+        recs.append((with_dep(lbl, sim_dep(r["deposit"])) if deposits else lbl, r["status"], g))
     return recs
 
 

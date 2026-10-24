@@ -183,7 +183,7 @@ Each rule has four fields:
   `refund_to_none`): that set compares deposit refunds by receiver and every receipt's deposit
   amount (in the model's unit, 1 mNEAR), and the model's refund of the failed call's 2 N
   deposit goes, as 2 N, to `refund_to` when set, else to the predecessor, as in nearcore. The
-  other flows leave refund receipts and amounts out on both sides.
+  `probes` set leaves refund receipts and deposit amounts out on both sides.
 
 ---
 

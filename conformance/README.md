@@ -172,8 +172,11 @@ set's flows file. In `probes2` deposit refunds are compared as well: each is an 
 receipt labelled by its receiver (`tx1:bob[REFUND]`), so the refund target of R5 is checked;
 gas refunds, which the model does not make, stay out. `probes2` also compares deposit amounts:
 a receipt with a nonzero deposit gets it in its label on both sides, `(d)` in the model's unit,
-1 mNEAR (`mkconf.dep`: the sim's yoctoNEAR / 10^21, rounded down; a nonzero amount under
-1 mNEAR, and the storage minimum, as 1), so `tx1:bob[REFUND](2000)` is a 2 N refund to bob.
+1 mNEAR, so `tx1:bob[REFUND](2000)` is a 2 N refund to bob. A sim amount in whole mNEAR is
+compared exactly; any other amount of 1 mNEAR or more keeps its yocto in the label
+(`conform.sim_dep`), so it matches no model deposit and an amount off by 1 yocto fails. A
+nonzero amount under 1 mNEAR, and the storage minimum, are the model's 1 (`mkconf.dep`): those
+are compared at that resolution only, and no `probes2` flow has one.
 `Probe2Conf` reports each receipt's deposit; a model record without one fails the flow.
 
 A flow passes `conform.py` only if:
