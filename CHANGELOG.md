@@ -146,6 +146,23 @@ Each entry ends with its migration.
   `deleted` to the list; conjoin `PlatformInitAccounts` (`created = {} /\ burnt = 0 /\
   deleted = {}`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
   hand-written `vars`, use `platformVars` or add `deleted`.
+- **New platform variables `gcode`, `guse` and `gnonce` in `NearAsync`** (global contracts,
+  SEMANTICS A10: the code published under each identifier, the identifier each account runs,
+  and each identifier's last applied distribution nonce; partial functions). They stay empty
+  unless a model deploys or uses a global contract, so models that do not are unchanged: every
+  example run kept its verdict and its generated, distinct and depth counts (all 139 runs
+  compared at one worker). They are in `platformVars`, and `PlatformInit`,
+  `PlatformInitStaked`, `PlatformInitAccounts` and `PlatformInitExtra` initialise them (from
+  the overridable `InitGCode` and `InitUses`). A new built-in receipt kind, `GDIST`, is in
+  `IsBuiltin`, so a dispatcher that routes `IsBuiltin(r)` to `ExecBuiltin(r)` (or
+  `ExecBuiltinK`) runs it. Like `code`: a step that lists platform variables one by one in
+  `UNCHANGED` must add them, a hand-written `Init` must set them, and a hand-written `vars`
+  must include them. Migration: write `UNCHANGED platformVars` or add `gcode, guse, gnonce` to
+  the list; conjoin `PlatformInitAccounts` (or set `gcode = InitGCode /\ guse = InitUses /\
+  gnonce = [g \in {} |-> 0]`) in a hand-written `Init`; in a hand-written `vars`, use
+  `platformVars` or add them. A model that declares a variable `gcode`, `guse` or `gnonce`, or
+  defines `GHash`, `GAcct`, `IdLen`, `GDIST` or another of the names in the Added entry, must
+  rename it.
 - **New platform variable `code` in `NearAsync`** (the code tag deployed to each account at
   run time, a partial function; SEMANTICS A9). It stays empty unless a model deploys, so
   models that do not are unchanged: every example run kept its verdict and its generated,
@@ -426,6 +443,28 @@ Each entry ends with its migration.
   DeleteAccount), init's attached deposit in `accall_init`, and three library mutants in
   `platform-selftest`. Sim: `promise_call_then_delete`, `batch_call_sees_own_deposit`. A
   factory's `init` finds code once its batch deploys it (the DeployContract entry below).
+- **Global contracts (NEP-591)** (SEMANTICS A10; docs/USAGE.md section 16, "Global
+  contracts"). Identifiers `GHash(t)` and `GAcct(a)` (`IdLen`: 32 bytes, or the owner id's
+  length). `WithDeployGlobal(r, t, md)` adds DeployGlobalContract to an ACCOUNT receipt
+  (`md` = `"hash"` or `"acct"`), `WithUseGlobal(r, g)` adds UseGlobalContract to an ACCOUNT or
+  call receipt (the factory batch `[CreateAccount, Transfer, UseGlobalContract,
+  FunctionCall(init)]`), with the lone `DeployGlobalRcpt` and `UseGlobalRcpt`. The deploy
+  burns `GlobalBurn(CodeLen[t])` (0.0001 NEAR per byte, `GlobalByteCost`) into `burnt` and
+  emits a `GDIST` distribution receipt (`ExecGDist`) that publishes the code when it runs, if
+  its nonce (the receipt id) is above the identifier's `gnonce`; until then a use fails with
+  `GlobalContractDoesNotExist`. `CodeOf` follows `guse` in the current state, so a
+  by-account redeploy reaches every user, a callback in flight included; `CodeBytes` counts
+  the identifier's bytes, a deletion drops the account's `guse` entry and leaves the
+  owner's `gcode`. `GlobalInstant <- TRUE` publishes at the deploy's commit (unsound,
+  SEMANTICS N-global-instant). `NearFees`: the `deploy_global_contract` and
+  `use_global_contract` fees (`77.yaml`), `GlobalDeployBytesFee`, `UseGlobalBytesFee`.
+  N-global now lists only what A10 leaves out (distribution across shards, compute). New runs:
+  `selftest_global` (9 scenarios, three fee pins in `acct_fee`, five library mutants);
+  `factory_global` (the factory batch with a by-hash global child; library mutant
+  `lib_init_ignores_use_global`); new example `account-lifecycle/global-upgrade`
+  (`upgrade_assumes_old_code` and `upgrade_use_races_deploy` must fail, `upgrade_by_hash`,
+  `upgrade_two_deploys` and `upgrade_use_race_instant` pass; six witnesses, four mutants).
+  Sim: `conformance/tests/global.rs`.
 - **SEMANTICS N-upgrade** (contract upgrades mid-flow: a handler runs the new code only if it
   branches on `CodeOf(r.to)`), and the `NearAsync` / `NearKeys` header comments now list
   DeployContract, instant receipts and DeleteAccount as modelled and point to SEMANTICS "Not

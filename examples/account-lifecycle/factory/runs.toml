@@ -104,6 +104,20 @@ Users = "{U1}"
 StoragePerByte = "TRUE"
 CodeLen = '("child" :> 100000)'
 
+# The child's 300 KB code as a global contract, published beforehand: the batch uses it by
+# hash, the child holds 32 bytes, and D covers them (factory_underfunds_code fails on the same
+# code deployed locally).
+[[run]]
+name = "factory_global"
+expect = "pass"
+invariants = ["Served", "UserFundsBack", "PaidImpliesAccount", "Sane"]
+[run.constants]
+Users = "{U1}"
+StoragePerByte = "TRUE"
+CodeLen = '("child" :> 300000)'
+InitGCode = "FGlobal"
+GlobalChild = "TRUE"
+
 # ---- anti-vacuity: python3 tools/run.py examples/account-lifecycle/factory --anti-vacuity ----
 
 # Both users' batches in flight at once (the race).
@@ -147,6 +161,12 @@ runs = ["factory_underfunds_code"]
 id = "user_repaid"
 expr = '~(\E r \in rq : r.m = XFER /\ r.fr = F)'
 runs = ["factory_cb_refunds"]
+
+# The child runs the global contract its batch switched it to.
+[[witness]]
+id = "batch_uses_global"
+expr = '~(N \in DOMAIN guse /\ CodeOf(N) = "child" /\ owner[N] # "")'
+runs = ["factory_global"]
 
 [[mutant]]
 id = "cb_no_refund"
@@ -208,3 +228,14 @@ replace = 'IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN NoCode'
 class = "platform rule dropped (library)"
 killed_by = ["Served"]
 runs = ["factory_funds_code"]
+
+# The library: init does not see the global contract its batch switched to (every batch fails).
+[[mutant]]
+id = "lib_init_ignores_use_global"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF "ac" \in DOMAIN r /\ Ug(r) # NoGid THEN GCodeOf(Ug(r))'
+replace = 'ELSE IF "ac" \in DOMAIN r /\ Ug(r) # NoGid THEN NoCode'
+class = "platform rule dropped (library)"
+killed_by = ["Served"]
+runs = ["factory_global"]

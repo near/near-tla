@@ -25,8 +25,10 @@
 (*     lib.rs:1078-1088).  WithKeyActs / ExecWithKeys.                     *)
 (*  5. A function call to an account without code, or to a missing         *)
 (*     account, fails.  NearAsync does this itself (CallTargetOK; the code *)
-(*     a call sees, CodeSeen, includes a DeployContract earlier in its     *)
-(*     receipt, A9); FailNoCode is kept as an explicit step.               *)
+(*     a call sees, CodeSeen, includes a DeployContract or                 *)
+(*     UseGlobalContract earlier in its receipt, A9, A10); FailNoCode is   *)
+(*     kept as an explicit step.  ExecBuiltinK also runs the global        *)
+(*     contract distribution receipt (GDIST).                              *)
 (*  6. Ghost sigpaid[a]: transactions signed by a's keys (a pays the gas). *)
 (*  7. Delegate actions (NEP-366, meta transactions): a user signs a       *)
 (*     delegate (SignedDelegate), a relayer submits it (SubmitDelegate),   *)
@@ -173,7 +175,7 @@ ExecKeyAct(r, k, p) ==
                /\ rlog' = LogR(r, "ok")
                /\ stor' = IF StoragePerByte THEN [stor EXCEPT ![r.to] = @ + KeyActBytes(r, k, p)] ELSE stor
                /\ UNCHANGED <<locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created,
-                              burnt, blk, deleted, code, sigpaid>>
+                              burnt, blk, deleted, code, gcode, guse, gnonce, sigpaid>>
           ELSE FailP(r, FALSE) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
@@ -311,7 +313,7 @@ ExecTransferK(r) ==
     /\ UNCHANGED sigpaid
 ExecBuiltinK(r) ==
     \/ ExecTransferK(r)
-    \/ (ExecTransferFail(r) \/ ExecStake(r)) /\ UNCHANGED keyVars
+    \/ (ExecTransferFail(r) \/ ExecStake(r) \/ ExecGDist(r)) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
 (* Delegate actions (NEP-366, meta transactions).                          *)
@@ -411,7 +413,7 @@ ExecDelegate(r) ==
              /\ keys' = IF r.to \in KeyAccts THEN KeysWithNonce(r.to, sd.k, sd.n) ELSE keys
              /\ rlog' = LogR(r, "ok")
              /\ UNCHANGED <<near, locked, proposal, epoch, fails, paid, minted, oog, txsig, created,
-                            burnt, blk, stor, deleted, code, sigpaid>>
+                            burnt, blk, stor, deleted, code, gcode, guse, gnonce, sigpaid>>
           \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
              /\ FailP(r, FALSE)
              /\ UNCHANGED keyVars

@@ -34,6 +34,11 @@
 (* factory_owner_label: as factory_underfunds_code, with the owner label   *)
 (*   written on failure too (OwnerOnFail): Served still fails, since the   *)
 (*   labelled account does not exist.                                     *)
+(* factory_global: the same 300 KB child code, published once as a global *)
+(*   contract (A10, InitGCode); the batch is [CreateAccount, Transfer(D),  *)
+(*   UseGlobalContract(GHash(child)), FunctionCall(init)] (GlobalChild).   *)
+(*   The child holds a 32-byte identifier instead of the code, which D     *)
+(*   covers: Served holds.                                                 *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -64,10 +69,14 @@ NoTable == [x \in {} |-> 0]
 Out0    == Outcome({}, {}, RVal(0), 0, 0)
 TxOf(u) == IF u = U1 THEN 1 ELSE 2
 
-\* F's create: the factory batch to Name, then self.on_create(user, D).
+\* F's create: the factory batch to Name, then self.on_create(user, D).  The
+\* child's code: deployed by the batch, or (GlobalChild) the global contract
+\* published under its hash (FGlobal, given as InitGCode).
+GlobalChild == FALSE
+FGlobal == (GHash("child") :> "child")
 Create(r) ==
-    LET batch == WithDeploy(WithCreate(Rcpt(nid, r.tx, Name, F, "init", [u |-> r.fr], r.dep, F, nid + 1)),
-                            "child")
+    LET mk    == WithCreate(Rcpt(nid, r.tx, Name, F, "init", [u |-> r.fr], r.dep, F, nid + 1))
+        batch == IF GlobalChild THEN WithUseGlobal(mk, GHash("child")) ELSE WithDeploy(mk, "child")
         cb    == Rcpt(nid + 1, r.tx, F, F, "on_create", [u |-> r.fr, d |-> r.dep], 0, F, 0)
     IN Outcome({batch}, {cb}, RVal(0), r.dep, 2)
 \* F's on_create: [O |-> outcome, reg |-> registry after it].

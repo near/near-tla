@@ -360,6 +360,10 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `CodeLen` | 0 bytes for every code tag | with `StoragePerByte` and DeployContract: the bytes of each code tag a model deploys, `("child" :> 300000)` ([section 16](#16-creating-and-deleting-accounts)) |
 | `EthWalletCode` | `"eth_wallet"` | a model reads `CodeOf`: the tag of the eth wallet contract an eth-implicit account gets when a Transfer creates it (again) |
 | `InitCode` | `"code"` for every account | a model reads `CodeOf` and its contracts start with different code: each account's tag at the start (only the accounts in `Contracts` have code) |
+| `InitGCode` | nothing published | global contracts published at the start: a function from identifiers (`GHash(t)`, `GAcct(a)`) to code tags, `(GHash("child") :> "child")` ([section 16](#global-contracts)) |
+| `InitUses` | no account uses one | accounts that run a global contract at the start: account to identifier; it wins over `InitCode`. With `StoragePerByte`, count the identifier's bytes (`IdLen`) in `StorageInit` |
+| `GlobalByteCost` | `<<1, 10000>>` (0.0001 NEAR per byte) | your NEAR unit is not 1 NEAR, as for `StorageByteCost`: the burn of a DeployGlobalContract per code byte, `num/den` units; the burn of a deploy must be a whole number of units (an `Assert`) |
+| `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
@@ -399,7 +403,7 @@ Initialise every platform variable with one helper:
 |---|---|
 | `PlatformInit(near0, txIds)` | `near0`: `[Accounts -> Nat]`; `txIds`: the transaction ids (the domain of the `paid` ghost) |
 | `PlatformInitStaked(near0, locked0, txIds)` | the same, with `locked0` already staked on `StakingAcct` |
-| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `blk`, `stor` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage`) |
+| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `code`, `gcode`, `guse`, `gnonce`, `blk`, `stor` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage`) |
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
@@ -415,8 +419,8 @@ A step that touches no platform state writes `UNCHANGED platformVars`.
 Build `vars` (the tuple in `Spec == Init /\ [][Next]_vars`) from `platformVars` as above, not
 from a hand-written list of platform variables. A variable missing from `vars` is unconstrained
 by the stuttering steps of `[][Next]_vars`, and TLC only warns. When the library adds a
-platform variable (`blk` and `stor` in 0.2, `deleted` later), a hand-written list goes stale
-silently.
+platform variable (`blk` and `stor` in 0.2, `deleted`, `code`, `gcode`, `guse` and `gnonce`
+later), a hand-written list goes stale silently.
 
 ## 4. Receipts
 
@@ -1091,8 +1095,10 @@ before `Submit`, since an uncovered `Submit` is a disabled step.
 
 The rules are [A6](SEMANTICS.md#a6-createaccount), [A7](SEMANTICS.md#a7-deleteaccount),
 [A8](SEMANTICS.md#a8-account-actions-in-a-call-receipt) and
-[A9](SEMANTICS.md#a9-deploycontract). Worked examples:
-[`account-lifecycle`](../examples/account-lifecycle/) and its `instant/` and `factory/`.
+[A9](SEMANTICS.md#a9-deploycontract) and
+[A10](SEMANTICS.md#a10-global-contracts-nep-591). Worked examples:
+[`account-lifecycle`](../examples/account-lifecycle/) and its `instant/`, `factory/` and
+`global-upgrade/`.
 Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 
 | constructor | actions |
@@ -1105,6 +1111,10 @@ Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 | `WithDeleteTo(r, b)` on a call receipt | puts `DeleteAccount(b)` after its call (sent by the account itself, or after a CreateAccount) |
 | `WithDeploy(r, t)` | adds `DeployContract(t)` to an ACCOUNT or call receipt, after its CreateAccount and Transfer, before its call and DeleteAccount (A9) |
 | `DeployRcpt(id, tx, acct, a, t, cb)` | `[DeployContract(t)]` on `acct`, sent by `acct` itself |
+| `WithDeployGlobal(r, t, md)` | adds `DeployGlobalContract(t)` to an ACCOUNT receipt; `md` is `"hash"` or `"acct"` (A10) |
+| `DeployGlobalRcpt(id, tx, acct, a, t, md, cb)` | `[DeployGlobalContract(t)]` on `acct`, sent by `acct` itself |
+| `WithUseGlobal(r, g)` | adds `UseGlobalContract(g)` to an ACCOUNT or call receipt, where `DeployContract` would go (not both) |
+| `UseGlobalRcpt(id, tx, acct, a, g, cb)` | `[UseGlobalContract(g)]` on `acct`, sent by `acct` itself |
 
 In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee
 table, the prepaid reservation, whether the receipt succeeds or fails (nearcore refunds a
@@ -1208,6 +1218,36 @@ adds behaviours. The beneficiary's payout is not instant, nor is a delete that i
 transaction's first receipt, nor `[Transfer, DeleteAccount]`. `InstantFirst <- FALSE` turns
 the rule off, an over-approximation (N-instant): a self-closing contract then shows a
 spurious use-after-close (`examples/account-lifecycle/instant`).
+
+### Global contracts
+
+[A10](SEMANTICS.md#a10-global-contracts-nep-591). An identifier is `GHash(t)` (by hash: users
+keep the code they chose) or `GAcct(a)` (by account: the owner `a` redeploys and every user
+runs the new code). `IdLen(g)` is its bytes, 32 or the owner id's length. `DeployGlobalRcpt(nid,
+t, "o", args, "v2", "acct", 0)` publishes tag `"v2"` under `GAcct("o")`; `UseGlobalRcpt(nid, t,
+"u", args, GAcct("o"), 0)` switches `u` to it. In a factory batch,
+`WithUseGlobal(WithCreate(Rcpt(..)), GHash("child"))` is `[CreateAccount, Transfer,
+UseGlobalContract, FunctionCall(init)]`: the child stores 32 bytes for the identifier, not the
+code (`factory_global`).
+
+What the library does:
+
+- **The deploy** burns `GlobalBurn(CodeLen[t])` from the account at commit (it joins `burnt`)
+  and emits a `GDIST` receipt, a built-in that `ExecBuiltin` (and `ExecBuiltinK`) runs. Until
+  it runs, the identifier is unpublished or still has the old code. Its id is the deploy's
+  nonce; it is applied only if that is above the identifier's last applied nonce (`gnonce`),
+  so of two deploys in flight the later wins, though the earlier may be published first for a
+  while. No account needs to exist for it to run, and it carries no gas or NEAR.
+- **The use** fails with `GlobalContractDoesNotExist` unless `gcode` has the identifier when it
+  runs, so a use sent right after the deploy can fail (`upgrade_use_races_deploy`).
+- **`CodeOf(a)`** of a user is `gcode[guse[a]]` in the current state: a callback that was in
+  flight during a by-account redeploy runs the new code. Dispatch on `CodeOf(r.to)` in your
+  handler if both versions matter (`upgrade_assumes_old_code`, must fail).
+- **Deletion** drops the account's `guse` entry; deleting the owner leaves `gcode`.
+
+`GlobalInstant <- TRUE` skips the `GDIST` receipt and publishes at the deploy's commit. It
+saves states but removes the window above, so a verdict that passes with it may not hold
+(`upgrade_use_race_instant` passes, `upgrade_use_races_deploy` fails).
 
 ## Calibrating
 
@@ -1619,5 +1659,5 @@ All examples are toy contracts written for this repo.
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |
-  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt; `instant/`: a self-closing contract relies on its delete being instant; `factory/`: a factory batch is atomic and its deposit returns to the factory, whose callback must repay the user, from a reserve |
+  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt; `instant/`: a self-closing contract relies on its delete being instant; `factory/`: a factory batch is atomic and its deposit returns to the factory, whose callback must repay the user, from a reserve, and a batch can use a global contract instead of deploying one; `global-upgrade/`: a by-account global contract's redeploy reaches a user's callback already in flight, and a use sent right after the deploy can fail |
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |

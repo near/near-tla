@@ -138,14 +138,17 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
 - Per-byte storage staking, opt-in next to the fixed floor (`StoragePerByte`, SEMANTICS B2,
   `examples/storage-stake`): the bytes of writes, keys, created accounts and token
   registrations, checked after every receipt with the 770-byte zero-balance exemption.
-- The account lifecycle (SEMANTICS A6-A9, `examples/account-lifecycle`): CreateAccount, the
+- The account lifecycle (SEMANTICS A6-A10, `examples/account-lifecycle`): CreateAccount, the
   creation rules, DeleteAccount with its payout, receipts to a deleted account, and an
   account created again; a lone DeleteAccount created by a receipt runs right after it
   (instant receipts, S5); account actions in a call receipt, such as a factory's
   `[CreateAccount, Transfer, DeployContract, FunctionCall(init)]` (A8,
-  `examples/account-lifecycle/factory`); DeployContract with its storage and fees (A9). What
-  stays out is listed in [Not modelled](docs/SEMANTICS.md#not-modelled): global contracts,
-  deterministic and universal state init, gas keys.
+  `examples/account-lifecycle/factory`); DeployContract with its storage and fees (A9); global
+  contracts (NEP-591, A10, `examples/account-lifecycle/global-upgrade`): the burn, the
+  distribution receipt that publishes the code a little later, by-hash and by-account users,
+  and an owner's redeploy reaching a callback in flight. What stays out is listed in
+  [Not modelled](docs/SEMANTICS.md#not-modelled): deterministic and universal state init, gas
+  keys, global contract distribution across shards.
 
 ### Later
 
@@ -160,7 +163,7 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   bytes by hand.
 - **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:** the
   function-call AddKey per-byte fee; access-key allowances and transaction validity (nonces);
-  deterministic-account state init, global contracts and gas keys.
+  deterministic-account state init and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 
 ## License

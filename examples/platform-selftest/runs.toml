@@ -399,6 +399,23 @@ CodeSize = "LCode"
 CodeLen = "SCodeLen"
 Scns = '{"deploy_bytes", "deploy_replace", "deploy_del_large", "deploy_del_same", "deploy_lackstate"}'
 
+# Global contracts (A10): DeployGlobalContract by hash and by account (the burn, nothing on the
+# owner, LackBalanceForState, the actor), UseGlobalContract (identifier bytes, a missing
+# identifier, the deploy's own batch, a local deploy over it, the delete limit less the
+# identifier, the factory batch), and a redeploy reaching a user.
+[[run]]
+name = "selftest_global"
+expect = "pass"
+[run.constants]
+StoragePerByte = "TRUE"
+StorageInit = "GStor"
+StorageByteCost = "LCost"
+GlobalByteCost = "GCost"
+CodeSize = "LCode"
+CodeLen = "SCodeLen"
+Scns = '''{"global_deploy", "global_lackstate", "global_actor", "global_use", "global_use_missing",
+          "global_same_batch", "global_swap", "global_del_large", "global_factory"}'''
+
 # An eth-implicit account created by a Transfer runs the wallet contract even when the model
 # does not list it in Contracts.
 [[run]]
@@ -606,3 +623,58 @@ replace = "ELSE IF a \\notin Contracts THEN NoCode\n    ELSE IF a \\in created T
 class = "platform rule dropped (library)"
 killed_by = ["Check"]
 runs = ["selftest_eth_wallet"]
+
+# ... a user of a global contract runs no code: CodeOf ignores the account's identifier.
+[[mutant]]
+id = "lib_codeof_ignores_guse"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF a \in DOMAIN guse THEN GCodeOf(guse[a])'
+replace = 'ELSE IF FALSE THEN GCodeOf(guse[a])'
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_global"]
+
+# ... DeployGlobalContract burns nothing.
+[[mutant]]
+id = "lib_global_no_burn"
+file = "NearAsync.tla"
+library = true
+find = 'GBurn(r) == IF IsAcctRcpt(r) /\ DgTag(r) # NoCode THEN GlobalBurn(CodeLenOf(DgTag(r))) ELSE 0'
+replace = 'GBurn(r) == 0'
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_global"]
+
+# ... the burn leaves the account but is not counted in `burnt`, so NEAR goes missing.
+[[mutant]]
+id = "lib_global_burn_not_counted"
+file = "NearAsync.tla"
+library = true
+find = "/\\ burnt' = burnt + GBurn(r)"
+replace = "/\\ burnt' = burnt"
+class = "wrong effect (library)"
+killed_by = ["Sane"]
+runs = ["selftest_global"]
+
+# ... UseGlobalContract with an unpublished identifier succeeds.
+[[mutant]]
+id = "lib_use_unchecked"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF Ug(r) # NoGid /\ Ug(r) \notin DOMAIN gcode THEN "GlobalContractDoesNotExist"'
+replace = 'ELSE IF FALSE THEN "GlobalContractDoesNotExist"'
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_global"]
+
+# ... a user stores no bytes for the identifier it uses.
+[[mutant]]
+id = "lib_id_bytes_free"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF Ug(r) # NoGid THEN IdLen(Ug(r)) ELSE CodeBytesBefore(r)'
+replace = 'ELSE CodeBytesBefore(r)'
+class = "wrong effect (library)"
+killed_by = ["Check"]
+runs = ["selftest_global"]

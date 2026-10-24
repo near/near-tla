@@ -38,6 +38,10 @@
 \* action_deterministic_state_init at 85 (85.yaml:28-39) and the universal
 \* state-init per-entry and per-byte fees at 88 (88.yaml:14-45). State-init
 \* actions are not modelled.
+\* The global-contract fees (deploy_global_*, use_global_*) are not in the
+\* SNAP files; they cite core/parameters/res/runtime_configs/77.yaml, which
+\* introduced them; no later diff changes them (84.yaml:39-40 adds the
+\* distribution's compute, not a gas fee).
 \*
 \* ---------------------------------------------------------------------------
 \* Units and rounding
@@ -145,7 +149,7 @@ RcvKinds == {"named", "near_implicit", "eth_implicit", "deterministic", "univers
 
 FeeActions == {"transfer", "create_account", "add_key_full", "add_key_fc",
                "delete_key", "delete_account", "stake", "deploy_base",
-               "function_call_base", "delegate"}
+               "function_call_base", "delegate", "deploy_global_base", "use_global_base"}
 
 \* A fee row: send_sir, send_not_sir, execution.
 Row(ss, sn, ex) == [ss |-> ss, sn |-> sn, ex |-> ex]
@@ -215,6 +219,10 @@ BaseRowM(pv, name) ==
          \* 94,946,625,000 x3                                    SNAP:79-83
     [] name = "delegate"           -> <<200000, 200000, 200000>>
          \* 200,000,000,000 x3                                   SNAP:89-93
+    [] name = "deploy_global_base" -> <<184766, 184766, 184766>>
+         \* action_deploy_global_contract 184,765,750,000 x3    77.yaml:3-14
+    [] name = "use_global_base"    -> <<184766, 184766, 184766>>
+         \* action_use_global_contract 184,765,750,000 x3       77.yaml:27-38
     [] OTHER -> Assert(FALSE, "NearFees: unknown base fee name")
 
 \* A base row in whole Ggas.
@@ -232,6 +240,10 @@ ByteRowG(pv, name) ==
          \*                                                    SNAP:47-51
     [] name = "add_key_fc_byte"    -> <<1925331, 47683715, 1925331>>
          \*                                                    SNAP:73-77
+    [] name = "deploy_global_byte" -> <<6812999, 47683715, 70000000>>
+         \* action_deploy_global_contract_per_byte             77.yaml:15-26
+    [] name = "use_global_byte"    -> <<6812999, 47683715, 64572944>>
+         \* action_use_global_contract_per_identifier_byte     77.yaml:39-50
     [] OTHER -> Assert(FALSE, "NearFees: unknown per-byte fee name")
 
 \* A per-byte row in uGgas per byte.
@@ -241,7 +253,7 @@ ByteRow(pv, name) ==
 \* n bytes at u uGgas/byte, in Ggas. m is the product in milli-Ggas: "up"
 \* rounds its sub-mGgas part and then the Ggas up; "nearest" truncates the
 \* sub-mGgas part and rounds the Ggas to the nearest (as before). With
-\* n <= 16 MiB and u <= 64573 every intermediate value is below 1.1e9.
+\* n <= 16 MiB and u <= 70000 every intermediate value is below 1.2e9.
 Bytes(n, u) ==
   LET h == n \div 1000
       l == n % 1000
@@ -321,6 +333,18 @@ DeployBytesExecFeeAt(pv, n)      == Bytes(n, ByteRow(pv, "deploy_byte").ex)
 DeployBytesFeeAt(pv, sir, n) ==
   DeployBytesSendFeeAt(pv, sir, n) + DeployBytesExecFeeAt(pv, n)
 
+\* DeployGlobalContract: n = code length; UseGlobalContract: n = the
+\* identifier's length, 32 by hash or the owner id's (config.rs:171-191,
+\* :380-395).
+GlobalDeployBytesSendFeeAt(pv, sir, n) == Bytes(n, SendPart(ByteRow(pv, "deploy_global_byte"), sir))
+GlobalDeployBytesExecFeeAt(pv, n)      == Bytes(n, ByteRow(pv, "deploy_global_byte").ex)
+GlobalDeployBytesFeeAt(pv, sir, n) ==
+  GlobalDeployBytesSendFeeAt(pv, sir, n) + GlobalDeployBytesExecFeeAt(pv, n)
+UseGlobalBytesSendFeeAt(pv, sir, n) == Bytes(n, SendPart(ByteRow(pv, "use_global_byte"), sir))
+UseGlobalBytesExecFeeAt(pv, n)      == Bytes(n, ByteRow(pv, "use_global_byte").ex)
+UseGlobalBytesFeeAt(pv, sir, n) ==
+  UseGlobalBytesSendFeeAt(pv, sir, n) + UseGlobalBytesExecFeeAt(pv, n)
+
 \* ===== Data receipts (promise results) =====================================
 \* A .then receipt with d dependencies: the creator burns, for each dependency,
 \* the data receipt base send + exec (host.rs:2353-2360). sameAcct is TRUE
@@ -377,6 +401,8 @@ AddKeyFcBytesFee(sir, n)         == AddKeyFcBytesFeeAt(FeeProtocol, sir, n)
 DeployBytesSendFee(sir, n)       == DeployBytesSendFeeAt(FeeProtocol, sir, n)
 DeployBytesExecFee(n)            == DeployBytesExecFeeAt(FeeProtocol, n)
 DeployBytesFee(sir, n)           == DeployBytesFeeAt(FeeProtocol, sir, n)
+GlobalDeployBytesFee(sir, n)     == GlobalDeployBytesFeeAt(FeeProtocol, sir, n)
+UseGlobalBytesFee(sir, n)        == UseGlobalBytesFeeAt(FeeProtocol, sir, n)
 
 DataDepFee(sameAcct)    == DataDepFeeAt(FeeProtocol, sameAcct)
 DataBytesFee(sir, n)    == DataBytesFeeAt(FeeProtocol, sir, n)

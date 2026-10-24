@@ -31,6 +31,11 @@
 (* ordinary id).  The lifecycle_storage run gives w 10,001 bytes and v     *)
 (* 10,500, 600 of them code, at 2,000 bytes a unit.  A script entry AcD    *)
 (* adds a DeployContract(t) (A9); the code tags' sizes are SCodeLen.       *)
+(* Global contracts (the global_ scenarios, A10): AcG is an ACCOUNT       *)
+(* transaction with a DeployGlobalContract, AcU one with a                 *)
+(* UseGlobalContract; the selftest_global run gives w 9,990 bytes and v   *)
+(* 10,500 (600 of them code), at 2,000 bytes a unit, and burns one unit   *)
+(* per 200 published bytes (GCost, ten times the storage rate).            *)
 (***************************************************************************)
 EXTENDS Tokens, NearKeys
 
@@ -75,6 +80,10 @@ LCost     == <<1, 2000>>
 LCode     == [a \in Accts |-> IF a = V THEN 600 ELSE 0]
 \* DeployContract: the code tags' bytes.
 SCodeLen  == ("big" :> 1000) @@ ("tiny" :> 10) @@ ("huge" :> 10000) @@ ("child" :> 0)
+\* Global contracts (selftest_global): w just under the delete limit; a published byte burns
+\* ten times what a stored one costs (LCost).
+GStor     == [a \in Accts |-> CASE a = W -> 9990 [] a = V -> 10500 [] OTHER -> 0]
+GCost     == <<1, 200>>
 STokBytes == [t \in {FT} |-> [h \in STokHolders[t] |-> IF h = W THEN 180 ELSE 150]]   \* ids of different lengths
 Tok0 == [t \in {FT} |-> Ledger([h \in {U, W, C, D} |-> CASE h = U -> 5 [] h = C -> 3 [] OTHER -> 0],
                                {U, C, D})]
@@ -201,6 +210,11 @@ H(r) ==
              c0 == IF a.w = "" THEN cc ELSE WithDeploy(cc, a.w)
              c1 == IF a.key = "" THEN c0 ELSE WithAcctKeys(c0, <<AddKeyAct(a.key, PermOf(a.key))>>)
              c  == IF a.rto = "" THEN c1 ELSE WithDeleteTo(c1, a.rto) IN
+         [O |-> Outcome({c}, {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
+    [] r.m = "mkinitg" ->   \* the factory batch on a global contract: [CreateAccount,
+                            \* Transfer(a.amt), UseGlobalContract(GAcct(a.k)), FunctionCall(init)]
+         LET c == WithUseGlobal(WithCreate(Rcpt(nid, r.tx, a.to, r.to, "init", G0, a.amt, r.to, nid + 1)),
+                                GAcct(a.k)) IN
          [O |-> Outcome({c}, {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
     [] r.m = "init" ->      \* the new account's init: adds a.amt bytes, returns 7; records its
                             \* attached deposit ("idep") and its balance ("ibal")
@@ -401,6 +415,16 @@ Ac(to, fr, mk, dep, bnf, ka) == T(to, fr, ACCT, [mk |-> mk, bnf |-> bnf, ka |-> 
 \* The same with DeployContract(t) after the key actions.
 AcD(to, fr, mk, dep, bnf, ka, t) ==
     T(to, fr, ACCT, [mk |-> mk, bnf |-> bnf, ka |-> ka, dpl |-> t], dep, 0, "", <<>>)
+\* An ACCOUNT transaction on to from fr: [Transfer(dep)?, DeployGlobalContract(t) by md,
+\* DeleteAccount(bnf)?] (AcG); [Transfer(dep)?, UseGlobalContract(g), DeleteAccount(bnf)?]
+\* (AcU); [DeployGlobalContract(t) by md, UseGlobalContract(g)] (AcGU).
+AcG(to, fr, dep, bnf, t, md) ==
+    T(to, fr, ACCT, [mk |-> FALSE, bnf |-> bnf, ka |-> <<>>, dg |-> [t |-> t, md |-> md]], dep, 0, "", <<>>)
+AcU(to, fr, dep, bnf, g) ==
+    T(to, fr, ACCT, [mk |-> FALSE, bnf |-> bnf, ka |-> <<>>, ug |-> g], dep, 0, "", <<>>)
+AcGU(to, t, md, g) ==
+    T(to, to, ACCT, [mk |-> FALSE, bnf |-> "", ka |-> <<>>, dg |-> [t |-> t, md |-> md], ug |-> g],
+      0, 0, "", <<>>)
 AddK(k) == AddKeyAct(k, PermOf(k))
 
 Script(s) ==
@@ -645,6 +669,24 @@ Script(s) ==
                                     Ac(EA, EA, FALSE, 0, U, <<>>),                       \* deleted
                                     Tx(C, U, "send", G("", "", EA, 1, 0, "", ""), 0),    \* 0xa again
                                     Tx(EA, U, "foo", G0, 1) >>
+    \* Global contracts (A10).
+    [] s = "global_deploy"    -> << AcG(W, W, 0, "", "big", "hash"),                    \* burns 5
+                                    AcG(W, W, 0, "", "child", "acct") >>
+    [] s = "global_lackstate" -> << AcG(U, U, 0, "", "huge", "acct") >>                 \* burn 50 > 10
+    [] s = "global_actor"     -> << AcG(W, U, 0, "", "big", "acct") >>                  \* u on w
+    [] s = "global_use"       -> << AcG(W, W, 0, "", "big", "acct"),
+                                    AcU(U, U, 0, "", GAcct(W)),
+                                    Tx(U, C, "foo", G0, 0),                              \* runs big
+                                    AcG(W, W, 0, "", "child", "acct") >>                 \* u now runs child
+    [] s = "global_use_missing" -> << AcU(U, U, 0, "", GAcct(W)) >>
+    [] s = "global_same_batch"-> << AcGU(W, "big", "acct", GAcct(W)) >>
+    [] s = "global_swap"      -> << AcG(W, W, 0, "", "big", "hash"),
+                                    AcU(V, V, 0, "", GHash("big")),                      \* local 600 -> id 32
+                                    AcD(V, V, FALSE, 0, "", <<>>, "tiny") >>             \* id 32 -> local 10
+    [] s = "global_del_large" -> << AcG(W, W, 0, "", "big", "hash"),
+                                    AcU(W, W, 0, U, GHash("big")) >>                     \* [Use, Delete]
+    [] s = "global_factory"   -> << AcG(W, W, 0, "", "big", "acct"),
+                                    Tx(C, U, "mkinitg", G(W, "", SB, 2, 0, "", ""), 0) >>
     [] s = "acct_bytes"       -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>) >>
     [] s = "acct_bytes_del"   -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>),
                                     Ac(SB, SB, FALSE, 0, C, <<>>) >>
@@ -662,8 +704,10 @@ MkTx(e, id, t) ==
     LET r0 == Rcpt(id, t, e.to, e.fr, e.m, e.a, e.dep, e.fr, 0)
         r1 == IF e.gs # <<>> THEN WithStatic(r0, e.gs) ELSE r0
     IN IF e.m = ACCT   \* an action-only receipt: no gas of its own
-       THEN LET a0 == WithAcctKeys(AcctRcpt(id, t, e.to, e.fr, G0, e.dep, 0, e.a.mk, e.a.bnf), e.a.ka) IN
-            IF "dpl" \in DOMAIN e.a THEN WithDeploy(a0, e.a.dpl) ELSE a0
+       THEN LET a0 == WithAcctKeys(AcctRcpt(id, t, e.to, e.fr, G0, e.dep, 0, e.a.mk, e.a.bnf), e.a.ka)
+                a1 == IF "dpl" \in DOMAIN e.a THEN WithDeploy(a0, e.a.dpl) ELSE a0
+                a2 == IF "dg" \in DOMAIN e.a THEN WithDeployGlobal(a1, e.a.dg.t, e.a.dg.md) ELSE a1 IN
+            IF "ug" \in DOMAIN e.a THEN WithUseGlobal(a2, e.a.ug) ELSE a2
        ELSE IF GasMode # "gas" THEN r1
        ELSE IF Len(e.gs) > 1 THEN [r1 EXCEPT !.g = e.gs]   \* one gas per function-call action
        ELSE WithGas(r1, e.gas)
@@ -1039,7 +1083,12 @@ Expect(s) ==
              c2 == WithDeleteTo(Rcpt(0, 0, C, C, "last", G0, 0, C, 0), U)
              \* A9: [DeployContract] of 1000 bytes ("big") on w by w; the same in a factory batch.
              d0 == DeployRcpt(0, 0, W, G0, "big", 0)
-             c3 == WithDeploy(c1, "big") IN
+             c3 == WithDeploy(c1, "big")
+             \* A10: [DeployGlobalContract] of 1000 bytes on w by w; [UseGlobalContract] of a hash
+             \* (32 bytes) and of the id "w" (1 byte).
+             g0 == DeployGlobalRcpt(0, 0, W, G0, "big", "hash", 0)
+             u0 == UseGlobalRcpt(0, 0, W, G0, GHash("big"), 0)
+             u1 == UseGlobalRcpt(0, 0, W, G0, GAcct(W), 0) IN
          GasMode = "gas" =>
            /\ r1.gf = NearFeeTable!TransferFeeTotal(FALSE, "near_implicit")
            /\ c1.gf = c0.gf + NearFeeTable!ActionFee("create_account", FALSE, "named")
@@ -1050,6 +1099,9 @@ Expect(s) ==
                 /\ c2.gf - Rcpt(0, 0, C, C, "last", G0, 0, C, 0).gf = 296
                 \* receipt base 218, deploy_base 370, 1000 bytes 72 (same account) or 113
                 /\ d0.gf = 660 /\ c3.gf - c1.gf = 370 + 113
+                \* receipt base 218, deploy_global base 370, 1000 bytes 7 + 70; use_global base
+                \* 370, 32 bytes 1 + 3, 1 byte 1 + 1.  config.rs:171-191, :380-395
+                /\ g0.gf = 665 /\ u0.gf = 592 /\ u1.gf = 590
     [] s = "del_beneficiary" ->   \* only the account deletes itself; its balance goes to the
          \* beneficiary in a later receipt.  actions.rs:776-783, :380-386
          deleted = {W} /\ near[W] = 0 /\ near[U] = 20 /\ near[C] = 5 /\ burnt = 0
@@ -1187,6 +1239,38 @@ Expect(s) ==
     [] s = "del_large" ->         \* storage minus code over 10,000 bytes: DeleteAccountWithLargeState
          \* actions.rs:342-369, account.rs:248
          deleted = {V} /\ stor[W] = 10001 /\ stor[V] = 0 /\ near[U] = 20 /\ near[W] = 10
+    \* Global contracts (docs/SEMANTICS.md A10; sim: conformance/tests/global.rs).
+    [] s = "global_deploy" ->     \* the deploy burns 1 unit per 200 bytes (5 for big) and adds no
+         \* bytes or code to w; the code is published by the distribution receipt, by hash and by
+         \* account.  global_contracts.rs:25-63, :143-171, :191-246
+         gcode = (GHash("big") :> "big") @@ (GAcct(W) :> "child") /\ near[W] = 5 /\ burnt = 5
+         /\ stor[W] = 9990 /\ DOMAIN code = {} /\ DOMAIN guse = {} /\ DOMAIN gnonce = DOMAIN gcode
+    [] s = "global_lackstate" ->  \* a burn above the balance: LackBalanceForState, nothing burnt
+         \* or published.  global_contracts.rs:41-48
+         DOMAIN gcode = {} /\ near[U] = 10 /\ burnt = 0 /\ acc = <<TRUE>>
+    [] s = "global_actor" ->      \* only the account itself deploys: ActorNoPermission.
+         \* actions.rs:755-812
+         DOMAIN gcode = {} /\ near[W] = 10 /\ burnt = 0
+    [] s = "global_use" ->        \* u runs w's code by account, 1 byte of identifier ("w"); w's
+         \* redeploy reaches u.  global_contracts.rs:76-109, lib.rs:684-700
+         guse = (U :> GAcct(W)) /\ stor[U] = 1 /\ <<3, U, "foo">> \in ran /\ CodeOf(U) = "child"
+         /\ gcode = (GAcct(W) :> "child") /\ near[W] = 5 /\ burnt = 5
+    [] s = "global_use_missing" -> \* nothing published under w: GlobalContractDoesNotExist.
+         \* global_contracts.rs:83-90
+         DOMAIN guse = {} /\ stor[U] = 0 /\ CodeOf(U) = NoCode
+    [] s = "global_same_batch" -> \* the deploy's own batch cannot use it yet: the code is published
+         \* by the distribution receipt.  The batch fails and burns nothing.  Sim: deploy_global
+         DOMAIN gcode = {} /\ DOMAIN guse = {} /\ near[W] = 10 /\ burnt = 0
+    [] s = "global_swap" ->       \* the use replaces v's 600 code bytes with 32; a local deploy
+         \* replaces the identifier with 10.  global_contracts.rs:91-106, actions.rs:300-311
+         stor[V] = 9910 /\ code = (V :> "tiny") /\ DOMAIN guse = {} /\ CodeOf(V) = "tiny"
+    [] s = "global_del_large" ->  \* [UseGlobalContract(hash), DeleteAccount]: 9,990 + 32 bytes,
+         \* less the identifier: 9,990, so the delete passes.  actions.rs:342-369, :426-440
+         deleted = {W} /\ near[U] = 15 /\ DOMAIN guse = {} /\ burnt = 5
+    [] s = "global_factory" ->    \* [CreateAccount, Transfer, UseGlobalContract, FunctionCall(init)]:
+         \* init runs w's code on s.c, 100 + 1 bytes
+         created = {SB} /\ guse = (SB :> GAcct(W)) /\ stor[SB] = 101 /\ near[SB] = 2 /\ near[C] = 3
+         /\ <<2, SB, "init">> \in ran
     [] s = "acct_bytes" ->        \* a new account is 100 bytes, plus its full-access key (82)
          \* actions.rs:202-208, access_keys.rs:17-29
          created = {SB} /\ stor[SB] = 182 /\ near[SB] = 1 /\ near[C] = 4

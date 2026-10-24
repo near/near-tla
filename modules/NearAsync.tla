@@ -111,12 +111,16 @@
 (* ACCOUNT receipts (ExecAcct) or with a call (HasAc, Exec): see          *)
 (* "Account lifecycle" below (docs/SEMANTICS.md A6-A9).  A lone            *)
 (* DeleteAccount created by a receipt is instant (InstantFirst, S5).       *)
+(* Global contracts (DeployGlobalContract, UseGlobalContract, NEP-591)     *)
+(* run the same way; a deploy publishes through a distribution receipt     *)
+(* (GDIST, ExecGDist) and users resolve a by-account contract when each    *)
+(* receipt runs (A10).                                                     *)
 (*                                                                         *)
 (* What is not modelled is listed in docs/SEMANTICS.md, "Not modelled":    *)
 (* among others congestion (a local receipt that does not fit the chunk's  *)
 (* compute limit is delayed, lib.rs:2513-2521), gas price and gas refunds  *)
-(* in NEAR, global contracts, gas keys, and one receipt feeding several    *)
-(* callbacks (cb is one id).                                               *)
+(* in NEAR, cross-shard distribution of global contracts, gas keys, and    *)
+(* one receipt feeding several callbacks (cb is one id).                   *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
@@ -167,16 +171,19 @@ VARIABLES
     blk,       \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
     stor,      \* [Accounts -> Int] storage usage in bytes; stays StorageInit unless StoragePerByte
     deleted,   \* accounts deleted by DeleteAccount and not created again since
-    code       \* code deployed at run time: a partial function account -> code tag (CodeOf)
+    code,      \* code deployed at run time: a partial function account -> code tag (CodeOf)
+    gcode,     \* published global contracts: a partial function identifier -> code tag (A10)
+    guse,      \* accounts on a global contract: a partial function account -> identifier
+    gnonce     \* per identifier, the nonce of the last distribution applied (absent: 0)
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
-\* platform variable such as txsig, blk, stor, deleted or code shown as null,
+\* platform variable such as txsig, blk, stor, deleted, code or gcode shown as null,
 \* means PlatformInitExtra (or its parts PlatformInitSigner /
 \* PlatformInitAccounts / PlatformInitClock / PlatformInitStorage) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created, burnt, blk, stor, deleted, code>>
+                  txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
@@ -360,7 +367,9 @@ ADDK  == "ADDKEY"   \* AddKey action (executed by NearKeys)
 DELK  == "DELKEY"   \* DeleteKey action (executed by NearKeys)
 DELEG == "DELEGATE" \* Delegate action, NEP-366 (executed by NearKeys.ExecDelegate)
 ACCT  == "ACCOUNT"  \* CreateAccount / DeleteAccount, with Transfer and AddKey (ExecAcct, NearKeys.ExecAcctK)
-IsBuiltin(r) == r.m \in {XFER, REFND, STAKE}
+GDIST == "GDIST"    \* global contract distribution (A10; ExecGDist);
+                    \* a = [g |-> identifier, t |-> code tag]
+IsBuiltin(r) == r.m \in {XFER, REFND, STAKE, GDIST}
 IsKeyRcpt(r) == r.m \in {ADDK, DELK}
 IsDeleg(r)   == r.m = DELEG
 IsAcctRcpt(r) == r.m = ACCT
@@ -504,9 +513,17 @@ InstantFirst == TRUE
 \* (WithDeploy; the optional field dpl of ac).
 NoCode == ""
 Dpl(r) == IF "dpl" \in DOMAIN r.ac THEN r.ac.dpl ELSE NoCode
+\* Global contracts (A10): the code a receipt's DeployGlobalContract
+\* publishes (WithDeployGlobal; ac.dg = [t |-> tag, md |-> "hash" | "acct"])
+\* and the identifier its UseGlobalContract switches to (WithUseGlobal;
+\* ac.ug), if any.
+NoGid == <<>>
+DgTag(r) == IF "dg" \in DOMAIN r.ac THEN r.ac.dg.t ELSE NoCode
+Ug(r)    == IF "ug" \in DOMAIN r.ac THEN r.ac.ug ELSE NoGid
 IsInstantShape(c) ==
     /\ IsAcctRcpt(c)
     /\ ~c.ac.mk /\ c.ac.bnf # "" /\ c.ac.ka = <<>> /\ Dpl(c) = NoCode /\ c.dep = 0
+    /\ DgTag(c) = NoCode /\ Ug(c) = NoGid
 InstantTag(c) == IF InstantFirst /\ IsInstantShape(c) THEN [inst |-> TRUE] @@ c ELSE c
 \* For a postponed child: only a joint callback with no inputs.
 InstantTagP(c) == IF IsJoint(c) /\ c.ins = <<>> THEN InstantTag(c) ELSE c
@@ -596,8 +613,29 @@ InitCode == [a \in Accounts |-> "code"]
 CodeLen  == [t \in {} |-> 0]
 EthWalletCode == "eth_wallet"
 CodeLenOf(t) == IF t \in DOMAIN CodeLen THEN CodeLen[t] ELSE 0
+\* Global contracts (NEP-591, A10).  An identifier is GHash(t), code t
+\* published by its hash (a function of the tag), or GAcct(a), the code
+\* account a last published under its own id.  gcode maps the published
+\* identifiers to their code; guse[a] is the identifier account a runs.  A
+\* by-account identifier is resolved when each receipt runs (lib.rs
+\* :684-700), so a redeploy reaches every user, a callback in flight
+\* included (sim: conformance/tests/global.rs, redeploy_updates_users,
+\* update_while_callback_in_flight).  An identifier's storage bytes
+\* (IdLen): 32 by hash, the owner id's length by account
+\* (core/primitives-core/src/account.rs:182-188; toy ids give toy lengths).
+\* InitGCode, InitUses (overridable): what is published, and which initial
+\* accounts use it, at the start (default: nothing).  CodeOf reads code (run
+\* time deploys), then guse, then InitCode: an account in InitUses runs its
+\* global contract whatever its InitCode.
+GHash(t) == <<"hash", t>>
+GAcct(a) == <<"acct", a>>
+IdLen(g) == IF g[1] = "hash" THEN 32 ELSE Len(g[2])
+GCodeOf(g) == IF g \in DOMAIN gcode THEN gcode[g] ELSE NoCode
+InitGCode == [g \in {} |-> NoCode]
+InitUses  == [a \in {} |-> NoGid]
 CodeOf(a) ==
     IF a \in DOMAIN code THEN code[a]
+    ELSE IF a \in DOMAIN guse THEN GCodeOf(guse[a])
     ELSE IF a \in created THEN (IF KindOf(a) = "eth_implicit" THEN EthWalletCode ELSE NoCode)
     ELSE IF a \notin Contracts THEN NoCode
     ELSE IF a \in DOMAIN InitCode THEN InitCode[a] ELSE "code"
@@ -605,25 +643,29 @@ CodeOf(a) ==
 \* code is empty.)
 HasCode(a) == AcctExists(a) /\ CodeOf(a) # NoCode
 \* The code a receipt's call sees: what its earlier actions leave (a
-\* DeployContract's code, a CreateAccount's new account with none), else the
-\* receiver's.  CodeSeen(r): the call finds code.
+\* DeployContract's code, a UseGlobalContract's global code as published
+\* now, a CreateAccount's new account with none), else the receiver's.
+\* SetsCode(r): r has such an action.  CodeSeen(r): the call finds code.
+SetsCode(r) == "ac" \in DOMAIN r /\ (r.ac.mk \/ Dpl(r) # NoCode \/ Ug(r) # NoGid)
 CodeAfter(r) ==
     IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN Dpl(r)
+    ELSE IF "ac" \in DOMAIN r /\ Ug(r) # NoGid THEN GCodeOf(Ug(r))
     ELSE IF "ac" \in DOMAIN r /\ r.ac.mk THEN NoCode
     ELSE CodeOf(r.to)
 CodeSeen(r) ==
-    IF "ac" \in DOMAIN r /\ (r.ac.mk \/ Dpl(r) # NoCode) THEN CodeAfter(r) # NoCode
+    IF SetsCode(r) THEN CodeAfter(r) # NoCode
     ELSE HasCode(r.to)
 \* A missing or deleted receiver fails the call even with CallsNeedCode =
 \* FALSE (AccountDoesNotExist, actions.rs:874-879), as does an uninitialised
 \* universal one (AccountNotInitialized, :883-887).  A call in the same receipt
-\* as a CreateAccount or DeployContract (HasAc, the factory batch) sees the
-\* account they leave (CodeAfter): a new account has no code
-\* (actions.rs:202-208) unless the batch deploys some first; this holds also
-\* when the id was deleted before (the existence checks are AcctErr's).
+\* as a CreateAccount, DeployContract or UseGlobalContract (HasAc, the
+\* factory batch) sees the account they leave (CodeAfter): a new account
+\* has no code (actions.rs:202-208) unless the batch deploys or uses some
+\* first; this holds also when the id was deleted before (the existence
+\* checks are AcctErr's).
 CallTargetOK(r) ==
     \/ ~IsCall(r)
-    \/ IF "ac" \in DOMAIN r /\ (r.ac.mk \/ Dpl(r) # NoCode) THEN ~CallsNeedCode \/ CodeSeen(r)
+    \/ IF SetsCode(r) THEN ~CallsNeedCode \/ CodeSeen(r)
        ELSE AcctExists(r.to) /\ ~UninitUniversal(r.to) /\ (~CallsNeedCode \/ CodeSeen(r))
 
 \* The transaction signer, inherited by every receipt of the transaction.
@@ -753,18 +795,21 @@ StorAfter(r, O) ==
     LET b == stor[r.to] + StorDelta(O) IN
     IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
 ----------------------------------------------------------------------------
-(* Account lifecycle: CreateAccount, DeleteAccount, DeployContract         *)
-(* (docs/SEMANTICS.md A6-A9).  An ACCOUNT receipt (m = ACCT) holds only    *)
-(* account actions, in this order: [CreateAccount]? [Transfer(dep)]? [key  *)
-(* actions]* [DeployContract]? [DeleteAccount(bnf)]?, recorded in the      *)
-(* optional field ac = [mk |-> BOOLEAN (CreateAccount), bnf |->            *)
-(* beneficiary or "" (DeleteAccount), ka |-> key actions                   *)
-(* (NearKeys.WithAcctKeys)], and dpl |-> code tag (WithDeploy, optional).  *)
-(* The Transfer is present iff dep > 0.  It runs no code, never runs out   *)
-(* of gas, and is run by ExecAcct (NearKeys.ExecAcctK with key actions);   *)
-(* Exec asserts on it.  A dispatcher routes IsAcctRcpt(r) there before any *)
-(* contract handler.  A call receipt may carry the same field (HasAc, A8,  *)
-(* below): Exec runs it.  Sim: conformance/tests/lifecycle.rs.             *)
+(* Account lifecycle: CreateAccount, DeleteAccount, DeployContract, and    *)
+(* the global-contract actions (docs/SEMANTICS.md A6-A10).  An ACCOUNT     *)
+(* receipt (m = ACCT) holds only account actions, in this order:           *)
+(* [CreateAccount]? [Transfer(dep)]? [key actions]* [DeployContract]?      *)
+(* [DeployGlobalContract]? [UseGlobalContract]? [DeleteAccount(bnf)]?,     *)
+(* recorded in the optional field ac = [mk |-> BOOLEAN (CreateAccount),    *)
+(* bnf |-> beneficiary or "" (DeleteAccount), ka |-> key actions           *)
+(* (NearKeys.WithAcctKeys)], with the optional dpl |-> code tag            *)
+(* (WithDeploy), dg |-> [t, md] (WithDeployGlobal) and ug |-> identifier   *)
+(* (WithUseGlobal).  The Transfer is present iff dep > 0.  It runs no      *)
+(* code, never runs out of gas, and is run by ExecAcct (NearKeys.ExecAcctK *)
+(* with key actions); Exec asserts on it.  A dispatcher routes             *)
+(* IsAcctRcpt(r) there before any contract handler.  A call receipt may    *)
+(* carry the same field (HasAc, A8, below; not dg): Exec runs it.  Sim:    *)
+(* conformance/tests/lifecycle.rs, global.rs.                              *)
 
 \* Account-id structure.  Toy ids carry none, so the model states it.
 \* AcctParent[a]: a's direct parent ("near" for "alice.near"), or NoParent
@@ -790,11 +835,14 @@ TopCreator == "top-creator"
 \* contract identifier is subtracted too, version.rs:612-628).  The check
 \* reads stor, so it applies only with StoragePerByte (N-delete-large).
 \* CodeSize[a]: the code bytes counted in a's StorageInit (overridable,
-\* default 0); an eth-implicit account created by a Transfer holds the
-\* 32-byte global contract hash; other created accounts have no code.
+\* default 0); an account on a global contract counts its identifier
+\* (IdLen, A10; include it in StorageInit for an account in InitUses); an
+\* eth-implicit account created by a Transfer holds the 32-byte global
+\* contract hash; other created accounts have no code.
 MaxDeleteBytes == 10000
 CodeSize == [a \in Accounts |-> 0]
 CodeBytes(a) == IF a \in DOMAIN code THEN CodeLenOf(code[a])
+                ELSE IF a \in DOMAIN guse THEN IdLen(guse[a])
                 ELSE IF a \in created /\ KindOf(a) = "eth_implicit" THEN 32
                 ELSE IF ~HasCode(a) THEN 0
                 ELSE IF a \in DOMAIN CodeSize THEN CodeSize[a] ELSE 0
@@ -844,11 +892,15 @@ WithDeleteTo(r, b) ==
 \* default 0), at most max_contract_size (4 MiB, action_validation.rs
 \* :305-318; a larger one is rejected, which the model does not represent).
 \* Its fee is deploy_base plus deploy_byte per byte (config.rs:99-108).
-\* DeployRcpt: [DeployContract(t)] on acct from acct itself.
+\* DeployRcpt: [DeployContract(t)] on acct from acct itself.  Not with a
+\* UseGlobalContract in the same receipt (the model fixes the action order;
+\* nearcore keeps the last one).
 MaxContractSize == 4194304
 WithDeploy(r, t) ==
     IF ~(IsAcctRcpt(r) \/ IsCall(r)) \/ t = NoCode \/ ("ac" \in DOMAIN r /\ Dpl(r) # NoCode)
-    THEN Assert(FALSE, <<"WithDeploy needs an ACCOUNT or call receipt without a DeployContract, and a code tag", r.id>>)
+       \/ ("ac" \in DOMAIN r /\ Ug(r) # NoGid)
+    THEN Assert(FALSE, <<"WithDeploy needs an ACCOUNT or call receipt without a DeployContract"
+                         \o " or UseGlobalContract, and a code tag", r.id>>)
     ELSE IF CodeLenOf(t) > MaxContractSize
     THEN Assert(FALSE, <<"WithDeploy: code above max_contract_size", t>>)
     ELSE LET r1 == IF "ac" \in DOMAIN r THEN r ELSE [ac |-> [mk |-> FALSE, bnf |-> "", ka |-> <<>>]] @@ r
@@ -857,6 +909,74 @@ WithDeploy(r, t) ==
                          + NearFeeTable!DeployBytesFee(r.fr = r.to, CodeLenOf(t)) IN
          [r1 EXCEPT !.ac = [dpl |-> t] @@ @, !.gf = @ + fee]
 DeployRcpt(id, tx, acct, a, t, cb) == WithDeploy(AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, ""), t)
+
+\* Global contracts (NEP-591, A10; sim: conformance/tests/global.rs).
+\* WithDeployGlobal(r, t, md) adds DeployGlobalContract(t) to an ACCOUNT
+\* receipt, after its DeployContract position and before its DeleteAccount;
+\* md is "hash" (identifier GHash(t)) or "acct" (GAcct(r.to)).  The account
+\* itself must send it (ActorNoPermission, actions.rs:755-812).  It burns
+\* GlobalBurn(CodeLen[t]) of the account's balance (global_contracts.rs
+\* :35-51; LackBalanceForState when short) and adds nothing to its storage
+\* or code.  The code is published later, when the distribution receipt it
+\* emits runs (DistRcpt, ExecGDist; :143-171): a UseGlobalContract in the
+\* same batch, or in a receipt that runs before the distribution, fails
+\* (sim: deploy_global).  Fee: deploy_global base plus per byte
+\* (config.rs:171-180, :380-387).  Only in ACCOUNT receipts here.
+\* WithUseGlobal(r, g) adds UseGlobalContract(g) to an ACCOUNT or call
+\* receipt, after its CreateAccount, Transfer and key actions and before its
+\* call and DeleteAccount (the factory batch [CreateAccount, Transfer,
+\* UseGlobalContract, FunctionCall(init)]).  g must be published when the
+\* receipt runs (GlobalContractDoesNotExist, :76-90); the account's bytes
+\* lose its old code's (local length or identifier) and gain IdLen(g)
+\* (:91-106; sim: use_global_storage).  Fee: use_global base plus per
+\* identifier byte (config.rs:182-190, :389-395).
+\* GlobalByteCost = <<num, den>>: one published byte burns num/den model
+\* NEAR units; 0.0001 N per byte (77.yaml:2), ten times the storage rate,
+\* so <<1, 10000>> when 1 unit = 1 NEAR.  The burn is exact: choose units
+\* and CodeLen so that bytes x num is a multiple of den (an Assert).
+\* GlobalInstant <- TRUE: the code is published when the deploy commits, no
+\* distribution receipt.  An under-approximation (unsound, N-global-instant):
+\* it drops the window in which a Use fails and users still run the old code.
+GlobalByteCost == <<1, 10000>>
+GlobalInstant  == FALSE
+GlobalBurn(n) ==
+    IF (n * GlobalByteCost[1]) % GlobalByteCost[2] # 0
+    THEN Assert(FALSE, <<"GlobalBurn: code bytes x num is not a multiple of den"
+                         \o " (GlobalByteCost)", n>>)
+    ELSE (n * GlobalByteCost[1]) \div GlobalByteCost[2]
+DgId(r)  == IF r.ac.dg.md = "hash" THEN GHash(r.ac.dg.t) ELSE GAcct(r.to)
+GBurn(r) == IF IsAcctRcpt(r) /\ DgTag(r) # NoCode THEN GlobalBurn(CodeLenOf(DgTag(r))) ELSE 0
+\* An ACCOUNT receipt's liquid after its actions: the Transfer in, the
+\* global deploy's burn out (negative: the burn is not covered).
+AcctBal(r) == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep - GBurn(r)
+WithDeployGlobal(r, t, md) ==
+    IF ~IsAcctRcpt(r) \/ t = NoCode \/ md \notin {"hash", "acct"} \/ DgTag(r) # NoCode
+    THEN Assert(FALSE, <<"WithDeployGlobal needs an ACCOUNT receipt without a DeployGlobalContract,"
+                         \o " a code tag, and md \"hash\" or \"acct\"", r.id>>)
+    ELSE IF CodeLenOf(t) > MaxContractSize
+    THEN Assert(FALSE, <<"WithDeployGlobal: code above max_contract_size", t>>)
+    ELSE LET fee == IF GasMode # "gas" THEN 0
+                    ELSE NearFeeTable!ActionFee("deploy_global_base", r.fr = r.to, KindOf(r.to))
+                         + NearFeeTable!GlobalDeployBytesFee(r.fr = r.to, CodeLenOf(t)) IN
+         [r EXCEPT !.ac = [dg |-> [t |-> t, md |-> md]] @@ @, !.gf = @ + fee]
+WithUseGlobal(r, g) ==
+    IF ~(IsAcctRcpt(r) \/ IsCall(r)) \/ g = NoGid \/ g[1] \notin {"hash", "acct"}
+       \/ ("ac" \in DOMAIN r /\ (Ug(r) # NoGid \/ Dpl(r) # NoCode))
+    THEN Assert(FALSE, <<"WithUseGlobal needs an ACCOUNT or call receipt without a UseGlobalContract"
+                         \o " or DeployContract, and an identifier (GHash, GAcct)", r.id>>)
+    ELSE LET r1 == IF "ac" \in DOMAIN r THEN r ELSE [ac |-> [mk |-> FALSE, bnf |-> "", ka |-> <<>>]] @@ r
+             fee == IF GasMode # "gas" THEN 0
+                    ELSE NearFeeTable!ActionFee("use_global_base", r.fr = r.to, KindOf(r.to))
+                         + NearFeeTable!UseGlobalBytesFee(r.fr = r.to, IdLen(g)) IN
+         [r1 EXCEPT !.ac = [ug |-> g] @@ @, !.gf = @ + fee]
+\* [DeployGlobalContract(t)] and [UseGlobalContract(g)] on acct from acct.
+DeployGlobalRcpt(id, tx, acct, a, t, md, cb) ==
+    WithDeployGlobal(AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, ""), t, md)
+UseGlobalRcpt(id, tx, acct, a, g, cb) == WithUseGlobal(AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, ""), g)
+\* The distribution receipt of r's DeployGlobalContract, with id (and
+\* nonce) id: a system receipt (receipt.rs:538-548), here addressed to the
+\* owner; it carries no NEAR and no gas.
+DistRcpt(id, r) == Rcpt(id, r.tx, r.to, r.to, GDIST, [g |-> DgId(r), t |-> DgTag(r)], 0, r.to, 0)
 
 \* The actor after the CreateAccount (the new account) or without one (the
 \* predecessor) (actions.rs:202; lib.rs:599-610).
@@ -872,17 +992,28 @@ AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
 \* code: usage less the old code's size plus the new one's (actions.rs
 \* :300-311, the old size :426-440); data stays.
 CodeBytesBefore(r) == IF r.ac.mk THEN 0 ELSE CodeBytes(r.to)
-CodeBytesAfter(r)  == IF Dpl(r) # NoCode THEN CodeLenOf(Dpl(r)) ELSE CodeBytesBefore(r)
+CodeBytesAfter(r)  == IF Dpl(r) # NoCode THEN CodeLenOf(Dpl(r))
+                      ELSE IF Ug(r) # NoGid THEN IdLen(Ug(r)) ELSE CodeBytesBefore(r)
 DplDelta(r)        == CodeBytesAfter(r) - CodeBytesBefore(r)
 AcctBytes(r, kb)   == (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + kb + DplDelta(r)
 \* code after a committed receipt with account actions: a DeleteAccount
 \* drops the account's entry (remove_account, core/store/src/utils/mod.rs
 \* :504-575), as does a CreateAccount (a new account has none), unless a
-\* DeployContract sets it.
+\* DeployContract sets it; a UseGlobalContract drops it too
+\* (global_contracts.rs:92-94).  guse likewise: a DeleteAccount, a
+\* DeployContract or a CreateAccount without a UseGlobalContract drops the
+\* account's entry, a UseGlobalContract sets it.  An account is in at most
+\* one of DOMAIN code and DOMAIN guse.
 CodeNext(r) ==
     IF r.ac.bnf # "" \/ (r.ac.mk /\ Dpl(r) = NoCode) THEN [x \in DOMAIN code \ {r.to} |-> code[x]]
     ELSE IF Dpl(r) # NoCode THEN (r.to :> Dpl(r)) @@ code
+    ELSE IF Ug(r) # NoGid THEN [x \in DOMAIN code \ {r.to} |-> code[x]]
     ELSE code
+UsesNext(r) ==
+    IF r.ac.bnf # "" \/ Dpl(r) # NoCode \/ (r.ac.mk /\ Ug(r) = NoGid)
+    THEN [x \in DOMAIN guse \ {r.to} |-> guse[x]]
+    ELSE IF Ug(r) # NoGid THEN (r.to :> Ug(r)) @@ guse
+    ELSE guse
 
 \* The first failing action check, as nearcore's error name, or "".  Per
 \* action: existence, then the actor, then the action (lib.rs:599-610).
@@ -896,11 +1027,19 @@ CodeNext(r) ==
 \*  Key actions: exist, initialised, actor = the account (:862-886,
 \*    :755-801), each one applies (access_keys.rs:84, :158).
 \*  DeployContract: exists, initialised, actor = the account (:755-776).
+\*  DeployGlobalContract, UseGlobalContract: the same (:755-776); then the
+\*    balance must cover the deploy's burn (LackBalanceForState,
+\*    global_contracts.rs:41-48) and the used identifier must be published
+\*    now (GlobalContractDoesNotExist, :83-90).
 \*  DeleteAccount: exists; actor = the account (:776-783, ActorNoPermission);
 \*    nothing locked (:784-790, DeleteAccountStaking); not large state, the
 \*    code it then has subtracted (a DeployContract before it: the new code).
+\* t: NoCode unless the receipt has a code action (DeployContract,
+\* DeployGlobalContract, UseGlobalContract).
 AcctErr(r, kb, kok) ==
-    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf  t == Dpl(r)
+    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf
+        t == IF Dpl(r) # NoCode THEN Dpl(r) ELSE IF DgTag(r) # NoCode THEN DgTag(r)
+             ELSE IF Ug(r) # NoGid THEN "global" ELSE NoCode
         bytes == AcctBytes(r, kb) IN
     \* (IF, not CASE: the first failing check wins.)
     IF r.ac.mk /\ AcctExists(a) THEN "AccountAlreadyExists"
@@ -911,6 +1050,8 @@ AcctErr(r, kb, kok) ==
     ELSE IF (ka # <<>> \/ t # NoCode \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
     ELSE IF (ka # <<>> \/ t # NoCode \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
     ELSE IF ka # <<>> /\ ~kok THEN "AddKeyAlreadyExists or DeleteKeyDoesNotExist"
+    ELSE IF DgTag(r) # NoCode /\ AcctBal(r) < 0 THEN "LackBalanceForState"
+    ELSE IF Ug(r) # NoGid /\ Ug(r) \notin DOMAIN gcode THEN "GlobalContractDoesNotExist"
     ELSE IF b # "" /\ LockedOf(a) > 0 THEN "DeleteAccountStaking"
     ELSE IF b # "" /\ StoragePerByte /\ bytes - CodeBytesAfter(r) > MaxDeleteBytes
          THEN "DeleteAccountWithLargeState"
@@ -1211,7 +1352,8 @@ CommitAc(r, O) ==
     /\ created' = IF mk THEN created \cup {a} ELSE created
     /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
     /\ code' = CodeNext(r)
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk>>
+    /\ guse' = UsesNext(r)
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk, gcode, gnonce>>
 
 \* Commit: platform part.  The contract conjoins its own state update.
 Commit(r, O) ==
@@ -1224,7 +1366,7 @@ Commit(r, O) ==
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
     /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code, gcode, guse, gnonce>>
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
@@ -1238,7 +1380,7 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted, code>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -1291,7 +1433,7 @@ ExecTransfer(r) ==
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
     /\ deleted' = IF AcctExists(r.to) THEN deleted ELSE deleted \ {r.to}
     /\ stor' = IF StoragePerByte /\ ~AcctExists(r.to) THEN [stor EXCEPT ![r.to] = CreatedBytes(r.to)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk, code>>
+    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk, code, gcode, guse, gnonce>>
 
 \* A refund to a missing account fails and its amount is burnt
 \* (lib.rs:1046-1054); refunds never create accounts (actions.rs:930-933).
@@ -1301,7 +1443,7 @@ RefundBurn(r) ==
     /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
     /\ burnt' = burnt + r.dep
     /\ rlog'  = LogR(r, "fail")
-    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted, code>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted, code, gcode, guse, gnonce>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
@@ -1337,10 +1479,32 @@ ExecStake(r) ==
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted, code>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
+
+\* A global contract's distribution receipt (A10): it publishes its code
+\* under its identifier unless a later deploy's distribution got there
+\* first.  Its nonce is its id, so a later deploy's is larger; the code is
+\* set iff the nonce is above the last one applied for the identifier
+\* (global_contracts.rs:191-246, the check at :251-269).  The model's
+\* network keeps no order, so two distributions of one identifier can
+\* arrive either way: the later deploy wins, and the earlier code may be
+\* published briefly first (nearcore: on a shard other than the deployer's;
+\* on the deployer's own, the nonce is bumped at deploy time, :175-189, and
+\* the earlier one is dropped).  It runs whether or not the owner still
+\* exists (sim: redeploy_updates_users), has no result and no outcome entry
+\* (rlog), and costs no gas (its compute, 84.yaml:39-40, is chunk-level).
+GNonceOf(g) == IF g \in DOMAIN gnonce THEN gnonce[g] ELSE 0
+ExecGDist(r) ==
+    /\ r.m = GDIST
+    /\ LET g == r.a.g  fresh == r.id > GNonceOf(g) IN
+       /\ rq'     = RemR(r)
+       /\ gcode'  = IF fresh THEN (g :> r.a.t) @@ gcode ELSE gcode
+       /\ gnonce' = IF fresh THEN (g :> r.id) @@ gnonce ELSE gnonce
+    /\ UNCHANGED <<post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
+                   txsig, created, burnt, blk, stor, deleted, code, guse>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
-ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
+ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r) \/ ExecGDist(r)
 
 \* A function call whose receiver is missing or has no code fails before
 \* any contract code runs.  Exec does this already (Verdict); this step lets
@@ -1350,8 +1514,8 @@ ExecNoCode(r) == IsCall(r) /\ ~CallTargetOK(r) /\ FailP(r, FALSE)
 ----------------------------------------------------------------------------
 (* Account lifecycle, continued: ACCOUNT receipts (ExecAcct).            *)
 \* The storage check after the actions (lib.rs:1008-1031), skipped when the
-\* receipt deleted the account (:1010).  bal: the liquid after the actions.
-AcctBal(r) == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep
+\* receipt deleted the account (:1010).  AcctBal: the liquid after the
+\* actions.
 AcctStorOK(r, kb) ==
     IF r.ac.bnf # "" THEN TRUE
     ELSE IF StoragePerByte
@@ -1379,21 +1543,28 @@ AcctOK(r, kb, kok) == AcctErr(r, kb, kok) = "" /\ AcctStorOK(r, kb)
 ExecAcctWith(r, kb, kok) ==
     /\ IsAcctRcpt(r)
     /\ LET a == r.to  mk == r.ac.mk  b == r.ac.bnf  bal == AcctBal(r)
-           pay == b # "" /\ bal > 0 IN
+           pay == b # "" /\ bal > 0
+           dg == DgTag(r) # NoCode
+           dist == dg /\ ~GlobalInstant
+           did == IF pay THEN nid + 1 ELSE nid IN
        IF AcctOK(r, kb, kok)
        THEN /\ Assert(~mk \/ near[a] = 0, <<"CreateAccount of an account whose near is not 0", a, near[a]>>)
             /\ rq'   = RemR(r) \cup (IF pay THEN {Rcpt(nid, r.tx, b, "system", REFND, r.a, bal, b, 0)} ELSE {})
+                             \cup (IF dist THEN {DistRcpt(did, r)} ELSE {})
             /\ post' = RemP(r)
             /\ data' = RemD(r) \cup DataOf(r, TRUE, EMPTY)
             /\ near' = [near EXCEPT ![a] = IF b # "" THEN 0 ELSE bal]
-            /\ nid'  = IF pay THEN nid + 1 ELSE nid
+            /\ nid'  = did + (IF dist THEN 1 ELSE 0)
+            /\ burnt' = burnt + GBurn(r)
+            /\ guse' = UsesNext(r)
+            /\ gcode' = IF dg /\ GlobalInstant THEN (DgId(r) :> DgTag(r)) @@ gcode ELSE gcode
             /\ rlog' = LogR(r, "ok")
             /\ created' = IF mk THEN created \cup {a} ELSE created
             /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
             /\ stor' = IF ~StoragePerByte THEN stor
                        ELSE [stor EXCEPT ![a] = IF b # "" THEN 0 ELSE AcctBytes(r, kb)]
             /\ code' = CodeNext(r)
-            /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk>>
+            /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, blk, gnonce>>
        ELSE FailP(r, FALSE)
 \* Without key actions (NearKeys.ExecAcctK runs them).
 ExecAcct(r) ==
@@ -1423,7 +1594,7 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted, code>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
 
 \* Block clock: one block passes (the model adds BlockTick /\ UNCHANGED of its
 \* own variables to Next).  Every receipt that runs at one value of blk sees
@@ -1437,7 +1608,7 @@ BlockTick ==
     /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
     /\ blk' = blk + 1
     /\ UNCHANGED <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog,
-                   rlog, txsig, created, burnt, stor, deleted, code>>
+                   rlog, txsig, created, burnt, stor, deleted, code, gcode, guse, gnonce>>
 BlockTs == TsOf(blk)
 
 ----------------------------------------------------------------------------
@@ -1466,7 +1637,7 @@ SubmitAs(r, a, k) ==
     /\ near'  = [near EXCEPT ![a] = @ - DepTotal(r)]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted, code>>
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted, code, gcode, guse, gnonce>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
@@ -1515,6 +1686,7 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ paid = [t \in txIds |-> [a \in Accounts |-> 0]]
     /\ oog = {} /\ rlog = {}
     /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode] /\ blk = 0
+    /\ gcode = InitGCode /\ guse = InitUses /\ gnonce = [g \in {} |-> 0]
     /\ stor = StorageInit /\ StorageInitOK(near0, locked0)
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
@@ -1525,6 +1697,7 @@ PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 \* does not check the initial cover: list StorageCovered as an invariant.
 PlatformInitSigner   == txsig = <<>>
 PlatformInitAccounts == created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode]
+                        /\ gcode = InitGCode /\ guse = InitUses /\ gnonce = [g \in {} |-> 0]
 PlatformInitClock    == blk = 0
 PlatformInitStorage  == stor = StorageInit
 PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock

@@ -1,0 +1,155 @@
+# Global contracts: a by-account upgrade reaches a callback in flight; a Use can race the
+# deploy's distribution.  See Upgrade.tla.
+#
+#   python3 tools/run.py examples/account-lifecycle/global-upgrade
+
+spec = "Upgrade"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["Unlocked", "Sane"]
+tags = ["semantics:global-contracts"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"q"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+Contracts = "QCode"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+InitGCode = "UGCode"
+InitUses = "UUses"
+Acts = '{"go", "upgrade"}'
+Mode = '"acct"'
+
+# y on o's account: o publishes v2 while y's on_ping callback is in flight; the callback runs
+# v2, which has no on_ping, and fails: y stays locked.
+[[run]]
+name = "upgrade_assumes_old_code"
+expect = "violation"
+invariant = "Unlocked"
+
+# y on the hash of v1: o's redeploy by account does not reach it.
+[[run]]
+name = "upgrade_by_hash"
+expect = "pass"
+[run.constants]
+Mode = '"hash"'
+
+# o publishes v2, then v3 once v2's deploy has run: the distributions arrive in either order,
+# the later deploy wins.
+[[run]]
+name = "upgrade_two_deploys"
+expect = "pass"
+invariants = ["LatestWins", "Sane"]
+[run.constants]
+Acts = '{"upgrade", "upgrade2"}'
+
+# p publishes v1 by account; z uses it once p's deploy has committed, which can be before the
+# distribution lands: GlobalContractDoesNotExist.
+[[run]]
+name = "upgrade_use_races_deploy"
+expect = "violation"
+invariant = "UseWorks"
+invariants = ["UseWorks", "Sane"]
+[run.constants]
+Acts = '{"publish", "race"}'
+
+# The same with GlobalInstant = TRUE (published at the deploy's commit): UseWorks holds.  The
+# switch hides the window above; it is an under-approximation (SEMANTICS N-global-instant).
+[[run]]
+name = "upgrade_use_race_instant"
+expect = "pass"
+invariants = ["UseWorks", "Sane"]
+[run.constants]
+Acts = '{"publish", "race"}'
+GlobalInstant = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/account-lifecycle/global-upgrade --anti-vacuity ----
+
+# o's v2 lands while y's on_ping callback waits (y on the hash, unaffected).
+[[witness]]
+id = "update_lands_with_callback_in_flight"
+expr = '~(GCodeOf(GAcct(O)) = "v2" /\ \E p \in post : p.m = "on_ping")'
+runs = ["upgrade_by_hash"]
+
+# y's callback runs and unlocks it.
+[[witness]]
+id = "callback_unlocks"
+expr = '~("go" \in done /\ ~lock /\ Idle)'
+runs = ["upgrade_by_hash"]
+
+# Both distributions in flight at once.
+[[witness]]
+id = "two_distributions_in_flight"
+expr = '~(Cardinality({r \in rq : r.m = GDIST}) = 2)'
+runs = ["upgrade_two_deploys"]
+
+# v3 published while v2's distribution is still in flight: the stale one will be dropped.
+[[witness]]
+id = "stale_distribution_pending"
+expr = '~(GCodeOf(GAcct(O)) = "v3" /\ \E r \in rq : r.m = GDIST /\ r.a.t = "v2")'
+runs = ["upgrade_two_deploys"]
+
+# v2 published first, then v3 over it (the nonce lets the later one in).
+[[witness]]
+id = "intermediate_code_published"
+expr = '~(GCodeOf(GAcct(O)) = "v2" /\ \E r \in rq : r.m = GDIST /\ r.a.t = "v3")'
+runs = ["upgrade_two_deploys"]
+
+# z's use succeeds with the instant switch.
+[[witness]]
+id = "instant_use_works"
+expr = '~(Z \in DOMAIN guse)'
+runs = ["upgrade_use_race_instant"]
+
+# The model: y on o's account even in "hash" mode (the redeploy then reaches it).
+[[mutant]]
+id = "hash_mode_by_account"
+file = "Upgrade.tla"
+find = 'YId    == IF Mode = "hash" THEN GHash("v1") ELSE GAcct(O)'
+replace = 'YId    == GAcct(O)'
+class = "wrong identifier"
+killed_by = ["Unlocked"]
+runs = ["upgrade_by_hash"]
+
+# The model: the callback does not clear the lock.
+[[mutant]]
+id = "callback_keeps_lock"
+file = "Upgrade.tla"
+find = "/\\ lock' = IF Ok(r, Out0) THEN FALSE ELSE lock"
+replace = "/\\ lock' = lock"
+class = "dropped effect"
+killed_by = ["Unlocked"]
+runs = ["upgrade_by_hash"]
+
+# The library: a distribution is applied whatever its nonce (a stale one overwrites v3).
+[[mutant]]
+id = "lib_gdist_ignores_nonce"
+file = "NearAsync.tla"
+library = true
+find = 'fresh == r.id > GNonceOf(g)'
+replace = 'fresh == TRUE'
+class = "platform rule dropped (library)"
+killed_by = ["LatestWins"]
+runs = ["upgrade_two_deploys"]
+
+# The library: a by-account user keeps the code it had when it switched (no resolution at
+# execution): y never reaches v3.
+[[mutant]]
+id = "lib_codeof_snapshot"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF a \in DOMAIN guse THEN GCodeOf(guse[a])'
+replace = 'ELSE IF a \in DOMAIN guse THEN (IF guse[a] \in DOMAIN InitGCode THEN InitGCode[guse[a]] ELSE NoCode)'
+class = "wrong effect (library)"
+killed_by = ["LatestWins"]
+runs = ["upgrade_two_deploys"]

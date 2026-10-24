@@ -915,6 +915,71 @@ Each rule has four fields:
   (`selftest_deploy`, `selftest_deploy_storage`, the deploy fees in `acct_fee`);
   `examples/account-lifecycle/factory` (`factory_underfunds_code`, `factory_funds_code`).
 
+### A10. Global contracts (NEP-591)
+
+- **Rule:** `DeployGlobalContract(code, mode)` publishes code for other accounts to run, by
+  its hash (`CodeHash`) or under the deploying account's id (`AccountId`). Only the account
+  itself may send it (`ActorNoPermission`). It burns 0.0001 NEAR per code byte (ten times the
+  storage rate) from the account's balance, `LackBalanceForState` if the balance is short, and
+  adds nothing to the account's storage or code. The code is published by a separate
+  distribution receipt the deploy emits: until that receipt runs, the identifier does not
+  resolve (or still resolves to the previous code). Each deploy bumps a per-identifier nonce,
+  and a distribution is applied only if its nonce is not older than the last one applied, so
+  the later of two deploys wins. `UseGlobalContract(identifier)` switches the account to a
+  published global contract (`GlobalContractDoesNotExist` otherwise): the old contract's bytes
+  (a local code's length, or the old identifier) leave its storage usage and the identifier's
+  bytes join it, 32 for a hash and the owner id's length for an account id; a local
+  DeployContract later does the reverse; the account's data stays. A by-account identifier is
+  resolved when each receipt runs, so the owner's redeploy reaches every user at once, a
+  callback already in flight included; a by-hash user keeps its code. The DeleteAccount
+  10,000-byte check subtracts the identifier as it does local code (A7). The owner's deletion
+  leaves the published code in place for its users; an owner created again under the same id
+  publishes over it. A failed batch burns nothing (the burn is part of the reverted state).
+  **Fee:** `deploy_global_contract` base (185 + 185 Ggas, "up") plus per byte (send 6.8 Mgas
+  on the same account, 47.7 on another; exec 70); `use_global_contract` base (185 + 185) plus
+  per identifier byte (send 6.8 / 47.7, exec 64.6). The distribution's compute (20 Tgas plus
+  250 Mgas per byte) is chunk-level, not gas (N-compute).
+- **nearcore:** `runtime/runtime/src/global_contracts.rs:25-63` (`action_deploy_global_contract`:
+  the burn `:35-51`), `:76-109` (`use_global_contract`: existence `:83-90`, the old contract
+  cleared `:91-94`, the identifier's bytes `:99-106`), `:143-189` (`initiate_distribution`,
+  the nonce bumped at `:175-189`), `:191-246` (`apply_distribution_current_shard`),
+  `:251-269` (`check_and_update_nonce`: older nonces dropped), `:288-333` (forwarded shard by
+  shard); the distribution receipt `core/primitives/src/receipt.rs:538-548`; identifier bytes
+  `core/primitives-core/src/account.rs:182-188`; the delete check
+  `runtime/runtime/src/actions.rs:426-440`; actor `:755-812`; dispatch
+  `runtime/runtime/src/lib.rs:637-660`, the call's contract resolved at `:684-700`; fees
+  `runtime/runtime/src/config.rs:171-191` (send), `:380-395` (exec),
+  `core/parameters/res/runtime_configs/77.yaml:2-50`; compute `84.yaml:39-40`; validation
+  (size, deploys per receipt) `runtime/runtime/src/action_validation.rs:21-37`, `:319-335`.
+- **Model:** identifiers are `GHash(t)` (a code tag's hash: a function of the tag) and
+  `GAcct(a)`; `IdLen` gives their bytes (32, or `Len(a)`: toy ids give toy lengths). Three
+  platform variables: `gcode` (identifier to published tag), `guse` (account to the identifier
+  it runs) and `gnonce` (identifier to the nonce of the last distribution applied).
+  `CodeOf(a)` reads `code`, then `GCodeOf(guse[a])` (resolved in the current state, so a
+  callback sees the code published when it runs), then `InitCode`; `CodeBytes` counts the
+  identifier. `WithDeployGlobal(r, t, md)` (`md` is `"hash"` or `"acct"`) adds the deploy to an
+  ACCOUNT receipt; `WithUseGlobal(r, g)` adds the use to an ACCOUNT receipt or a call receipt
+  (the factory batch `[CreateAccount, Transfer, UseGlobalContract, FunctionCall(init)]`: the
+  call sees the global code, `CodeAfter`); `DeployGlobalRcpt` and `UseGlobalRcpt` are lone
+  ones. `AcctErr` checks existence, actor, the burn (`LackBalanceForState`) and, for a use,
+  that `gcode` has the identifier now. The burn is `GlobalBurn(CodeLen[t])` at
+  `GlobalByteCost` (default `<<1, 10000>>`: 0.0001 per byte at 1 unit = 1 NEAR; exact, an
+  Assert if it is not a whole number of units); it leaves the balance at commit and joins the
+  ghost `burnt`, so `NearConserved` holds. The deploy emits a `GDIST` receipt (a built-in:
+  `ExecBuiltin` runs it, `ExecGDist`) whose id is its nonce; it sets `gcode` if its nonce is
+  above `gnonce`'s. The model's network has no order, so two distributions of one identifier
+  arrive either way: the later deploy wins, and the earlier code may be published briefly
+  first (as on a shard other than the deployer's). `InitGCode` and `InitUses` (overridable)
+  set what is published, and who uses it, at the start. `GlobalInstant <- TRUE` publishes at
+  the deploy's commit, without the receipt (unsound: N-global-instant). A receipt has at most
+  one of each global action, and not a DeployContract together with a UseGlobalContract
+  (Asserts). The handler is the model's TLA+ (N-upgrade): a contract that changes under a user
+  must dispatch on `CodeOf(r.to)`.
+- **Validated:** sim (`conformance/tests/global.rs`: `deploy_global`, `use_global_storage`,
+  `redeploy_updates_users`, `delete_large_state_by_account`, `update_while_callback_in_flight`);
+  `examples/platform-selftest` (`selftest_global`, the global fees in `acct_fee`);
+  `examples/account-lifecycle/factory` (`factory_global`); `examples/account-lifecycle/global-upgrade`.
+
 ---
 
 ## Signer and access keys
@@ -1713,6 +1778,14 @@ against the current module code; some may be fixed in the modules later.
 
 ### Under-approximations (unsound: they can hide bugs)
 
+- **N-global-instant. Global contracts published at once.** With `GlobalInstant <- TRUE` a
+  DeployGlobalContract publishes its code when it commits, with no distribution receipt (A10).
+  That removes the window in which a UseGlobalContract of the identifier fails and its users
+  still run the old code (sim: `conformance/tests/global.rs`, `deploy_global`), so a bug that
+  needs the window is missed (`examples/account-lifecycle/global-upgrade`,
+  `upgrade_use_race_instant` passes where `upgrade_use_races_deploy` fails). Use it only for
+  state-count relief, and run the default as well.
+
 - **N-local-congested. Local priority under chunk limits.** With the switch ON, the model
   assumes the receiving chunk is below its compute and storage-proof limits. When it is not, the
   local receipt goes to the back of the delayed queue and every receipt already delayed runs
@@ -1889,9 +1962,10 @@ against the current module code; some may be fixed in the modules later.
   `runtime/runtime/src/lib.rs:925-948`, `:987-999`). Exceeding any of them fails the receipt in
   nearcore; the model does not fail for them. Deploys: at most 10 per receipt, checked when
   the receipt is made (`runtime/runtime/src/action_validation.rs:21-37`, `:128-129`), and 4 MiB
-  of code (`:305-318`; `.snap:245`, `:250`). The model has at most one deploy per receipt
-  (`WithDeploy` asserts on a second) and asserts on a larger `CodeLen`, so it never reaches
-  either refusal (A9).
+  of code (`:305-318`; `.snap:245`, `:250`); DeployGlobalContract counts as a deploy
+  (`:28`). The model has at most one deploy and one global deploy per receipt (`WithDeploy`
+  and `WithDeployGlobal` assert on a second) and asserts on a larger `CodeLen`, so it never
+  reaches either refusal (A9, A10).
 - **N-one-yocto. `one_yocto_on_promise` (85+).** A contract with zero balance may attach
   exactly 1 yocto to a promise function call without having it
   (`runtime/near-vm-runner/src/logic/host.rs:3579-3593`;
@@ -1925,7 +1999,7 @@ against the current module code; some may be fixed in the modules later.
   happens and a delete nearcore refuses succeeds. Put `ACCT` in `MayFail` to explore the
   failure anyway. With `StoragePerByte`, `CodeSize` must state each contract's code bytes
   (counted in its `StorageInit`), or the deletes of large contracts fail falsely; deployed
-  code counts its `CodeLen` (A9).
+  code counts its `CodeLen` (A9), a global contract its identifier (A10).
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
   touched. A model whose accounts can be deleted and created again must reset them, with
@@ -1948,15 +2022,21 @@ against the current module code; some may be fixed in the modules later.
   are absent. The model's inner receipt is one receipt record: a delegate whose inner actions
   bundle key actions with a call needs `WithKeyActs`, and `KeyCanSign` cannot see those
   (N-fckey-one-action).
-- **N-global. Global contracts** (NEP-591; `runtime/runtime/src/global_contracts.rs:25`, `:65`).
-  Code shared by hash or by account and updated in place is absent. An eth-implicit account's
-  code is a global contract (A3); the model gives it the tag `EthWalletCode` (A9).
+- **N-global. Global contracts: what A10 leaves out.** Distribution across shards
+  (`runtime/runtime/src/global_contracts.rs:288-333`): nearcore publishes shard by shard, so
+  users on different shards can see a redeploy at different times; the model has one global
+  table, updated once per distribution. The distribution's compute cost (N-compute). A
+  DeployGlobalContract only in an ACCOUNT receipt, at most one per receipt, and no
+  DeployContract with a UseGlobalContract in one receipt (nearcore allows each; the model
+  asserts). The eth wallet: an eth-implicit account's code is a global contract
+  (`actions.rs:255-268`); the model gives it the tag `EthWalletCode` (A9), not a `guse` entry.
 - **N-upgrade. Contract upgrades mid-flow.** A DeployContract changes the account's code tag
   (A9), and nearcore runs every later receipt on the account, a callback in flight included,
   with the code deployed when that receipt executes (the account's contract is read as the
   action runs, `runtime/runtime/src/lib.rs:684-700`). The model's handler, though, is the
   model's TLA+: it runs the new code only if it branches on `CodeOf(r.to)`, and nothing
-  makes a model do that. A model of an upgradable contract must dispatch on `CodeOf(r.to)`
+  makes a model do that. A by-account global contract's redeploy is the same, for every user
+  at once (A10; `examples/account-lifecycle/global-upgrade`, `upgrade_assumes_old_code`). A model of an upgradable contract must dispatch on `CodeOf(r.to)`
   and migrate its own state for the account; otherwise callbacks after an upgrade run the old
   logic in the model.
 - **N-deterministic. Deterministic and universal account ids, state init** (NEP-616;
