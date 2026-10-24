@@ -87,15 +87,17 @@
 (*      414, :679-721).  nearcore also gives the last weighted action the  *)
 (*      remainder, in gas units.  Under NearFees.FeeRounding = "up" (the   *)
 (*      default) the model drops its whole-Ggas remainder, so every share  *)
-(*      is a lower bound of nearcore's; under "nearest" the last action in *)
-(*      creation order gets it (see Share).                                *)
+(*      is a lower bound of nearcore's where the model's U is (see Share   *)
+(*      for the premises); under "nearest" the last action in creation    *)
+(*      order gets it.                                                     *)
 (*    * a receipt with several function-call actions may give per-action   *)
 (*      accounting in the outcome (`pa`): each action's leftover is split  *)
 (*      over the children it created (function_call.rs:61, :343-345);      *)
 (*      without `pa` the whole receipt is one action.                      *)
 (*    * a created function call left with 0 gas fails the creating receipt *)
-(*      (action_validation.rs:350-351, applied at lib.rs:968-978); see     *)
-(*      ZeroGasKid for "up".                                               *)
+(*      (action_validation.rs:350-351, applied at lib.rs:968-978).  Under  *)
+(*      "up" the model cannot always tell 0 gas from a little: it then     *)
+(*      keeps both outcomes (ZeroGasKid, ZeroGasMaybe; Verdict "either").  *)
 (*    * a panic is labelled out-of-gas when its explicit panic-path burn   *)
 (*      (OPanicKey) plus the children created before it exceeds the        *)
 (*      attached gas (gas_counter.rs:136-141, :155-174, :205-213).         *)
@@ -159,9 +161,10 @@ VARIABLES
     blk        \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
-\* "The variable txsig was not initialized" means PlatformInitExtra (or its
-\* parts PlatformInitSigner / PlatformInitAccounts / PlatformInitClock) is
-\* missing.
+\* "current state is not a legal state" on the initial state, with a
+\* platform variable such as txsig or blk shown as null, means
+\* PlatformInitExtra (or its parts PlatformInitSigner / PlatformInitAccounts
+\* / PlatformInitClock) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
                   txsig, created, burnt, blk>>
@@ -668,10 +671,14 @@ LastE(E) == CHOOSE e \in E : \A f \in E : f[1] < e[1] \/ (f[1] = e[1] /\ f[2] <=
 \* (receipt_manager.rs:679-719).  The model's U is in whole Ggas.
 \*  "up" (the default): floor(U*w/W) Ggas for every action, the last one
 \*    included; the model's remainder (up to n - 1 Ggas) is not handed out.
-\*    The model's U is at most nearcore's (attached gas is a lower bound,
-\*    Need an upper bound), and a whole-Ggas floor of a smaller value never
-\*    exceeds the gas-unit floor of a larger one, so every share is at most
-\*    nearcore's: gas the model finds enough for a child is enough there.
+\*    Where the model's U is at most nearcore's, a whole-Ggas floor of a
+\*    smaller value never exceeds the gas-unit floor of a larger one, so every
+\*    share is at most nearcore's: gas the model finds enough for a child is
+\*    enough there.  U is at most nearcore's when the attached gas is (a stated
+\*    prepaid amount or an "up" share; not a pooled leftover, PooledGasOK) and
+\*    Need is an upper bound (fees "up"; burns from a calibrated table within
+\*    its measured sizes).  docs/SEMANTICS.md, N-precision, lists the
+\*    exceptions.
 \*  "nearest": the last action in (id, index) order gets the remainder in
 \*    Ggas, as before; it can then exceed nearcore's share by up to n - 1
 \*    Ggas (docs/SEMANTICS.md, G3).
@@ -689,32 +696,56 @@ Assign(c, U, E) ==
 LeftFor(r, O, c) ==
     IF PerAction(r, O) THEN LET k == ActOf(O, c) IN ActGas(r, k) - ActNeed(O, k)
     ELSE GasOf(r) - Need(r, O)
+\* The weighted actions U is split over: those of c's action's children under pa.
+EntriesFor(r, O, c) ==
+    IF PerAction(r, O) THEN EntriesOf(ActKids(O, ActOf(O, c))) ELSE Entries(O)
 
 \* A child with its attached gas, after the split.
-Alloc(r, O, c) ==
-    IF PerAction(r, O)
-    THEN LET k == ActOf(O, c) IN Assign(c, LeftFor(r, O, c), EntriesOf(ActKids(O, k)))
-    ELSE Assign(c, LeftFor(r, O, c), Entries(O))
+Alloc(r, O, c) == Assign(c, LeftFor(r, O, c), EntriesFor(r, O, c))
 
 Give(r, O, S) ==
     IF GasMode # "gas" THEN S ELSE {Alloc(r, O, c) : c \in S}
 
-\* A function-call child left with 0 gas (static 0 and no share) fails the
-\* creating receipt: new receipts are validated after the action
-\* (lib.rs:968-978; action_validation.rs:350-351, FunctionCallZeroAttachedGas).
-\* "nearest": its allocated gas is 0.  "up": its static is 0 and it gets no
-\* share at all (weight 0, or U = 0).  A weighted child with U > 0 gets a
-\* positive share in nearcore, whose U is then at least 1 Ggas (10^9 gas
-\* units; weight sums are far smaller), even where the model's lower-bound
-\* floor is 0 Ggas: there the creator commits and the child runs with 0 Ggas
-\* in the model, so it runs out of gas, as it does in nearcore with less than
-\* 1 Ggas.
+\* A function-call child left with 0 gas fails the creating receipt: new
+\* receipts are validated after the action (lib.rs:968-978;
+\* action_validation.rs:350-351, FunctionCallZeroAttachedGas).  nearcore
+\* splits the leftover in gas units (receipt_manager.rs:686-716): a weighted
+\* action gets floor(U*w/W) gas units, the last one also the remainder; an
+\* action with weight 0 is not in gas_weights (:414-419) and gets nothing.
+\*  "nearest": the child's allocated gas decides (ZeroGasKid), as before.
+\*  "up": the model's U (whole Ggas) is a lower bound of nearcore's, so
+\*    whether a static-0 action ends up with 0 gas is not always known:
+\*    - weight 0: certainly 0 gas: the creator fails (ZeroGasKid);
+\*    - weight w > 0 and U*10^9*w >= W: nearcore's share is at least
+\*      floor(U*10^9*w/W) >= 1 gas unit, certainly nonzero (SureShare);
+\*    - weight w > 0 otherwise (U = 0 included, and a small w against a large
+\*      W, which floors to 0 gas units even with U >= 1 Ggas, host.rs:
+\*      3501-3503): nearcore's share may be 0 or not (ZeroGasMaybe).  Both
+\*      outcomes are kept: Verdict is "either", and Exec fails the creator or
+\*      commits it; the child then runs with its floor of 0 Ggas and runs out
+\*      of gas, as it does in nearcore with less gas than its burn.
+\* The premise is the one of Share's "up" lower bound (N-precision).
 ZeroGasKid(r, O) ==
     /\ GasMode = "gas"
     /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs :
          IF NearFeeTable!FeeRounding = "up"
-         THEN GasListsOK(c) /\ c.gs[k] = 0 /\ ~(c.gw[k] > 0 /\ LeftFor(r, O, c) > 0)
+         THEN GasListsOK(c) /\ c.gs[k] = 0 /\ c.gw[k] = 0
          ELSE Alloc(r, O, c).g[k] = 0
+\* U*10^9*w >= W without overflow (TLC integers are 32-bit): with
+\* q = ceil(W / 10^9), at most 3, it is U*w >= q.  W is WSum over the
+\* entries, so Share's U*w and W themselves must fit (weights up to about
+\* 10^9 work only with small U).
+SureShare(r, O, c, k) ==
+    LET U == LeftFor(r, O, c)
+        w == c.gw[k]
+        W == WSum(EntriesFor(r, O, c))
+        q == W \div 1000000000 + (IF W % 1000000000 = 0 THEN 0 ELSE 1)
+    IN  U >= 1 /\ w >= 1 /\ (U >= q \/ w >= q \/ U * w >= q)
+ZeroGasMaybe(r, O) ==
+    /\ GasMode = "gas"
+    /\ NearFeeTable!FeeRounding = "up"
+    /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs :
+         GasListsOK(c) /\ c.gs[k] = 0 /\ c.gw[k] > 0 /\ ~SureShare(r, O, c, k)
 
 \* A receipt with several function-call actions and no pa would pool their
 \* gas; that is only allowed with PooledGasOK.  A failing outcome without a
@@ -724,11 +755,14 @@ PoolCheck(r, O) ==
        \/ (O.err # "" /\ ~HasPanicKey(O)) THEN TRUE
     ELSE Assert(FALSE, <<"receipt with several function calls but no pa (per-action gas); PooledGasOK <- TRUE to pool", r.to, r.m>>)
 
-\* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas).
+\* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas)
+\* | "either" (gas mode, "up": a child's gas may be 0 in nearcore or not,
+\* ZeroGasMaybe; the receipt commits or fails, and Exec takes both).
 \* Order: the receiver check comes first (the call never starts); a panic
 \* the gas could not reach is "oog"; new-receipt validation and the storage
-\* check run after the call.  A Delegate receipt runs no code: a dispatcher
-\* that hands one to a contract handler is a modelling error (an Assert).
+\* check run after the call (an unaffordable receipt fails either way).  A
+\* Delegate receipt runs no code: a dispatcher that hands one to a contract
+\* handler is a modelling error (an Assert).
 Verdict(r, O) ==
     IF IsDeleg(r) THEN Assert(FALSE, <<"DELEGATE receipt passed to Exec; run it with NearKeys' ExecDelegate", r.id>>)
     ELSE IF ~PoolCheck(r, O) THEN "fail"
@@ -737,6 +771,7 @@ Verdict(r, O) ==
     ELSE IF ~GasOK(r, O) THEN "oog"
     ELSE IF ZeroGasKid(r, O) THEN "fail"
     ELSE IF ~Affordable(r, O) THEN "fail"
+    ELSE IF ZeroGasMaybe(r, O) THEN "either"
     ELSE "ok"
 
 \* Outcome log (conformance).  st: "ok" | "fail" | "oog" | "forced"
@@ -777,12 +812,22 @@ FailL(r, lbl) ==
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
 
-\* The generic runner.  Platform part only; the caller conjoins
+\* The generic runner.  Platform part only; the caller conjoins, after Exec,
 \*   IF Ok(r, O) THEN <its own state := O's> ELSE UNCHANGED <its state>.
-Ok(r, O) == Verdict(r, O) = "ok"
+\* For "either" Exec has two successors, and Ok tells which one this step
+\* took by reading the primed platform state: the commit created r's
+\* children (fresh ids, so no other receipt equals one), the failure none.
+\* So Ok must come after Exec in the same action; written as membership in
+\* rq' / post', it is an error (not an assignment) if it comes first.
+Committed(r, O) == \E c \in Kids(O) : Alloc(r, O, c) \in rq' \cup post'
+Ok(r, O) ==
+    LET v == Verdict(r, O) IN
+    IF v = "either" THEN Committed(r, O) ELSE v = "ok"
 Exec(r, O) ==
     LET v == Verdict(r, O) IN
-    IF v = "ok" THEN Commit(r, O) ELSE IF v = "oog" THEN FailOOG(r) ELSE FailP(r, FALSE)
+    IF v = "ok" THEN Commit(r, O) ELSE IF v = "oog" THEN FailOOG(r)
+    ELSE IF v = "either" THEN Commit(r, O) \/ FailP(r, FALSE)
+    ELSE FailP(r, FALSE)
 
 \* The forced-fault switch as one step (the contract conjoins UNCHANGED of its vars).
 ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailP(r, TRUE)

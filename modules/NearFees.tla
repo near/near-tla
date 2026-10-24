@@ -163,12 +163,17 @@ SendPart(row, sir) == IF sir THEN row.ss ELSE row.sn
 \*              0.5 Ggas per entry.
 \* Change it here, like FeeProtocol, or per run with
 \*   "NearFees!FeeRounding" = '"nearest"'
-\* in a runs.toml's [constants] (tools/run.py), which is TLC's
-\*   FeeRounding <- [NearFees] <value>
-\* and also reaches the NearFeeTable instance inside NearAsync.  NearAsync
+\* in a runs.toml's [constants] (tools/run.py), which generates a definition
+\* const_NearFees_FeeRounding == "nearest" and the cfg line
+\*   FeeRounding <- [NearFees] const_NearFees_FeeRounding
+\* and also reaches the NearFeeTable instance inside NearAsync.  In a
+\* hand-written cfg, define the value in the spec (FeeNearest == "nearest")
+\* and write FeeRounding <- [NearFees] FeeNearest: TLC rejects a string
+\* literal on the right of <- as an undefined identifier.  NearAsync
 \* reads it for the unused-gas split too: under "up" no child gets the
-\* split's whole-Ggas remainder, so none gets more than in nearcore; under
-\* "nearest" the last weighted child gets it (NearAsync, Share).
+\* split's whole-Ggas remainder, so none gets more than in nearcore where the
+\* model's leftover is at most nearcore's; under "nearest" the last weighted
+\* child gets it (NearAsync, Share).
 FeeRounding == "up"
 
 FeeRoundingModes == {"nearest", "up"}

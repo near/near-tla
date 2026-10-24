@@ -101,7 +101,9 @@ Each rule has four fields:
   committed before start `:903-905`, the actions loop `:946-1005`, then commit `:1079-1083` or
   rollback `:1084-1087`.
 - **Model:** `Exec(r, O)`, which takes the `Verdict` and dispatches to `Commit`, `FailOOG` or
-  `FailP`. The contract conjoins its own state update.
+  `FailP`, or for `"either"` (a child's gas may be 0 or not, G3) to both `Commit` and `FailP`.
+  The contract conjoins its own state update after it, guarded by `Ok(r, O)`, which for
+  `"either"` reads which of the two the step took.
 - **Validated:** nearcore reading. <!-- conformance --> The sim compared each receipt's
   verdict (ok, out of gas, failed) on every flow, but it does not see state or interleaving,
   so the atomicity itself is not checked there.
@@ -435,7 +437,9 @@ Each rule has four fields:
   attached gas (`PanicOOG`; per action: the actions before `i` against their own need, and
   action `i` against the panic burn). Only the label differs. Without a panic key a panic is
   always `"fail"`: the success-path burn says nothing about where the panic happens.
-  `ZeroGasKid` fails the creator when a child call gets 0 gas, ready or callback. In gas mode a
+  `ZeroGasKid` fails the creator when a child call gets 0 gas, ready or callback; under
+  `"up"`, where the model cannot always tell 0 gas from a little, it keeps both outcomes
+  (`ZeroGasMaybe`, G3). In gas mode a
   function-call child must have one static (and weight) per call, from `GasCall` or `WithCall`;
   an empty list is an `Assert` (`GasListsOK`).
 - **Validated:** sim (`chain1`, `chain3w`, `chain_w0`, `ret*`: the creator fails until its
@@ -458,15 +462,32 @@ Each rule has four fields:
   is in whole Ggas, and what happens to its remainder depends on `NearFees.FeeRounding`:
   - **`"up"` (the default):** every weighted action gets `⌊U·w/W⌋` Ggas, the last one
     included; the model's remainder (up to `n − 1` Ggas for `n` weighted actions) goes to no
-    one. Every share is then at most nearcore's: the model's `U` is at most nearcore's
-    (attached gas is itself such a share or a stated prepaid amount, and the need is an upper
-    bound: fees rounded up, burns an upper envelope, N-precision), and a whole-Ggas floor of a
-    smaller amount never exceeds the gas-unit floor of a larger one. A share falls short of
+    one. A whole-Ggas floor of a smaller amount never exceeds the gas-unit floor of a larger
+    one, so every share is at most nearcore's **where the model's `U` is at most nearcore's**.
+    That holds when the attached gas is at most nearcore's (a stated prepaid amount, or itself
+    an `"up"` share) and the need is an upper bound (fees rounded up, burns an upper
+    envelope). N-precision lists where these premises fail: pooled gas (N-batch-oog), burns
+    from hand-written tables, past a calibrated table's measured sizes, or off its measured
+    paths (N-burn). There a share can exceed nearcore's. A share falls short of
     nearcore's by less than 1 Ggas plus its weight's part of the two leftovers' difference, and
-    the last action also by nearcore's remainder. Which action is last no longer matters. A
-    weighted action with static 0 whose share floors to 0 Ggas while `U > 0` does not fail its
-    creator (`ZeroGasKid`): in nearcore it gets a positive share. It runs with 0 Ggas and runs
-    out of gas, as it would in nearcore with less than 1 Ggas.
+    the last action also by nearcore's remainder. Which action is last no longer matters.
+
+    **Zero gas under `"up"`.** Since the model's `U` is only a lower bound (in whole Ggas),
+    it cannot always tell whether a static-0 action ends up with 0 gas in nearcore, which
+    fails the creator (G2). Weight 0: certainly 0 (it is not in `gas_weights`, so it gets
+    neither a share nor the remainder, `receipt_manager.rs:414-419`), so the creator fails
+    (`ZeroGasKid`). Weight `w > 0` with `U·10⁹·w ≥ W`: nearcore's share is at least
+    `⌊U·10⁹·w/W⌋ ≥ 1` gas unit, certainly nonzero (`SureShare`), so the creator commits.
+    Otherwise (`U = 0`, or a small weight against a large sum, which floors to 0 gas units
+    even with 1 Ggas left; nearcore's own documentation notes this,
+    `runtime/near-vm-runner/src/logic/host.rs:3501-3503`) both are possible (`ZeroGasMaybe`):
+    the verdict is `"either"`, and the creator fails in one successor and commits in the
+    other. In the commit the child runs with its floor of 0 Ggas and runs out of gas. Examples
+    (`examples/platform-selftest`): a model leftover of 0 with one weight-1 child
+    (`zero_gas_left0`; nearcore's leftover may be 0.5 Ggas, and the creator commits), and
+    1 Ggas over weights 1 and 10⁹ (`zero_gas_heavy`; nearcore gives exactly 1 Ggas as
+    `[0, 10⁹]` gas units, and the creator fails). The runs `selftest_zero_*` reach both
+    outcomes of each.
   - **`"nearest"`:** the last weighted action in (child id, action index) order also gets the
     remainder (`FloorSum`), in Ggas, so it can get up to `n − 1` Ggas more than nearcore
     gives it, and a burn within that margin passes in the model and runs out of gas in
@@ -474,7 +495,8 @@ Each rule has four fields:
     Ggas against nearcore's 1009.84; the last child gets 1171 Ggas against 1168.31). The order
     matches host-call order whenever a handler builds each child completely before creating
     the next; a handler that interleaves appends across promises can see the remainder go to a
-    different action. A share that floors to 0 Ggas on a static-0 action fails its creator.
+    different action. A share that floors to 0 Ggas on a static-0 action fails its creator,
+    whatever nearcore's gas-unit share (the conformance comparison is pinned to this mode).
 
   **Per action:** each function-call action of a receipt has
   its own gas and its own promise manager, so only that action's leftover is split, over the
@@ -525,8 +547,8 @@ Each rule has four fields:
   DeleteKey, Stake, ...) have `c.gf` = send + exec of the whole single-action receipt, receipt
   base included, so one burn key works for named and implicit receivers. `NearAsync` reads the
   table through `NearFeeTable == INSTANCE NearFees` (`XferFee`, `StakeFee`, `BuiltinFee`);
-  `NearKeys` through `KeyFee`, which omits the per-byte part of a function-call AddKey (see
-  N-keyfee).
+  `NearKeys` through `KeyFee`, which charges a function-call AddKey its per-byte part too
+  (`MethodBytes`; see N-keyfee).
 - **Validated:** for action-only Transfer children, sim: the creator pays the whole receipt's
   fees from its own gas, by receiver kind (`send_*` edges; `ft_storage_again`,
   `wnear_storage_again` and `wnear_withdraw` for a contract's Transfer to a named account), and
@@ -758,7 +780,9 @@ Each rule has four fields:
   the key's nonce becomes the delegate's and the inner receipt is created:
   - its predecessor is **U** and its receiver C;
   - its signer and signer key are **R**'s, so the inner call and every receipt it spawns see
-    `signer_account_id = R` and `predecessor_account_id = U` (in the inner call);
+    `signer_account_id = R` (`runtime/runtime/src/function_call.rs:173-174` copies the signer
+    into each child), and `predecessor_account_id = U` in the inner call only: a receipt it
+    spawns sees its creator as predecessor (`:188`), so for U → C → D, D sees C;
   - it is a new outgoing receipt, never local, and has no `refund_to`;
   - if it fails, its deposit is refunded to its predecessor, **U**, not to R, who paid it.
 
@@ -1383,9 +1407,9 @@ against the current module code; some may be fixed in the modules later.
     - `"up"` (the default): never understated. A base entry is over by less than 1 Ggas, a
       per-byte term by less than `1.001 + 1e-6 × n` Ggas for `n` bytes, a single-action
       receipt (receipt base and one action, send and exec) by less than **4 Ggas** (a named
-      Transfer: 450 against 446.37). As far as the fee table and the split below go, a
-      prepaid amount the model finds enough is enough in nearcore, and so is the gas it gives
-      a child. The price is a false out-of-gas within that margin.
+      Transfer: 450 against 446.37). As far as the fee table goes, a prepaid amount the model
+      finds enough is enough in nearcore, and so, under the premises of the split below, is
+      the gas it gives a child. The price is a false out-of-gas within that margin.
     - `"nearest"` (the earlier rounding; set `"NearFees!FeeRounding" = '"nearest"'` in a run's constants):
       at most 0.5 Ggas per base entry, `0.5 + 0.001 + 0.5e-6 × n` Ggas per per-byte term
       (≤ 0.51 Ggas up to 20 KB, ≤ 2.6 Ggas at 4 MiB), roughly 3 Ggas per receipt, **either
@@ -1396,9 +1420,22 @@ against the current module code; some may be fixed in the modules later.
       under `"up"` a budget that is enough by 0.63 Ggas fails too
       (`edge_up_tight_false_cex`).
   - **The unused-gas split (G3), by the same switch.** `"up"`: every weighted child gets
-    `⌊U·w/W⌋` Ggas of the model's leftover `U` and the remainder goes to no one, so no child
-    gets more than in nearcore (the model's `U` is at most nearcore's, by the bounds here);
-    a child's share is short by less than 1 Ggas plus its part of the leftovers' difference.
+    `⌊U·w/W⌋` Ggas of the model's leftover `U` and the remainder goes to no one. No child then
+    gets more than in nearcore **provided the model's `U` is at most nearcore's**, which
+    needs the creator's attached gas to be at most nearcore's and its need to be an upper
+    bound. Neither follows from `"up"` alone. The exceptions:
+    - `GasBurn` burns or `GasCall` exec fees (`fee`, the child's prepaid exec fee, part of
+      the need) that are not upper bounds: hand-written tables (such as the examples'), and
+      calibrated ones past their largest measured size or on a path or trie shape they did
+      not measure (the burn bullet below, N-burn);
+    - a receipt that pools several function calls' gas (`PooledGasOK`, N-batch-oog): its one
+      leftover can exceed the leftover of the action that created a child;
+    - `FeeRounding = "nearest"`, which understates fees.
+
+    Where the premise fails, a child's share, and the attached gas of everything below it, can
+    exceed nearcore's. Where it holds, a child's share is short by less than 1 Ggas plus its
+    part of the leftovers' difference. The same premise makes `SureShare` (G3, zero gas under
+    `"up"`) sound.
     `"nearest"`: the last weighted child also gets the remainder, up to `n − 1` Ggas for `n`
     weighted children, which can exceed nearcore's share by about that much
     (`examples/weight-split/remainder`).
@@ -1408,7 +1445,8 @@ against the current module code; some may be fixed in the modules later.
     Ggas per KB, so past the largest size measured a burn is understated by up to
     `(per_exact − per) × (size − largest size measured)` when `per` was rounded down. A table
     says nothing about paths or sizes its flows did not measure.
-  - **Still understated:** the function-call AddKey per-byte fee (N-keyfee).
+  - **Function-call AddKey per-byte fee** (`KeyFee`): charged since this release, from the
+    model's method names or a byte count given with `WithMethodBytes` (N-keyfee).
   - **Overstated:** the KB rounding of sizes ([Units](#units)) when sizes feed fees or burns.
 
   A predicted gas edge is accurate only to these bounds summed over the receipts on the path.
@@ -1441,10 +1479,16 @@ against the current module code; some may be fixed in the modules later.
   count, argument length and network (trie-node pricing). A real out-of-gas at a prepaid amount
   the model calls safe is possible near any calibrated edge. Treat windows as approximate. They
   are tied to the calibration's provenance (`docs/VERSIONING.md`).
-- **N-keyfee. AddKey per-byte fee.** `NearKeys.KeyFee` charges a function-call AddKey only its
-  base fee and drops the per-byte part (`NearFeeTable!AddKeyFcBytesFee`, about 3.9 Ggas per KB of method
-  names to the same account, 49.6 Ggas per KB cross-shard). The creator's need is under-charged, so an out-of-gas at creation can be
-  missed.
+- **N-keyfee. AddKey per-byte fee from the model's method names.** `NearKeys.KeyFee` charges
+  a function-call AddKey its base fee and its per-byte part (`NearFeeTable!AddKeyFcBytesFee`,
+  about 3.9 Ggas per KB on the creator's own account) for `Σ (len(name) + 1)` bytes over the
+  permission's method names (`runtime/near-vm-runner/src/logic/utils.rs:4-6`, charged at
+  `host.rs:4078-4091`). The model's names are counted as written: a model whose names stand
+  for longer real ones under-charges the creator, so an out-of-gas at creation can be missed
+  and a weighted sibling's share can exceed nearcore's. State the real count with
+  `WithMethodBytes(p, n)`. Before this release the per-byte part was dropped altogether (a
+  self-directed AddKey with 2,000 bytes of method names: 424 Ggas against nearcore's
+  428.26; now 432).
 - **N-burn-fail. Burn of a failing receipt.** Only the verdict is modelled, not how much a
   failing receipt burnt. Gas-griefing amounts are not computed.
 - **N-storage. Storage staking details.** `storage_usage` is not tracked per byte, so a write

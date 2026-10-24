@@ -660,7 +660,12 @@ def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int) -> Attempt
     tla, cfg = wrapper(run, mod, invs, props)
     work = tempfile.mkdtemp(prefix=f"tlc-{mod}-", dir="/tmp" if os.path.isdir("/tmp") else None)
     libpath = os.pathsep.join([str(run.dir)] + run.library)
-    cmd = ["java", "-XX:+UseParallelGC", *shlex.split(os.environ.get("TLC_JAVA_OPTS", "")),
+    # TLC unpacks its standard modules into java.io.tmpdir; a private one per run keeps
+    # concurrent TLC processes from parsing each other's half-written copies.
+    jtmp = os.path.join(work, "jtmp")
+    os.makedirs(jtmp)
+    cmd = ["java", "-XX:+UseParallelGC", f"-Djava.io.tmpdir={jtmp}",
+           *shlex.split(os.environ.get("TLC_JAVA_OPTS", "")),
            f"-DTLA-Library={libpath}", "-cp", jar, "tlc2.TLC",
            *([] if run.deadlock else ["-deadlock"]),
            "-workers", str(workers), "-metadir", os.path.join(work, "states"),

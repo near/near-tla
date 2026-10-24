@@ -166,7 +166,8 @@ A flow passes `conform.py` only if:
   place in the receipt tree, and the order in which they ran is not compared.
 
 The model runs on the library's defaults, except the fee table's rounding: `mkconf.py` pins
-`FeeRounding <- [NearFees] "nearest"`, because the comparison measures accuracy and the
+`FeeRounding` to `"nearest"` (the cfg line `FeeRounding <- [NearFees] mc_fee_rounding`, with
+`mc_fee_rounding == "nearest"` in the generated module), because the comparison measures accuracy and the
 default `"up"` overstates an action-only child's fee by up to 4 Ggas on purpose (under `"up"`
 two flows, `ft_storage_again` and `wnear_storage_again`, move their edge from 1.0 to 1.1 Tgas;
 `docs/SEMANTICS.md`, N-precision). Token batches are accounted per call (each call of a

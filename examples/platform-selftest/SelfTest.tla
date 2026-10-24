@@ -126,9 +126,18 @@ H(r) ==
     [] r.m = "cbf" -> [O |-> OErr(Out0, "cbf panics"), s |-> {}]
     [] r.m = "spawn0" ->    \* a function call left with no gas (static 0, weight 0); a.k = "cb":
                             \* d.work takes the whole leftover and the callback gets nothing;
-                            \* a.k = "two": two d.work calls, static 0, weight 1 each
+                            \* a.k = "two": two d.work calls, static 0, weight 1 each;
+                            \* a.k = "one": one d.work call, static 0, weight 1;
+                            \* a.k = "heavy": two d.work calls, static 0, weights 1 and 10^9
          IF a.k = "two"
          THEN [O |-> Outcome({WithCall(Rcpt(nid + i, r.tx, D, r.to, "work", G0, 0, r.to, 0), <<0>>, <<1>>) : i \in 0..1},
+                             {}, RVal(0), 0, 2), s |-> {}]
+         ELSE IF a.k = "one"
+         THEN [O |-> Outcome({WithCall(Rcpt(nid, r.tx, D, r.to, "work", G0, 0, r.to, 0), <<0>>, <<1>>)},
+                             {}, RVal(0), 0, 1), s |-> {}]
+         ELSE IF a.k = "heavy"
+         THEN [O |-> Outcome({WithCall(Rcpt(nid + i, r.tx, D, r.to, "work", G0, 0, r.to, 0), <<0>>,
+                                       <<IF i = 0 THEN 1 ELSE 1000000000>>) : i \in 0..1},
                              {}, RVal(0), 0, 2), s |-> {}]
          ELSE IF a.k = "cb"
          THEN [O |-> Outcome({WithCall(Rcpt(nid, r.tx, D, r.to, "work", G0, 0, r.to, nid + 1), <<0>>, <<1>>)},
@@ -343,6 +352,8 @@ Script(s) ==
     [] s = "zero_gas_child"   -> << TxG(C, U, "spawn0", G0, 0, 10000) >>
     [] s = "zero_gas_cb"      -> << TxG(C, U, "spawn0", G("cb", "", "", 0, 0, "", ""), 0, 10000) >>
     [] s = "zero_gas_share"   -> << TxG(C, U, "spawn0", G("two", "", "", 0, 0, "", ""), 0, 501) >>
+    [] s = "zero_gas_left0"   -> << TxG(C, U, "spawn0", G("one", "", "", 0, 0, "", ""), 0, 500) >>
+    [] s = "zero_gas_heavy"   -> << TxG(C, U, "spawn0", G("heavy", "", "", 0, 0, "", ""), 0, 501) >>
     [] s = "zero_gas_split"   -> << TxG(FT, U, "ft_transfer_call", FtArgs(D, 1, "keep"), 1, 6100),
                                     TxG(FT, U, "ft_transfer_call", FtArgs(D, 1, "keep"), 1, 6101) >>
     [] s = "panic_oog"        -> << TxG(C, U, "boom", G0, 0, 3000), TxG(C, U, "boom", G0, 0, 6000),
@@ -586,10 +597,33 @@ Expect(s) ==
          IF NearFeeTable!FeeRounding = "up"
          THEN ran = {<<1, C, "spawn0">>} /\ oog = {<<1, "work">>}
          ELSE ran = {} /\ oog = {}
-    [] s = "zero_gas_split" ->    \* static 0 + weight 1 with leftover 0 is 0 gas: fails the
-         \* creator; with 1 Ggas left the child runs and runs out
+    [] s = "zero_gas_left0" ->    \* one call, static 0 + weight 1, and a model leftover of 0.
+         \* nearcore's leftover is at least the model's (fees and burns are upper bounds): if it is
+         \* 0 the call has 0 gas and fails the creator; if it is 0.5 Ggas the call gets it, the
+         \* creator commits and the call runs out of gas.  "up" keeps both; "nearest" fails it.
+         \* receipt_manager.rs:686-716, action_validation.rs:350-351, lib.rs:968-978
+         IF NearFeeTable!FeeRounding = "up"
+         THEN \/ ran = {} /\ oog = {}
+              \/ ran = {<<1, C, "spawn0">>} /\ oog = {<<1, "work">>}
+         ELSE ran = {} /\ oog = {}
+    [] s = "zero_gas_heavy" ->    \* two calls, static 0, weights 1 and 10^9, share a leftover
+         \* of 1 Ggas.  With exactly 1 Ggas nearcore gives [0, 10^9] gas units and the first fails
+         \* the creator; with 1.5 Ggas it gives the first 1 unit and the creator commits.  "up"
+         \* keeps both; "nearest" (the first gets 0 Ggas) fails the creator.
+         \* receipt_manager.rs:701-716, host.rs:3501-3503, action_validation.rs:350-351
+         IF NearFeeTable!FeeRounding = "up"
+         THEN \/ ran = {} /\ oog = {}
+              \/ ran = {<<1, C, "spawn0">>} /\ oog = {<<1, "work">>}
+         ELSE ran = {} /\ oog = {}
+    [] s = "zero_gas_split" ->    \* static 0 + weight 1 with a model leftover of 0: 0 gas fails
+         \* the creator; under "up" nearcore's leftover may be larger, so tx 1 may also commit and
+         \* its ft_on_transfer run out of gas (as zero_gas_left0).  With 1 Ggas left the child runs
+         \* and runs out.
          \* action_validation.rs:350-351, gas_counter.rs:155-174
-         oog = {<<2, "ft_on_transfer">>} /\ seen = {} /\ L.bal[U] = 5 /\ L.bal[D] = 0 /\ near[FT] = 11
+         LET c1 == <<1, "ft_on_transfer">> \in oog IN
+         /\ c1 => NearFeeTable!FeeRounding = "up"
+         /\ oog \ {<<1, "ft_on_transfer">>} = {<<2, "ft_on_transfer">>}
+         /\ seen = {} /\ L.bal[U] = 5 /\ L.bal[D] = 0 /\ near[FT] = IF c1 THEN 12 ELSE 11
     [] s = "panic_oog" ->         \* a panic the gas cannot reach is out of gas; the
          \* children created before it count (limit prepaid - promises gas); exact fit is a panic
          \* gas_counter.rs:136-141, :155-174
@@ -723,6 +757,10 @@ Expect(s) ==
          TxsSeen = {1} /\ ~\E x \in ran : x[3] = "pong" /\ DOMAIN keys[C] = {"k0", "k1"} /\ near[U] = 10
 
 Check == Done => Expect(scn)
+\* zero_gas_left0, zero_gas_heavy: whether the creator (tx 1's spawn0) committed.  Under "up"
+\* each is violated (both outcomes are reachable); runs.toml expects that.
+CreatorNeverCommits  == Done => <<1, C, "spawn0">> \notin ran
+CreatorAlwaysCommits == Done => <<1, C, "spawn0">> \in ran
 NoNegDeposit == \A x \in rq \cup post : x.dep >= 0
 Sane  == /\ NearConserved(Total0(scn)) /\ NoOrphans /\ NoNegDeposit
          /\ TokSupplyOK /\ TokTypeOK

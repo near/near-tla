@@ -326,7 +326,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
-| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into TLC's `FeeRounding <- [NearFees] ...`. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
+| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`.
 Pick names the library does not export (`ReserveShape`, for example, is a `Nep141` operator):
@@ -365,8 +365,9 @@ Initialise every platform variable with one helper:
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
-TLC's "The variable txsig was not initialized" means the platform part of `Init` is missing a
-helper.
+TLC's "current state is not a legal state" while working on the initial state, with a platform
+variable such as `txsig` or `blk` shown as `null`, means the platform part of `Init` is
+missing a helper.
 
 Every step must say what it leaves unchanged. The library's steps (`Exec`, `Submit`,
 `ExecBuiltin`, ...) set every platform variable. Your steps conjoin `UNCHANGED` for your own
@@ -476,6 +477,13 @@ RunC(r) ==
 
 The guard must be the same verdict the platform used. With key actions bundled into the
 receipt, that is `OkWithKeys`, not `Ok` ([section 10](#10-signer-and-keys)).
+
+Conjoin the guard **after** `Exec`, in the same action. In gas mode under the default
+`FeeRounding = "up"` the verdict can be `"either"`: a child's gas may be 0 in nearcore or not,
+so `Exec` has two successors, one where the receipt commits and one where it fails
+([G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). `Ok` then tells which one
+the step took by reading the primed platform state (did the receipt's children appear in
+`rq'` or `post'`?). Placed before `Exec`, it stops TLC with an error in that case.
 
 When a handler also computes new state, return both: `<<O, newState>>`, as `Pay.tla` does.
 
@@ -661,9 +669,12 @@ Your contract can change its own keys with child receipts built by
   permission `p` from your own `r.a`.
 - Key actions succeed only on the predecessor's own account.
 - Adding a key that is present, or deleting one that is absent, fails the receipt.
-- In gas mode, these constructors give the receipt its fee-table fee (`KeyFee`). A key-action
-  receipt built with plain `Rcpt(..., ADDK, ...)` costs its creator nothing unless you add
-  `WithFee`.
+- In gas mode, these constructors give the receipt its fee-table fee (`KeyFee`). For a
+  function-call permission that includes the per-byte fee on its method names, counted as
+  written (`Σ (len + 1)`); if your names are placeholders, give the real byte count with
+  `WithMethodBytes(perm, n)` ([N-keyfee](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
+  A key-action receipt built with plain `Rcpt(..., ADDK, ...)` costs its creator nothing
+  unless you add `WithFee`.
 
 ### Key actions bundled with a call: guard on `OkWithKeys`
 
@@ -697,8 +708,10 @@ because `KeyCanSign` cannot see bundled key actions.
 In a meta transaction (NEP-366) a user signs a delegate and a relayer submits it, paying the
 gas and any deposit ([K4](SEMANTICS.md#k4-delegate-actions-nep-366-meta-transactions)). The
 inner call sees the **user as predecessor** (`r.fr`) and the **relayer as signer**
-(`Signer(r)`, `SignerKey(r)`), and so does everything it spawns. A contract that pays or
-authorises `env::signer_account_id()` serves the relayer here.
+(`Signer(r)`, `SignerKey(r)`). Only the signer and its key carry over to the receipts it
+spawns: each of those sees its immediate creator as predecessor, so for user → C → D, D sees
+C as predecessor and the relayer as signer. A contract that pays or authorises
+`env::signer_account_id()` serves the relayer here.
 
 - `SignedDelegate(s, k, n, mbh, c)` is user `s`'s signature with its key `k`: nonce `n`,
   expiry height `mbh` (or `NoExpiry`), inner receipt `c` (built with `Rcpt`; its id, tx and
@@ -815,12 +828,17 @@ can make a callback run out while its call succeeded. In gas mode:
   attached gas; without a panic key a panic is always a plain failure;
 - otherwise the leftover is split over the children's function-call actions by weight, each
   getting `floor(U * w / W)` Ggas. With the default `FeeRounding = "up"` the whole-Ggas
-  remainder goes to no one, so no child gets more than in nearcore; with `"nearest"` the last
+  remainder goes to no one, so no child gets more than in nearcore as long as the model's
+  leftover is at most nearcore's (burns that are upper bounds, no pooled gas: N-precision in
+  [SEMANTICS](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)); with `"nearest"` the last
   weighted action also gets it
   ([G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas));
-- a child function call left with 0 gas fails its creator (under `"up"`: static 0 and no
-  share at all, since nearcore gives any weighted action a positive share of a positive
-  leftover); one with no static gas at all (no `GasCall` entry, no `WithCall`) is a TLC
+- a child function call left with 0 gas fails its creator. Under `"up"` the model's leftover
+  is a lower bound of nearcore's, so it cannot always tell 0 gas from a little: static 0 and
+  weight 0 fails the creator; static 0 and a weight whose share is certainly at least one gas
+  unit commits it; otherwise (a model leftover of 0, or a tiny weight against a large sum)
+  both happen (verdict `"either"`), and in the commit the child runs with 0 Ggas and runs out
+  of gas. One with no static gas at all (no `GasCall` entry, no `WithCall`) is a TLC
   assertion;
 - action-only children cost their creator the fee table's send + exec fee by default
   (`XFER`: `TransferFeeTotal` by the receiver's account kind; `STAKE`: `OneActionReceiptFee`).

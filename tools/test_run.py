@@ -511,7 +511,9 @@ class FakeTLCTest(unittest.TestCase):
         o = self.go(r)
         self.assertTrue(o.ok, o.notes)
         cmd, cwd, files = self.calls[0]
-        self.assertEqual(files, ["MC_t.cfg", "MC_t.tla"])  # a fresh dir: nothing else in it
+        self.assertEqual(files, ["MC_t.cfg", "MC_t.tla", "jtmp"])  # a fresh dir: nothing else in it
+        # TLC unpacks its standard modules into a private java.io.tmpdir, not a shared one
+        self.assertIn(f"-Djava.io.tmpdir={os.path.join(cwd, 'jtmp')}", cmd)
         self.assertNotEqual(Path(cwd).resolve(), (self.d / "build").resolve())
         lib = next(c for c in cmd if c.startswith("-DTLA-Library="))
         self.assertNotIn("build", lib)

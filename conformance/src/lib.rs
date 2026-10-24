@@ -23,8 +23,14 @@ pub const SIM_REV: &str = "29e909033bb59eab792dee136e9d02870488bc3e";
 /// 1 Ggas, the model's gas unit.
 pub const GGAS: u64 = 1_000_000_000;
 
+/// The crate's directory. `cargo run` and `cargo test` set `CARGO_MANIFEST_DIR` at run time,
+/// which wins over the compile-time value: a binary built in another checkout of the repo
+/// (a shared `CARGO_TARGET_DIR` or build cache) would otherwise read and write that
+/// checkout's `data/` and flows.
 pub fn crate_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

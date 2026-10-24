@@ -35,16 +35,20 @@ Each entry ends with its migration.
   '"nearest"'` in a run's `[constants]` (or `[constants]` of the file) restores the old
   behaviour exactly (every table entry, and `Bytes(n, u)` for all `n` up to 3000 and at 20 KB,
   1, 4 and 16 MiB, were checked equal); or update the literals (450, 8150, ...). A model that
-  `EXTENDS NearFees` can write `FeeRounding <- ...` unqualified.
+  `EXTENDS NearFees` can write `FeeRounding <- FeeNearest` unqualified in its cfg. In a
+  hand-written cfg the right of `<-` must be a definition, not a literal (TLC rejects
+  `FeeRounding <- [NearFees] "nearest"` as an undefined identifier): define
+  `FeeNearest == "nearest"` in the spec and write `FeeRounding <- [NearFees] FeeNearest`.
 - **Under `FeeRounding = "up"` (the default) the unused-gas split hands out no whole-Ggas
   remainder.** Every weighted function-call child gets `floor(U * w / W)` Ggas, the last one
   included; it used to get the remainder too, up to `n - 1` Ggas for `n` weighted children,
   which nearcore splits in gas units (`receipt_manager.rs:679-719`), so the last child could
   get more than in nearcore (six equal weights, a model leftover of 1001 Ggas against
   nearcore's 1009.84: 1171 against 1168.31 Ggas, and a burn of 1170 passed in the model
-  only). No child now gets more than in nearcore. `ZeroGasKid` under `"up"` fails the creator
-  only for a static-0 call with no share at all (weight 0, or a leftover of 0): a weighted
-  call whose share floors to 0 Ggas runs and runs out of gas, as in nearcore. `"nearest"` is
+  only). No child now gets more than in nearcore, provided the model's leftover is at most
+  nearcore's: burns that are upper bounds and no pooled gas (SEMANTICS N-precision lists the
+  exceptions). A static-0 child whose share may be 0 gas keeps both outcomes of its creator
+  (next entry). `"nearest"` is
   unchanged (the conformance side, pinned to it, is byte-identical: 73 flows, 0 mismatches).
   Every example run keeps its verdict, state counts (compared at one worker; `selftest_gas`
   grows only by its new scenario) and windows; `weight-split`'s `SplitExact` reads the
@@ -53,6 +57,39 @@ Each entry ends with its migration.
   "needs more gas". Migration: `"NearFees!FeeRounding" = '"nearest"'` restores the old split together with the
   old fees; a model that checks a child's gas against the remainder rule reads it by mode
   (`NearFeeTable!FeeRounding`).
+- **Gas mode, `"up"`: a static-0 child whose gas may be 0 in nearcore keeps both outcomes
+  of its creator.** The model's leftover `U` is a lower bound of nearcore's in whole Ggas, so
+  it cannot always tell whether such a child ends up with 0 gas (which fails the creator,
+  `action_validation.rs:350-351`, applied at `lib.rs:968-978`). The earlier rule (fail only
+  for weight 0 or `U = 0`) was wrong both ways: with a model `U` of 0 nearcore may have
+  0.5 Ggas left, and the creator commits; with 1 Ggas over weights `[1, 10^9]` nearcore gives
+  `[0, 10^9]` gas units (`receipt_manager.rs:701-716`, `host.rs:3501-3503`), and the
+  creator fails. Now weight 0 fails the creator (`ZeroGasKid`); a weight with
+  `U * 10^9 * w >= W` certainly gets at least one gas unit (`SureShare`), and the creator
+  commits; any other weighted static-0 child makes the verdict `"either"`
+  (`ZeroGasMaybe`): `Exec` fails the creator in one successor and commits it in the other,
+  where the child runs with 0 Ggas and runs out of gas. `Ok(r, O)` tells which successor the
+  step took from the primed platform state, so it must be conjoined after `Exec` in the same
+  action (every example does; placed before, TLC stops with an error). `"nearest"` is
+  unchanged (conformance byte-identical). New `platform-selftest` scenarios
+  `zero_gas_left0` and `zero_gas_heavy`, with runs `selftest_zero_*` that reach both
+  outcomes of each (with the old rule one of each is unreachable). `selftest_gas` grows from
+  77 to 96 distinct states: the two new scenarios, and `zero_gas_split`, whose first
+  transaction (model leftover 0) may now also commit (its `Expect` accepts both);
+  `selftest_gas_share_nearest` also runs those three under `"nearest"`, which still fails the
+  creators. No other example run changes verdict or state count. Migration: a model with a
+  static-0 weighted child and a small or zero model leftover gets the extra successor; an
+  invariant that assumed the creator fails (or commits) must accept both, or the model must
+  give the child static gas. A custom `Verdict` consumer must handle `"either"`.
+- **Gas mode: `NearKeys.KeyFee` charges a function-call AddKey its per-byte fee**
+  (`AddKeyFcBytesFee`, self-directed) on `Σ (len(name) + 1)` bytes over the permission's method
+  names (`utils.rs:4-6`; `host.rs:4078-4091`); it used to charge only the base fee (2,000
+  bytes: 424 Ggas against nearcore's 428.26; now 432). The names are counted as written;
+  `WithMethodBytes(p, n)` states a real byte count (it adds an `mb` field to the permission,
+  which the added key keeps: compare permission fields, not whole records). Only `AddKeyRcpt` uses `KeyFee`; no
+  example or conformance flow does. Migration: a model whose `AddKeyRcpt` budgets sat within
+  a few Ggas of an edge may now run out of gas at creation; give the real byte count with
+  `WithMethodBytes` if the names are placeholders.
 - **The fee table's self-checks now run for every model.** TLC ignores the `ASSUME`s of an
   INSTANCEd module, so `NearFees`' own checks never ran for models that reach it through
   `NearAsync`'s `NearFeeTable`. `NearAsync` now carries `ASSUME NearFeeTable!FeeSelfChecks`:
@@ -70,7 +107,8 @@ Each entry ends with its migration.
   by name, `blk` is missing from it and unconstrained by its stuttering steps (TLC only
   warns). State counts of models without yields or a clock are unchanged. Migration: write
   `UNCHANGED platformVars` or add `blk` to the list; conjoin `PlatformInitClock`
-  (`blk = 0`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
+  (`blk = 0`) to a hand-written `Init` that does not use `PlatformInitExtra` (without it TLC
+  stops with "current state is not a legal state", `blk = null`, on the initial state); in a
   hand-written `vars`, replace the platform variables with `platformVars`
   (`vars == <<platformVars, mine>>`) or add `blk`.
 - **`RemD` and `NoOrphans` cover several inputs per receipt** (`InIds`): a joint callback
@@ -519,6 +557,13 @@ Each entry ends with its migration.
   `expire` step no longer shifts the next one: `yield_resume_late`'s resume is transaction 2
   on both sides, it was 3 in the model), so outcomes swapped between two transactions fail
   the statuses, the gas pairing and the edges.
+- `tools/run.py` and `conformance/scripts/tlc.sh` give each TLC process a private
+  `java.io.tmpdir`. TLC unpacks its standard modules there, and concurrent runs sharing one
+  directory could read each other's half-written copies (spurious parse errors or a stalled run).
+- Conformance: `crate_dir()` prefers the run-time `CARGO_MANIFEST_DIR` (set by `cargo run` /
+  `cargo test`) over the compile-time one, so a `calibrate` binary built in another checkout of
+  the repo (shared `CARGO_TARGET_DIR` or build cache) no longer reads and writes that
+  checkout's `data/`.
 - Conformance: `ProbeConf` checks `NotStuck`: a branch that has run every step and can do
   nothing more must be `Done` (no data or non-yield receipt left over). Such a branch prints
   no report, so before this another branch at the same prepaid point could hide it.

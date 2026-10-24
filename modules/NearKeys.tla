@@ -89,13 +89,27 @@ SubmitSigned(r, a, k) ==
 ----------------------------------------------------------------------------
 (* AddKey / DeleteKey receipts                                             *)
 
+\* The bytes a function-call AddKey is charged per byte for: the sum over its
+\* method names of (length + 1) (runtime/near-vm-runner/src/logic/utils.rs:4-6,
+\* paid at host.rs:4078-4091); the receiver id and allowance are not charged
+\* per byte.  An empty list (any method) is 0 bytes.  The model's names count
+\* as written; WithMethodBytes(p, n) states the real byte count n instead,
+\* for a model whose names are placeholders or abbreviated.
+RECURSIVE NameBytes(_)
+NameBytes(M) == IF M = {} THEN 0
+                ELSE LET m == CHOOSE x \in M : TRUE IN Len(m) + 1 + NameBytes(M \ {m})
+WithMethodBytes(p, n) == ("mb" :> n) @@ p
+MethodBytes(p) == IF "mb" \in DOMAIN p THEN p.mb ELSE NameBytes(p.ms)
+
 \* Constructors for key-action receipts on the creator's own account acct,
-\* with the receipt's send + exec fee as the creator-side fee (gas mode).
+\* with the receipt's send + exec fee as the creator-side fee (gas mode),
+\* per-byte part included (sir: the receipt is on the creator's account).
 KeyFee(m, p) ==
     IF GasMode # "gas" THEN 0
     ELSE IF m = DELK THEN NearFeeTable!OneActionReceiptFee("delete_key", TRUE, "named")
     ELSE IF IsFull(p) THEN NearFeeTable!OneActionReceiptFee("add_key_full", TRUE, "named")
-    ELSE NearFeeTable!OneActionReceiptFee("add_key_fc", TRUE, "named")   \* per-byte part not modelled
+    ELSE NearFeeTable!OneActionReceiptFee("add_key_fc", TRUE, "named")
+         + NearFeeTable!AddKeyFcBytesFee(TRUE, MethodBytes(p))
 AddKeyRcpt(id, tx, acct, a, p, cb) == WithFee(Rcpt(id, tx, acct, acct, ADDK, a, 0, acct, cb), KeyFee(ADDK, p))
 DelKeyRcpt(id, tx, acct, a, cb)    == WithFee(Rcpt(id, tx, acct, acct, DELK, a, 0, acct, cb), KeyFee(DELK, FullPerm))
 

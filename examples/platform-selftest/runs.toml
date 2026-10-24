@@ -70,12 +70,14 @@ expect = "pass"
 GasMode = '"gas"'
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
-Scns = '''{"zero_gas_child", "zero_gas_cb", "zero_gas_share", "zero_gas_split", "panic_oog",
-          "panic_plain", "oog_and_broke", "per_action", "per_action_two", "per_action_panic",
-          "ft_std_gas"}'''
+Scns = '''{"zero_gas_child", "zero_gas_cb", "zero_gas_share", "zero_gas_left0", "zero_gas_heavy",
+          "zero_gas_split", "panic_oog", "panic_plain", "oog_and_broke", "per_action",
+          "per_action_two", "per_action_panic", "ft_std_gas"}'''
 
 # A weighted call whose share floors to 0 Ggas under "nearest" fails its creator; under
-# "up" (selftest_gas) it has a share, so the creator commits and the call runs out of gas.
+# "up" (selftest_gas) zero_gas_share's calls certainly get a share (1 Ggas over weights 1 + 1),
+# so the creator commits and the calls run out of gas, while zero_gas_left0, zero_gas_heavy
+# and zero_gas_split's first transaction may get 0 gas in nearcore or not, and keep both.
 [[run]]
 name = "selftest_gas_share_nearest"
 expect = "pass"
@@ -83,8 +85,59 @@ expect = "pass"
 GasMode = '"gas"'
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
-Scns = '{"zero_gas_share"}'
+Scns = '{"zero_gas_share", "zero_gas_left0", "zero_gas_heavy", "zero_gas_split"}'
 "NearFees!FeeRounding" = '"nearest"'
+
+# Under "up" a static-0 weighted call whose share may be 0 gas in nearcore keeps both
+# outcomes of its creator.  A model leftover of 0 (nearcore's may be larger): the creator
+# can commit (it always failed before) ...
+[[run]]
+name = "selftest_zero_left0_commits"
+expect = "violation"
+invariant = "CreatorNeverCommits"
+invariants = ["CreatorNeverCommits"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"zero_gas_left0"}'
+
+# ... and can fail.
+[[run]]
+name = "selftest_zero_left0_fails"
+expect = "violation"
+invariant = "CreatorAlwaysCommits"
+invariants = ["CreatorAlwaysCommits"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"zero_gas_left0"}'
+
+# Weights 1 and 10^9 sharing 1 Ggas (nearcore: [0, 10^9] gas units when it is exactly 1
+# Ggas): the creator can fail (it always committed before) ...
+[[run]]
+name = "selftest_zero_heavy_fails"
+expect = "violation"
+invariant = "CreatorAlwaysCommits"
+invariants = ["CreatorAlwaysCommits"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"zero_gas_heavy"}'
+
+# ... and can commit.
+[[run]]
+name = "selftest_zero_heavy_commits"
+expect = "violation"
+invariant = "CreatorNeverCommits"
+invariants = ["CreatorNeverCommits"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"zero_gas_heavy"}'
 
 # FT 3.x gas shape (TokFtGasShape "reserve").
 [[run]]
