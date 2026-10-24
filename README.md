@@ -149,15 +149,22 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   and an owner's redeploy reaching a callback in flight. What stays out is listed in
   [Not modelled](docs/SEMANTICS.md#not-modelled): deterministic and universal state init, gas
   keys, global contract distribution across shards.
+- 33 rules promoted to "sim" validation by tests in `conformance/tests/` that assert nearcore's
+  behaviour in the sim (receipts, promises and gas; accounts, keys and stake; NEP-141 on the
+  `ft` probe). None was refuted.
 
 ### Later
 
 - **An optional conformance CI job.** The suite runs locally only today, because
   near-contract-sim is a private git dependency. A job that runs it needs sim access through a
   deploy key or an app token.
-- **Promote rules to "sim" validation** as the conformance probes cover them (the rules marked
-  in `docs/SEMANTICS.md`). Per-byte storage is checked by sim tests only; a probe flow for it
-  needs a re-sweep of every flow.
+- **Promote the rest of the rules to "sim" validation.** What the existing probes cannot
+  reach needs new probe methods: `promise_set_refund_to` (R5), returning a joint promise or
+  appending to one (C5, C6), the `_with_id` yield, a yield's deposit, a returned yield and its
+  signer (C7), interleaved appends across promises (G3), a callback after a Stake (B1), and a
+  NEP-245 probe (T5). Multi-shard order and missed chunks (S2, S4) need a multi-shard sim.
+  Per-byte storage is checked by sim tests only; a probe flow for it needs a re-sweep of
+  every flow.
 - **Storage bytes from the calibrator:** a per-(method, path) table of the bytes each call
   writes, measured in the sim beside the gas burns, so that models need not count `OStor`
   bytes by hand.

@@ -424,6 +424,16 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **33 rules now sim-validated** (`docs/SEMANTICS.md`; 19 from nearcore or source reading, 14
+  extended from a partial check): new sim tests `conformance/tests/receipts.rs` (R1-R5, C1,
+  C3-C6, G1-G3, G5, S3), `accounts.rs` (A1-A5, K2, K3, B1, B2) and `tokens.rs` (T1, T2, T4 on
+  the `ft` probe), and in `semantics.rs` a full chunk delaying local receipts (S1,
+  N-local-congested), the yield timeout at 200 blocks (C7) and a delegate's sender, signature
+  and nonce checks (K4); K1, M1 and S4 now cite their existing tests. Each test asserts
+  nearcore's behaviour against the rule as written, with no model run. None refuted a rule.
+  A call to an eth-implicit account running the wallet contract is not sim-testable (the
+  sim's chain has not published the wallet code). No probe wasm or flow changed.
+
 - **Account actions in a call receipt** (SEMANTICS A8; docs/USAGE.md section 16). A call
   receipt can carry the `ac` field (`HasAc`, `AcCall`): `WithCreate(r)` puts
   `[CreateAccount, Transfer(r.dep)]` before its call (a factory's batch on the new account;
