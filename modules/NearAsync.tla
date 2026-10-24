@@ -581,9 +581,22 @@ DepTotal(r) == r.dep + XferOf(r)
 \* (near-vm-runner logic.rs:45-49).  near[r.to] is the balance before the
 \* receipt; a handler that reads its own balance reads BalSeen(r).
 BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]) + DepTotal(r)
-Sum(S) == LET F[T \in SUBSET S] == IF T = {} THEN 0
-                                   ELSE LET x == CHOOSE y \in T : TRUE IN DepTotal(x) + F[T \ {x}]
-          IN F[S]
+\* RcptSum(F, S): the sum of F(x) over a set of receipts S.  A sum that
+\* takes one element per level recurses |S| deep, and with a few hundred
+\* receipts that is past a 512 KB thread stack (TLC's StackOverflowError;
+\* the default stack is 1 MB on 64-bit Linux and macOS).  So a set of more
+\* than 16 is split in two by id (ids are unique integers), which keeps the
+\* depth near 16 + 2 x log2 of the id range.
+RECURSIVE RcptSumIn(_, _, _, _)
+RcptSumIn(F(_), S, lo, hi) ==
+    IF Cardinality(S) <= 16 \/ lo >= hi
+    THEN LET G[T \in SUBSET S] == IF T = {} THEN 0
+                                  ELSE LET x == CHOOSE y \in T : TRUE IN F(x) + G[T \ {x}]
+         IN G[S]
+    ELSE LET mid == (lo + hi) \div 2 IN
+         RcptSumIn(F, {x \in S : x.id <= mid}, lo, mid) + RcptSumIn(F, {x \in S : x.id > mid}, mid + 1, hi)
+RcptSum(F(_), S) == RcptSumIn(F, S, -1073741824, 1073741824)
+Sum(S) == RcptSum(LAMBDA x : DepTotal(x), S)
 
 \* Ids are unique, so Sum over a set of receipts is well defined.
 InflightDeposits == Sum(rq) + Sum(post)
@@ -1199,9 +1212,7 @@ Burn(r, O) ==
     IF k \in DOMAIN GasBurn THEN GasBurn[k].base + GasBurn[k].per * O.sz
     ELSE Assert(FALSE, <<"no GasBurn entry for", k>>)
 
-RECURSIVE KidsCost(_)
-KidsCost(S) == IF S = {} THEN 0
-               ELSE LET c == CHOOSE y \in S : TRUE IN c.gf + SumSeq(c.gs) + KidsCost(S \ {c})
+KidsCost(S) == RcptSum(LAMBDA c : c.gf + SumSeq(c.gs), S)
 
 Need(r, O) == Burn(r, O) + KidsCost(Kids(O))
 

@@ -416,7 +416,7 @@ them. A model that lists platform variables one by one must add each.
   `MaxMethodNameBytes`, `MethodBytesOK`; in `NearAsync`: `MaxActionsPerReceipt`,
   `MaxPromisesPerCall`, `MaxJointInputs`, `MaxReturnedData`, `AcActCount`, `NCalls`, `NActs`,
   `PromiseCount`, `RetTooLong`, `HostLimitErr`, `NewRcptLimitErr`, `MaxLogs`, `MaxLogBytes`,
-  `OLog`, `LogCount`, `LogBytes`, `LogsOver`.
+  `OLog`, `LogCount`, `LogBytes`, `LogsOver`, `RcptSum`, `RcptSumIn`.
   Migration: rename the model's own definition. A model-local local-receipt rule
   is not always replaceable by `LocalPriorityOK`: a rule that lets **every**
   top-level receipt skip the wait admits more interleavings than the library
@@ -989,6 +989,14 @@ them. A model that lists platform variables one by one must add each.
 
 ### Changed
 
+- `NearAsync`: `Sum` (the deposits in flight, read by `NearConserved`) and `KidsCost` (gas
+  mode) no longer recurse once per receipt. With a few hundred receipts in flight that
+  recursion ran past the JVM's thread stack: `limits`' `limit_join_128` (129 receipts) threw
+  `StackOverflowError` on the Linux CI runner, and locally at `-Xss1m` in 5 of 6 tries. They
+  are now `RcptSum`, which splits a set of more than 16 receipts in two by id; the same run
+  passes at `-Xss640k` (6 of 6). The values are unchanged, and so is every run's verdict and
+  state count. `examples/limits` now checks `NearConserved` on the 1024-receipt fan-out too
+  (`limit_fan_1024`: 2 s to 9 s).
 - Docs: SEMANTICS N-order and N-resume-order were wrong. nearcore keeps no per-pair order at
   protocol 88: a new receipt bypasses the link's outgoing buffer whenever it fits
   (`congestion_control.rs:292-325`, `:451`), and missed chunks reverse the order across heights

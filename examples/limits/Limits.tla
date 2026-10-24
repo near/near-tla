@@ -111,7 +111,5 @@ Done == started /\ Idle =>
             [] Shape = "join"                   -> got = N
             [] Shape \in {"ret", "log"}           -> got = 1
             [] OTHER                            -> KeyPresent(U, "s")
-\* NearConserved sums the deposits in flight recursively, one level per
-\* receipt: past TLC's stack with 1024 of them.  The fan-out moves no NEAR.
-Sane == NoOrphans /\ IF Shape = "fan" THEN TRUE ELSE NearConserved(30)
+Sane == NoOrphans /\ NearConserved(30)
 =============================================================================
