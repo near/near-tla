@@ -372,7 +372,8 @@ Each entry ends with its migration.
   tables are validated on every run. Conventions: docs/USAGE.md, Witnesses and mutants. The
   method comes from a mutation audit of the examples, in which a dropped `.then` left a result
   with nothing to consume it, so `Idle` never held and `Idle => P` passed vacuously.
-- **Examples: witnesses and mutants in every example except `platform-selftest`**, and the
+- **Examples: witnesses in every example except `platform-selftest`, and mutants wherever a
+  correct pass run exists** (not in `yield-clock/final-observation`), and the
   invariants that kill the mutants: `NoOrphans` in every `Sane`; per-term `>= 0` beside
   conservation sums (`NoOverdraft`, `NoNegCredit`); effect invariants (`CallbackRan`,
   `RevokeTakesEffect`, `OpenApplied`, `WorkFits`, `Forgotten`); checks against the
