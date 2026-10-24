@@ -34,19 +34,29 @@ GRID = [1000, 1100, 1200]  # Ggas
 OK_LOG = "Model checking completed. No error has been found.\n"
 
 
-def sim_line(pp, recs, flow="f"):
-    """A sweep line at `pp` Ggas with the conversion and `recs`
-    (status, attached Ggas) as q-probe.near::work receipts."""
-    rs = [dict(conversion=True, refund=None, receiver="alice.near", methods=[], actions=[], attached=0, status="ok")]
-    rs += [dict(conversion=False, refund=None, receiver="q-probe.near", methods=["work"], actions=["FunctionCall"],
-                attached=g * 10**9, status=s) for s, g in recs]
-    return json.dumps(dict(flow=flow, gas=pp * 10**9, tx_ok=True, receipts=rs)) + "\n"
+def sim_line(pp, recs, flow="f", yields=0):
+    """A sweep line at `pp` Ggas with `recs` (status, attached Ggas[, flow
+    transaction 1, 2, ...; default 1]) as q-probe.near::work receipts, each
+    transaction's conversion first; the sweep numbers transactions from 0.
+    `yields`: the yields still parked at the end."""
+    rs, txs = [], []
+    for r in recs:
+        s, g, t = (*r, 1) if len(r) == 2 else r
+        if t not in txs:
+            txs.append(t)
+            rs.append(dict(tx=t - 1, conversion=True, refund=None, receiver="alice.near", methods=[], actions=[],
+                           attached=0, status="ok"))
+        rs.append(dict(tx=t - 1, conversion=False, refund=None, receiver="q-probe.near", methods=["work"],
+                       actions=["FunctionCall"], attached=g * 10**9, status=s))
+    return json.dumps(dict(flow=flow, gas=pp * 10**9, tx_ok=True, receipts=rs, yields=yields)) + "\n"
 
 
-def model_report(pp, recs, to="q", m="work", tx=1):
-    body = ", ".join(f'[to |-> "{to}", m |-> "{m}", st |-> "{s}", tx |-> {tx}, id |-> {i + 1}, g |-> {g}]'
-                     for i, (s, g) in enumerate(recs))
-    return f'<< "CONF", {pp}, {{{body}}} >>\n'
+def model_report(pp, recs, to="q", m="work", tx=1, parked=0):
+    """A ProbeConf report at `pp`: `recs` (status, Ggas[, transaction])."""
+    body = ", ".join(f'[to |-> "{to}", m |-> "{m}", st |-> "{r[0]}", tx |-> {r[2] if len(r) > 2 else tx}, '
+                     f'id |-> {i + 1}, g |-> {r[1]}]'
+                     for i, r in enumerate(recs))
+    return f'<< "CONF", {pp}, {parked}, {{{body}}} >>\n'
 
 
 def read(path):
@@ -85,10 +95,10 @@ class Conform(unittest.TestCase):
         with open(os.path.join(self.data, "f.meta.json"), "w") as f:
             json.dump(m, f)
 
-    def write_model(self, points):
+    def write_model(self, points, parked=0):
         with open(os.path.join(self.build, "f.log"), "w") as f:
             for pp, recs in points.items():
-                f.write(model_report(pp, recs))
+                f.write(model_report(pp, recs, parked=parked))
             f.write(OK_LOG)
 
     def run_compare(self, subset=False):
@@ -133,6 +143,89 @@ class Conform(unittest.TestCase):
         self.assertEqual(res["worst"], 10000)
         self.assertProblem(res, "attached gas not paired")
         self.assertEqual(self.run_main(), 1)
+
+    def test_swapped_transaction_outcomes_fail(self):
+        # Two transactions with one work receipt each. The model swaps their
+        # (status, gas): the same labels, statuses and gas per status, so
+        # only the transaction tells them apart.
+        self.write_sim("".join(sim_line(pp, [("ok", 10000, 1), ("oog", 20000, 2)]) for pp in GRID))
+        self.write_model({pp: [("ok", 10000, 1), ("oog", 20000, 2)] for pp in GRID})
+        self.assertEqual(self.run_compare()["problems"], [])
+        self.write_model({pp: [("oog", 20000, 1), ("ok", 10000, 2)] for pp in GRID})
+        res = self.run_compare()
+        self.assertEqual(res["stat_ok"], 0)
+        self.assertEqual(res["gas_ok"], 0)
+        self.assertProblem(res, "statuses differ at 3 points")
+        self.assertEqual(self.run_main(), 1)
+        # swapped gas only (statuses in place): the gas pairing sees it
+        self.write_sim("".join(sim_line(pp, [("ok", 10000, 1), ("ok", 20000, 2)]) for pp in GRID))
+        self.write_model({pp: [("ok", 20000, 1), ("ok", 10000, 2)] for pp in GRID})
+        res = self.run_compare()
+        self.assertEqual(res["stat_ok"], 3)
+        self.assertProblem(res, "attached gas not paired")
+        self.assertEqual(self.run_main(), 1)
+
+    def test_transaction_numbers_must_agree(self):
+        # The sim's second transaction (index 1) is transaction 2; a model
+        # that numbers it 3 (an expire step counted as a transaction) fails.
+        self.write_sim("".join(sim_line(pp, [("ok", 10000, 1), ("ok", 20000, 2)]) for pp in GRID))
+        self.write_model({pp: [("ok", 10000, 1), ("ok", 20000, 3)] for pp in GRID})
+        res = self.run_compare()
+        self.assertProblem(res, "statuses differ at 3 points")
+        self.assertEqual(self.run_main(), 1)
+
+    def test_edges_see_the_transaction(self):
+        # Below 1.1 Tgas transaction 1's receipt fails, from there
+        # transaction 2's: an edge at 1.1 Tgas in the sim, none in a model
+        # that keeps the failure in transaction 1 (same statuses and gas).
+        def recs(pp, failing, fail):
+            return [(fail if failing == 1 else "ok", 10000, 1), (fail if failing == 2 else "ok", 10000, 2)]
+        self.write_sim("".join(sim_line(pp, recs(pp, 1 if pp < 1100 else 2, "failed")) for pp in GRID))
+        self.write_model({pp: recs(pp, 1, "fail") for pp in GRID})
+        res = self.run_compare()
+        self.assertEqual([pp for pp, _ in res["sedges"]], [1000, 1100])
+        self.assertEqual([pp for pp, _ in res["medges"]], [1000])
+        self.assertProblem(res, "edges differ")
+        self.assertProblem(res, "statuses differ at 2 points")
+
+    def test_parked_yields_compared(self):
+        recs = [("ok", 10000), ("oog", 20000)]
+        # the sim leaves a yield parked, the model's report has none
+        self.write_sim("".join(sim_line(pp, recs, yields=1) for pp in GRID))
+        self.write_model({pp: recs for pp in GRID})
+        res = self.run_compare()
+        self.assertEqual(res["stat_ok"], 0)
+        self.assertProblem(res, "statuses differ at 3 points")
+        self.assertEqual(self.run_main(), 1)
+        # the model leaves a stale yield, the sim cleaned up
+        self.write_sim("".join(sim_line(pp, recs) for pp in GRID))
+        self.write_model({pp: recs for pp in GRID}, parked=1)
+        self.assertProblem(self.run_compare(), "statuses differ at 3 points")
+        self.assertEqual(self.run_main(), 1)
+        # both leave one: pass
+        self.write_sim("".join(sim_line(pp, recs, yields=1) for pp in GRID))
+        self.assertEqual(self.run_compare()["problems"], [])
+        # a change of the count alone is an edge
+        self.write_sim("".join(sim_line(pp, recs, yields=int(pp >= 1100)) for pp in GRID))
+        res = self.run_compare()
+        self.assertEqual([pp for pp, _ in res["sedges"]], [1000, 1100])
+        self.assertProblem(res, "edges differ")
+
+    def test_line_without_tx_or_yields_is_unreadable(self):
+        self.good()
+        line = json.loads(sim_line(1000, [("ok", 10000), ("oog", 20000)]))
+        for drop in ("tx", "yields"):
+            with self.subTest(field=drop):
+                v = json.loads(json.dumps(line))
+                if drop == "tx":
+                    del v["receipts"][1]["tx"]
+                else:
+                    del v["yields"]
+                text = json.dumps(v) + "\n" + "".join(sim_line(pp, [("ok", 10000), ("oog", 20000)]) for pp in GRID[1:])
+                self.write_sim(text)
+                res = self.run_compare()
+                self.assertProblem(res, "1 JSONL lines unreadable (no tx or yields field")
+                self.assertProblem(res, "1 grid points missing in the sweep")
 
     def test_joint_pairing(self):
         j = conform.joint
@@ -203,7 +296,7 @@ class Conform(unittest.TestCase):
         self.good()
         recs = [("ok", 10000), ("oog", 20000)]
         self.write_sim(sim_line(1000, recs) + sim_line(1100, recs) + sim_line(1200, recs, flow="g"))
-        self.assertProblem(self.run_compare(), "1 JSONL lines unreadable, of another flow")
+        self.assertProblem(self.run_compare(), "1 JSONL lines unreadable")
 
     def test_missing_model_point_fails(self):
         self.good()
@@ -291,7 +384,8 @@ class Conform(unittest.TestCase):
         # Two reports of one point, equal in (id, status, gas): the earlier
         # disagrees with the sim, the later agrees. Neither may be dropped.
         recs = [("ok", 10000), ("oog", 20000)]
-        for field, other in (("to", dict(to="p")), ("m", dict(m="rest")), ("tx", dict(tx=2))):
+        for field, other in (("to", dict(to="p")), ("m", dict(m="rest")), ("tx", dict(tx=2)),
+                             ("parked", dict(parked=1))):
             with self.subTest(field=field):
                 self.good()
                 with open(os.path.join(self.build, "f.log"), "w") as f:
@@ -318,10 +412,12 @@ class Conform(unittest.TestCase):
 
     def test_parse_reports(self):
         recs = [("ok", 1), ("oog", 2)]
-        out, nondet = tlcparse.parse(model_report(5, recs) + model_report(5, recs, to="p") + model_report(6, recs))
-        self.assertEqual(sorted(out), [5, 6])
-        self.assertEqual(nondet, {5: 2})
-        self.assertEqual(out[6][0], dict(to="q", m="work", st="ok", tx=1, id=1, g=1))
+        out, nondet = tlcparse.parse(model_report(5, recs) + model_report(5, recs, to="p") + model_report(6, recs)
+                                     + model_report(7, recs, parked=2) + model_report(7, recs))
+        self.assertEqual(sorted(out), [5, 6, 7])
+        self.assertEqual(nondet, {5: 2, 7: 2})
+        self.assertEqual(out[6][0][0], dict(to="q", m="work", st="ok", tx=1, id=1, g=1))
+        self.assertEqual((out[6][1], out[7][1]), (0, 2))
 
     def test_tlc_log_is_read_once(self):
         # The log is rewritten between reads: the first snapshot is a

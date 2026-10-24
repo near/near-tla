@@ -271,13 +271,16 @@ Each entry ends with its migration.
   under-approximation, SEMANTICS N-clock-horizon). Two checks to list as invariants:
   `YieldDeadlinesInBound` (no pending deadline past `MaxBlk`, so no timeout in the run is
   premature; it says nothing about coverage; `ClockBoundOK` in the pre-release tree) and
-  `ClockHorizonOK(n, T)` (`MaxBlk >= n * max(T, YieldTicks)`, with `T` the largest number of
-  blocks a clock comparison counts and `n` the most clock-relevant steps per behaviour: then
-  the bound covers every behaviour).
+  `ClockHorizonOK(n, T)` (`MaxBlk >= (n + 1) * max(T, YieldTicks)`, with `T` the largest
+  number of blocks a clock comparison counts and `n` the most clock-relevant steps per
+  behaviour; the `+ 1` is the gap after the last step, where an invariant still reads the
+  clock: then the bound covers every behaviour).
 - Examples `joint-promise` (`Pair`), `yield-resume` (`Oracle`, the double-resume trap) and
   `yield-clock` (`Deadline`: early timeouts at a too small bound, `cancel_trusts_timeout`,
   `cancel_after_answer`, and `horizon_*`: a double refund that passes at `MaxBlk = 2`, is
-  flagged by `ClockHorizonOK` and found at `MaxBlk = 3`), with must-pass and must-fail runs.
+  flagged by `ClockHorizonOK` and found at `MaxBlk = 3`; `final-observation` (`Arm`):
+  `final_obs_*`, an invariant that fails only in the gap after the last clock-relevant step),
+  with must-pass and must-fail runs.
 - `examples/platform-selftest`: `selftest_async` and `selftest_async_gas`, 10 scenarios for
   joint callbacks (result order, a starved input, a callback with no gas) and yields (a second
   resume, two resumes in the yielding call, timeout then resume, a resume in flight at the
@@ -392,9 +395,23 @@ Each entry ends with its migration.
   point must agree in every field, the TLC log is read once, and `calibrate` publishes
   each sweep/provenance pair under a per-flow lock with unique temp files, hashing the
   bytes it writes.
+- Conformance: receipts are matched by transaction. A receipt's label carries its
+  transaction number (the sweep's `tx` + 1; `ProbeConf` numbers only transactions, so an
+  `expire` step no longer shifts the next one: `yield_resume_late`'s resume is transaction 2
+  on both sides, it was 3 in the model), so outcomes swapped between two transactions fail
+  the statuses, the gas pairing and the edges.
+- Conformance: the yields still parked once a point's last step has run are compared. Sweeps
+  gain a per-line field `yields` (`Sim::yields()`; re-sweep: a line without it is
+  unreadable), `ProbeConf`'s report prints `Parked` (`<<"CONF", pp, Parked, rlog>>`), and the
+  count is part of the status vector. Every point of the 73 flows ends with none, on both
+  sides; the totals and the calibrated tables are unchanged.
 
 ### Changed
 
+- Docs: C6 and C7 no longer claim that the sim validates execution order (the callback
+  after the last input, after the resume or the timeout): the comparison is per receipt and
+  unordered, and a yield callback is listed under the yielding transaction on both sides, so
+  the transaction gives no order either.
 - `NearKeys.SubmitSigned(r, a, k)` now calls `SubmitAs`; its
   key check also accepts full-access keys (which may attach a deposit).
 - `IsTokRcpt` / `IsMtRcpt` are `IsCall(r)` on a token account (no Transfer,

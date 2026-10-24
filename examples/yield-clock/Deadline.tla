@@ -28,7 +28,8 @@
 (* the clock-relevant steps are request (records blk), cancel (reads it)   *)
 (* and on_answer (a timeout; Early reads blk), at most 2 * MaxTx; the      *)
 (* largest comparison is CancelAt (cancel), YieldTicks (the deadline) or   *)
-(* ReqUntil + 1 (request).                                                 *)
+(* ReqUntil + 1 (request).  ClockHorizonOK adds the final observation:     *)
+(* MaxBlk >= (2 * MaxTx + 1) * max(that, YieldTicks).                      *)
 (* ReqUntil: request fails above this height (-1: never; the default).     *)
 (***************************************************************************)
 EXTENDS NearAsync

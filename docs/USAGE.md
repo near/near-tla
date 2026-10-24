@@ -879,17 +879,20 @@ an argument, so the runner cannot override it: compute your own function of `blk
 - `YieldDeadlinesInBound` fails if a pending yield's deadline passed `MaxBlk`, where yields
   may time out early. While it holds, no timeout in the run is premature, so a violation is
   real. It says nothing about what the bound leaves out.
-- `ClockHorizonOK(n, T)` fails if `MaxBlk < n * max(T, YieldTicks)`. Nothing past `MaxBlk`
-  is explored: a window your model opens later, or a timeout delayed past the bound, is
-  missing, and a pass is a pass up to `MaxBlk` only
+- `ClockHorizonOK(n, T)` fails if `MaxBlk < (n + 1) * max(T, YieldTicks)`. Nothing past
+  `MaxBlk` is explored: a window your model opens later, or a timeout delayed past the bound,
+  is missing, and a pass is a pass up to `MaxBlk` only
   ([N-clock-horizon](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Take `T`
   = the largest number of blocks any comparison with the clock counts (`blk >= at + CancelAt`
-  counts `CancelAt`; `>` and `=` count one more), and `n` = the most steps in one behaviour
-  that read or record `blk` or `BlockTs`, create a yield or run a yield callback. Define it in
-  your module (`HorizonOK == ClockHorizonOK(2 * MaxTx, CancelAt)`) and list it. If you choose
-  a smaller `MaxBlk`, write down why it still covers your model, or report the result as
-  bounded. `horizon_*` in `yield-clock` shows a double refund that passes at `MaxBlk = 2`,
-  is flagged by `HorizonOK` and found at `MaxBlk = 3`.
+  counts `CancelAt`; `>` and `=` count one more; a comparison with a yield's deadline counts
+  `YieldTicks` more), and `n` = the most steps in one behaviour that read or record `blk` or
+  `BlockTs`, create a yield or run a yield callback. The `+ 1` is the state an invariant
+  reads after the last of them; do not count it in `n`. Define it in your module
+  (`HorizonOK == ClockHorizonOK(2 * MaxTx, CancelAt)`) and list it. If you choose a smaller
+  `MaxBlk`, write down why it still covers your model, or report the result as bounded.
+  `horizon_*` in `yield-clock` shows a double refund that passes at `MaxBlk = 2`, is flagged
+  by `HorizonOK` and found at `MaxBlk = 3`; `yield-clock/final-observation` shows an
+  invariant that fails only in the gap after the last step.
 
 With `TickAnytime <- FALSE`, no handler reading the clock and at most `k` yields per
 behaviour, `MaxBlk = k * YieldTicks` is enough. Keep `TickAnytime` TRUE whenever a handler reads
@@ -1173,4 +1176,4 @@ All examples are toy contracts written for this repo.
   | `mt-smoke` | NEP-245 transfer and resolve |
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
-  | `yield-clock` | timeouts fire late, never early; the clock bound and `TickAnytime` |
+  | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |

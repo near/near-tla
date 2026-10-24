@@ -939,22 +939,32 @@ YieldDeadlinesInBound == MaxBlk = 0 \/ \A p \in post : IsYield(p) => p.ydl <= Ma
 \* passes says nothing about it: an under-approximation.  A check on the
 \* constants (list it as an invariant; it fails in the initial state).
 \* Assumption: every comparison with the clock (in handlers, guards and
-\* invariants) is blk - h >= c or its negation, with h a height recorded
-\* earlier in the behaviour (blk at some step, a yield's creation) or 0, and
-\* 0 <= c <= T; count blk > h + c and blk = h + c as c + 1, and a
-\* comparison of BlockTs as the height it needs.  Then a gap of more than
-\* K = max(T, YieldTicks) blocks between two clock-relevant steps can be cut
-\* to K without changing any comparison, so MaxBlk >= n * K covers every
-\* behaviour with at most n clock-relevant steps (steps that read or record
-\* blk or BlockTs, yield creations, yield callbacks).  Sufficient, not
-\* necessary; a smaller bound needs its own argument.  Without a clock
-\* (MaxBlk = 0) only T matters: every yield may time out at any moment.
+\* invariants) is x - h >= c or its negation, with 0 <= c <= T and h <= x
+\* each 0, blk, or a height recorded earlier in the behaviour (blk at some
+\* step, a yield's creation).  Count blk > h + c and blk = h + c as c + 1, a
+\* comparison with a yield's deadline (creation + YieldTicks) as
+\* YieldTicks + c, and one of BlockTs as the height it needs.  n: the most
+\* clock-relevant steps in one behaviour (steps that read or record blk or
+\* BlockTs, yield creations, yield callbacks).
+\* Argument.  An invariant fails in the last state of some behaviour on an
+\* unbounded clock.  Let its clock-relevant steps run at heights
+\* b1 <= .. <= bn and its last state be at bf >= bn; with b0 = 0 that is
+\* n + 1 gaps.  Cut each gap to K = max(T, YieldTicks) blocks, dropping the
+\* ticks at its end.  x - h is a sum of whole gaps: if none was cut it is
+\* unchanged, otherwise it is >= K >= c before and after.  So every
+\* handler, guard, timeout and invariant sees the same values; with
+\* TickAnytime = FALSE a kept tick keeps its offset in its gap, so the
+\* deadline it waits for is still ahead.  The cut behaviour ends at
+\* bf <= (n + 1) * K: the + 1 is the final observation, the gap after the
+\* last step.  Sufficient, not necessary.  Without a clock (MaxBlk = 0)
+\* every gap is 0, which changes no comparison if T = 0; every yield may
+\* then time out at any moment (more behaviours, not fewer).
 \* (blk <= MaxBlk always holds; it makes this a state predicate, which TLC
 \* reports as a violation rather than as an error at startup.)
 ClockHorizonOK(n, T) ==
     /\ blk <= MaxBlk
     /\ IF MaxBlk = 0 THEN T = 0
-       ELSE MaxBlk >= n * (IF T > YieldTicks THEN T ELSE YieldTicks)
+       ELSE MaxBlk >= (n + 1) * (IF T > YieldTicks THEN T ELSE YieldTicks)
 
 \* No receipt in flight holds more gas than its transaction's prepaid gas
 \* (the split never creates gas).

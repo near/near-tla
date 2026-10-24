@@ -62,7 +62,7 @@ MaxBlk = "1"
 TickAnytime = "FALSE"
 
 # cancel reads blk, so blocks pass freely (TickAnytime, the default).  A bounded pass: with
-# 3 transactions HorizonOK needs MaxBlk >= 2 * 3 * CancelAt = 18, so behaviours that need a
+# 3 transactions HorizonOK needs MaxBlk >= (2 * 3 + 1) * CancelAt = 21, so behaviours that need a
 # later height (a request late in the run, then its cancel window) are not explored here.
 [[run]]
 name = "cancel_guarded"
@@ -114,7 +114,8 @@ ReqUntil = "0"
 MaxBlk = "2"
 Bug = '"trusts_timeout"'
 
-# ... HorizonOK does (it needs MaxBlk >= 2 * 2 * 3 = 12) ...
+# ... HorizonOK does (it needs MaxBlk >= (2 * 2 + 1) * 3 = 15: 4 clock-relevant steps and the
+# final observation, see examples/yield-clock/final-observation) ...
 [[run]]
 name = "horizon_short_flagged"
 expect = "violation"
@@ -155,4 +156,4 @@ MaxTx = "2"
 Steps = '{"request", "answer", "cancel"}'
 CancelAt = "3"
 ReqUntil = "0"
-MaxBlk = "12"
+MaxBlk = "15"

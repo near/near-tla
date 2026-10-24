@@ -6,9 +6,14 @@ Model (TLC logs tla/build/<flow>.log of ProbeConf) vs sim
   - status: ok / oog / failed, or not created;
   - attached gas of every function-call receipt (Ggas, sim rounded),
     compared jointly with the status: see `joint`;
+  - the number of yields still parked at the end of the point (the
+    sweep's `yields`, the model's Parked), part of the status vector;
   - edges: the grid points where the status vector changes, over the
     sim's whole grid (a point the model lacks is its own status).
-Refund receipts are left out on both sides.
+Refund receipts are left out on both sides. A receipt's label carries
+its transaction (1 for the swept one, then the `after` transactions in
+order; the sweep's `tx` + 1), so receipts of different transactions never
+pair, in the statuses, the gas or the edges.
 
 A flow passes only if
   - TLC finished without error (the log is read once: completion and
@@ -21,10 +26,11 @@ A flow passes only if
     (an empty or truncated sweep fails);
   - the model has every grid point and none outside it, and reports one
     outcome per point (two reports of a point that differ in any field,
-    receiver, method or transaction included, fail);
-  - every status vector is equal, the edges are identical, and at every
-    point the receipts pair up by label and status with attached gas
-    within --tol (default 5 Ggas).
+    parked yields, receiver, method or transaction included, fail);
+  - every status vector (parked yields included) is equal, the edges are
+    identical, and at every point the receipts pair up by label
+    (transaction included) and status with attached gas within --tol
+    (default 5 Ggas).
 Exits 1 if any flow fails. --subset compares only the grid points the
 model has (for a quick run on a coarser grid; reported as such, and still
 exits 1 on any other failure)."""
@@ -45,26 +51,43 @@ MISSING = "<no model point>"
 META_FIELDS = ("flows_sha256", "grid", "points", "jsonl_sha256")
 
 
+def label(tx, body):
+    """A receipt's label: its transaction (1, 2, ... in the flow) and what
+    it is (`receiver::methods` or `receiver[actions]`)."""
+    return f"tx{tx}:{body}"
+
+
 def sim_records(v, names):
     """(label, status, attached Ggas or None) of every non-refund receipt
-    of one sweep line."""
+    of one sweep line. The sweep numbers transactions from 0."""
     recs = []
     for r in v["receipts"]:
         if r["conversion"] or r["refund"]:
             continue
+        tx = r["tx"]
+        if not isinstance(tx, int) or isinstance(tx, bool) or tx < 0:
+            raise ValueError(f"bad tx {tx!r}")
         to = names.get(r["receiver"], r["receiver"])
         if r["methods"]:
-            label = f"{to}::{'+'.join(r['methods'])}"
+            body = f"{to}::{'+'.join(r['methods'])}"
             g = round(r["attached"] / 1e9)
         else:
-            label = f"{to}[{','.join(r['actions'])}]"
+            body = f"{to}[{','.join(r['actions'])}]"
             g = None
-        recs.append((label, r["status"], g))
+        recs.append((label(tx + 1, body), r["status"], g))
     return recs
 
 
+def parked_of(v):
+    """The sweep line's count of yields still parked (`yields`)."""
+    n = v["yields"]
+    if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+        raise ValueError(f"bad yields {n!r}")
+    return n
+
+
 def load_sweep(flow, gname, data_dir, flows_sha, names):
-    """The sweep of `flow` as {prepaid Ggas: records}, and what is wrong
+    """The sweep of `flow` as {prepaid Ggas: (records, parked)}, and what is wrong
     with it: its meta must be bound to it and it must hold the declared
     grid `gname`, every point once."""
     problems = []
@@ -107,19 +130,21 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
             gas = v["gas"]
             assert v["flow"] == flow and isinstance(gas, int) and gas % 10**9 == 0
             recs = sim_records(v, names)
+            parked = parked_of(v)
         except (ValueError, KeyError, TypeError, AssertionError):
             bad += 1
             continue
         pp = gas // 10**9
         if pp in out:
             dup.add(pp)
-        out[pp] = recs
+        out[pp] = (recs, parked)
     if not lines:
         problems.append("empty sweep")
     if m is not None and "points" in m and m["points"] != len(lines):
         problems.append(f"JSONL has {len(lines)} lines, .meta.json says {m['points']!r}")
     if bad:
-        problems.append(f"{bad} JSONL lines unreadable, of another flow or off the Ggas grid")
+        problems.append(f"{bad} JSONL lines unreadable (no tx or yields field: re-run calibrate), "
+                        "of another flow or off the Ggas grid")
     if dup:
         problems.append(f"{len(dup)} grid points more than once in the sweep")
     if set(out) - want:
@@ -131,12 +156,12 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
 
 def model_label(r, batch_methods):
     if r["m"] == "XFER":
-        return f'{r["to"]}[Transfer]'
+        return label(r["tx"], f'{r["to"]}[Transfer]')
     if r["m"] == "REFUND":
         return None
     if r["m"] == "batch" and batch_methods and r["to"] in TOKENS:
-        return f'{r["to"]}::{batch_methods}'
-    return f'{r["to"]}::{r["m"]}'
+        return label(r["tx"], f'{r["to"]}::{batch_methods}')
+    return label(r["tx"], f'{r["to"]}::{r["m"]}')
 
 
 STAT = {"ok": "ok", "oog": "oog", "fail": "failed", "forced": "forced"}
@@ -151,9 +176,12 @@ def model_records(recs, batch_methods):
     return out
 
 
-def sig(recs):
+def sig(recs, parked=0):
+    """The status vector: every (label, status) with its multiplicity, and
+    the parked yields if any."""
     c = collections.Counter((l, s) for l, s, _ in recs)
-    return " ".join(f"{l}={s}" + (f"x{n}" if n > 1 else "") for (l, s), n in sorted(c.items()))
+    out = " ".join(f"{l}={s}" + (f"x{n}" if n > 1 else "") for (l, s), n in sorted(c.items()))
+    return out + (f" parked-yields={parked}" if parked else "")
 
 
 def joint(mrecs, srecs):
@@ -226,8 +254,8 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
         res["problems"].append("the model has no grid point")
     pm = ps = None
     for pp in sorted(grid & set(sim)):
-        srecs = sim[pp]
-        ss = sig(srecs)
+        srecs, sparked = sim[pp]
+        ss = sig(srecs, sparked)
         if pp not in model:
             res["missing"] += 1
             if subset:
@@ -235,8 +263,8 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
             sm = MISSING
             mrecs = []
         else:
-            mrecs = model_records(model[pp], bm)
-            sm = sig(mrecs)
+            mrecs = model_records(model[pp][0], bm)
+            sm = sig(mrecs, model[pp][1])
         res["n"] += 1
         res["receipts"] += len(srecs)
         equal, gd = joint(mrecs, srecs)

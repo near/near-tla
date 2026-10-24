@@ -221,9 +221,10 @@ pub fn lock_beside(path: &Path, exclusive: bool) -> std::io::Result<std::fs::Fil
 
 /// Runs `tx` on a clone of `base` at every gas of `grid`, and returns one
 /// JSON value per point (`dump_all` of the outcomes `tx` returns, plus
-/// `flow` and `gas`). With `out`, it writes them as JSON lines to `out`
-/// once the whole grid has run (`write_atomic`): an interrupted sweep
-/// leaves the previous file whole.
+/// `flow`, `gas` and `yields`, the number of yields still parked once `tx`
+/// has returned: `Sim::yields`). With `out`, it writes them as JSON lines
+/// to `out` once the whole grid has run (`write_atomic`): an interrupted
+/// sweep leaves the previous file whole.
 pub fn sweep(
     flow: &str,
     base: &Sim,
@@ -238,6 +239,8 @@ pub fn sweep(
         let mut v = dump_all(&os);
         v["flow"] = json!(flow);
         v["gas"] = json!(g);
+        // yields still parked once the point's last step has run
+        v["yields"] = json!(sim.yields().len());
         lines.push(v);
     }
     if let Some(p) = out {

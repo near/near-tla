@@ -6,9 +6,12 @@
 (* Grid (Ggas).  Its After steps follow, each once nothing can run (as    *)
 (* the sim's harness runs them once the chain is idle): a transaction at  *)
 (* its own gas, or a block (BlockTick) that times out the parked yield.   *)
-(* Report prints the per-receipt outcome log of every transaction in      *)
-(* every terminal state (PrintT is TRUE, so TLC never stops);             *)
-(* scripts/conform.py compares it with the sim's sweep.                   *)
+(* Report prints, in every terminal state, the number of yields still     *)
+(* parked and the per-receipt outcome log of every transaction (PrintT is *)
+(* TRUE, so TLC never stops); scripts/conform.py compares them with the   *)
+(* sim's sweep.  Transactions are numbered 1, 2, ... in the order they    *)
+(* are sent, counting only transactions (an expire step is a block), as   *)
+(* the sim's sweep numbers them (from 0).                                 *)
 (*                                                                         *)
 (* The probe contract (conformance/probes/probe), on accounts "p" and "q": *)
 (*   chain   creates kids (each its own function call with the static gas *)
@@ -186,13 +189,18 @@ Start ==
 \* is all that may be left.
 Quiet == Runnable = {}
 
+\* The transaction id of After step i: 1 + the transactions among steps
+\* 1..i (an expire step sends none).  NTx: the flow's transactions.
+TxOf(i) == 1 + Cardinality({j \in 1..i : After[j].k = "tx"})
+NTx == TxOf(Len(After))
+
 \* The next After step, once nothing can run: transaction 2, 3, ... at its
 \* own gas, or one block (the parked yield's timeout, YieldTicks = 1).
 AfterStep ==
     /\ sent /\ ai < Len(After) /\ Quiet
     /\ LET s == After[ai + 1] IN
        IF s.k = "expire" THEN BlockTick
-       ELSE SubmitAs(WithGas(Rcpt(nid, ai + 2, s.to, s.fr, s.m, s.a, 0, s.fr, 0), s.g), s.fr, DefaultKey)
+       ELSE SubmitAs(WithGas(Rcpt(nid, TxOf(ai + 1), s.to, s.fr, s.m, s.a, 0, s.fr, 0), s.g), s.fr, DefaultKey)
     /\ ai' = ai + 1
     /\ UNCHANGED <<tk, pp, sent>>
 
@@ -204,7 +212,7 @@ Run ==
        /\ UNCHANGED confVars
 
 Init ==
-    /\ PlatformInit([a \in Accts |-> 1000000], 1..(1 + Len(After)))
+    /\ PlatformInit([a \in Accts |-> 1000000], 1..NTx)
     /\ tk = [t \in Toks |-> Ledger(Bal0(t), Reg0(t))]
     /\ pp \in Grid
     /\ sent = FALSE
@@ -213,8 +221,11 @@ Init ==
 Next == Start \/ Run \/ AfterStep
 Spec == Init /\ [][Next]_vars
 
-\* Every step done and nothing left but a parked yield.
+\* Every step done and nothing left but parked yields.  Report prints how
+\* many (the sim's sweep records Sim::yields() at the same moment), so a
+\* stale yield left in post does not pass as clean-up.
 Done == sent /\ ai = Len(After) /\ Quiet /\ data = {} /\ \A p \in post : IsYield(p)
-Report == Done => PrintT(<<"CONF", pp, rlog>>)
+Parked == Cardinality({p \in post : IsYield(p)})
+Report == Done => PrintT(<<"CONF", pp, Parked, rlog>>)
 TypeOK == TokSupplyOK
 =============================================================================

@@ -1,0 +1,57 @@
+# The clock horizon's final observation: an invariant that compares blk with a recorded
+# height is read after the last clock-relevant step. See Arm.tla.
+#
+#   python3 tools/run.py examples/yield-clock/final-observation
+
+spec = "Arm"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["Safe"]
+tags = ["semantics:block-clock"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"a"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+ArmFrom = "1"
+Lag = "1"
+YieldTicks = "1"
+
+# At MaxBlk = 1 arm can run only at height 1, the last one: Safe passes, and so does
+# YieldDeadlinesInBound (no yields) ...
+[[run]]
+name = "final_obs_short_passes"
+expect = "pass"
+invariants = ["Safe", "YieldDeadlinesInBound"]
+[run.constants]
+MaxBlk = "1"
+
+# ... and so did the horizon check while it counted only the steps (1 * 1).  It now reserves
+# the final observation: (1 + 1) * 1 = 2 > MaxBlk.
+[[run]]
+name = "final_obs_short_flagged"
+expect = "violation"
+invariant = "HorizonOK"
+invariants = ["HorizonOK", "Safe", "YieldDeadlinesInBound"]
+[run.constants]
+MaxBlk = "1"
+
+# At the bound it asks for, Safe fails: 0 -> 1 -> arm (at = 1) -> 2.
+[[run]]
+name = "final_obs_bug_found"
+expect = "violation"
+invariant = "Safe"
+invariants = ["HorizonOK", "Safe", "YieldDeadlinesInBound"]
+[run.constants]
+MaxBlk = "2"

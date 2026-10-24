@@ -64,14 +64,25 @@ prepaid-gas point:
 
 - **Statuses.** Every receipt's outcome: ok, failed, out of gas, or not created. The model's
   outcome is its per-receipt log (`rlog`, with `LogOn = TRUE`), printed by TLC; the sim's is
-  the JSONL sweep.
+  the JSONL sweep. A receipt is identified by its transaction (1 for the swept one, then the
+  later ones in order), receiver and method, so outcomes swapped between two transactions
+  fail. A yield callback belongs to the transaction that yielded, in both.
+- **Parked yields.** The number of yields still waiting once the point's last step has run
+  (the sweep's `yields`, from `Sim::yields()`; the model's `Parked`), part of the status
+  vector, so a stale yield left behind does not pass as clean-up.
 - **Attached gas.** The gas each function-call child was given, which is where the static and
   weighted split shows. It must agree within the tolerance `conform.py --tol` (5 Ggas by
   default), which covers the rounding of fees and burns to whole Ggas. Gas is compared together
-  with status: at each point, the receipts must pair up one to one by label and status with
-  their gas within tolerance, so a gas value cannot match a receipt of another status.
+  with status: at each point, the receipts must pair up one to one by label (transaction
+  included) and status with their gas within tolerance, so a gas value cannot match a receipt
+  of another status or another transaction.
 - **Edges.** The prepaid values at which the vector of statuses changes. These are the window
   boundaries a gas-mode model predicts, so they must be identical, not just close.
+
+Not compared: the order in which receipts run. Each point is compared as a multiset of
+receipts per transaction plus the final parked-yield count, so two executions that differ only
+in order (a callback before or after one of its inputs) look the same. The order of a joint
+callback's results is visible only where a probe turns it into a status (`on_order`).
 
 Separately, `calibrate`'s **split check** checks nearcore's leftover split against the
 declared statics and weights for every function-call child at every grid point, to the gas
@@ -93,7 +104,7 @@ at this commit:
 | flows | 73, all match (58, plus 8 joint-promise and 7 yield/resume flows) |
 | prepaid points per flow | 1313 (95,849 points in all) |
 | receipts compared | 222,918 sim receipts |
-| status mismatches | 0 |
+| status mismatches | 0 (receipts matched by transaction; parked yields at the end: 0 at every point, on both sides) |
 | edge mismatches | 0 |
 | attached-gas differences above tolerance | 0 (tolerance 5 Ggas; largest 5 Ggas, from rounding up at two creation levels) |
 | split-check mismatches | 0 of 106,608 children (largest difference 0 gas) |

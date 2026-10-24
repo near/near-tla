@@ -37,7 +37,8 @@ Each rule has four fields:
     each such entry says what the sim checked, if anything. The run on the current library
     (73 flows, 95,849 prepaid points, 222,918 sim receipts) found no status, window-edge or
     attached-gas mismatch ([results](../conformance/README.md#results-at-the-pins)). The
-    comparison sees each receipt's status and attached gas and the window edges; the
+    comparison sees each receipt's status and attached gas, by transaction, the yields still
+    parked at the end, and the window edges, but not the order in which receipts run; the
     calibration checks the leftover split and the action-only fees. A rule is "sim" where a
     flow exercises it and that comparison would show a difference. Where a flow covers only
     part of a rule, the entry says which part; the rest keeps its earlier level.
@@ -280,16 +281,19 @@ Each rule has four fields:
   creator's calibrated burn, which therefore needs its own key per input count (G4).
 - **Validated:** sim for these parts (`conformance/`, flows `and2_*` and `and3_mixed`; see
   [Async patterns](../conformance/README.md#async-patterns-joint-promises-and-yieldresume)):
-  the callback runs once, after the last input, also when an input panics (`and2_fail`) or
-  runs out of gas (`and2_oog`, below its window edge); the callback's attached gas, the
-  inputs' and the creator's window edges with two and three inputs, same- and cross-account
-  (`and2_ok`, `and3_mixed`; the creator's burn calibrated per input count); the result order
+  the callback runs exactly once, also when an input panics (`and2_fail`) or runs out of gas
+  (`and2_oog`, below its window edge); the callback's attached gas, the inputs' and the
+  creator's window edges with two and three inputs, same- and cross-account (`and2_ok`,
+  `and3_mixed`; the creator's burn calibrated per input count); the order of the results
   (`and2_order_ff` / `and2_order_fs`: a callback that fails iff its first result is `Failed`
   fails with the failing input first and succeeds with it second); an input or a joint
-  callback with 0 gas fails the creator (`and2_s0`, `and2_cb0`). The comparison does not see
-  what the callback reads otherwise, and the sim gives one arrival order. Nested joins, an
-  input that returns a promise, the 128-input limit and the restrictions on joint promises:
-  nearcore reading. `examples/platform-selftest` checks the order with the failing input first
+  callback with 0 gas fails the creator (`and2_s0`, `and2_cb0`). The comparison is per receipt
+  and unordered, so that the callback runs after the last input, rather than at some other
+  time, is not compared (nearcore reading; every receipt of these flows is in one
+  transaction, so the transaction says nothing about it either). It does not see what the
+  callback reads otherwise, and the sim gives one arrival order. Nested joins, an input that
+  returns a promise, the 128-input limit and the restrictions on joint promises: nearcore
+  reading. `examples/platform-selftest` checks the order with the failing input first
   (`and_order`), a starved input (`and_starved_leg`) and a joint callback with no gas
   (`and_zero_cb`). <!-- conformance -->
 
@@ -357,16 +361,23 @@ Each rule has four fields:
 - **Validated:** sim for these parts (`conformance/`, flows `yield_*` on a separate async probe
   contract; see
   [Async patterns](../conformance/README.md#async-patterns-joint-promises-and-yieldresume)):
-  the callback runs once, after a resume sent by a later transaction (`yield_resume`) or, with
-  no resume, after the timeout (`yield_timeout`); a resume once the callback has run, by
-  timeout (`yield_resume_late`) or by an earlier resume (`yield_resume_twice`), sends nothing;
-  two resumes in the yielding call give one callback (`yield_self_resume2`); the callback's
-  gas is a child's (static and weighted share: `yield_cb_oog` runs out of gas between the
-  creator's edge at 1.9 Tgas and its own at 2.1 Tgas, and the split check covers every yield
-  callback), and with 0 gas it fails the creator (`yield_cb0`), although the yield is stored,
-  not sent. The flows run the model on a one-tick clock, so the 200-block deadline and the
-  race at it are not checked there (near-contract-sim's own tests cover the race,
-  `tests/yields.rs:70-92` at its rev 29e9090), and what the callback reads is not compared.
+  the callback runs exactly once in a flow whose later transaction resumes it (`yield_resume`)
+  and in one with no resume whose yield times out (`yield_timeout`), and no yield is left
+  parked at the end of either; a resume sent after the callback has run, by timeout
+  (`yield_resume_late`) or by an earlier resume (`yield_resume_twice`), sends nothing (still
+  one callback, and the resuming transactions' own receipts compared under their transaction
+  numbers); two resumes in the yielding call give one callback (`yield_self_resume2`); the
+  callback's gas is a child's (static and weighted share: `yield_cb_oog` runs out of gas
+  between the creator's edge at 1.9 Tgas and its own at 2.1 Tgas, and the split check covers
+  every yield callback), and with 0 gas it fails the creator (`yield_cb0`), although the
+  yield is stored, not sent. The flows run the model on a one-tick clock, so the 200-block
+  deadline and the race at it are not checked there (near-contract-sim's own tests cover the
+  race, `tests/yields.rs:70-92` at its rev 29e9090), and what the callback reads is not
+  compared. Nor is the order in which receipts run: that the callback runs after the resume
+  or the timeout follows from how the flows run (each step once the chain is idle; the sim's
+  `transact()` returns with the yield parked) and from the nearcore reading, not from the
+  comparison. The transaction gives no order either: the sim lists a yield callback under the
+  transaction that yielded, whichever one resumed it, and the model does the same.
   `conformance/tests/semantics.rs` observes in the sim, without a model comparison: two
   resumes that run in one block both return 1 and the first payload wins; a resume after the
   timeout returns 0; a resume of another account's yield returns 0 and leaves it parked; the
@@ -806,24 +817,40 @@ Each rule has four fields:
     opens past the bound, or a timeout delayed past it (nearcore can process a timeout late,
     `runtime/runtime/src/lib.rs:3129-3147`, and it then sends an outgoing resume receipt,
     `:3163-3201`). A pass is a pass up to `MaxBlk` only. `ClockHorizonOK(n, T)` holds when
-    `MaxBlk >= n * max(T, YieldTicks)`. `T` is the largest number of blocks any comparison
-    with the clock counts (in handlers, guards or invariants; `blk > h + c` and `blk = h + c`
-    count `c + 1`); `n` is the most clock-relevant steps in one behaviour (steps that read or
-    record `blk` or `BlockTs`, yield creations, yield callbacks). If every comparison is
-    `blk - h >= c` or its negation, with `h` a height recorded earlier in the behaviour or 0,
-    that bound covers every behaviour: cutting any longer gap between two clock-relevant steps
-    to `max(T, YieldTicks)` blocks changes no comparison. It is sufficient, not necessary; a
-    smaller `MaxBlk` needs its own argument. `MaxBlk > T + YieldTicks` is not enough on its
-    own, because windows chain: a step that needs one window to have passed can open the next
-    (a request sent only after an earlier one timed out, then its own cancel window). With
-    `TickAnytime = FALSE`, no handler reading the clock and at most `k` yields per behaviour,
-    `MaxBlk >= k * YieldTicks` suffices.
+    `MaxBlk >= (n + 1) * max(T, YieldTicks)`. `T` is the largest number of blocks any
+    comparison with the clock counts (in handlers, guards or invariants; `blk > h + c` and
+    `blk = h + c` count `c + 1`, a comparison with a yield's deadline counts
+    `YieldTicks + c`); `n` is the most clock-relevant steps in one behaviour (steps that read
+    or record `blk` or `BlockTs`, yield creations, yield callbacks). If every comparison is
+    `x - h >= c` or its negation, with `h <= x` each 0, `blk` or a height recorded earlier in
+    the behaviour, that bound covers every behaviour. Argument: an invariant fails in the last
+    state of some behaviour on an unbounded clock. Its `n` clock-relevant steps and that last
+    state split the heights into `n + 1` gaps: from 0 to the first step, between steps, and from
+    the last step to the final observation. Cut each gap to `K = max(T, YieldTicks)` blocks,
+    dropping the ticks at its end. `x - h` is a sum of whole gaps, so it is unchanged if no
+    gap was cut and at least `K >= c` otherwise: every handler, guard, timeout and invariant
+    sees the same values, and with `TickAnytime = FALSE` each kept tick keeps its offset in
+    its gap, so the deadline it waits for is still ahead. The cut behaviour ends at or below
+    `(n + 1) * K`. Without the final gap the bound is too small for an invariant that reads
+    the clock (`final_obs_*` below). It is sufficient, not necessary; a smaller `MaxBlk` needs
+    its own argument. `MaxBlk > T + YieldTicks` is not enough on its own, because windows
+    chain: a step that needs one window to have passed can open the next (a request sent only
+    after an earlier one timed out, then its own cancel window). Without a clock
+    (`MaxBlk = 0`) every gap is 0, which changes no comparison if `T = 0`; every yield may
+    then time out at any moment (more behaviours, not fewer). With `TickAnytime = FALSE`, no
+    handler reading the clock and at most `k` yields per behaviour, `MaxBlk >= k * YieldTicks`
+    suffices: the clock never passes the last deadline, so that bound cuts nothing.
 - **Validated:** nearcore reading. `examples/yield-clock` shows `YieldDeadlinesInBound` and
   an early timeout failing at a too small bound, a bug that `TickAnytime = FALSE` hides, and
   the horizon: with `MaxBlk = 2` a double refund passes unnoticed (`horizon_short_passes`),
   `ClockHorizonOK` flags that bound (`horizon_short_flagged`), one more block finds the bug
   (`horizon_bug_found`), and the correct handler passes at a justified bound
-  (`horizon_justified`).
+  (`horizon_justified`). `examples/yield-clock/final-observation` shows why the bound counts
+  the gap after the last step: one step that arms at height 1 or later, and an invariant that
+  fails once a block passes after it. At `MaxBlk = 1` the invariant passes
+  (`final_obs_short_passes`); `ClockHorizonOK(1, 1)` flags that bound
+  (`final_obs_short_flagged`), where `n * max(T, YieldTicks)` did not; at `MaxBlk = 2` the
+  invariant fails (`final_obs_bug_found`).
 
 ---
 
@@ -1149,10 +1176,12 @@ against the current module code; some may be fixed in the modules later.
   and an `on_answer` that refunds on a timeout even when the request was cancelled. With
   `MaxBlk = 2` the cancel never opens and `NoNegEscrow` passes, as does
   `YieldDeadlinesInBound`; with `MaxBlk = 3` the timeout is delayed past the cancel and the
-  escrow goes negative. Mitigation: choose `MaxBlk` so that `ClockHorizonOK(n, T)` holds (S3:
-  `T` the largest number of blocks any clock comparison counts, `n` the most clock-relevant
-  steps per behaviour) and list it as an invariant, or give your own argument that a smaller
-  bound covers the model; otherwise report the result as bounded.
+  escrow goes negative. Mitigation: choose `MaxBlk` so that `ClockHorizonOK(n, T)` holds,
+  i.e. `MaxBlk >= (n + 1) * max(T, YieldTicks)` (S3: `T` the largest number of blocks any
+  clock comparison counts, `n` the most clock-relevant steps per behaviour, and one more gap
+  for the state an invariant reads after the last step) and list it as an invariant, or give
+  your own argument that a smaller bound covers the model; otherwise report the result as
+  bounded.
 - **N-precision. Rounding of fees and burns.** Fees (`NearFees`) and calibrated burns are
   rounded to the nearest Ggas. Error bounds:
   - at most 0.5 Ggas per base fee entry;

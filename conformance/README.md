@@ -54,7 +54,7 @@ once per point. What the sim offers for yields at this rev, and what the flows u
 | `src/bin/calibrate.rs` | the calibration / sweep tool |
 | `tests/semantics.rs` | receipt semantics: local-receipt priority, signer propagation, DeleteKey batch atomicity (`docs/SEMANTICS.md`: "Local receipts first", "Signer and signer public key propagate", "Multi-action receipts are atomic"); yield/resume: the resume payload limit, two resumes in one block, a resume after the timeout, a resume of another account's yield ("Yield and resume (NEP-519)", "N-yield-payload") |
 | `tests/smoke.rs` | the smoke grid: split check (per action too), standard burns, action-only fees, two window edges |
-| `tla/ProbeConf.tla` | the model side: the probe contracts on the library, one flow per run (its `after` steps included), `PrintT` per receipt |
+| `tla/ProbeConf.tla` | the model side: the probe contracts on the library, one flow per run (its `after` steps included), `PrintT` of the parked yields and every receipt |
 | `tla/CalibProbes.tla` | the probe world's burn and exec-fee table (generated) |
 | `scripts/gen_probes.py` | writes `flows/probes.toml` |
 | `scripts/mkconf.py` | writes `tla/build/MC_<flow>.tla/.cfg` for each flow |
@@ -147,15 +147,20 @@ A flow passes `conform.py` only if:
   of the JSONL beside it;
 - the sweep holds every point of that grid exactly once (an empty or truncated sweep fails);
 - the model has every grid point and none outside it, and one outcome per point: TLC may print a
-  point more than once, and two reports of it that differ in any field (receiver, method,
-  transaction, id, status, gas) fail the flow;
-- every status vector is equal and the edges are identical;
+  point more than once, and two reports of it that differ in any field (parked yields,
+  receiver, method, transaction, id, status, gas) fail the flow;
+- every status vector is equal and the edges are identical. A receipt's label is its
+  transaction, receiver and method (`tx2:y::resume`): transactions are numbered 1 for the swept
+  one, then the `after` calls in order (the sweep's `tx` + 1; the model's `ProbeConf` counts
+  only transactions, not `expire` steps), so outcomes swapped between transactions fail. The
+  vector also holds the number of yields still parked once the point's last step has run (the
+  sweep's `yields`, the model's `Parked`; shown as `parked-yields=N` when not 0);
 - at every point the receipts pair up one to one by label and status with attached gas within
   `--tol` (5 Ggas). Status and gas are compared together, so two receipts of one method whose
   statuses and gas are swapped between model and sim fail. Within a (label, status) group the
   sorted gas values are paired in order, which minimises the largest difference. The model's
-  log (`rlog`) carries no parent, so receipts are matched by label, not by their place in the
-  receipt tree.
+  log (`rlog`) carries no parent and no order, so receipts are matched by label, not by their
+  place in the receipt tree, and the order in which they ran is not compared.
 
 The model runs on the library's defaults: token batches are accounted per call (each call of a
 batch keyed `<acct>.batch/<shape>#<method>`, the per-call keys above), token methods use their
@@ -289,7 +294,8 @@ data, and two concurrent sweeps of a flow leave one sweep's pair, not one's prov
 other's data. `--from-data` reads the pair under a shared lock:
 
 ```
-{ "flow": str, "gas": prepaid (gas units), "tx_ok": bool, "receipts": [receipt, ...] }
+{ "flow": str, "gas": prepaid (gas units), "tx_ok": bool, "receipts": [receipt, ...],
+  "yields": number of yields still parked once the point's last step has run (Sim::yields) }
 ```
 
 Each receipt is listed in execution order, transaction by transaction, with each transaction's
@@ -312,7 +318,8 @@ conversion first and refunds included:
 | `logs`, `block` | logs, block height |
 
 An "edge" is a grid point where the status vector changes. The status vector is the sorted
-`receiver::methods=status` of every non-refund receipt.
+`tx<n>:receiver::methods=status` of every non-refund receipt (`n` = `tx` + 1), and the
+parked-yield count.
 
 ## Units in the model
 
@@ -355,7 +362,7 @@ out. The `[[path_rule]]`s turn those logs into the keys `y.resume/ok` / `/none` 
 
 | flow | `after` | what it checks |
 |---|---|---|
-| `yield_resume` | resume | the yield callback runs once, after the resume, with the gas its creator gave it |
+| `yield_resume` | resume | the yield callback runs once, with the gas its creator gave it, and nothing stays parked |
 | `yield_timeout` | expire | without a resume it times out, and runs (with `Failed`) |
 | `yield_resume_late` | expire, resume | a resume after the timeout sends nothing: in the model a resume of a yield that is no longer pending adds no data, and a flow whose model left data behind would report no point |
 | `yield_resume_twice` | resume, resume | the second resume (after the callback ran) sends nothing |
@@ -366,7 +373,10 @@ out. The `[[path_rule]]`s turn those logs into the keys `y.resume/ok` / `/none` 
 The model's clock is one tick: `YieldTicks = 1` and `MaxBlk = 1 + Len(After)`, so a yield can
 time out only after an `expire` step (a `BlockTick`), and each flow has one outcome per point.
 The sim's `expire` advances to the real `expires_at` (200 blocks). The resume's 300 Tgas
-transaction is compared too (status and attached gas), under its own transaction id.
+transaction is compared too (status and attached gas), as transaction 2 (`expire` is not a
+transaction: in `yield_resume_late` the resume is transaction 2 on both sides). The yield
+callback is listed under transaction 1, the one that yielded, in the sim and the model alike,
+whichever transaction resumed it.
 
 **Sim capabilities used** (near-contract-sim at the pinned rev, `src/sim.rs`):
 
@@ -392,6 +402,10 @@ transaction is compared too (status and attached gas), under its own transaction
   (`tests/yields.rs:70-92` at its rev 29e9090);
 - what a callback reads (the payload or `Failed`, each joint result): the comparison sees
   statuses and gas, not results; only `on_order` turns the first result into a status;
+- the order in which receipts run: a point is compared as a multiset of receipts per
+  transaction and a parked-yield count at the end, so a joint callback that ran before its
+  last input, or a yield callback before its resume, would look the same. That they run after
+  is how the flows are built (each `after` step once the chain is idle) and nearcore reading;
 - two resumes that run in one block (both return true, the first payload wins), a resume of
   another account's yield, and the payload limit: `tests/semantics.rs` only. A payload over
   1024 bytes fails the resumer in nearcore and not in the model (`docs/SEMANTICS.md`,
@@ -423,10 +437,12 @@ transaction is compared too (status and attached gas), under its own transaction
   prepaid check: the call fails for lack of gas only when burn + 2 child exec fees + 5 Tgas
   exceeds prepaid (edge at 8.4 Tgas); between 8.4 and 8.8 Tgas the receiver runs out of gas.
 
-**Model conformance** on `../modules/` at commit `06f8a1b` (output of `scripts/conform.py`;
-edges in Tgas). All 73 flows pass: 95 849 points, 222 918 sim receipts compared, 0 status
-mismatches, 0 edge mismatches, 0 points with attached gas off by more than 5 Ggas, 0 model
-points missing. The 58 flows before the async patterns give the same totals as at `1ba96ff`
+**Model conformance** on `../modules/` after `9702b14`, with receipts matched by transaction
+and the parked yields compared (output of `scripts/conform.py`; edges in Tgas). All 73 flows
+pass: 95 849 points, 222 918 sim receipts compared, 0 status mismatches, 0 edge mismatches, 0
+points with attached gas off by more than 5 Ggas, 0 model points missing. No point of any flow
+ends with a yield parked, in the sim or the model. The table and totals are the same as at
+`06f8a1b`, before transactions and parked yields were compared. The 58 flows before the async patterns give the same totals as at `1ba96ff`
 (76 154 points, 166 712 receipts), and their calibrated rows in `tla/CalibProbes.tla` are
 unchanged. The largest gas difference, 5 Ggas on `ft_batch_C` (3 elsewhere), is rounding:
 burns and fees round up at each of two creation levels, so the model gives the receiver
@@ -512,7 +528,7 @@ slightly less than nearcore, never more.
 
 Differences between the model and nearcore found by these flows, and what fixed each. The sim
 was not patched, and none is a sim-vs-nearcore divergence: the sim runs nearcore's runtime.
-None is open at `06f8a1b`; the joint-promise and yield/resume flows found none.
+None is open after `9702b14`; the joint-promise and yield/resume flows found none.
 
 1. **ft_storage_again, wnear_storage_again: edge at 1.0 Tgas in nearcore, 1.1 in the model.**
    `storage_deposit` for a registered account refunds the deposit and burns 553 Ggas;
