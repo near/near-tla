@@ -33,8 +33,11 @@
 \*   core/parameters/src/snapshots/near_parameters__config_store__tests__<v>.json.snap
 \* ("SNAP<v>" below), built from core/parameters/res/runtime_configs/parameters.yaml
 \* plus the per-version diffs <v>.yaml. Line numbers are the same in SNAP84,
-\* SNAP85, SNAP87 and SNAP88. Between 84 and 88 the only action fee that changes
-\* is create_account (85.yaml:16-27).
+\* SNAP85, SNAP87 and SNAP88. Between 84 and 88 the only fee IN THIS TABLE that
+\* changes is create_account (85.yaml:16-27). Fees outside the table also change:
+\* action_deterministic_state_init at 85 (85.yaml:28-39) and the universal
+\* state-init per-entry and per-byte fees at 88 (88.yaml:14-45). State-init
+\* actions are not modelled.
 \*
 \* ---------------------------------------------------------------------------
 \* Units and rounding
@@ -49,6 +52,14 @@
 \*   about 1.1e9, so it stays inside TLC's 32-bit integers for n up to 16 MiB.
 \*   Every protocol limit on a byte count is below that: arguments, return
 \*   data and contract size are all at most 4 MiB at 88 (SNAP88:248-252).
+\* - Error bounds. A base entry is off by at most 0.5 Ggas. Bytes(n, u) is off
+\*   by at most 0.5 Ggas (final rounding) + 0.001 Ggas (truncation) +
+\*   0.5e-6 * n Ggas (u rounded to the uGgas), i.e. <= 0.51 Ggas for n <= 20 KB
+\*   and <= 2.6 Ggas at n = 4 MiB. Each operator sums such terms, and the
+\*   errors can go either way: a single-action receipt total (receipt base +
+\*   one action, send + exec = 4 base entries, plus up to 2 per-byte terms) is
+\*   off by at most ~3 Ggas for byte counts up to a few KB. A gas edge
+\*   predicted from these fees is only accurate to that bound.
 \*
 \* ---------------------------------------------------------------------------
 \* sir ("sender is receiver")
@@ -57,7 +68,8 @@
 \* created by a contract, that means the receipt targets the creating contract
 \* itself (runtime/near-vm-runner/src/logic/host.rs:2577, :2636, and
 \* promise_idx_to_receipt_idx_with_sir at :2699-2715). For a transaction's first
-\* receipt, it means signer = receiver (runtime/runtime/src/config.rs:86-90, total_send_fees(sender_is_receiver)).
+\* receipt, it means signer = receiver (runtime/runtime/src/config.rs:489,
+\* calculate_tx_cost; total_send_fees takes it at :86-90).
 \* At versions 84-88 every BASE fee has send_sir = send_not_sir, so sir only
 \* changes the per-byte send fees (send_not_sir = 47,683,715 gas/byte for all of
 \* them: the cross-shard bandwidth charge).
@@ -77,14 +89,18 @@
 \*   "eth_implicit"   "0x" + 40 lowercase hex          (checked first)
 \*   "near_implicit"  64 lowercase hex
 \*   "deterministic"  "0s" + 40 lowercase hex
-\*   "universal"      "0u" + 52 Crockford base32 (87+)
+\*   "universal"      "0u" + 52 Crockford base32 whose last char is "0" or
+\*                    "g" (validation.rs:117-124; 87+)
 \*   "named"          anything else
 \* Transfer fee by kind (cost.rs:775-848):
 \*   named          transfer
 \*   near_implicit  transfer + create_account + add_full_access_key
 \*   eth_implicit   transfer + create_account   (eth_implicit_accounts is TRUE
 \*                  at 84-88: SNAP84:231 .. SNAP88:231)
-\*   deterministic  transfer + create_account   (same flag)
+\*   deterministic  transfer + create_account   (no flag on the fee side: the
+\*                  fee functions charge it unconditionally, cost.rs:805-807,
+\*                  :844-846; the runtime's account-type check reuses
+\*                  eth_implicit_accounts, actions.rs:899-927)
 \*   universal      transfer + create_account at 87+ (universal_accounts:
 \*                  SNAP87:232, SNAP88:232). At 84-86 the flag is off and it
 \*                  is charged as a plain transfer.

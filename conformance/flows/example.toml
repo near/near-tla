@@ -1,0 +1,77 @@
+# Calibrating your own contract: a template.
+#
+#   cargo run --release --bin calibrate -- --flows flows/example.toml \
+#       --wasm path/to/your_contract.wasm \
+#       --tla MyCalib.tla --prefix My --params app
+#
+# `${WASM}` below is the --wasm file. As written, the template runs with the
+# generic probe in its place (--wasm probes/res/probe.wasm), so its flows use
+# the probe's methods: replace the [[flow]] transactions, [[static]] and
+# [[size]] entries with your contract's methods, the static gas and weight
+# each of its cross-contract calls declares, and the argument or result that
+# drives its burn. See README.md ("Flow specs") for every field.
+#
+# Gas in Ggas unless named tgas; deposits in yocto (strings).
+
+[world]
+# sim account id -> model account name (the keys of the emitted table)
+names = { "alice.near" = "alice", "app.near" = "app", "callee.near" = "callee" }
+
+[[account]]
+id = "alice.near"
+near = 1000
+
+# The contract under calibration.
+[[contract]]
+id = "app.near"
+wasm = "${WASM}"
+source = "your contract (name, version, commit)"
+# init = { method = "new", args = '{"owner_id": "alice.near"}' }
+
+# A contract it calls (here the probe, which burns a set amount).
+[[contract]]
+id = "callee.near"
+wasm = "../probes/res/probe.wasm"
+source = "conformance/probes/probe (near-sdk 5.29.1)"
+
+# State the flows need before they start (registrations, deposits, ...).
+# [[setup]]
+# signer = "alice.near"
+# receiver = "app.near"
+# method = "register"
+# deposit = "1250000000000000000000"
+
+# The static gas and weight of each call the contract makes, as declared in
+# its code (static Ggas, weight per function-call action). The calibrator
+# checks nearcore's leftover split against them before it trusts a burn.
+[[static]]
+child = "callee.near.burn"
+actions = [[5000, 1]]
+
+[[static]]
+child = "app.near.on_read"
+actions = [[5000, 1]]
+
+# What a burn grows with: an argument, or the bytes returned / read (KB).
+[[size]]
+key = "callee.near.burn"
+from = "arg:ggas"
+
+[[size]]
+key = "app.near.on_read"
+from = "result"
+div = 1000
+
+# One flow per path worth a burn key. `grid` is "standard" (5-130 Tgas by
+# 0.1, then 140-300 by 10), "smoke", or "lo:hi:step" in Tgas.
+[[flow]]
+name = "call_then_callback"
+about = "app calls callee.burn(2000), then its own on_read"
+grid = "smoke"
+tx = { signer = "alice.near", receiver = "app.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":2000}", "static_ggas": 5000, "weight": 1, "receiver": "callee.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}' }
+
+[[flow]]
+name = "bigger_burn"
+about = "the same with callee.burn(8000): a second size for the fit"
+grid = "smoke"
+tx = { signer = "alice.near", receiver = "app.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":8000}", "static_ggas": 5000, "weight": 1, "receiver": "callee.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}' }

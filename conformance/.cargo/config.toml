@@ -1,0 +1,3 @@
+[env]
+# nearcore's VM keeps at most 1000 wasm instances per process.
+RUST_TEST_THREADS = "1"

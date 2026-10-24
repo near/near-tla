@@ -1,0 +1,5 @@
+# sweeps and TLC output (regenerate with the commands in README.md)
+/data/
+/tla/build/
+/probes/target/
+__pycache__/

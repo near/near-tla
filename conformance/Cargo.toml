@@ -1,0 +1,25 @@
+[package]
+name = "near-tla-conformance"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95.0"
+publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/near/near-tla"
+description = "Checks near-tla's per-receipt predictions against nearcore's runtime (via near-contract-sim) and calibrates per-method gas burns"
+
+# Standalone: not a member of any workspace (the repo has no root Cargo.toml).
+[workspace]
+
+[dependencies]
+# Private repo. Pinned by rev; see README.md for fetching and for a local [patch].
+near-contract-sim = { git = "https://github.com/near/near-contract-sim", rev = "29e909033bb59eab792dee136e9d02870488bc3e" }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+toml = "0.8"
+
+# nearcore is slow unoptimized; the probes' gas does not depend on the profile.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

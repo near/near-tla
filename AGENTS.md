@@ -26,8 +26,9 @@ tools/sany.py         parse check
 conformance/          Rust conformance + calibration crate (standalone; CI does not build it)
 conformance/probes/   probe contracts (Rust -> wasm)
 conformance/tla/      the model side of conformance runs
-conformance/scripts/  mkconf / conform / calib
-docs/                 SEMANTICS.md (rules, citations, trust), USAGE.md, CONFORMANCE.md, VERSIONING.md
+conformance/scripts/  conformance helpers (mkconf.py, conform.py)
+docs/                 SEMANTICS.md (rules, citations, trust), CONFORMANCE.md, VERSIONING.md,
+                      USAGE.md (planned)
 ```
 
 ## How to run things
@@ -56,8 +57,8 @@ tools/run.py 'pay_*' --print-trace   # some runs, with traces
   do not set `GIT_AUTHOR_*` / `GIT_COMMITTER_*`.
 - **No AI attribution:** no `Co-Authored-By` trailers, no "Generated with" footers, in commits,
   PRs or docs.
-- **Rust:** build with plain `cargo` (it may be a caching shim; do not bypass it with an
-  absolute toolchain path). Keep any resource limits you are given (`-j`).
+- **Rust:** build with plain `cargo`, not an absolute toolchain path. Keep any resource limits
+  you are given (`-j`).
 - **TLC:** at most **2 workers** per run (the runner caps at 4). Use `-metadir /tmp/tlc-<name>`
   for ad-hoc runs and delete those directories afterwards. `-deadlock` is normal: quiescence is
   not an error. Keep each example run under about 60 s.
@@ -81,5 +82,8 @@ tools/run.py 'pay_*' --print-trace   # some runs, with traces
 5. **Show every invariant can fail.** For each invariant, add a deliberately wrong variant (the
    must-fail example) and check that TLC reports a violation of that invariant, for the reason you
    intended. Confirm this from the trace. An invariant that has never failed may be vacuous.
-6. **Know what is not modelled.** Read the "Not modelled" section of `docs/SEMANTICS.md` before
+6. **Run with local priority off as well.** `LocalPriorityOK` assumes the receiving chunk is not
+   at its compute limit. A violation that appears only with it off needs a congestion argument
+   before you dismiss it (`docs/SEMANTICS.md`, S1).
+7. **Know what is not modelled.** Read the "Not modelled" section of `docs/SEMANTICS.md` before
    claiming a result. Under-approximations there can hide bugs.

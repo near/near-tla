@@ -1,0 +1,452 @@
+# Probe flows: the conformance sweeps and the calibration of the
+# standard-token burn keys (see README.md for the format).
+#
+# alice.near signs; p.near and q.near run the generic probe; ft.near is a
+# plain near-contract-standards FT; wrap.near the wNEAR-like token; dave.near
+# is registered nowhere. Gas in Ggas unless named tgas; deposits in yocto.
+
+[world]
+names = { "alice.near" = "alice", "dave.near" = "dave", "p.near" = "p", "q.near" = "q", "ft.near" = "ft", "wrap.near" = "wrap", "nobody.near" = "nobody", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" = "nimp", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" = "nimp_new", "0x1111111111111111111111111111111111111111" = "eth", "0x2222222222222222222222222222222222222222" = "eth_new" }
+# token batches: the key scheme of modules/Tokens.tla ("batch/" [D][S](T|C))
+keys = { "near_deposit+ft_transfer" = "batch/DT", "near_deposit+ft_transfer_call" = "batch/DC", "near_deposit+storage_deposit+ft_transfer" = "batch/DST", "near_deposit+storage_deposit+ft_transfer_call" = "batch/DSC" }
+
+[[account]]
+id = "alice.near"
+near = 100000
+
+[[account]]
+id = "dave.near"
+near = 1000
+
+# existing NEAR-implicit and eth-implicit accounts (the *_new ids of the
+# same shapes do not exist)
+[[account]]
+id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+near = 10
+
+[[account]]
+id = "0x1111111111111111111111111111111111111111"
+near = 10
+
+[[contract]]
+id = "p.near"
+wasm = "../probes/res/probe.wasm"
+source = "conformance/probes/probe (near-sdk 5.29.1)"
+
+[[contract]]
+id = "q.near"
+wasm = "../probes/res/probe.wasm"
+source = "conformance/probes/probe (near-sdk 5.29.1)"
+
+[[contract]]
+id = "ft.near"
+wasm = "../probes/res/ft.wasm"
+source = "conformance/probes/ft (near-contract-standards 5.29.1)"
+init = { method = "new", args = '{"owner_id": "alice.near", "total_supply": "1000000"}' }
+
+[[contract]]
+id = "wrap.near"
+wasm = "../probes/res/wrap.wasm"
+source = "conformance/probes/wrap (near-contract-standards 5.29.1)"
+init = { method = "new", args = '{}' }
+
+[[setup]]
+signer = "alice.near"
+receiver = "ft.near"
+method = "storage_deposit"
+args = '{"account_id": "q.near"}'
+deposit = "1250000000000000000000"
+
+[[setup]]
+signer = "alice.near"
+receiver = "ft.near"
+method = "storage_deposit"
+args = '{"account_id": "p.near"}'
+deposit = "1250000000000000000000"
+
+[[setup]]
+signer = "alice.near"
+receiver = "wrap.near"
+method = "storage_deposit"
+args = '{"account_id": "alice.near"}'
+deposit = "1250000000000000000000"
+
+[[setup]]
+signer = "alice.near"
+receiver = "wrap.near"
+method = "storage_deposit"
+args = '{"account_id": "q.near"}'
+deposit = "1250000000000000000000"
+
+[[setup]]
+signer = "alice.near"
+receiver = "wrap.near"
+method = "storage_deposit"
+args = '{"account_id": "p.near"}'
+deposit = "1250000000000000000000"
+
+[[setup]]
+signer = "alice.near"
+receiver = "wrap.near"
+method = "near_deposit"
+deposit = "10000000000000000000000000"
+
+# Standard-token statics (near-contract-standards 5.29.1,
+# fungible_token/core_impl.rs: ft_on_transfer gets static 0 and the
+# leftover by weight 1; ft_resolve_transfer static 5 Tgas, weight 0).
+[[static]]
+child = "q.near.ft_on_transfer"
+actions = [[0, 1]]
+
+[[static]]
+child = "ft.near.ft_resolve_transfer"
+actions = [[5000, 0]]
+
+[[static]]
+child = "wrap.near.ft_resolve_transfer"
+actions = [[5000, 0]]
+
+# Burn sizes: burn(ggas) by its argument; ret(bytes) and on_read by the
+# bytes returned / read, in KB (1000 bytes).
+[[size]]
+key = "q.near.burn"
+from = "arg:ggas"
+
+[[size]]
+key = "p.near.burn"
+from = "arg:ggas"
+
+[[size]]
+key = "q.near.ret"
+from = "arg:bytes"
+div = 1000
+
+[[size]]
+key = "p.near.on_read"
+from = "result"
+div = 1000
+
+[[flow]]
+name = "chain1"
+about = "q.burn(2000) static 5000 w1, then p.on_read static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":2000}", "static_ggas": 5000, "weight": 1, "receiver": "q.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.burn"
+actions = [[5000, 1]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "chain3w"
+about = "detached q.burn(1000) static 3000 w1; p.burn(2000) static 2000 w2, then p.on_read static 4000 w3: floor shares and the remainder"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":1000}", "static_ggas": 3000, "weight": 1, "receiver": "q.near"}, {"method": "burn", "args": "{\"ggas\":2000}", "static_ggas": 2000, "weight": 2}], "cb": {"method": "on_read", "args": "", "static_ggas": 4000, "weight": 3}, "detach": true}', deposit = "" }
+[[flow.static]]
+child = "q.near.burn"
+actions = [[3000, 1]]
+[[flow.static]]
+child = "p.near.burn"
+actions = [[2000, 2]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[4000, 3]]
+
+[[flow]]
+name = "chain_w0"
+about = "W = 0: q.burn(1000) static 4000 w0, then p.on_read static 3000 w0 (leftover not forwarded)"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":1000}", "static_ggas": 4000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 3000, "weight": 0}}', deposit = "" }
+[[flow.static]]
+child = "q.near.burn"
+actions = [[4000, 0]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[3000, 0]]
+
+[[flow]]
+name = "chain_s0"
+about = "q.burn(500) with static 0 and weight 0: a function call with no gas"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":500}", "static_ggas": 0, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_count", "args": "", "static_ggas": 3000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.burn"
+actions = [[0, 0]]
+[[flow.static]]
+child = "p.near.on_count"
+actions = [[3000, 1]]
+
+[[flow]]
+name = "ret0"
+about = "q.ret(0 bytes) static 3000 w0, then p.on_read (reads them) static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 0}", "static_ggas": 3000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.ret"
+actions = [[3000, 0]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "ret1000"
+about = "q.ret(1000 bytes) static 3000 w0, then p.on_read (reads them) static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 1000}", "static_ggas": 3000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.ret"
+actions = [[3000, 0]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "ret10000"
+about = "q.ret(10000 bytes) static 3000 w0, then p.on_read (reads them) static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 10000}", "static_ggas": 3000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.ret"
+actions = [[3000, 0]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "ret100000"
+about = "q.ret(100000 bytes) static 3000 w0, then p.on_read (reads them) static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 100000}", "static_ggas": 3000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.ret"
+actions = [[3000, 0]]
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "retc0"
+about = "q.ret(0 bytes), then p.on_count (does not read) static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 0}", "static_ggas": 3000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_count", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.ret"
+actions = [[3000, 0]]
+[[flow.static]]
+child = "p.near.on_count"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "retc10000"
+about = "q.ret(10000 bytes), then p.on_count (does not read) static 5000 w1"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "chain", args = '{"kids": [{"method": "ret", "args": "{\"bytes\": 10000}", "static_ggas": 3000, "weight": 0, "receiver": "q.near"}], "cb": {"method": "on_count", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q.near.ret"
+actions = [[3000, 0]]
+[[flow.static]]
+child = "p.near.on_count"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "send_named"
+about = "p.send(1 NEAR) to q.near"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "q.near", "yocto": "1000000000000000000000000"}', deposit = "" }
+
+[[flow]]
+name = "send_named_missing"
+about = "p.send(1 NEAR) to nobody.near"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "nobody.near", "yocto": "1000000000000000000000000"}', deposit = "" }
+
+[[flow]]
+name = "send_nimp"
+about = "p.send(1 NEAR) to aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "yocto": "1000000000000000000000000"}', deposit = "" }
+
+[[flow]]
+name = "send_nimp_new"
+about = "p.send(1 NEAR) to bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "yocto": "1000000000000000000000000"}', deposit = "" }
+
+[[flow]]
+name = "send_eth"
+about = "p.send(1 NEAR) to 0x1111111111111111111111111111111111111111"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "0x1111111111111111111111111111111111111111", "yocto": "1000000000000000000000000"}', deposit = "" }
+
+[[flow]]
+name = "send_eth_new"
+about = "p.send(1 NEAR) to 0x2222222222222222222222222222222222222222"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "0x2222222222222222222222222222222222222222", "yocto": "1000000000000000000000000"}', deposit = "" }
+
+[[flow]]
+name = "send_eth_new_cb"
+about = "p.send(1 NEAR) to 0x2222222222222222222222222222222222222222 with p.on_read (static 5000 w1)"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "0x2222222222222222222222222222222222222222", "yocto": "1000000000000000000000000", "cb": true, "cb_ggas": 5000}', deposit = "" }
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "send_named_missing_cb"
+about = "p.send(1 NEAR) to nobody.near with p.on_read (static 5000 w1)"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "p.near", method = "send", args = '{"to": "nobody.near", "yocto": "1000000000000000000000000", "cb": true, "cb_ggas": 5000}', deposit = "" }
+[[flow.static]]
+child = "p.near.on_read"
+actions = [[5000, 1]]
+
+[[flow]]
+name = "ft_call_keep"
+about = "ft.ft_transfer_call(q, 10, msg=keep)"
+grid = "standard"
+path = "keep"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "10", "msg": "keep"}', deposit = "1" }
+
+[[flow]]
+name = "ft_call_return"
+about = "ft.ft_transfer_call(q, 10, msg=return)"
+grid = "standard"
+path = "return"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "10", "msg": "return"}', deposit = "1" }
+
+[[flow]]
+name = "ft_call_over"
+about = "ft.ft_transfer_call(q, 10, msg=over)"
+grid = "standard"
+path = "over"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "10", "msg": "over"}', deposit = "1" }
+
+[[flow]]
+name = "ft_call_panic"
+about = "ft.ft_transfer_call(q, 10, msg=panic)"
+grid = "standard"
+path = "panic"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "10", "msg": "panic"}', deposit = "1" }
+
+[[flow]]
+name = "ft_call_burn20000"
+about = "ft.ft_transfer_call(q, 10, msg=burn:20000)"
+grid = "standard"
+path = "burn20000"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "10", "msg": "burn:20000"}', deposit = "1" }
+
+[[flow]]
+name = "ft_call_big2000"
+about = "ft.ft_transfer_call(q, 10, msg=big:2000)"
+grid = "standard"
+path = "big2000"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "10", "msg": "big:2000"}', deposit = "1" }
+
+[[flow]]
+name = "ft_transfer"
+about = "ft.ft_transfer(q, 10)"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "ft.near", method = "ft_transfer", args = '{"receiver_id": "q.near", "amount": "10"}', deposit = "1" }
+
+[[flow]]
+name = "ft_storage_new"
+about = "ft.storage_deposit(dave) by alice"
+grid = "standard"
+path = "new"
+path_for = ["ft.near.storage_deposit"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "storage_deposit", args = '{"account_id": "dave.near"}', deposit = "1250000000000000000000" }
+
+[[flow]]
+name = "ft_storage_again"
+about = "ft.storage_deposit(q) again: refund Transfer"
+grid = "standard"
+path = "again"
+path_for = ["ft.near.storage_deposit"]
+tx = { signer = "alice.near", receiver = "ft.near", method = "storage_deposit", args = '{"account_id": "q.near"}', deposit = "1250000000000000000000" }
+
+[[flow]]
+name = "wrap_deposit"
+about = "wrap.near_deposit(1 NEAR), registered"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "wrap.near", method = "near_deposit", args = '{}', deposit = "1000000000000000000000000" }
+
+[[flow]]
+name = "wrap_deposit_new"
+about = "wrap.near_deposit(1 NEAR) by unregistered dave: registers"
+grid = "standard"
+path = "new"
+path_for = ["wrap.near.near_deposit"]
+tx = { signer = "dave.near", receiver = "wrap.near", method = "near_deposit", args = '{}', deposit = "1000000000000000000000000" }
+
+[[flow]]
+name = "wrap_withdraw"
+about = "wrap.near_withdraw(0.1 NEAR)"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "wrap.near", method = "near_withdraw", args = '{"amount": "100000000000000000000000"}', deposit = "1" }
+
+[[flow]]
+name = "wrap_transfer"
+about = "wrap.ft_transfer(q, 1000)"
+grid = "standard"
+tx = { signer = "alice.near", receiver = "wrap.near", method = "ft_transfer", args = '{"receiver_id": "q.near", "amount": "1000"}', deposit = "1" }
+
+[[flow]]
+name = "wrap_call"
+about = "wrap.ft_transfer_call(q, 1000, keep)"
+grid = "standard"
+path = "keep"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "wrap.near", method = "ft_transfer_call", args = '{"receiver_id": "q.near", "amount": "1000", "msg": "keep"}', deposit = "1" }
+
+[[flow]]
+name = "wrap_batch_DT"
+about = "p.batch to wrap: [near_deposit+ft_transfer], one receipt"
+grid = "standard"
+path = "keep"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "p.near", method = "batch", args = '{"receiver": "wrap.near", "calls": [{"method": "near_deposit", "args": "{}", "static_ggas": 5000, "weight": 1, "deposit": "1000"}, {"method": "ft_transfer", "args": "{\"receiver_id\": \"q.near\", \"amount\": \"1000\"}", "static_ggas": 5000, "weight": 1, "deposit": "1"}]}', deposit = "" }
+[[flow.static]]
+child = "wrap.near.near_deposit+ft_transfer"
+actions = [[5000, 1], [5000, 1]]
+
+[[flow]]
+name = "wrap_batch_DC"
+about = "p.batch to wrap: [near_deposit+ft_transfer_call], one receipt"
+grid = "standard"
+path = "keep"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "p.near", method = "batch", args = '{"receiver": "wrap.near", "calls": [{"method": "near_deposit", "args": "{}", "static_ggas": 5000, "weight": 1, "deposit": "1000"}, {"method": "ft_transfer_call", "args": "{\"receiver_id\": \"q.near\", \"amount\": \"1000\", \"msg\": \"keep\"}", "static_ggas": 30000, "weight": 1, "deposit": "1"}]}', deposit = "" }
+[[flow.static]]
+child = "wrap.near.near_deposit+ft_transfer_call"
+actions = [[5000, 1], [30000, 1]]
+
+[[flow]]
+name = "wrap_batch_DST"
+about = "p.batch to wrap: [near_deposit+storage_deposit+ft_transfer], one receipt"
+grid = "standard"
+path = "keep"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "p.near", method = "batch", args = '{"receiver": "wrap.near", "calls": [{"method": "near_deposit", "args": "{}", "static_ggas": 5000, "weight": 1, "deposit": "1000"}, {"method": "storage_deposit", "args": "{\"account_id\": \"dave.near\"}", "static_ggas": 5000, "weight": 1, "deposit": "1250000000000000000000"}, {"method": "ft_transfer", "args": "{\"receiver_id\": \"q.near\", \"amount\": \"1000\"}", "static_ggas": 5000, "weight": 1, "deposit": "1"}]}', deposit = "" }
+[[flow.static]]
+child = "wrap.near.near_deposit+storage_deposit+ft_transfer"
+actions = [[5000, 1], [5000, 1], [5000, 1]]
+
+[[flow]]
+name = "wrap_batch_DSC"
+about = "p.batch to wrap: [near_deposit+storage_deposit+ft_transfer_call], one receipt"
+grid = "standard"
+path = "keep"
+path_for = ["q.near.ft_on_transfer"]
+tx = { signer = "alice.near", receiver = "p.near", method = "batch", args = '{"receiver": "wrap.near", "calls": [{"method": "near_deposit", "args": "{}", "static_ggas": 5000, "weight": 1, "deposit": "1000"}, {"method": "storage_deposit", "args": "{\"account_id\": \"dave.near\"}", "static_ggas": 5000, "weight": 1, "deposit": "1250000000000000000000"}, {"method": "ft_transfer_call", "args": "{\"receiver_id\": \"q.near\", \"amount\": \"1000\", \"msg\": \"keep\"}", "static_ggas": 30000, "weight": 1, "deposit": "1"}]}', deposit = "" }
+[[flow.static]]
+child = "wrap.near.near_deposit+storage_deposit+ft_transfer_call"
+actions = [[5000, 1], [5000, 1], [30000, 1]]

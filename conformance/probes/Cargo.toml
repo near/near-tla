@@ -1,0 +1,18 @@
+# Probe contracts for the conformance suite: small, generic near-sdk
+# contracts whose receipts the suite compares with the model. Build with
+# ./build.sh (wasm32-unknown-unknown); the wasms and their sha256 are in res/.
+[workspace]
+resolver = "2"
+members = ["probe", "ft", "wrap"]
+
+[workspace.dependencies]
+near-sdk = { version = "=5.29.1" }
+near-contract-standards = { version = "=5.29.1" }
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

@@ -1,0 +1,5 @@
+[toolchain]
+# The probes' own toolchain (the sim runs nearcore 2.14.0-rc.5, which is
+# tested with contracts built by 1.95.0; see build.sh for the wasm features).
+channel = "1.95.0"
+targets = ["wasm32-unknown-unknown"]
