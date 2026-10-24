@@ -140,7 +140,8 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   registrations, checked after every receipt with the 770-byte zero-balance exemption.
 - CreateAccount and DeleteAccount (SEMANTICS A6, A7, `examples/account-lifecycle`): the
   creation rules, deletion with its payout, receipts to a deleted account, and an account
-  created again. Instant receipts and DeployContract are still open.
+  created again; a lone DeleteAccount created by a receipt runs right after it (instant
+  receipts, S5). DeployContract is still open.
 
 ### Later
 
@@ -155,7 +156,7 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   bytes by hand.
 - **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:** the
   function-call AddKey per-byte fee; access-key allowances and transaction validity (nonces);
-  instant receipts, DeployContract, deterministic-account state init, global contracts and
+  DeployContract, deterministic-account state init, global contracts and
   gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 

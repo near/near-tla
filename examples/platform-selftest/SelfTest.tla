@@ -191,6 +191,18 @@ H(r) ==
     [] r.m = "mkacct" ->    \* CreateAccount a.to with a.amt NEAR (a factory), then self.cb
          [O |-> Outcome({CreateAcctRcpt(nid, r.tx, a.to, r.to, G0, a.amt, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
+    [] r.m = "bye" ->       \* c closes: DeleteAccount(c -> u), instant, and d.relay(c.probe)
+         [O |-> Outcome({DeleteAcctRcpt(nid, r.tx, r.to, G0, U, 0),
+                         Rcpt(nid + 1, r.tx, D, r.to, "relay", G("", "", r.to, 0, 0, "", ""), 0, r.to, 0)},
+                        {}, RVal(0), 0, 2), s |-> {}]
+    [] r.m = "byeb" ->      \* c closes: DeleteAccount(c -> d), and d.seebal
+         [O |-> Outcome({DeleteAcctRcpt(nid, r.tx, r.to, G0, D, 0),
+                         Rcpt(nid + 1, r.tx, D, r.to, "seebal", G0, 0, r.to, 0)},
+                        {}, RVal(0), 0, 2), s |-> {}]
+    [] r.m = "relay" ->     \* calls a.to.probe
+         [O |-> Outcome({Rcpt(nid, r.tx, a.to, r.to, "probe", G0, 0, r.to, 0)}, {}, RVal(0), 0, 1), s |-> {}]
+    [] r.m = "seebal" ->    \* records the receiver's balance when it runs
+         [O |-> Out0, s |-> {Sn(r, "bal", near[r.to])}]
     [] r.m = "dostake" ->   \* Stake(a.amt) on v, then self.cb
          [O |-> Outcome({Rcpt(nid, r.tx, V, r.to, STAKE, [x1 |-> a.amt], 0, r.to, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), 0, 2), s |-> {}]
@@ -313,6 +325,11 @@ RunBundle(r) ==
     /\ ran' = IF OkWithKeys(r, acts, Out0) THEN ran \cup {<<r.tx, r.to, r.m>>} ELSE ran
     /\ UNCHANGED <<tk, scn, ntx, acc, seen>>
 
+\* An ACCOUNT receipt; an instant one is recorded in seen ("inst").
+RunAcct(r) == /\ ExecAcctK(r)
+              /\ seen' = IF IsInstant(r) THEN seen \cup {Sn(r, "inst", 1)} ELSE seen
+              /\ UNCHANGED <<tk, scn, ntx, acc, ran>>
+
 RunTok(r) == \E ch \in TokChoices(r) : TokStep(r, TokHandle(r, ch)) /\ UNCHANGED <<keyVars, mine>>
 RunKey(r) == ExecKeyAct(r, Ar(r).key, PermOf(Ar(r).key)) /\ UNCHANGED <<tk, mine>>
 
@@ -320,7 +337,7 @@ Run == \E r \in Runnable :
          IF IsBuiltin(r) THEN ExecBuiltinK(r) /\ UNCHANGED <<tk, mine>>
          ELSE IF IsKeyRcpt(r) THEN RunKey(r)
          ELSE IF IsDeleg(r) THEN ExecDelegate(r) /\ UNCHANGED <<tk, mine>>
-         ELSE IF IsAcctRcpt(r) THEN ExecAcctK(r) /\ UNCHANGED <<tk, mine>>
+         ELSE IF IsAcctRcpt(r) THEN RunAcct(r)
          ELSE IF IsTokRcpt(r) THEN RunTok(r)
          ELSE IF r.m = "kbundle" THEN RunBundle(r)
          ELSE RunC(r)
@@ -535,6 +552,12 @@ Script(s) ==
                                     Ac(EA, EA, FALSE, 0, U, <<>>),
                                     Tx(C, U, "send", G("", "", EA, 1, 0, "", ""), 0),    \* 0xa again
                                     Ans(EA, 2, 5) >>
+    \* Instant receipts.
+    [] s = "instant_close"    -> << Tx(C, U, "bye", G0, 0) >>
+    [] s = "instant_payout"   -> << Tx(C, U, "byeb", G0, 0) >>
+    [] s = "instant_deleg"    -> << Dl(U, "ku", D, "k0", 1, NoExpiry, D, ACCT, 0) >>
+    [] s = "instant_deleg_local" -> << Dl(D, "k0", D, "k0", 1, NoExpiry, D, ACCT, 0) >>
+    [] s = "instant_tx"       -> << Ac(W, W, FALSE, 0, U, <<>>) >>
     [] s = "del_large"        -> << Ac(W, W, FALSE, 0, U, <<>>), Ac(V, V, FALSE, 0, U, <<>>) >>
     \* Without UniversalOn (protocol < 87) 0u1 is a named top-level id.
     [] s = "universal_off"    -> << Ac(UA, W, TRUE, 2, "", <<AddK("k0")>>),             \* w creates it
@@ -564,7 +587,9 @@ MkTx(e, id, t) ==
        ELSE WithGas(r1, e.gas)
 CanSign(a, k, r) == (a \in KeyAccts) => KeyCanSign(a, k, r)
 \* A delegate entry's signed delegate (the user's signature) and its inner call.
-DInner(e) == LET c == Rcpt(0, 0, e.a.ito, e.to, e.a.im, G0, e.dep, e.to, 0) IN
+\* An inner ACCT is [DeleteAccount(user -> u)].
+DInner(e) == LET c == IF e.a.im = ACCT THEN DeleteAcctRcpt(0, 0, e.to, G0, U, 0)
+                     ELSE Rcpt(0, 0, e.a.ito, e.to, e.a.im, G0, e.dep, e.to, 0) IN
              IF GasMode = "gas" /\ IsCall(c) THEN WithGas(c, e.gas) ELSE c
 SD(e) == SignedDelegate(e.to, e.a.k, e.a.n, e.a.mbh, DInner(e))
 
@@ -963,6 +988,22 @@ Expect(s) ==
          \* the key it added) and its delete succeed.  actions.rs:880-887, :918-924
          created = {UA} /\ deleted = {UA} /\ DOMAIN keys[UA] = {} /\ near[UA] = 0 /\ near[W] = 10
          /\ acc = <<TRUE, TRUE, TRUE, TRUE>> /\ <<3, C, "ping">> \in ran /\ burnt = 0
+    \* Instant receipts (docs/SEMANTICS.md S5): a lone DeleteAccount made by a receipt runs
+    \* right after it.  receipt.rs:468-491, lib.rs:1222-1224, :2747-2775
+    [] s = "instant_close" ->     \* c's delete runs before d.relay, so c.probe finds c deleted
+         \* (no "inst" clause: selftest_instant_off must fail on the probe alone)
+         deleted = {C} /\ near[U] = 15 /\ <<1, D, "relay">> \in ran /\ <<1, C, "probe">> \notin ran
+    [] s = "instant_payout" ->    \* the payout is a later refund receipt, not instant: d.seebal
+         \* may run before or after it (both are reachable: selftest_payout_*)
+         deleted = {C} /\ near[D] = 5 /\ S1("inst", 1) \in seen
+         /\ (S1("bal", 0) \in seen \/ S1("bal", 5) \in seen)
+    [] s = "instant_deleg" ->     \* a delegate's inner [DeleteAccount] is instant.  Sim:
+         \* lifecycle.rs instant_delete_via_delegate
+         deleted = {D} /\ S1("inst", 1) \in seen /\ DOMAIN keys[D] = {}
+    [] s = "instant_deleg_local" -> \* also when the relayer is the user (a local creator)
+         deleted = {D} /\ S1("inst", 1) \in seen
+    [] s = "instant_tx" ->        \* a transaction's own [DeleteAccount] is not instant
+         deleted = {W} /\ seen = {} /\ near[U] = 20
     [] s = "del_large" ->         \* storage minus code over 10,000 bytes: DeleteAccountWithLargeState
          \* actions.rs:342-369, account.rs:248
          deleted = {V} /\ stor[W] = 10001 /\ stor[V] = 0 /\ near[U] = 20 /\ near[W] = 10
@@ -978,6 +1019,10 @@ Check == Done => Expect(scn)
 \* each is violated (both outcomes are reachable); runs.toml expects that.
 CreatorNeverCommits  == Done => <<1, C, "spawn0">> \notin ran
 CreatorAlwaysCommits == Done => <<1, C, "spawn0">> \in ran
+\* instant_payout: whether d.seebal ran before the payout to d (selftest_payout_*: both are
+\* reachable, the payout being an ordinary receipt).
+PayoutBeforeSeen == Done => S1("bal", 5) \in seen
+PayoutAfterSeen  == Done => S1("bal", 0) \in seen
 NoNegDeposit == \A x \in rq \cup post : x.dep >= 0
 Sane  == /\ NearConserved(Total0(scn)) /\ NoOrphans /\ NoNegDeposit /\ StorageCovered
          /\ TokSupplyOK /\ TokTypeOK

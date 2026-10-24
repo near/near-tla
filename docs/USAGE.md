@@ -353,6 +353,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `StoragePerByte` | `FALSE` | the model tracks storage in bytes: `TRUE` replaces the fixed `StorageFloor` with `stor` priced per byte ([section 15](#15-storage-staking-per-byte)) |
 | `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
+| `InstantFirst` | `TRUE` | never, unless you want the over-approximation without instant receipts ([S5](SEMANTICS.md#s5-instant-receipts)): `FALSE` lets other receipts, transactions and blocks run between a receipt and the lone DeleteAccount it creates |
 | `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
 | `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
 | `CodeSize` | 0 bytes for every account | with `StoragePerByte` and DeleteAccount: the code bytes in each contract's `StorageInit`, which the 10,000-byte delete limit leaves out |
@@ -820,7 +821,8 @@ Run == \E r \in Runnable : (LocalOn => LocalPriorityOK(r)) /\ Step(r)
 ```
 
 `LocalPriorityOK(r)` forbids running a non-local receipt on an account while a local receipt
-on that account is pending.
+on that account is pending. An instant receipt ([section 16](#16-creating-and-deleting-accounts))
+is exempt: it runs before local ones.
 
 - **With the rule**, the model assumes the receiving chunk has room. When the chunk is at its
   compute or storage-proof limit, nearcore puts the local receipt at the back of the delayed
@@ -1144,8 +1146,24 @@ RunAcct(r) == /\ ExecAcct(r)
 
 An account that a model creates must be in `Accounts` (with balance 0 in the initial state)
 and outside `Exists`. Without `StoragePerByte` the large-state refusal never happens
-(N-delete-large); the instant-receipt rule (a lone DeleteAccount created by a receipt runs
-right after it) is not modelled (N-instant).
+(N-delete-large).
+
+**Instant deletes** ([S5](SEMANTICS.md#s5-instant-receipts)). A lone `DeleteAcctRcpt` that a
+handler emits in its outcome's ready set (no deposit, no key actions), or a delegate's inner
+one, runs right after the receipt that made it: `Commit` tags it (`inst`), and while it is
+pending (`InstantPending`) only tagged receipts run and no transaction, block or epoch step is
+enabled. The library's own steps are gated; conjoin `~InstantPending` to your own steps that
+change state outside receipts (a scripted action, a contract-side clock):
+
+```tla
+Tick == ~InstantPending /\ round' = round + 1 /\ UNCHANGED platformVars
+```
+
+Forgetting it is sound: your step may then run between a creator and its delete, which only
+adds behaviours. The beneficiary's payout is not instant, nor is a delete that is a
+transaction's first receipt, nor `[Transfer, DeleteAccount]`. `InstantFirst <- FALSE` turns
+the rule off, an over-approximation (N-instant): a self-closing contract then shows a
+spurious use-after-close (`examples/account-lifecycle/instant`).
 
 ## Calibrating
 
@@ -1557,5 +1575,5 @@ All examples are toy contracts written for this repo.
   | `joint-promise` | a joint callback's results: one per input, in order, failing independently |
   | `yield-resume` | resume returns TRUE until the callback runs (the double-resume trap); a timeout is Failed |
   | `yield-clock` | timeouts fire late, never early; the clock bound (with the gap after the last step: `final-observation/`) and `TickAnytime` |
-  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt |
+  | `account-lifecycle` | a Transfer to an account deleted meanwhile is refunded to the sender: an escrow without a callback strands it, one with a callback restores the claim; a refund to a deleted account is burnt; `instant/`: a self-closing contract relies on its delete being instant |
   | `storage-stake` | per-byte storage: a record written in a callback after the payout fails for storage, which the fixed floor misses; recording in the paying receipt passes |

@@ -377,6 +377,22 @@ Each entry ends with its migration.
 
 ### Added
 
+- **Instant receipts** (SEMANTICS S5; docs/USAGE.md section 16). A lone DeleteAccount
+  (`IsInstantShape`) that a receipt creates, in its outcome's ready set or as a delegate's
+  inner receipt, is tagged `inst` (`InstantTag`, by `Commit` and `NearKeys.ExecDelegate`).
+  While one is pending (`InstantPending`), `Runnable` holds only tagged receipts (no yield
+  timeout either; the earlier set is `RunnableAll`), `SubmitAs`, `BlockTick` and `EpochTick`
+  are disabled, and `LocalPriorityOK` never holds a tagged receipt back. Models conjoin
+  `~InstantPending` to their own steps outside receipts; forgetting it only adds
+  interleavings. `InstantFirst` (overridable, default `TRUE`) switches it off, an
+  over-approximation (N-instant, rewritten). The payout of a delete stays a later receipt.
+  Models that create no such receipt are unchanged: every example run kept its verdict and
+  its generated, distinct and depth counts (all 116 runs compared at one worker). New
+  `platform-selftest` runs `selftest_instant` (a contract's self-delete, a delegate's inner delete relayed by another
+  account and by the user itself, a transaction's delete that is not instant),
+  `selftest_instant_off` and `selftest_payout_before` / `_after` (the payout runs in either
+  order); new example `account-lifecycle/instant` (`instant_on_passes`,
+  `instant_off_spurious`, with witnesses and mutants).
 - **CreateAccount and DeleteAccount** (SEMANTICS A6, A7; docs/USAGE.md section 16). A new
   receipt kind, ACCOUNT (`ACCT`, `IsAcctRcpt`), holds `[CreateAccount]? [Transfer]? [key
   actions]* [DeleteAccount]?` in an optional field `ac`: constructors `CreateAcctRcpt`,
@@ -406,7 +422,7 @@ Each entry ends with its migration.
   (`escrow_pays_deleted` must fail, `escrow_pays_cb` passes, `refund_to_deleted_burns` must
   fail; with witnesses and mutants). SEMANTICS: N-create-account and N-delete-account are
   gone; new N-acct-ids, N-delete-large and N-wipe; N-refund-stuck, N-storage, N-universal,
-  N-gas-keys and N-delegate-rekey updated; N-instant stays open.
+  N-gas-keys and N-delegate-rekey updated.
 - **`tools/run.py --anti-vacuity`: witnesses and mutants.** Two new tables in `runs.toml`.
   A `[[witness]]` is a situation that must be reachable: the runner checks `Wit_<id>` alone
   and requires a violation; a pass fails as `vacuous: witness <id> never reached`

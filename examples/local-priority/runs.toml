@@ -79,7 +79,7 @@ runs = ["local_on"]
 id = "no_local_priority"
 file = "NearAsync.tla"
 library = true
-find = 'LocalPriorityOK(r) == ~r.loc => ~\E y \in rq : y.loc /\ y.to = r.to'
+find = 'LocalPriorityOK(r) == IsInstant(r) \/ (~r.loc => ~\E y \in rq : y.loc /\ y.to = r.to)'
 replace = 'LocalPriorityOK(r) == TRUE'
 class = "platform rule dropped"
 runs = ["local_on"]

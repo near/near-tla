@@ -766,6 +766,9 @@ Each rule has four fields:
     which are keyed by account id. While the account is deleted they fail when they run
     (`AccountDoesNotExist`); once it is created again they run against the **new** account.
 
+  A receipt made of this one action, created by a receipt (a contract deleting itself, a
+  delegate's inner action), is instant: it runs right after its creator (S5).
+
   Receipts that reach a deleted account: a call, a key action and a Stake fail with
   `AccountDoesNotExist`; a Transfer fails and its deposit is refunded to its sender, unless
   the id is implicit, in which case the Transfer creates it again (A3, a NEAR-implicit one
@@ -981,7 +984,7 @@ Each rule has four fields:
 
   The rule covers only a transaction's **first** receipt. Receipts created while executing a
   receipt (self-calls, callbacks, refunds) are never local: they go out through
-  `forward_or_buffer_receipt`, except *instant* receipts (N-instant).
+  `forward_or_buffer_receipt`, except *instant* receipts, which run before all of them (S5).
 - **nearcore:** `runtime/runtime/src/lib.rs:2317-2324` (`if receipt.receiver_id() == signer_id
   { local_receipts.push_back(receipt) } else { forward_or_buffer_receipt }`), `:2787-2826`
   (`process_receipts`: local `:2800`, then delayed `:2808`, then incoming `:2816`, then yield
@@ -1157,6 +1160,41 @@ Each rule has four fields:
   block, runs a block before them. This is the sim's own `tests/order.rs:400-433`
   (near-contract-sim `29e9090`) on the probe contracts, with no fault injected. Missed
   chunks: nearcore reading only (the sim has none).
+
+### S5. Instant receipts
+
+- **Rule:** A receipt that holds a single `DeleteAccount` and no input data, created while
+  another receipt runs, is **instant**: it is not sent out, but runs right after the receipt
+  that created it, in the same chunk, whatever the chunk's gas limit. No other receipt runs in
+  between, local ones included, and no transaction, block or epoch can come between: the
+  chunk's transactions were converted before its receipts ran. This holds for local, delayed
+  and incoming creators alike, and for a delegate's inner receipt. Not instant: a
+  transaction's own first receipt (it is converted, not created by a receipt); any receipt
+  with another action, such as `[Transfer, DeleteAccount]` or `[CreateAccount, ...,
+  DeleteAccount]`; a `DeleteAccount` waiting on a callback's inputs; and the delete's payout
+  to the beneficiary, an ordinary refund receipt that runs later (A7). A `PromiseYield`
+  receipt is instant too; processing it only stores the yield.
+- **nearcore:** `core/primitives/src/receipt.rs:468-491` (`is_instant_receipt`),
+  `runtime/runtime/src/lib.rs:1222-1234` (instant receipts are queued, not forwarded),
+  `:2747-2775` (`process_receipt_and_instant_receipts`, called for local, delayed and incoming
+  receipts at `:2538`, `:2642`, `:2727`), `runtime/runtime/src/actions.rs:500-512` (the
+  delegate's inner receipt is a new receipt).
+- **Model:** `Commit` (on the outcome's ready children) and `NearKeys.ExecDelegate` tag a
+  receipt of that shape (`IsInstantShape`: an ACCOUNT receipt with only a DeleteAccount, no
+  deposit) with the field `inst` (`InstantTag`). While one is pending (`InstantPending`),
+  `Runnable` holds only tagged receipts (no timeout either), and `SubmitAs`, `BlockTick` and
+  `EpochTick` are disabled; `LocalPriorityOK` never holds a tagged receipt back. A model
+  conjoins `~InstantPending` to its own steps that change state outside receipts; forgetting
+  it only adds interleavings. Tagged receipts run in any order among themselves (nearcore:
+  creation order). `InstantFirst` (overridable, default `TRUE`) is the switch;
+  `InstantFirst <- FALSE` is the earlier behaviour, an over-approximation (N-instant).
+- **Validated:** sim (`conformance/tests/lifecycle.rs`, `instant_delete_via_delegate`: the inner
+  `[DeleteAccount]` runs right after the Delegate receipt, in the same block, before marks
+  submitted after it, also when the relayer is the user itself, a local creator; the payout
+  runs in a later block; an inner Transfer, the control, waits a block).
+  `examples/platform-selftest` (`selftest_instant`, `selftest_instant_off`,
+  `selftest_payout_*`), `examples/account-lifecycle/instant`. A contract's own self-delete
+  (not through a delegate): nearcore reading; the probe contract cannot emit one.
 
 ---
 
@@ -1477,14 +1515,14 @@ against the current module code; some may be fixed in the modules later.
   With it **ON**, it does not: see N-local-congested. A finding about latency bounds needs the
   real scheduler. Congestion can also reject new transactions, which the model treats as "not
   submitted".
-- **N-instant. Instant receipts.** A receipt holding a single `DeleteAccount` with no inputs
-  runs immediately after its creator in the same chunk, whatever the chunk's load
-  (`core/primitives/src/receipt.rs:467-491`, `runtime/runtime/src/lib.rs:1222-1224`,
-  `:2748-2775`), also as a delegate's inner receipt (sim: `conformance/tests/lifecycle.rs`,
-  `instant_delete_via_delegate`). The model lets other receipts interleave between a receipt
-  and the `DeleteAcctRcpt` it creates (A7). Still open. A `PromiseYield` receipt is instant too, but processing it only stores it
-  (`lib.rs:1549-1553`); the model puts the yield in `post` at its creator's commit, which is
-  the same.
+- **N-instant. Instant receipts off.** With `InstantFirst <- FALSE` an instant receipt (S5)
+  is an ordinary one: other receipts, transactions and blocks may come between a receipt and
+  the lone `DeleteAccount` it creates, which nearcore never allows. A contract that relies on
+  its self-delete being immediate then shows spurious counterexamples
+  (`examples/account-lifecycle/instant`, `instant_off_spurious`). With the default the rule is
+  exact, except that tagged receipts run in any order among themselves. A `PromiseYield`
+  receipt is instant too, but processing it only stores it (`lib.rs:1549-1553`); the model puts
+  the yield in `post` at its creator's commit, which is the same.
 - **N-local-off.** With the local-priority switch (S1) off, a self-signed first receipt may run
   after receipts that nearcore, on an uncongested chunk, would run later. Such orders are
   reachable under congestion (S1), so a violation found this way is not a false positive unless

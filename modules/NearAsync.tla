@@ -108,12 +108,12 @@
 (*  out-of-gas is recorded in `oog`.                                       *)
 (*                                                                         *)
 (* Accounts are created and deleted by ACCOUNT receipts (CreateAccount,    *)
-(* DeleteAccount; ExecAcct): see "Account lifecycle" below.                *)
+(* DeleteAccount; ExecAcct): see "Account lifecycle" below.  A lone       *)
+(* DeleteAccount created by a receipt is instant (InstantFirst, S5).       *)
 (*                                                                         *)
 (* Not modelled: congestion (a local receipt that does not fit the chunk's *)
-(* compute limit is delayed, lib.rs:2513-2521), instant receipts           *)
-(* (core/primitives/src/receipt.rs:468-485), gas price and gas refunds in  *)
-(* NEAR, DeployContract (code is static, see Contracts), one receipt       *)
+(* compute limit is delayed, lib.rs:2513-2521), gas price and gas refunds  *)
+(* in NEAR, DeployContract (code is static, see Contracts), one receipt    *)
 (* feeding several callbacks (cb is one id).                               *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
@@ -470,17 +470,49 @@ TimedOut(p) == /\ IsYield(p)
                /\ ~\E d \in data : d.to = p.id
                /\ (blk >= p.ydl \/ blk >= MaxBlk)
 
+\* Instant receipts (docs/SEMANTICS.md S5).  A receipt holding a single
+\* DeleteAccount and no inputs, created by a receipt, runs right after its
+\* creator in the same chunk, whatever the chunk's load, before any other
+\* receipt, local ones included (core/primitives/src/receipt.rs:468-491;
+\* runtime/runtime/src/lib.rs:1222-1224, :2747-2775, called for local,
+\* delayed and incoming receipts alike at :2538, :2642, :2727).  So does a
+\* delegate's inner receipt of that shape (sim: conformance/tests/
+\* lifecycle.rs, instant_delete_via_delegate, also with a local creator).
+\* A transaction's own first receipt is not instant, nor is the delete's
+\* payout (a refund receipt), nor a DeleteAccount waiting on a callback's
+\* inputs.  (A yield receipt is instant too; the model puts the yield in
+\* post at its creator's commit, which is the same.)
+\* Commit and NearKeys.ExecDelegate tag such a receipt with the field inst
+\* (InstantTag).  While one is pending (InstantPending), only tagged
+\* receipts run (Runnable), and SubmitAs, BlockTick and EpochTick are
+\* disabled: no transaction, block or epoch can come between a creator and
+\* its delete.  A model conjoins ~InstantPending to its own steps that
+\* change state outside receipts (a contract-side tick, a scripted step);
+\* one that forgets only allows more interleavings.  Tagged receipts run in
+\* any order among themselves (nearcore: creation order).
+\* InstantFirst <- FALSE: no receipt is instant (the earlier behaviour, an
+\* over-approximation: N-instant).
+InstantFirst == TRUE
+IsInstantShape(c) ==
+    /\ IsAcctRcpt(c)
+    /\ ~c.ac.mk /\ c.ac.bnf # "" /\ c.ac.ka = <<>> /\ c.dep = 0
+InstantTag(c) == IF InstantFirst /\ IsInstantShape(c) THEN [inst |-> TRUE] @@ c ELSE c
+IsInstant(r) == "inst" \in DOMAIN r
+InstantPending == InstantFirst /\ \E y \in rq : IsInstant(y)
+
 \* Receipts that can run now: ready ones; postponed ones whose data arrived
 \* (a yield with its resume payload); joint callbacks whose inputs all
 \* arrived, with rs = their results in order and res = JointMark; timed-out
 \* yields, with Failed.  (No data is ever addressed to a joint callback's own
-\* id: its data ids are fresh.)
-Runnable ==
+\* id: its data ids are fresh.)  While an instant receipt is pending, only
+\* instant receipts (no timeout either).
+RunnableAll ==
     rq \cup { [pd[1] EXCEPT !.res = [ok |-> pd[2].ok, v |-> pd[2].v, sz |-> pd[2].sz, len |-> pd[2].len]] :
                 pd \in {xy \in post \X data : xy[2].to = xy[1].id} }
        \cup { [[rs |-> JointRes(p)] @@ p EXCEPT !.res = JointMark] :
                 p \in {q \in post : IsJoint(q) /\ Arrived(q)} }
        \cup { [p EXCEPT !.res = FailedRes] : p \in {q \in post : TimedOut(q)} }
+Runnable == IF InstantPending THEN {y \in rq : IsInstant(y)} ELSE RunnableAll
 
 \* The promise results as the handler sees them: promise_results_count()
 \* (runtime/near-vm-runner/src/logic/host.rs:4583-4593) and promise_result(i - 1)
@@ -871,7 +903,7 @@ Label == IF fails > 0 THEN "forced" ELSE IF oog # {} THEN "caller-gas" ELSE "no-
 ----------------------------------------------------------------------------
 \* Commit: platform part.  The contract conjoins its own state update.
 Commit(r, O) ==
-    /\ rq'   = RemR(r) \cup Give(r, O, O.ready)
+    /\ rq'   = RemR(r) \cup {InstantTag(c) : c \in Give(r, O, O.ready)}
     /\ post' = RemP(r) \cup Give(r, O, O.post)
     /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
                      \cup ResumeData(r, O)
@@ -905,7 +937,7 @@ FailOOG(r)    == FailL(r, "oog")
 \* children (fresh ids, so no other receipt equals one), the failure none.
 \* So Ok must come after Exec in the same action; written as membership in
 \* rq' / post', it is an error (not an assignment) if it comes first.
-Committed(r, O) == \E c \in Kids(O) : Alloc(r, O, c) \in rq' \cup post'
+Committed(r, O) == \E c \in Kids(O) : InstantTag(Alloc(r, O, c)) \in rq' \cup post'
 Ok(r, O) ==
     LET v == Verdict(r, O) IN
     IF v = "either" THEN Committed(r, O) ELSE v = "ok"
@@ -1186,6 +1218,7 @@ DeletesAcct(r) == r.to \in deleted' \ deleted
 \* (nearcore returns unstaked funds once the stake leaves the validator set,
 \* a few epochs later).
 EpochTick ==
+    /\ ~InstantPending
     /\ epoch < MaxEpoch
     /\ \E rw \in 0..(IF locked > 0 THEN MaxReward ELSE 0) :
          LET newLocked == IF proposal < locked THEN proposal ELSE locked
@@ -1203,6 +1236,7 @@ EpochTick ==
 \* TickAnytime = FALSE a block passes only while some yield's deadline is
 \* ahead.  Independent of EpochTick (env::epoch_height(), :847).
 BlockTick ==
+    /\ ~InstantPending
     /\ blk < MaxBlk
     /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
     /\ blk' = blk + 1
@@ -1230,6 +1264,7 @@ CanSubmit(r, a) ==
 \* (prepaid gas in r.g, see WithGas).  The signer pays the deposit now.  The
 \* receipt is local iff signer = receiver (lib.rs:2316-2324).
 SubmitAs(r, a, k) ==
+    /\ ~InstantPending
     /\ CanSubmit(r, a)
     /\ rq'    = rq \cup {[r EXCEPT !.loc = (a = r.to)]}
     /\ near'  = [near EXCEPT ![a] = @ - r.dep]
@@ -1252,8 +1287,11 @@ Submit(r) == SubmitAs(r, r.fr, DefaultKey)
 \* nearcore's order is chunk-wide (all local receipts first, for every
 \* account); this rule only orders receipts of the same account, which
 \* allows more orders than nearcore does.
+\* An instant receipt (S5) precedes local ones: it runs right after its
+\* creator, before the chunk's other receipts whatever their kind, so
+\* LocalPriorityOK never holds it back.
 \* Opt-in: conjoin LocalPriorityOK(r) to the receipt step, or draw r from Schedulable.
-LocalPriorityOK(r) == ~r.loc => ~\E y \in rq : y.loc /\ y.to = r.to
+LocalPriorityOK(r) == IsInstant(r) \/ (~r.loc => ~\E y \in rq : y.loc /\ y.to = r.to)
 Schedulable == {r \in Runnable : LocalPriorityOK(r)}
 
 TxBusy(t) == \E x \in rq \cup post : x.tx = t

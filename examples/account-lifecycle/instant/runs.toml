@@ -1,0 +1,111 @@
+# A self-deleting contract relies on the delete being instant.  See Closer.tla.
+#
+#   python3 tools/run.py examples/account-lifecycle/instant
+
+spec = "Closer"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+invariants = ["NoUseAfterClose", "OwnerCloses", "Sane"]
+tags = ["semantics:instant-receipts"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"k"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+Contracts = "KCode"
+GasMode = '"fault"'
+GasCall = "NoTable"
+GasBurn = "NoTable"
+LogOn = "FALSE"
+
+# The library's rule: close's delete runs before the uses in flight, which then fail.
+[[run]]
+name = "instant_on_passes"
+expect = "pass"
+
+# Without the rule a use in flight runs between close and its delete: a false positive.
+[[run]]
+name = "instant_off_spurious"
+expect = "violation"
+invariant = "NoUseAfterClose"
+[run.constants]
+InstantFirst = "FALSE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/account-lifecycle/instant --anti-vacuity ----
+
+# The situation: a use in flight to K when close commits.
+[[witness]]
+id = "use_in_flight_at_close"
+expr = '~(closed /\ \E r \in rq : r.m = "use")'
+runs = ["instant_on_passes"]
+
+# The instant delete pending, with a use waiting behind it.
+[[witness]]
+id = "instant_pending_use_waits"
+expr = '~(InstantPending /\ \E r \in rq : r.m = "use")'
+runs = ["instant_on_passes"]
+
+# Such a use then fails on the deleted account.
+[[witness]]
+id = "use_on_deleted"
+expr = '~(\E r \in Runnable : r.m = "use" /\ K \in deleted)'
+runs = ["instant_on_passes"]
+
+# A use commits before close (the counter counts).
+[[witness]]
+id = "use_counts"
+expr = '~(uses > 0)'
+runs = ["instant_on_passes"]
+
+# U's close is refused.
+[[witness]]
+id = "close_by_other"
+expr = '~(\E r \in Runnable : r.m = "close" /\ r.fr = U)'
+runs = ["instant_on_passes"]
+
+[[mutant]]
+id = "no_owner_check"
+file = "Closer.tla"
+find = 'ELSE IF r.fr # O THEN OErr(Out0, "only the owner closes")'
+replace = 'ELSE IF FALSE THEN OErr(Out0, "only the owner closes")'
+class = "removed precondition"
+killed_by = ["OwnerCloses"]
+runs = ["instant_on_passes"]
+
+# A Transfer in the delete's receipt: [Transfer, DeleteAccount] is not instant.
+[[mutant]]
+id = "delete_not_instant_shape"
+file = "Closer.tla"
+find = 'Outcome({DeleteAcctRcpt(nid, r.tx, K, Arg(0), B, 0)}, {}, RVal(0), 0, 1)'
+replace = 'Outcome({AcctRcpt(nid, r.tx, K, K, Arg(0), 1, 0, FALSE, B)}, {}, RVal(0), 1, 1)'
+class = "breaks the instant shape"
+killed_by = ["NoUseAfterClose"]
+runs = ["instant_on_passes"]
+
+# close forgets the delete: K stays open.
+[[mutant]]
+id = "close_without_delete"
+file = "Closer.tla"
+find = 'Outcome({DeleteAcctRcpt(nid, r.tx, K, Arg(0), B, 0)}, {}, RVal(0), 0, 1)'
+replace = 'Outcome({}, {}, RVal(0), 0, 0)'
+class = "dropped effect"
+killed_by = ["NoUseAfterClose"]
+runs = ["instant_on_passes"]
+
+# The library mutant: instant receipts not prioritised.
+[[mutant]]
+id = "lib_runnable_ignores_instant"
+file = "NearAsync.tla"
+library = true
+find = 'Runnable == IF InstantPending THEN {y \in rq : IsInstant(y)} ELSE RunnableAll'
+replace = 'Runnable == RunnableAll'
+class = "instant rule dropped (library)"
+killed_by = ["NoUseAfterClose"]
+runs = ["instant_on_passes"]

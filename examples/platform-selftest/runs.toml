@@ -360,3 +360,40 @@ expect = "pass"
 [run.constants]
 UniversalOn = "FALSE"
 Scns = '{"universal_off"}'
+
+# Instant receipts: a contract's self-delete runs before the call it made alongside (so a
+# call back to it fails), a delegate's inner delete (relayed by another account, and by the
+# user itself: a local creator), a transaction's own delete (not instant).
+[[run]]
+name = "selftest_instant"
+expect = "pass"
+[run.constants]
+Scns = '''{"instant_close", "instant_payout", "instant_deleg", "instant_deleg_local",
+          "instant_tx"}'''
+
+# InstantFirst <- FALSE: c's delete may come after c.probe, so instant_close's Expect fails.
+[[run]]
+name = "selftest_instant_off"
+expect = "violation"
+invariant = "Check"
+[run.constants]
+InstantFirst = "FALSE"
+Scns = '{"instant_close"}'
+
+# The payout is not instant: d.seebal can run before it ...
+[[run]]
+name = "selftest_payout_before"
+expect = "violation"
+invariant = "PayoutBeforeSeen"
+invariants = ["PayoutBeforeSeen"]
+[run.constants]
+Scns = '{"instant_payout"}'
+
+# ... and after it.
+[[run]]
+name = "selftest_payout_after"
+expect = "violation"
+invariant = "PayoutAfterSeen"
+invariants = ["PayoutAfterSeen"]
+[run.constants]
+Scns = '{"instant_payout"}'

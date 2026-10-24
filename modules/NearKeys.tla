@@ -380,7 +380,7 @@ ExecDelegate(r) ==
            c  == [sd.inner EXCEPT !.id = nid, !.tx = r.tx, !.fr = r.to, !.rto = r.to,
                                   !.cb = 0, !.res = NoRes, !.loc = FALSE]
        IN \/ /\ ~DelegMustExpire(sd) /\ DelegErr(r) = ""
-             /\ rq'   = RemR(r) \cup {c}
+             /\ rq'   = RemR(r) \cup {InstantTag(c)}   \* an inner [DeleteAccount] is instant (S5)
              /\ post' = RemP(r)
              /\ data' = RemD(r)
              /\ nid'  = nid + 1
