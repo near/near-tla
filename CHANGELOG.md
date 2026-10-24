@@ -4,11 +4,17 @@ All notable changes to the `modules/` library are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
 `docs/VERSIONING.md`.
 
-The entries under `[Unreleased]` are relative to the pre-release module set that
-existing models were written against (NearAsync, TokenCommon, Nep145, Nep141,
-WNear, Tokens, Nep245, plus a separate NearKeys).
+The 0.1.0 entries are relative to the pre-release module set that existing
+models were written against (NearAsync, TokenCommon, Nep145, Nep141, WNear,
+Tokens, Nep245, plus a separate NearKeys).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-24
+
+```
+nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, covered 84-88
+near-contract-sim: 29e909033bb59eab792dee136e9d02870488bc3e
+near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
+```
 
 ### Breaking
 
@@ -27,8 +33,9 @@ Each entry ends with its migration.
   `mt-smoke` examples were migrated this way, to `/\ PlatformInit([a \in Accts |-> 0], TxIds)`.
   State cost: settled transactions keep their `txsig` entry, which grew the state
   space by up to about 17% in models that never read the signer;
-  `TrackSigner <- FALSE` leaves `txsig` unchanged in `SubmitAs` (reading the
-  signer is then a TLC error, never a wrong value).
+  `TrackSigner <- FALSE` leaves `txsig` unchanged in `SubmitAs`. Do not read the
+  signer then: with `txsig` initialised empty (`PlatformInit`) that is a TLC
+  error, but with a pre-sized `txsig` it silently returns the initial value.
 - **`txsig` moved from `NearKeys` to `NearAsync`; `keyVars` is now `<<keys, sigpaid>>`.**
   `SignerOf(t)` is unchanged. Migration: initialise `txsig` once, either with
   `PlatformInitSigner` (`txsig = <<>>`) or with your existing function, plus
@@ -177,18 +184,17 @@ Each entry ends with its migration.
   `TokOnTransferStatic`, `OnTransferWeight`. New in `NearKeys`: `FullPerm`, `IsFull`,
   `KeysInit`, `KeyFee`, `AddKeyRcpt`, `DelKeyRcpt`, `KAct`, `AddKeyAct`,
   `DelKeyAct`, `KeysFold`, `KeyActsOK`, `KeysAfter`, `WithKeyActs`, `OkWithKeys`,
-  `ExecWithKeys`, `IsMultiCall`, `KeyCanSign`. Batch 1 adds, in `NearAsync`:
+  `ExecWithKeys`, `IsMultiCall`, `KeyCanSign`. Also new in `NearAsync`:
   `burnt` (a variable), `Contracts`, `CallsNeedCode`, `BurnLostRefunds`,
   `UniversalOn`, `ADDK`, `DELK`, `IsKeyRcpt`, `IsCall` (the last four moved from
   `NearKeys`), `HasCode`, `CallTargetOK`, `ExecNoCode`, `LockedOf`, `RefundBurn`,
   `PerAction`, `ActGas`, `ActBurn`, `ActKids`, `ActNeed`, `ActOf`, `PanicOOG`,
-  `GasListsOK`, `EntriesOf`, `Alloc`, `ZeroGasKid`, `NoOrphans`; in the token
-  modules: `OnTransferStatic`, `ReserveShort`, `TokFtGasShape`,
-  `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`, `ResolveGas`, `SuAct`,
-  `SuArgs`, `TokBatchPerAction`, `BatchPA`, `MtOnStatic`, `MtReserveShort`.
-  Batch 2 adds, in `NearAsync`: `OPanicKey`, `OPanicAt`, `HasPanicKey`,
-  `PanicBurn`, `PanicAct`, `PAOK`, `PoolCheck`, `PooledGasOK`; in the token
-  modules: `BatchCallKey`, `PathKey`.
+  `GasListsOK`, `EntriesOf`, `Alloc`, `ZeroGasKid`, `NoOrphans`, `OPanicKey`,
+  `OPanicAt`, `HasPanicKey`, `PanicBurn`, `PanicAct`, `PAOK`, `PoolCheck`,
+  `PooledGasOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
+  `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
+  `ResolveGas`, `SuAct`, `SuArgs`, `TokBatchPerAction`, `BatchPA`, `MtOnStatic`,
+  `MtReserveShort`, `BatchCallKey`, `PathKey`.
   Migration: rename the model's own definition. A model-local local-receipt rule
   is not always replaceable by `LocalPriorityOK`: a rule that lets **every**
   top-level receipt skip the wait admits more interleavings than the library
@@ -255,13 +261,16 @@ Each entry ends with its migration.
   callback) and `ExecNoCode(r)`.
 - `examples/platform-selftest`: 49 deterministic scenarios (receipts, results,
   accounts, refunds, staking, storage, keys, tokens, gas) with their expected
-  nearcore end state. `NearConserved` / `GasBounded` are now checked in every
-  example; `eth-implicit-fee` pins the Transfer fees as literals (8146 / 446
+  nearcore end state. `NearConserved` is now checked in every example except
+  `mt-smoke`, and `GasBounded` in the gas-mode examples (`pay`, `weight-split`,
+  `eth-implicit-fee`); `eth-implicit-fee` pins the Transfer fees as literals (8146 / 446
   Ggas); `pay` has `pay_gas_std` with the measured `CalibStd` token table.
 - Examples with must-pass and must-fail runs: `revert-scope`,
   `callback-after-failure`, `weight-split`, `local-priority`,
   `signer-propagation`, `deletekey-atomicity`, `eth-implicit-fee`,
   `nep141-refund-cap`, `nep145-refund-to-predecessor`.
+- `examples/minimal`: the walkthrough model from `docs/USAGE.md` (`Tally`), in
+  fault and gas mode, with a must-fail variant and a printed gas window.
 
 ### Changed
 

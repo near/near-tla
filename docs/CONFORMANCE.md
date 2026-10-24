@@ -154,9 +154,11 @@ A measured number is only meaningful with what it was measured on.
 
 ## Why it runs locally only
 
-CI checks the TLA+ side only: it parses every module and runs every example's expectations.
-It does not build the conformance crate, because near-contract-sim is a private git dependency
-and CI has no credentials for it. The calibrated tables are committed, so models and examples
+CI checks the TLA+ side only. It SANY-parses every module, every example spec and the
+conformance specs in `conformance/tla/` (`ProbeConf.tla`, `CalibProbes.tla`), and it runs every
+example's expectations. It neither runs TLC on the conformance flows nor builds the
+conformance crate, because near-contract-sim is a private git dependency and CI has no
+credentials for it. The calibrated tables are committed, so models and examples
 that use them run in CI without the sim.
 
 On the roadmap: an optional CI job that runs the conformance suite, given sim access through a

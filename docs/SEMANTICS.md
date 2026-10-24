@@ -51,7 +51,7 @@ Each rule has four fields:
   - `NearFees` per-byte operators (`DataBytesFee`, `FunctionCallBytesFee`, `AddKeyFcBytesFee`,
     `DeployBytesFee` and their send/exec parts) take **bytes**.
   - Bytes to model size: `sz = (n + 999) \div 1000`. Model size to bytes for a fee:
-    `NearFees!DataBytesFee(sir, 1000 * r.res.sz)`. This overstates the bytes by up to 999, so it
+    `NearFeeTable!DataBytesFee(sir, 1000 * r.res.sz)`. This overstates the bytes by up to 999, so it
     overstates the fee by up to about 65 Ggas per waiting receiver (cross-shard rate) or 34 Ggas
     (same account).
 
@@ -191,7 +191,7 @@ Each rule has four fields:
   and `88.yaml` (limit set, then lifted).
 - **Model:** a size field on data receipts and `r.res.sz`, **in KB** (see [Units](#units)):
   `RVal(v)` has size 0 and `RValSz(v, n)` carries `n` KB (also `DataOfSz`, `RetSz`, `OSz`).
-  Handlers may use `r.res.sz` as the burn size. Fee: `NearFees!DataBytesFee(sir, bytes)`, which
+  Handlers may use `r.res.sz` as the burn size. Fee: `NearFeeTable!DataBytesFee(sir, bytes)`, which
   takes **bytes**.
 - **Validated:** nearcore reading.
 
@@ -843,7 +843,7 @@ against the current module code; some may be fixed in the modules later.
   the model calls safe is possible near any calibrated edge. Treat windows as approximate. They
   are tied to the calibration's provenance (`docs/VERSIONING.md`).
 - **N-keyfee. AddKey per-byte fee.** `NearKeys.KeyFee` charges a function-call AddKey only its
-  base fee and drops the per-byte part (`NearFees!AddKeyFcBytesFee`, about 3.9 Ggas per KB of method
+  base fee and drops the per-byte part (`NearFeeTable!AddKeyFcBytesFee`, about 3.9 Ggas per KB of method
   names to the same account, 49.6 Ggas per KB cross-shard). The creator's need is under-charged, so an out-of-gas at creation can be
   missed.
 - **N-burn-fail. Burn of a failing receipt.** Only the verdict is modelled, not how much a

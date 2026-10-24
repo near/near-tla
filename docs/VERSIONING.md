@@ -129,7 +129,8 @@ change" in the PR description.
    dependency. Confirm that its `Cargo.lock` pins the same nearcore revision, that it runs the
    protocol version you expect, and that the config it applies at that version equals nearcore's
    snapshot for it (fees, limits, flags). If they differ, conformance results do not carry over.
-9. **Parse and run.** Run `tools/sany.py modules examples` and every example (`tools/run.py`).
+9. **Parse and run.** Run `python3 tools/sany.py modules examples conformance/tla` and every
+   example (`python3 tools/run.py`).
 10. **Repeat conformance** (see `docs/CONFORMANCE.md`):
     - the fee probes: Transfer to named, NEAR-implicit and eth-implicit receivers, existing and
       absent; AddKey/DeleteKey; Stake;

@@ -33,7 +33,14 @@ the runtime allows.
 
 ## Quickstart
 
-You need Java 21 and Python 3.11 or later (standard library only).
+You need git, Java 21 and Python 3.11 or later (standard library only).
+
+Clone the repo and work from its root:
+
+```sh
+git clone https://github.com/near/near-tla.git
+cd near-tla
+```
 
 Fetch the pinned TLC jar (tla2tools v1.7.4) and check its hash, as CI does:
 
@@ -53,15 +60,17 @@ python3 tools/run.py examples/
 Each example has must-pass runs and must-fail runs. The runner exits nonzero if any verdict
 differs from its expectation. `python3 tools/run.py --help` documents the `runs.toml` format.
 
-To model your first contract, follow [`docs/USAGE.md`](docs/USAGE.md).
+To model your first contract, follow [`docs/USAGE.md`](docs/USAGE.md). It starts from
+[`examples/minimal`](examples/minimal/), a complete model you can copy; your model can live
+outside this repo, and the runner still finds the library.
 
 ## Repo map
 
 | path | contents |
 |---|---|
 | [`modules/`](modules/) | the library: one flat directory, passed to TLC as `-DTLA-Library` |
-| [`examples/`](examples/) | toy contracts, each with a `runs.toml` of must-pass and must-fail runs; `platform-selftest` checks the library itself against known nearcore outcomes |
-| [`tools/`](tools/) | `run.py` (the runner), `sany.py` (parse check), `windows.py` (print-only gas windows), `tlctrace.py` (counterexample summaries), `check_links.py` |
+| [`examples/`](examples/) | toy contracts, each with a `runs.toml` of must-pass and must-fail runs; `minimal` is the starting point, `platform-selftest` checks the library itself against known nearcore outcomes |
+| [`tools/`](tools/) | `run.py` (the runner), `sany.py` (parse check), `windows.py` (print-only gas windows), `tlctrace.py` (counterexample summaries), `tlcparse.py` (TLC output parsing), `check_links.py` (offline link check), `test_run.py` (the runner's self-tests) |
 | [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim and produces calibrated gas tables. Runs locally only |
 | [`docs/`](docs/) | [`SEMANTICS.md`](docs/SEMANTICS.md) (rules, citations, trust), [`USAGE.md`](docs/USAGE.md) (modelling a contract), [`CONFORMANCE.md`](docs/CONFORMANCE.md), [`VERSIONING.md`](docs/VERSIONING.md) |
 
@@ -95,8 +104,7 @@ shared `NearAsync` base.
 
 ## Status and versioning
 
-Version **0.1.0**, the first release; its changes are listed under `[Unreleased]` in
-[`CHANGELOG.md`](CHANGELOG.md) until it is tagged. The behaviour encoded is protocol version
+Version **0.1.0**, the first release; see [`CHANGELOG.md`](CHANGELOG.md). The behaviour encoded is protocol version
 **88** at nearcore 2.14.0-rc.5. `NearFees` also carries the fee tables of 84-87, selected by
 `FeeProtocol`; the other rules are 88's. [`docs/VERSIONING.md`](docs/VERSIONING.md) says what
 counts as a breaking change, what each release states about its protocol assumptions, and how
@@ -104,20 +112,26 @@ to move to a new protocol version.
 
 ## Roadmap
 
+### Planned (v0.2)
+
+- `promise_and`: callbacks that join several promise results.
+- Yield/resume, with an abstract block clock for the timeout.
+- Delegate actions (NEP-366), where the signer is the relayer.
+- Opt-in per-sender-receiver ordering, to cut false counterexamples.
+- Per-byte storage staking instead of a fixed floor.
+- Fees rounded up instead of to the nearest Ggas, so gas edges err on the safe side.
+
+### Later
+
 - **An optional conformance CI job.** The suite runs locally only today, because
   near-contract-sim is a private git dependency. A job that runs it needs sim access through a
   deploy key or an app token.
 - **Promote rules to "sim" validation** as the conformance probes cover them (the rules marked
   in `docs/SEMANTICS.md`).
-- **Close gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list**, roughly in this
-  order:
-  - joint promises (`promise_and`) and yield/resume;
-  - delegate actions (meta-transactions), where the signer is the relayer;
-  - per-receiver ordering, to cut false counterexamples;
-  - the function-call AddKey per-byte fee;
-  - access-key allowances and transaction validity (nonces);
-  - DeleteAccount, CreateAccount restrictions, deterministic-account state init, global
-    contracts and gas keys.
+- **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:** the
+  function-call AddKey per-byte fee; access-key allowances and transaction validity (nonces);
+  DeleteAccount, CreateAccount restrictions, deterministic-account state init, global
+  contracts and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 
 ## License

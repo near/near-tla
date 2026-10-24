@@ -1,0 +1,100 @@
+# The complete minimal model of docs/USAGE.md: a call, a callback that must check
+# its promise result, fault mode and gas mode.  See Tally.tla.
+#
+#   python3 tools/run.py examples/minimal
+#
+# Counted  C's count of works matches D's once nothing is in flight.
+# Sane     NEAR conserved, gas bounded by each transaction's prepaid gas, no orphans.
+
+spec = "Tally"
+workers = 2
+library = "../../modules"
+budget_s = 60
+invariants = ["Counted", "Sane"]
+
+# TLA+ expression text. Single quotes keep backslashes and double quotes literal.
+[constants]
+Accounts = 'Accts'
+Exists = 'Accts'
+StorageFloor = 'Floor0'
+StakingAcct = '"c"'
+MinStake = '1'
+MaxEpoch = '0'
+MaxReward = '0'
+GasMode = '"fault"'
+GasCall = 'NoTable'
+GasBurn = 'NoTable'
+MayFail = '{}'
+MaxFails = '0'
+LogOn = 'FALSE'
+TrackSigner = 'FALSE'           # the model never reads the signer
+U = '"u"'
+C = '"c"'
+D = '"d"'
+MaxTx = '2'
+InitU = '2'
+GasMenu = '{0}'
+Trusting = 'FALSE'
+
+# work may fail once; done checks the result, so the counts agree.
+[[run]]
+name = "tally_ok"
+expect = "pass"
+tags = ["semantics:callback-result"]
+[run.constants]
+MayFail = '{"work"}'
+MaxFails = '1'
+
+# Must fail: done counts without checking, and a failed work is counted.
+[[run]]
+name = "tally_trusting"
+expect = "violation"
+invariant = "Counted"
+tags = ["semantics:callback-failure"]
+[run.constants]
+MayFail = '{"work"}'
+MaxFails = '1'
+Trusting = 'TRUE'
+
+# Gas mode, no forced faults. ping needs 1.0 burn + (0.3 + 5) + (0.3 + 2) = 8.6 Tgas;
+# the leftover goes to work (weight 1), which burns 5.5 of its 5 + leftover, so it runs
+# out below 9.1 Tgas. The correct done keeps Counted at every prepaid amount.
+[[run]]
+name = "tally_gas_ok"
+expect = "pass"
+tags = ["gas:out-of-gas"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = 'TGasCall'
+GasBurn = 'TGasBurn'
+GasMenu = 'Menu'
+MaxTx = '1'
+
+# Must fail: the trusting done, with work out of gas (a "caller-gas" label).
+[[run]]
+name = "tally_gas_trusting"
+expect = "violation"
+invariant = "Counted"
+tags = ["gas:out-of-gas"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = 'TGasCall'
+GasBurn = 'TGasBurn'
+GasMenu = 'Menu'
+MaxTx = '1'
+Trusting = 'TRUE'
+
+# The same as a print-only window: Counted breaks for prepaid 8.6-9.0 Tgas.
+[[run]]
+name = "tally_gas_win"
+expect = "pass"
+invariants = ["WinCounted", "Sane"]
+expect_window = "8600-9000"
+tags = ["gas:window"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = 'TGasCall'
+GasBurn = 'TGasBurn'
+GasMenu = 'Menu'
+MaxTx = '1'
+Trusting = 'TRUE'

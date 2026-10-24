@@ -22,12 +22,15 @@ modules/              the library, one flat directory (passed to TLC as -DTLA-Li
   Nep245.tla          external multi-token contract
   CalibStd.tla        measured gas tables for the standard FT and wNEAR (generated; do not edit)
 examples/<name>/      toy contracts + runs.toml (must-pass and must-fail runs)
+examples/minimal/     the complete minimal model of docs/USAGE.md
 examples/platform-selftest/   deterministic scenarios with known nearcore outcomes
 tools/run.py          runner: wrappers, TLC, verdict check (see --help)
 tools/sany.py         parse check
 tools/windows.py      fold print-only window reports into gas intervals
 tools/tlctrace.py     summarise a TLC counterexample
 tools/check_links.py  offline Markdown link check (CI runs it)
+tools/test_run.py     the runner's self-tests (python3 -m unittest tools/test_run.py)
+tools/tlcparse.py     TLC output parsing shared by the tools
 conformance/          Rust conformance + calibration crate (standalone; CI does not build it)
 conformance/probes/   probe contracts (Rust -> wasm), committed with their hashes
 conformance/flows/    flow specs (probes.toml, actions.toml, example.toml)
@@ -40,9 +43,10 @@ docs/                 SEMANTICS.md (rules, citations, trust), USAGE.md (modellin
 ## How to run things
 
 ```sh
-tools/sany.py modules examples       # parse everything
-tools/run.py                         # all example runs; nonzero exit on any unexpected verdict
-tools/run.py 'pay_*' --print-trace   # some runs, with traces
+python3 tools/sany.py modules examples       # parse everything
+python3 tools/run.py                         # all example runs; nonzero exit on any unexpected verdict
+python3 tools/run.py 'pay_*' --print-trace   # some runs, with traces
+python3 tools/run.py path/to/model/ my_run   # one run of a model outside examples/
 ```
 
 `tools/tla2tools.jar` must be tla2tools v1.7.4 (see `CONTRIBUTING.md`). Modelling a contract:
@@ -68,7 +72,7 @@ tools/run.py 'pay_*' --print-trace   # some runs, with traces
 - **TLC:** at most **2 workers** per run (the runner caps at 4). Use `-metadir /tmp/tlc-<name>`
   for ad-hoc runs and delete those directories afterwards. `-deadlock` is normal: quiescence is
   not an error. Keep each example run under about 60 s.
-- Run `tools/sany.py` before handing work back.
+- Run `python3 tools/sany.py modules examples` before handing work back.
 
 ## The method that works
 
@@ -88,8 +92,9 @@ tools/run.py 'pay_*' --print-trace   # some runs, with traces
 5. **Show every invariant can fail.** For each invariant, add a deliberately wrong variant (the
    must-fail example) and check that TLC reports a violation of that invariant, for the reason you
    intended. Confirm this from the trace. An invariant that has never failed may be vacuous.
-6. **Run with local priority off as well.** `LocalPriorityOK` assumes the receiving chunk is not
-   at its compute limit. A violation that appears only with it off needs a congestion argument
-   before you dismiss it (`docs/SEMANTICS.md`, S1).
+6. **If you conjoin `LocalPriorityOK`, also run without it.** Local priority is opt-in (off
+   unless conjoined) and assumes the receiving chunk is not at its compute limit. A violation
+   that appears only without it is reachable under congestion; dismiss it only with a concrete
+   argument that the receiving chunk cannot be full (`docs/SEMANTICS.md`, S1).
 7. **Know what is not modelled.** Read the "Not modelled" section of `docs/SEMANTICS.md` before
    claiming a result. Under-approximations there can hide bugs.

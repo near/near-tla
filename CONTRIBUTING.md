@@ -23,24 +23,28 @@ Every example directory `examples/<name>/` has one or more specs and a `runs.tom
 its TLC runs and the verdict each must give.
 
 ```sh
-tools/run.py                    # every run under examples/
-tools/run.py --list             # list runs
-tools/run.py examples/pay       # one directory
-tools/run.py 'pay_*'            # runs by name (globs work)
-tools/run.py --print-trace pay_ignore   # show the counterexample of a violating run
-tools/run.py --keep pay_std     # keep the generated wrapper, cfg and log in build/
+python3 tools/run.py                    # every run under examples/
+python3 tools/run.py --list             # list runs
+python3 tools/run.py examples/pay       # one directory
+python3 tools/run.py examples/pay pay_std   # one run within a directory
+python3 tools/run.py 'pay_*'            # runs by name under examples/ (globs work)
+python3 tools/run.py --print-trace pay_ignore   # show the counterexample of a violating run
+python3 tools/run.py --keep pay_std     # keep the generated wrapper, cfg and log in build/
 ```
 
-The runner writes `MC_<run>.tla`, `MC_<run>.cfg` and `<run>.log` into `examples/<name>/build/`
-(gitignored), runs TLC with `-DTLA-Library` pointing at `modules/`, and exits nonzero if a
-verdict differs from its `expect`. See `tools/run.py --help` for the `runs.toml` format.
+For each run the runner generates a wrapper `MC_<run>.tla` and a config `MC_<run>.cfg` in a
+fresh temporary directory, runs TLC there with `-DTLA-Library` pointing at `modules/`, and
+exits nonzero if a verdict differs from its `expect`. It keeps the wrapper, config and log in
+`examples/<name>/build/` (gitignored) only for runs whose verdict did not match, or for every
+run with `--keep`. See `python3 tools/run.py --help` for the `runs.toml` format, and
+[`docs/USAGE.md`](docs/USAGE.md) for writing a model of your own.
 
 ## Parsing
 
 Run SANY on everything you touched before pushing. CI parses every module and fails on any error:
 
 ```sh
-tools/sany.py modules examples
+python3 tools/sany.py modules examples conformance/tla
 # or, for one module:
 cd modules && java -cp ../tools/tla2tools.jar tla2sany.SANY NearFees.tla
 ```
