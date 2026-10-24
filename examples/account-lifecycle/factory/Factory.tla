@@ -31,6 +31,9 @@
 (*   D = 2 NEAR: the batch fails LackBalanceForState every time; the user  *)
 (*   is repaid but never gets an account (Served fails).                   *)
 (* factory_funds_code: a 100 KB contract, which D covers: Served holds.    *)
+(* factory_owner_label: as factory_underfunds_code, with the owner label   *)
+(*   written on failure too (OwnerOnFail): Served still fails, since the   *)
+(*   labelled account does not exist.                                     *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -86,9 +89,12 @@ RunF(r) ==
         /\ UNCHANGED <<owner, sent>>
 \* The batch (HasAc): Exec runs its CreateAccount, Transfer and
 \* DeployContract, then init on the new account, which records its owner.
+\* Bug switch (factory_owner_label): the owner label is written even when
+\* the batch fails, so it names an account that does not exist.
+OwnerOnFail == FALSE
 RunBatch(r) ==
     /\ Exec(r, Out0)
-    /\ owner' = IF Ok(r, Out0) THEN [owner EXCEPT ![r.to] = r.a.u] ELSE owner
+    /\ owner' = IF Ok(r, Out0) \/ OwnerOnFail THEN [owner EXCEPT ![r.to] = r.a.u] ELSE owner
     /\ UNCHANGED <<reg, sent>>
 
 Run == \E r \in Runnable :
@@ -112,7 +118,8 @@ UserFundsBack ==
               near[u] = 10 - (IF \E n \in Names : AcctExists(n) /\ owner[n] = u THEN D ELSE 0)
 \* F's registry names only owners of accounts that exist.
 PaidImpliesAccount == \A n \in Names : reg[n] # "" => AcctExists(n) /\ owner[n] = reg[n]
-\* Once all is settled, every user who called create owns an account.
-Served == Idle => \A u \in sent : \E n \in Names : owner[n] = u
+\* Once all is settled, every user who called create owns an account that
+\* exists (not only an owner label).
+Served == Idle => \A u \in sent : \E n \in Names : AcctExists(n) /\ owner[n] = u
 Sane == NearConserved(Total0) /\ NoOrphans
 =============================================================================

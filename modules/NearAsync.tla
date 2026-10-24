@@ -578,14 +578,19 @@ AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
 \* InitCode (overridable): the initial accounts' code tags, default "code".
 \* CodeLen (overridable): a code tag's length in bytes, default 0 (the bytes
 \* a DeployContract adds and pays the per-byte fee for).
+\* EthWalletCode (overridable): the tag of the protocol's eth wallet global
+\* contract, which an eth-implicit account created at run time gets, also
+\* when it is created again after a deletion, whatever its initial code
+\* (actions.rs:255-268).
 InitCode == [a \in Accounts |-> "code"]
 CodeLen  == [t \in {} |-> 0]
+EthWalletCode == "eth_wallet"
 CodeLenOf(t) == IF t \in DOMAIN CodeLen THEN CodeLen[t] ELSE 0
 CodeOf(a) ==
     IF a \in DOMAIN code THEN code[a]
-    ELSE IF a \in Contracts /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
-         THEN (IF a \in DOMAIN InitCode THEN InitCode[a] ELSE "code")
-    ELSE NoCode
+    ELSE IF a \notin Contracts THEN NoCode
+    ELSE IF a \in created THEN (IF KindOf(a) = "eth_implicit" THEN EthWalletCode ELSE NoCode)
+    ELSE IF a \in DOMAIN InitCode THEN InitCode[a] ELSE "code"
 \* Can a function call on a run?  (The same as before DeployContract while
 \* code is empty.)
 HasCode(a) == AcctExists(a) /\ CodeOf(a) # NoCode

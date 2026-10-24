@@ -440,13 +440,16 @@ Each entry ends with its migration.
   the storage check and the DeleteAccount's 10,000-byte check see them; on success `code`
   changes (`CodeNext`: a delete, or a create without a deploy, drops the entry). A call sees
   the code its receipt leaves (`CodeAfter`, `CodeSeen`, used by `CallTargetOK` and
-  `NearKeys.FailNoCode`, which ignored account actions before). Every example run kept its
+  `NearKeys.FailNoCode`, which ignored account actions before). An eth-implicit account
+  created at run time (also again, after a deletion) has `EthWalletCode` (overridable,
+  `"eth_wallet"`), not its initial tag (`selftest_eth_recreate`). Every example run kept its
   verdict and its generated, distinct and depth counts (all 132 runs compared at one worker),
   `account-lifecycle/factory` included, whose batch now deploys its child's code and no
   longer sets `CallsNeedCode <- FALSE`. New runs `selftest_deploy`, `selftest_deploy_storage`
   (9 scenarios, a fee check in `acct_fee`, five library mutants), `factory_underfunds_code`
   (must fail: a 300 KB child contract that the batch's 2 NEAR does not cover) and
-  `factory_funds_code`. N-deploy is gone; N-limits states the 10-deploy and 4 MiB limits.
+  `factory_funds_code`; `Served` checks that the account exists, not only its owner label
+  (`factory_owner_label`, must fail: the label written on a failed batch). N-deploy is gone; N-limits states the 10-deploy and 4 MiB limits.
 - **Instant receipts** (SEMANTICS S5; docs/USAGE.md section 16). A lone DeleteAccount
   (`IsInstantShape`) that a receipt creates, in its outcome's ready set, as a joint callback
   with no inputs in its postponed set (`.then` on an empty `promise_and`, `InstantTagP`) or as

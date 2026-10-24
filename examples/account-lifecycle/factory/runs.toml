@@ -81,6 +81,19 @@ Users = "{U1}"
 StoragePerByte = "TRUE"
 CodeLen = '("child" :> 300000)'
 
+# The same, with the owner label written even when the batch fails (OwnerOnFail): Served
+# looks at the account, not the label, so it still fails.
+[[run]]
+name = "factory_owner_label"
+expect = "violation"
+invariant = "Served"
+invariants = ["Served", "Sane"]
+[run.constants]
+Users = "{U1}"
+StoragePerByte = "TRUE"
+CodeLen = '("child" :> 300000)'
+OwnerOnFail = "TRUE"
+
 # The same with a 100 KB contract, which 2 NEAR covers: the user is served.
 [[run]]
 name = "factory_funds_code"

@@ -358,6 +358,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
 | `CodeSize` | 0 bytes for every account | with `StoragePerByte` and DeleteAccount: the code bytes in each contract's `StorageInit`, which the 10,000-byte delete limit leaves out |
 | `CodeLen` | 0 bytes for every code tag | with `StoragePerByte` and DeployContract: the bytes of each code tag a model deploys, `("child" :> 300000)` ([section 16](#16-creating-and-deleting-accounts)) |
+| `EthWalletCode` | `"eth_wallet"` | a model reads `CodeOf`: the tag of the eth wallet contract an eth-implicit account gets when a Transfer creates it (again) |
 | `InitCode` | `"code"` for every account | a model reads `CodeOf` and its contracts start with different code: each account's tag at the start (only the accounts in `Contracts` have code) |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |

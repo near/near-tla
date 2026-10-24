@@ -399,6 +399,14 @@ CodeSize = "LCode"
 CodeLen = "SCodeLen"
 Scns = '{"deploy_bytes", "deploy_replace", "deploy_del_large", "deploy_del_same", "deploy_lackstate"}'
 
+# An eth-implicit account with its own code, deleted and created again by a Transfer: it runs
+# the protocol's wallet contract (EthWalletCode), not its earlier code.
+[[run]]
+name = "selftest_eth_recreate"
+expect = "pass"
+[run.constants]
+Scns = '{"eth_recreate_code"}'
+
 # A call that returns a promise, then DeleteAccount: the child runs, the callback gets the
 # delete's empty bytes (the child wired to the callback is not forwarded).
 [[run]]
@@ -556,3 +564,14 @@ replace = 'IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN NoCode'
 class = "platform rule dropped (library)"
 killed_by = ["Check"]
 runs = ["selftest_deploy"]
+
+# ... an eth-implicit account created again runs its initial code, not the wallet contract.
+[[mutant]]
+id = "lib_eth_recreate_initcode"
+file = "NearAsync.tla"
+library = true
+find = 'ELSE IF a \in created THEN (IF KindOf(a) = "eth_implicit" THEN EthWalletCode ELSE NoCode)'
+replace = 'ELSE IF a \in created /\ KindOf(a) # "eth_implicit" THEN NoCode'
+class = "wrong effect (library)"
+killed_by = ["Check"]
+runs = ["selftest_eth_recreate"]

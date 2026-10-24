@@ -638,6 +638,10 @@ Script(s) ==
                                     Ac(V, V, FALSE, 0, U, <<>>) >>
     [] s = "deploy_del_same"  -> << AcD(V, V, FALSE, 0, U, <<>>, "big") >>
     [] s = "deploy_lackstate" -> << AcD(W, W, FALSE, 0, "", <<>>, "huge") >>
+    [] s = "eth_recreate_code"-> << AcD(EA, EA, FALSE, 0, "", <<>>, "local"),             \* 0xa's own code
+                                    Ac(EA, EA, FALSE, 0, U, <<>>),                       \* deleted
+                                    Tx(C, U, "send", G("", "", EA, 1, 0, "", ""), 0),    \* 0xa again
+                                    Tx(EA, U, "foo", G0, 1) >>
     [] s = "acct_bytes"       -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>) >>
     [] s = "acct_bytes_del"   -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>),
                                     Ac(SB, SB, FALSE, 0, C, <<>>) >>
@@ -1134,6 +1138,11 @@ Expect(s) ==
     [] s = "deploy_lackstate" ->  \* 10,001 + 10,000 bytes need more than w's 10 NEAR: the deploy
          \* fails LackBalanceForState, nothing changes.  lib.rs:1008-1031
          DOMAIN code = {} /\ stor[W] = 10001 /\ near[W] = 10 /\ acc = <<TRUE>>
+    [] s = "eth_recreate_code" -> \* an eth-implicit account created again by a Transfer gets the
+         \* protocol's wallet contract, not its earlier code (initial or deployed).
+         \* actions.rs:255-268
+         EA \in created /\ deleted = {} /\ DOMAIN code = {} /\ CodeOf(EA) = EthWalletCode
+         /\ CodeOf(EA) # "code" /\ <<4, EA, "foo">> \in ran /\ near[EA] = 2
     [] s = "accall_prom" ->       \* [FunctionCall(lastp), DeleteAccount(u)]: lastp returns a
          \* promise; the receipt succeeds, its Transfer child runs, and d.cb gets the delete's
          \* empty bytes, not the promise's result.  lib.rs:507-514, :1146-1189

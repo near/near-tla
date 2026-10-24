@@ -891,7 +891,9 @@ Each rule has four fields:
   bytes). The platform variable `code` is a partial function from account to the tag deployed
   at run time; `CodeOf(a)` reads it, else the code at the start (`InitCode`, default
   `"code"`, for the accounts in `Contracts`), and `HasCode` is unchanged while nothing is
-  deployed. `WithDeploy(r, t)` adds DeployContract(t) to an ACCOUNT receipt or a call
+  deployed. An eth-implicit account created at run time by a Transfer, also one created
+  again after a deletion, has the protocol's wallet contract, `EthWalletCode` (overridable,
+  default `"eth_wallet"`; `actions.rs:255-268`), not its initial or deployed code. `WithDeploy(r, t)` adds DeployContract(t) to an ACCOUNT receipt or a call
   receipt, after its CreateAccount and Transfer and before its call and DeleteAccount, and
   adds its fee to `gf`; `DeployRcpt(id, tx, acct, a, t, cb)` is a lone deploy. The checks are
   `AcctErr`'s (existence, initialised, actor); the bytes are `stor` less the old code
