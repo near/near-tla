@@ -403,6 +403,33 @@ class LoadAndWrapperTest(unittest.TestCase):
             self.load('spec = "Spec3"\n[[run]]\nname = "x"\nexpect = "pass"\ninvariants = ["A"]\n'
                       '[run.constants]\n"Fees!Rounding" = "1"\nFees_Rounding = "2"\n')
 
+    def test_module_qualified_constant_parameter_rejected(self):
+        """`Mod!Knob` for a CONSTANT Knob would generate `Knob <- [Mod] ...`, which TLC does
+        not accept as an assignment ("not assigned a value"): rejected, with the way out."""
+        lib = self.d / "lib"
+        lib.mkdir()
+        write(lib, "ModC.tla", "---- MODULE ModC ----\nCONSTANT Knob\nDef == 1\n====\n")
+        write(lib, "ModD.tla", "---- MODULE ModD ----\nCONSTANTS Dial, Knob2\n====\n")
+        write(lib, "Plat.tla", "---- MODULE Plat ----\nEXTENDS ModC\nCONSTANT Dial\n"
+                               "T == INSTANCE ModD WITH Knob2 <- 1\n====\n")
+        write(self.d, "Spec4.tla", "---- MODULE Spec4 ----\nEXTENDS Plat\n====\n")
+        (r,) = self.load('spec = "Spec4"\nlibrary = "lib"\n[[run]]\nname = "q"\nexpect = "pass"\n'
+                         'invariants = ["A"]\n[run.constants]\n"ModC!Knob" = "10"\n')
+        with self.assertRaisesRegex(run.ConfigError, r"Knob is a CONSTANT of ModC.*unqualified, 'Knob'"):
+            run.check_constants(r)
+        for ok in ({"Knob": "10"}, {"ModC!Def": "2"}, {"Dial": "1"}):
+            r.constants = ok
+            with self.subTest(ok):
+                self.assertIsNone(run.check_constants(r))
+        r.constants = {"ModD!Dial": "1"}   # also declared by Plat: unqualified works
+        with self.assertRaisesRegex(run.ConfigError, r"unqualified, 'Dial'"):
+            run.check_constants(r)
+        r.constants = {"ModD!Knob2": "1"}  # only in the INSTANCEd module
+        with self.assertRaisesRegex(run.ConfigError, r"INSTANCE ModD WITH Knob2 <- \.\.\."):
+            run.check_constants(r)
+        self.assertEqual(run.module_names("---- MODULE M ----\nEXTENDS A\nCONSTANT K\nD == 1\n====\n"),
+                         (["A"], {"K"}, {"D"}))
+
     # 7. temporal properties
     def test_temporal_matches_only_property(self):
         (r,) = self.load('spec = "Toy"\n[[run]]\nname = "x"\nexpect = "violation"\ninvariant = "Live"\n'

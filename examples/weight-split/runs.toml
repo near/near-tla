@@ -33,6 +33,15 @@ name = "weight_split_ok"
 expect = "pass"
 invariants = ["SplitExact", "CallbackDone", "Sane"]
 
+# The same split with the remainder rule: "nearest" gives the last weighted call
+# (on_done) the remainder, 1000 + 2051.
+[[run]]
+name = "weight_split_ok_nearest"
+expect = "pass"
+invariants = ["SplitExact", "CallbackDone", "Sane"]
+[run.constants]
+"NearFees!FeeRounding" = '"nearest"'
+
 [[run]]
 name = "weight_split_cb_zero"
 expect = "violation"

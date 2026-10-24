@@ -3,8 +3,13 @@
 (* Unused-gas split (runtime/runtime/src/receipt_manager.rs:679-721 @      *)
 (* b7b4737).  The gas a receipt attached but did not need, U, goes to the  *)
 (* function calls it created with weight w > 0, in creation order: each   *)
-(* gets floor(U * w / W), and the last weighted call also gets the         *)
-(* remainder.  W = 0 distributes nothing.                                  *)
+(* gets floor(U * w / W), and in nearcore the last weighted call also gets *)
+(* the remainder (in gas units).  W = 0 distributes nothing.  The model's  *)
+(* U is in whole Ggas: under NearFees.FeeRounding = "up" (the default) it  *)
+(* keeps its remainder, so every share is a lower bound of nearcore's;     *)
+(* under "nearest" the last weighted call gets it (run                     *)
+(* weight_split_ok_nearest).  See remainder/ for the case the "up" rule    *)
+(* exists for.                                                             *)
 (*                                                                         *)
 (* S.split() creates, in this order:                                       *)
 (*   W.work_a()                       static 1 Tgas, weight Wts[1]          *)
@@ -16,9 +21,11 @@
 (* static.  Prepaid 10001: Need(split) = 2000 + 3 * (300 + 1000) = 5900,   *)
 (* U = 4101.                                                               *)
 (*   Wts = <<1, 1, 2>>  W = 4: work_a 1000+1025, work_b 1000+1025,         *)
-(*                      on_done 1000+2051 (floor 2050 + remainder 1): ok   *)
-(*   Wts = <<1, 1, 0>>  W = 2: work_a 1000+2050, work_b 1000+2051 (last    *)
-(*                      weighted), on_done 1000: out of gas                *)
+(*                      on_done 1000+2050 ("up"; "nearest" adds the        *)
+(*                      remainder 1: 2051): ok                             *)
+(*   Wts = <<1, 1, 0>>  W = 2: work_a 1000+2050, work_b 1000+2050 ("up";   *)
+(*                      "nearest", last weighted: 2051), on_done 1000:     *)
+(*                      out of gas                                         *)
 (*   Wts = <<0, 0, 0>>  W = 0: every child gets exactly its static         *)
 (*                                                                         *)
 (* Correct S: weight on the callback that needs leftover gas (run          *)
@@ -51,6 +58,7 @@ LastW == CHOOSE i \in 1..3 : Wts[i] > 0 /\ \A j \in 1..3 : Wts[j] > 0 => j <= i
 FloorShare(i) == (Left * Wts[i]) \div WSumT
 Expected(i) ==
     St + (IF WSumT = 0 \/ Wts[i] = 0 THEN 0
+          ELSE IF NearFeeTable!FeeRounding = "up" THEN FloorShare(i)
           ELSE IF i = LastW
                THEN Left - (IF i # 1 /\ Wts[1] > 0 THEN FloorShare(1) ELSE 0)
                          - (IF i # 2 /\ Wts[2] > 0 THEN FloorShare(2) ELSE 0)

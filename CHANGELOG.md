@@ -36,6 +36,23 @@ Each entry ends with its migration.
   behaviour exactly (every table entry, and `Bytes(n, u)` for all `n` up to 3000 and at 20 KB,
   1, 4 and 16 MiB, were checked equal); or update the literals (450, 8150, ...). A model that
   `EXTENDS NearFees` can write `FeeRounding <- ...` unqualified.
+- **Under `FeeRounding = "up"` (the default) the unused-gas split hands out no whole-Ggas
+  remainder.** Every weighted function-call child gets `floor(U * w / W)` Ggas, the last one
+  included; it used to get the remainder too, up to `n - 1` Ggas for `n` weighted children,
+  which nearcore splits in gas units (`receipt_manager.rs:679-719`), so the last child could
+  get more than in nearcore (six equal weights, a model leftover of 1001 Ggas against
+  nearcore's 1009.84: 1171 against 1168.31 Ggas, and a burn of 1170 passed in the model
+  only). No child now gets more than in nearcore. `ZeroGasKid` under `"up"` fails the creator
+  only for a static-0 call with no share at all (weight 0, or a leftover of 0): a weighted
+  call whose share floors to 0 Ggas runs and runs out of gas, as in nearcore. `"nearest"` is
+  unchanged (the conformance side, pinned to it, is byte-identical: 73 flows, 0 mismatches).
+  Every example run keeps its verdict, state counts (compared at one worker; `selftest_gas`
+  grows only by its new scenario) and windows; `weight-split`'s `SplitExact` reads the
+  expected split by mode. In other models the last weighted child of a split gets up to
+  `n - 1` Ggas less, so verdicts and windows within that margin of an edge can move, towards
+  "needs more gas". Migration: `"NearFees!FeeRounding" = '"nearest"'` restores the old split together with the
+  old fees; a model that checks a child's gas against the remainder rule reads it by mode
+  (`NearFeeTable!FeeRounding`).
 - **The fee table's self-checks now run for every model.** TLC ignores the `ASSUME`s of an
   INSTANCEd module, so `NearFees`' own checks never ran for models that reach it through
   `NearAsync`'s `NearFeeTable`. `NearAsync` now carries `ASSUME NearFeeTable!FeeSelfChecks`:
@@ -275,7 +292,19 @@ Each entry ends with its migration.
   `[run.constants]` becomes TLC's `Name <- [Mod] const_Mod_Name`, which overrides a definition
   of a module the spec reaches through EXTENDS or INSTANCE, so `"NearFees!FeeRounding" =
   '"nearest"'` also reaches `NearAsync`'s `NearFeeTable`. The runner checks that `Mod` is
-  reachable and defines `Name` (zero-arity or a CONSTANT).
+  reachable and defines `Name` as a zero-arity definition. A `Name` that is a CONSTANT of
+  `Mod` is rejected: TLC's `[Mod]` substitution overrides definitions only and would leave
+  the CONSTANT unassigned ("not assigned a value by the configuration file"). The error says
+  to assign it unqualified (when the spec or a module it EXTENDS declares it) or to bind it
+  with `INSTANCE Mod WITH Name <- ...`.
+- **`examples/weight-split/remainder`**: the split's remainder, directionally. Six calls of
+  weight 1 share a model leftover of 1001 Ggas; nearcore's is taken as 1009.84 Ggas.
+  `remainder_up_ok` (the default) checks that no call gets more than nearcore's share
+  (`SharesLeNearcore`) and that the last, burning 1169.9 Ggas (1170 in the table), runs out of
+  gas as in nearcore (`NoFalseOk`); under `"nearest"` both fail (`remainder_nearest_over`,
+  `remainder_nearest_false_ok`). `weight-split` gains `weight_split_ok_nearest`, and
+  `platform-selftest` the scenario `zero_gas_share` (two static-0 calls sharing 1 Ggas: the
+  creator commits under `"up"`, fails under `"nearest"`; run `selftest_gas_share_nearest`).
 - **`examples/fee-edge`**: a Transfer budget 0.37 Ggas short of nearcore's fee passes under
   `"nearest"` (`edge_nearest_misses`, a false pass) and fails under `"up"`
   (`edge_up_catches`); the must-pass `edge_up_ok`, and `edge_up_tight_false_cex`, the price of
@@ -461,9 +490,10 @@ Each entry ends with its migration.
   protocol 88: a new receipt bypasses the link's outgoing buffer whenever it fits
   (`congestion_control.rs:292-325`, `:451`), and missed chunks reverse the order across heights
   (`chunk_validation.rs:478-480`). They are replaced by S4 ("No per-pair order"), which states
-  what nearcore does order (S2: per chunk, not per pair). The model's free order was not an
-  over-approximation there, it is exact; the planned opt-in pair-order switch is dropped, as
-  it would only hide real reorderings.
+  what nearcore does order (S2: per chunk, not per pair). Same-pair reorders are reachable,
+  so one alone does not make a counterexample spurious, though not every order the model
+  allows is (receipts in one receipt proof keep their order); the planned opt-in pair-order
+  switch is dropped, as it would only hide real reorderings.
 - Docs: N-precision, Units, USAGE and the `NearFees` header describe both rounding modes.
 - Conformance calibrator (`conformance/src/calib.rs`, `fit`): the burn line is an upper
   envelope. `per` is still the least-squares slope rounded to the nearest Ggas, but `base` is
@@ -474,6 +504,11 @@ Each entry ends with its migration.
   already the largest burn); only its header gained a line on the envelope.
   `conformance/tla/CalibProbes.tla`: `p.on_read` base 268 → 270 and `q.burn` base 0 → 1 Ggas.
 
+- Docs: S2, S4 and the README no longer claim that the model's unrestricted per-pair order
+  is exact. Same-pair overtaking is reachable, so a reorder alone does not make a
+  counterexample spurious, but receipts in one receipt proof keep their order
+  (`chunk_validation.rs:510-514`): a counterexample that reverses them can be spurious, and
+  its schedule must still be shown reachable.
 - Docs: C6 and C7 no longer claim that the sim validates execution order (the callback
   after the last input, after the resume or the timeout): the comparison is per receipt and
   unordered, and a yield callback is listed under the yielding transaction on both sides, so

@@ -16,7 +16,7 @@ The rule of thumb: **anything that can change the verdict of an existing model i
 |---|---|
 | A new operator, module, constant with a default, account kind, or fee row for a new protocol version, with every default unchanged | minor |
 | Changing the default `FeeProtocol` (fees move, so gas-mode verdicts and windows can change) | **major** |
-| Changing the default `FeeRounding` (every fee moves by up to 1 Ggas per entry) | **major** |
+| Changing the default `FeeRounding` (every fee moves by up to 1 Ggas per entry, and the unused-gas split's remainder rule with it) | **major** |
 | Changing a fee value for an already covered version (a correction) | **major** (it can change verdicts); patch only if no shipped example or calibration is affected, and say so |
 | A renamed or removed operator, a changed arity, a changed meaning, or a new required constant | major |
 | A semantic fix that changes a verdict of an existing model | major |

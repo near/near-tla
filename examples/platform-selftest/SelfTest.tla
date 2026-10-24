@@ -120,8 +120,12 @@ H(r) ==
                         RVal(0), 0, 3), s |-> {}]
     [] r.m = "cbf" -> [O |-> OErr(Out0, "cbf panics"), s |-> {}]
     [] r.m = "spawn0" ->    \* a function call left with no gas (static 0, weight 0); a.k = "cb":
-                            \* d.work takes the whole leftover and the callback gets nothing
-         IF a.k = "cb"
+                            \* d.work takes the whole leftover and the callback gets nothing;
+                            \* a.k = "two": two d.work calls, static 0, weight 1 each
+         IF a.k = "two"
+         THEN [O |-> Outcome({WithCall(Rcpt(nid + i, r.tx, D, r.to, "work", G0, 0, r.to, 0), <<0>>, <<1>>) : i \in 0..1},
+                             {}, RVal(0), 0, 2), s |-> {}]
+         ELSE IF a.k = "cb"
          THEN [O |-> Outcome({WithCall(Rcpt(nid, r.tx, D, r.to, "work", G0, 0, r.to, nid + 1), <<0>>, <<1>>)},
                              {WithCall(CbOf(r, nid + 1), <<0>>, <<0>>)}, RVal(0), 0, 2), s |-> {}]
          ELSE [O |-> Outcome({WithCall(Rcpt(nid, r.tx, D, r.to, "work", G0, 0, r.to, 0), <<0>>, <<0>>)},
@@ -323,6 +327,7 @@ Script(s) ==
                                     TxK(C, C, ADDK, 0, "k2") >>       \* a key action
     [] s = "zero_gas_child"   -> << TxG(C, U, "spawn0", G0, 0, 10000) >>
     [] s = "zero_gas_cb"      -> << TxG(C, U, "spawn0", G("cb", "", "", 0, 0, "", ""), 0, 10000) >>
+    [] s = "zero_gas_share"   -> << TxG(C, U, "spawn0", G("two", "", "", 0, 0, "", ""), 0, 501) >>
     [] s = "zero_gas_split"   -> << TxG(FT, U, "ft_transfer_call", FtArgs(D, 1, "keep"), 1, 6100),
                                     TxG(FT, U, "ft_transfer_call", FtArgs(D, 1, "keep"), 1, 6101) >>
     [] s = "panic_oog"        -> << TxG(C, U, "boom", G0, 0, 3000), TxG(C, U, "boom", G0, 0, 6000),
@@ -526,6 +531,14 @@ Expect(s) ==
     [] s = "zero_gas_cb" ->       \* ... also a callback with 0 gas
          \* action_validation.rs:350-351
          ran = {} /\ oog = {}
+    [] s = "zero_gas_share" ->    \* two calls, static 0 + weight 1, share a leftover of 1 Ggas.
+         \* nearcore gives each 0.5 Ggas: the creator commits, both run out of gas.  "up": each
+         \* gets floor(1/2) = 0 Ggas but has a share, so the same.  "nearest": the first gets
+         \* 0 Ggas and fails the creator (the last gets 1).
+         \* receipt_manager.rs:679-719, action_validation.rs:350-351
+         IF NearFeeTable!FeeRounding = "up"
+         THEN ran = {<<1, C, "spawn0">>} /\ oog = {<<1, "work">>}
+         ELSE ran = {} /\ oog = {}
     [] s = "zero_gas_split" ->    \* static 0 + weight 1 with leftover 0 is 0 gas: fails the
          \* creator; with 1 Ggas left the child runs and runs out
          \* action_validation.rs:350-351, gas_counter.rs:155-174

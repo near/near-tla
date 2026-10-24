@@ -27,13 +27,15 @@ the runtime allows.
 - **Over- versus under-approximations.** Most omissions are over-approximations: the model
   allows more orders than a network produces, so it misses no bug but can report
   counterexamples no network reaches. Replay every counterexample in the sim. (Receipts from
-  one account to another overtaking each other is not one of them: nearcore does that too,
-  [S4](docs/SEMANTICS.md#s4-no-per-pair-order).) A few are under-approximations, which can
-  hide bugs (for example, local-receipt priority under a full chunk); they are listed
-  separately in
+  one account to another overtaking each other does happen in nearcore,
+  [S4](docs/SEMANTICS.md#s4-no-per-pair-order), so such a reorder alone does not make a
+  counterexample spurious; its schedule still has to be reachable.) A few are
+  under-approximations, which can hide bugs (for example, local-receipt priority under a full
+  chunk); they are listed separately in
   [Under-approximations](docs/SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs).
-  Fees are rounded up by default, so a gas budget the model finds enough is enough as far as
-  the fee table goes.
+  Fees are rounded up by default and the unused-gas split then hands out no rounding
+  remainder, so a gas budget the model finds enough is enough as far as the fee table and the
+  split go.
 
 ## Quickstart
 
@@ -121,11 +123,12 @@ to move to a new protocol version.
 
 - `promise_and`: callbacks that join several promise results (SEMANTICS C6).
 - Yield/resume (NEP-519), with an abstract block clock for the timeout (C7, S3).
-- Fees rounded up instead of to the nearest Ggas, so gas edges err on the safe side
+- Fees rounded up instead of to the nearest Ggas, and the unused-gas split without a
+  whole-Ggas remainder, so gas edges err on the safe side
   (`FeeRounding`, N-precision); calibrated burns fitted as an upper envelope.
 - Per-sender-receiver ordering: dropped. nearcore keeps no per-pair order at protocol 88
-  (SEMANTICS S4), so the model's free order is exact there and a pair-order switch would
-  hide real bugs.
+  (SEMANTICS S4), so a pair-order switch would hide real bugs. Not every order the model
+  allows is reachable, though: a counterexample's schedule still needs replaying.
 
 ### Planned (v0.2)
 

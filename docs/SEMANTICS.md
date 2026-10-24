@@ -454,11 +454,29 @@ Each rule has four fields:
 - **nearcore:** `runtime/runtime/src/receipt_manager.rs:679-719` (`distribute_gas`), `:414-419`
   (`gas_weights.push` at append time); `runtime/runtime/src/function_call.rs:343-347` (called
   with `unused_gas = function_call.gas − outcome.used_gas`, skipped for views). NEP-264.
-- **Model:** `Give` assigns `g` to the children's weighted actions (`Share`, `FloorSum`), in
-  (child id, action index) order. That matches host-call order whenever a handler builds each
-  child completely before creating the next; a handler that interleaves appends across
-  promises can see the remainder (at most `n − 1` gas units for `n` weighted actions, far below
-  1 Ggas) go to a different action. **Per action:** each function-call action of a receipt has
+- **Model:** `Give` assigns `g` to the children's weighted actions (`Share`). The model's `U`
+  is in whole Ggas, and what happens to its remainder depends on `NearFees.FeeRounding`:
+  - **`"up"` (the default):** every weighted action gets `⌊U·w/W⌋` Ggas, the last one
+    included; the model's remainder (up to `n − 1` Ggas for `n` weighted actions) goes to no
+    one. Every share is then at most nearcore's: the model's `U` is at most nearcore's
+    (attached gas is itself such a share or a stated prepaid amount, and the need is an upper
+    bound: fees rounded up, burns an upper envelope, N-precision), and a whole-Ggas floor of a
+    smaller amount never exceeds the gas-unit floor of a larger one. A share falls short of
+    nearcore's by less than 1 Ggas plus its weight's part of the two leftovers' difference, and
+    the last action also by nearcore's remainder. Which action is last no longer matters. A
+    weighted action with static 0 whose share floors to 0 Ggas while `U > 0` does not fail its
+    creator (`ZeroGasKid`): in nearcore it gets a positive share. It runs with 0 Ggas and runs
+    out of gas, as it would in nearcore with less than 1 Ggas.
+  - **`"nearest"`:** the last weighted action in (child id, action index) order also gets the
+    remainder (`FloorSum`), in Ggas, so it can get up to `n − 1` Ggas more than nearcore
+    gives it, and a burn within that margin passes in the model and runs out of gas in
+    nearcore (`examples/weight-split/remainder`: six equal weights, a model leftover of 1001
+    Ggas against nearcore's 1009.84; the last child gets 1171 Ggas against 1168.31). The order
+    matches host-call order whenever a handler builds each child completely before creating
+    the next; a handler that interleaves appends across promises can see the remainder go to a
+    different action. A share that floors to 0 Ggas on a static-0 action fails its creator.
+
+  **Per action:** each function-call action of a receipt has
   its own gas and its own promise manager, so only that action's leftover is split, over the
   children it created (`runtime/runtime/src/function_call.rs:61`, `:343-345`; the rest is
   refunded, `runtime/runtime/src/lib.rs:1311-1315`). An outcome with `pa` (one
@@ -476,7 +494,14 @@ Each rule has four fields:
   `wnear_batch_DSC`). The floor-and-remainder rule (a few gas) is below that tolerance and
   stays nearcore reading; the calibration's split check confirms it in nearcore to the gas,
   against the formula rather than the model, and `examples/weight-split` covers it in the
-  model. <!-- conformance -->
+  model under both modes. The tolerance is symmetric and cannot see the direction. In a
+  one-off measurement against the sweep data (not a check `conform.py` runs), against the
+  sim's unrounded attached gas with `"up"` substituted, the model's is at or
+  below the sim's for every paired receipt of the 73 flows; with the remainder still handed
+  out it was above by up to 0.17 Ggas in `and3_mixed` (as under `"nearest"`).
+  `examples/weight-split/remainder` checks the direction on a remainder of 5 Ggas
+  (`remainder_up_ok`; under `"nearest"`, `remainder_nearest_over` and
+  `remainder_nearest_false_ok` fail). <!-- conformance -->
 
 ### G4. Who pays action send and exec fees
 
@@ -796,8 +821,10 @@ Each rule has four fields:
     receipts of the newest source block first.
 
   None of this orders receipts by sender and receiver: there is no per-pair FIFO (S4). The
-  model has no chunks or shards, so it encodes none of these rules; within a pair the
-  model's freedom is real (S4), and the rest of it is the over-approximation N-shards.
+  model has no chunks or shards, so it encodes none of these rules. Some same-pair reorders
+  are reachable (S4), but not every order the model allows: receipts in one receipt proof
+  keep their order, for one. What the model allows beyond nearcore, within a pair or not, is
+  the over-approximation N-shards.
 - **nearcore:** `runtime/runtime/src/lib.rs:2787-2826` (`process_receipts`: local `:2800`,
   delayed `:2808`, incoming `:2816`, timeouts `:2825`), `:2694-2711` (incoming in list order;
   over the limit, pushed to the delayed queue), `core/store/src/trie/receipts_column_helper.rs:83-119`
@@ -908,9 +935,15 @@ Each rule has four fields:
   `runtime/runtime/src/lib.rs:1554-1622` (the first `PromiseResume` runs the yield, `:1616-1620`
   ignores the rest).
 - **Model:** no constraint: any enabled receipt may run next (S2), whatever its sender,
-  receiver and creation order, and any resume in flight may be the one that wins (C7). That
-  is what nearcore can do, so a counterexample that needs a same-pair reorder is not a false
-  positive. The library offers no switch that imposes a pair order, because no such order
+  receiver and creation order, and any resume in flight may be the one that wins (C7).
+  nearcore can reorder a pair, so a same-pair reorder alone does not make a counterexample
+  spurious. That does not make every order the model allows reachable: receipts that leave
+  one source chunk for one destination shard travel in one receipt proof and run in their
+  order (`chain/chain/src/stateless_validation/chunk_validation.rs:510-514`, S2), and the
+  buffer bypass needs the earlier receipt not to fit the link's remaining limits. A
+  counterexample that reverses such receipts can still be spurious, so its particular
+  schedule must still be shown reachable (N-shards; replay it in the sim). The library offers
+  no switch that imposes a pair order, because no such order
   holds for all shard layouts and loads; a contract that needs one must enforce it itself
   (sequence numbers, or one message in flight at a time). `examples/pair-order` shows both:
   a receiver that assumes in-order delivery fails (`pair_assumes_fifo`), and one that keeps
@@ -1250,8 +1283,9 @@ against the current module code; some may be fixed in the modules later.
     - `"up"` (the default): never understated. A base entry is over by less than 1 Ggas, a
       per-byte term by less than `1.001 + 1e-6 × n` Ggas for `n` bytes, a single-action
       receipt (receipt base and one action, send and exec) by less than **4 Ggas** (a named
-      Transfer: 450 against 446.37). As far as the fee table goes, a prepaid amount the model
-      finds enough is enough in nearcore. The price is a false out-of-gas within that margin.
+      Transfer: 450 against 446.37). As far as the fee table and the split below go, a
+      prepaid amount the model finds enough is enough in nearcore, and so is the gas it gives
+      a child. The price is a false out-of-gas within that margin.
     - `"nearest"` (the earlier rounding; set `"NearFees!FeeRounding" = '"nearest"'` in a run's constants):
       at most 0.5 Ggas per base entry, `0.5 + 0.001 + 0.5e-6 × n` Ggas per per-byte term
       (≤ 0.51 Ggas up to 20 KB, ≤ 2.6 Ggas at 4 MiB), roughly 3 Ggas per receipt, **either
@@ -1261,6 +1295,13 @@ against the current module code; some may be fixed in the modules later.
       `"nearest"` (`edge_nearest_misses`) and fails under `"up"` (`edge_up_catches`), and
       under `"up"` a budget that is enough by 0.63 Ggas fails too
       (`edge_up_tight_false_cex`).
+  - **The unused-gas split (G3), by the same switch.** `"up"`: every weighted child gets
+    `⌊U·w/W⌋` Ggas of the model's leftover `U` and the remainder goes to no one, so no child
+    gets more than in nearcore (the model's `U` is at most nearcore's, by the bounds here);
+    a child's share is short by less than 1 Ggas plus its part of the leftovers' difference.
+    `"nearest"`: the last weighted child also gets the remainder, up to `n − 1` Ggas for `n`
+    weighted children, which can exceed nearcore's share by about that much
+    (`examples/weight-split/remainder`).
   - **Calibrated burns** (`CalibStd`, and tables from `conformance`'s `calibrate`). `base` and
     exec fees are rounded up, and `base` is fitted as an upper envelope: every burn measured
     is at or below `base + per × size`. `per` is the fitted slope rounded to the nearest whole
@@ -1273,11 +1314,12 @@ against the current module code; some may be fixed in the modules later.
   A predicted gas edge is accurate only to these bounds summed over the receipts on the path.
   Window edges closer together than that, and windows narrower than it, are not trustworthy.
   Conformance compares gas at 0.1 Tgas resolution with `FeeRounding` pinned to `"nearest"`,
-  since it measures accuracy. Under `"up"` the same comparison differs only where it should:
-  2 of 73 flows (`ft_storage_again`, `wnear_storage_again`, whose `storage_deposit` refunds
-  the excess by a Transfer) move their edge one grid point up, from 1.0 to 1.1 Tgas. At 1.0
-  Tgas nearcore succeeds with 0.8 and 1.3 Ggas to spare, and the model, 3.6 Ggas over on the
-  Transfer, runs out of gas. Nothing else changes.
+  since it measures accuracy. Under `"up"` (with the split above) the same comparison differs
+  only where it should: 2 of 73 flows (`ft_storage_again`, `wnear_storage_again`, whose
+  `storage_deposit` refunds the excess by a Transfer) move their edge one grid point up, from
+  1.0 to 1.1 Tgas. At 1.0 Tgas nearcore succeeds with 0.8 and 1.3 Ggas to spare, and the
+  model, 3.6 Ggas over on the Transfer, runs out of gas. No other status or edge changes;
+  attached gas moves within the 5 Ggas tolerance, never above the sim's (G3).
 - **N-batch-oog. Per-action out-of-gas in batches.** nearcore checks each function-call action
   against its own gas and splits only that action's leftover (G3). `NearAsync` does the same
   for an outcome with `pa`, and the token batch emits it by default (`TokBatchPerAction`). A

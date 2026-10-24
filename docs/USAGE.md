@@ -326,7 +326,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
 | `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
-| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into TLC's `FeeRounding <- [NearFees] ...` ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
+| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into TLC's `FeeRounding <- [NearFees] ...`. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`.
 Pick names the library does not export (`ReserveShape`, for example, is a `Nep141` operator):
@@ -750,10 +750,15 @@ can make a callback run out while its call succeeded. In gas mode:
   failure. A panic whose outcome names its panic-path burn key (`OPanicKey(O, k)`) is
   labelled out of gas when that burn plus the children created before the panic exceeds the
   attached gas; without a panic key a panic is always a plain failure;
-- otherwise the leftover is split over the children's function-call actions by weight; the
-  last weighted action also gets the remainder;
-- a child function call left with 0 gas fails its creator; one with no static gas at all
-  (no `GasCall` entry, no `WithCall`) is a TLC assertion;
+- otherwise the leftover is split over the children's function-call actions by weight, each
+  getting `floor(U * w / W)` Ggas. With the default `FeeRounding = "up"` the whole-Ggas
+  remainder goes to no one, so no child gets more than in nearcore; with `"nearest"` the last
+  weighted action also gets it
+  ([G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas));
+- a child function call left with 0 gas fails its creator (under `"up"`: static 0 and no
+  share at all, since nearcore gives any weighted action a positive share of a positive
+  leftover); one with no static gas at all (no `GasCall` entry, no `WithCall`) is a TLC
+  assertion;
 - action-only children cost their creator the fee table's send + exec fee by default
   (`XFER`: `TransferFeeTotal` by the receiver's account kind; `STAKE`: `OneActionReceiptFee`).
   Key-action receipts get `KeyFee` only through `AddKeyRcpt` / `DelKeyRcpt`. A `GasCall`
@@ -1151,8 +1156,14 @@ and prints the intervals in Tgas.
 
 Windows inherit the precision of the tables: only trust a window that is wider than the
 rounding bound summed over its path, and only on calibrated tables. With the default
-`FeeRounding = "up"` the fee table never understates, so a window's lower edge errs high (by
-less than 4 Ggas per action-only receipt), never low.
+`FeeRounding = "up"` the fee table never understates a fee and the unused-gas split never
+gives a child more than nearcore does (it hands out no whole-Ggas remainder,
+[G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)), so as far as the fee
+table and the split go a window's lower edge errs high, never low: by less than 4 Ggas per
+action-only receipt, plus less than 1 Ggas per weighted child for each split on the path,
+plus what the smaller leftover passes on. Burns are only as good as their calibration
+([N-burn](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Under `"nearest"` either
+edge can err by a few Ggas either way, the split included.
 
 ## Worked material
 
@@ -1177,7 +1188,7 @@ All examples are toy contracts written for this repo.
   | `signer-propagation` | the signer is inherited by children and callbacks |
   | `deletekey-atomicity` | `[DeleteKey, FunctionCall]` in one receipt is atomic |
   | `local-priority` | local-receipt priority on versus off |
-  | `weight-split` | the split of unused gas by weight |
+  | `weight-split` | the split of unused gas by weight; `remainder/`: under `"nearest"` the last child can get more than in nearcore, under `"up"` none does |
   | `eth-implicit-fee` | the Transfer fee to an eth-implicit receiver |
   | `fee-edge` | a gas budget at a fee's edge: `FeeRounding` `"up"` catches a budget 0.37 Ggas short that `"nearest"` passes |
   | `pair-order` | no per-pair FIFO: a receiver that assumes in-order delivery fails, one with sequence numbers passes |

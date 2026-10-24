@@ -1,0 +1,54 @@
+# The whole-Ggas remainder of the unused-gas split (gas mode, illustrative table).
+# See Fan.tla.
+#
+#   python3 tools/run.py examples/weight-split/remainder
+
+spec = "Fan"
+workers = 2
+library = "../../../modules"
+budget_s = 60
+tags = ["semantics:weight-split"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"s"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "PGasCall"
+GasBurn = "PGasBurn"
+LogOn = "FALSE"
+U = '"u"'
+S = '"s"'
+W = '"w"'
+Prepaid = "10801"
+
+# Default "up": every call gets floor(1001 / 6) = 166 on top of its static, at most
+# nearcore's share; k6 (1170) runs out of gas, as in nearcore.
+[[run]]
+name = "remainder_up_ok"
+expect = "pass"
+invariants = ["SharesLeNearcore", "NoFalseOk", "UpSplit", "Settled", "Sane"]
+
+# "nearest" gives k6 the model's remainder: 1171 Ggas, above nearcore's 1168.31.
+[[run]]
+name = "remainder_nearest_over"
+expect = "violation"
+invariant = "SharesLeNearcore"
+invariants = ["SharesLeNearcore", "Sane"]
+[run.constants]
+"NearFees!FeeRounding" = '"nearest"'
+
+# ... and so k6 succeeds in the model where nearcore runs out of gas.
+[[run]]
+name = "remainder_nearest_false_ok"
+expect = "violation"
+invariant = "NoFalseOk"
+invariants = ["NoFalseOk", "Sane"]
+[run.constants]
+"NearFees!FeeRounding" = '"nearest"'

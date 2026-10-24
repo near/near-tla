@@ -55,7 +55,9 @@ runs.toml format
   "NearFees!FeeRounding" = '"nearest"'   # Mod!Name: a definition of a module the spec
                               # EXTENDS or INSTANCEs (directly or through its modules):
                               # TLC's `Name <- [Mod] expr`, which also reaches a named
-                              # instance such as NearAsync's NearFeeTable
+                              # instance such as NearAsync's NearFeeTable. Definitions
+                              # only: a CONSTANT of Mod is an error (assign it unqualified,
+                              # or bind it with INSTANCE Mod WITH)
 
 Every key except name/expect/invariant/expect_*/window_step/allow_no_invariants may also
 be given at the top level as a default for all runs of the file.
@@ -389,6 +391,18 @@ def _id_list(text: str, pos: int) -> list[str]:
 _ZERO_ARITY_DEF = re.compile(r"^[ \t]*(?:LOCAL[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*==", re.M)
 
 
+def module_names(src: str) -> tuple[list[str], set[str], set[str]]:
+    """(EXTENDS list, declared CONSTANTs, zero-arity definitions) of one module's source."""
+    s = strip_tla(src)
+    m = re.search(r"\bEXTENDS\b", s)
+    ext = _id_list(s, m.end()) if m else []
+    defs: set[str] = set(_ZERO_ARITY_DEF.findall(s))
+    consts: set[str] = set()
+    for m in re.finditer(r"\bCONSTANTS?\b", s):
+        consts.update(_id_list(s, m.end()))
+    return ext, consts, defs
+
+
 def module_decls(src: str) -> tuple[list[str], set[str]]:
     """(EXTENDS list, names a cfg may substitute) of one module's source.
 
@@ -396,13 +410,8 @@ def module_decls(src: str) -> tuple[list[str], set[str]]:
     also overrides a defined operator, and the library uses that for overridable
     defaults.
     """
-    s = strip_tla(src)
-    m = re.search(r"\bEXTENDS\b", s)
-    ext = _id_list(s, m.end()) if m else []
-    names: set[str] = set(_ZERO_ARITY_DEF.findall(s))
-    for m in re.finditer(r"\bCONSTANTS?\b", s):
-        names.update(_id_list(s, m.end()))
-    return ext, names
+    ext, consts, defs = module_names(src)
+    return ext, consts | defs
 
 
 _INSTANCE = re.compile(r"\bINSTANCE\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -469,9 +478,19 @@ def check_constants(run: Run) -> str | None:
             if mod not in mods:
                 raise ConfigError(f"{rel(run.toml)} run {run.name}: {k!r}: {run.spec} neither EXTENDS "
                                   f"nor INSTANCEs a module {mod}")
-            if name not in module_decls(mods[mod].read_text(encoding="utf-8", errors="replace"))[1]:
-                raise ConfigError(f"{rel(run.toml)} run {run.name}: {k!r}: {name} is neither a CONSTANT "
-                                  f"nor a zero-arity definition of {mod}")
+            _, consts, defs = module_names(mods[mod].read_text(encoding="utf-8", errors="replace"))
+            if name in consts:
+                # TLC's `Name <- [Mod] expr` overrides a definition only; for a CONSTANT it
+                # leaves the parameter unassigned and TLC stops.
+                how = (f"assign it unqualified, {name!r}"
+                       if name in declared else
+                       f"bind it where {mod} is instantiated, `INSTANCE {mod} WITH {name} <- ...`, or "
+                       f"declare a CONSTANT there and assign that")
+                raise ConfigError(f"{rel(run.toml)} run {run.name}: {k!r}: {name} is a CONSTANT of {mod}, "
+                                  f"and a module-qualified key only overrides definitions; {how}")
+            if name not in defs:
+                raise ConfigError(f"{rel(run.toml)} run {run.name}: {k!r}: {name} is not a zero-arity "
+                                  f"definition of {mod}")
     return None
 
 
@@ -525,7 +544,8 @@ def const_def_name(key: str) -> str:
 
 def cfg_substitution(key: str) -> str:
     """The cfg line for constant key `Name` (`Name <- const_Name`) or `Mod!Name`
-    (`Name <- [Mod] const_Mod_Name`: TLC's override of a definition in module Mod)."""
+    (`Name <- [Mod] const_Mod_Name`: TLC's override of a definition in module Mod; it does
+    not assign a CONSTANT, which check_constants rejects)."""
     if "!" in key:
         mod, name = key.split("!", 1)
         return f"{name} <- [{mod}] {const_def_name(key)}"

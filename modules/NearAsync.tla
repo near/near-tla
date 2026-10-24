@@ -79,16 +79,20 @@
 (*      same revert scope as any failure.  This also covers "gas checked   *)
 (*      at promise creation": nothing the receipt would create exists.     *)
 (*    * otherwise U = attached - Need is split over the children's         *)
-(*      function-call actions with weight > 0, in creation order: each     *)
-(*      gets floor(U*w/W), the last one also gets the remainder; W = 0     *)
-(*      distributes nothing (runtime/runtime/src/receipt_manager.rs:414,   *)
-(*      :679-721).                                                         *)
+(*      function-call actions with weight > 0: each gets floor(U*w/W);     *)
+(*      W = 0 distributes nothing (runtime/runtime/src/receipt_manager.rs: *)
+(*      414, :679-721).  nearcore also gives the last weighted action the  *)
+(*      remainder, in gas units.  Under NearFees.FeeRounding = "up" (the   *)
+(*      default) the model drops its whole-Ggas remainder, so every share  *)
+(*      is a lower bound of nearcore's; under "nearest" the last action in *)
+(*      creation order gets it (see Share).                                *)
 (*    * a receipt with several function-call actions may give per-action   *)
 (*      accounting in the outcome (`pa`): each action's leftover is split  *)
 (*      over the children it created (function_call.rs:61, :343-345);      *)
 (*      without `pa` the whole receipt is one action.                      *)
 (*    * a created function call left with 0 gas fails the creating receipt *)
-(*      (action_validation.rs:350-351, applied at lib.rs:968-978).         *)
+(*      (action_validation.rs:350-351, applied at lib.rs:968-978); see     *)
+(*      ZeroGasKid for "up".                                               *)
 (*    * a panic is labelled out-of-gas when its explicit panic-path burn   *)
 (*      (OPanicKey) plus the children created before it exceeds the        *)
 (*      attached gas (gas_counter.rs:136-141, :155-174, :205-213).         *)
@@ -654,20 +658,38 @@ FloorSum(E, U, W) == IF E = {} THEN 0
 \* (receipt_manager.rs:414).  They agree when receipts are created in id
 \* order and their actions appended in order, as near-sdk promise chains do.
 LastE(E) == CHOOSE e \in E : \A f \in E : f[1] < e[1] \/ (f[1] = e[1] /\ f[2] <= e[2])
+\* nearcore gives each weighted action floor(U*w/W) in gas units and the last
+\* one also the remainder, fewer than n gas units for n weighted actions
+\* (receipt_manager.rs:679-719).  The model's U is in whole Ggas.
+\*  "up" (the default): floor(U*w/W) Ggas for every action, the last one
+\*    included; the model's remainder (up to n - 1 Ggas) is not handed out.
+\*    The model's U is at most nearcore's (attached gas is a lower bound,
+\*    Need an upper bound), and a whole-Ggas floor of a smaller value never
+\*    exceeds the gas-unit floor of a larger one, so every share is at most
+\*    nearcore's: gas the model finds enough for a child is enough there.
+\*  "nearest": the last action in (id, index) order gets the remainder in
+\*    Ggas, as before; it can then exceed nearcore's share by up to n - 1
+\*    Ggas (docs/SEMANTICS.md, G3).
 Share(e, U, E) ==
     LET W == WSum(E) IN
-    IF e = LastE(E) THEN U - FloorSum(E \ {e}, U, W) ELSE (U * e[3]) \div W
+    IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div W
+    ELSE IF e = LastE(E) THEN U - FloorSum(E \ {e}, U, W) ELSE (U * e[3]) \div W
 
 Assign(c, U, E) ==
     IF ~GasListsOK(c) THEN c
     ELSE [c EXCEPT !.g = [k \in DOMAIN c.gs |->
                         c.gs[k] + (IF c.gw[k] > 0 /\ U > 0 THEN Share(<<c.id, k, c.gw[k]>>, U, E) ELSE 0)]]
 
+\* The leftover U split over c's siblings: its action's under pa, else the receipt's.
+LeftFor(r, O, c) ==
+    IF PerAction(r, O) THEN LET k == ActOf(O, c) IN ActGas(r, k) - ActNeed(O, k)
+    ELSE GasOf(r) - Need(r, O)
+
 \* A child with its attached gas, after the split.
 Alloc(r, O, c) ==
     IF PerAction(r, O)
-    THEN LET k == ActOf(O, c) IN Assign(c, ActGas(r, k) - ActNeed(O, k), EntriesOf(ActKids(O, k)))
-    ELSE Assign(c, GasOf(r) - Need(r, O), Entries(O))
+    THEN LET k == ActOf(O, c) IN Assign(c, LeftFor(r, O, c), EntriesOf(ActKids(O, k)))
+    ELSE Assign(c, LeftFor(r, O, c), Entries(O))
 
 Give(r, O, S) ==
     IF GasMode # "gas" THEN S ELSE {Alloc(r, O, c) : c \in S}
@@ -675,9 +697,19 @@ Give(r, O, S) ==
 \* A function-call child left with 0 gas (static 0 and no share) fails the
 \* creating receipt: new receipts are validated after the action
 \* (lib.rs:968-978; action_validation.rs:350-351, FunctionCallZeroAttachedGas).
+\* "nearest": its allocated gas is 0.  "up": its static is 0 and it gets no
+\* share at all (weight 0, or U = 0).  A weighted child with U > 0 gets a
+\* positive share in nearcore, whose U is then at least 1 Ggas (10^9 gas
+\* units; weight sums are far smaller), even where the model's lower-bound
+\* floor is 0 Ggas: there the creator commits and the child runs with 0 Ggas
+\* in the model, so it runs out of gas, as it does in nearcore with less than
+\* 1 Ggas.
 ZeroGasKid(r, O) ==
     /\ GasMode = "gas"
-    /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs : Alloc(r, O, c).g[k] = 0
+    /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs :
+         IF NearFeeTable!FeeRounding = "up"
+         THEN GasListsOK(c) /\ c.gs[k] = 0 /\ ~(c.gw[k] > 0 /\ LeftFor(r, O, c) > 0)
+         ELSE Alloc(r, O, c).g[k] = 0
 
 \* A receipt with several function-call actions and no pa would pool their
 \* gas; that is only allowed with PooledGasOK.  A failing outcome without a

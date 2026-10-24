@@ -165,7 +165,10 @@ SendPart(row, sir) == IF sir THEN row.ss ELSE row.sn
 \*   "NearFees!FeeRounding" = '"nearest"'
 \* in a runs.toml's [constants] (tools/run.py), which is TLC's
 \*   FeeRounding <- [NearFees] <value>
-\* and also reaches the NearFeeTable instance inside NearAsync.
+\* and also reaches the NearFeeTable instance inside NearAsync.  NearAsync
+\* reads it for the unused-gas split too: under "up" no child gets the
+\* split's whole-Ggas remainder, so none gets more than in nearcore; under
+\* "nearest" the last weighted child gets it (NearAsync, Share).
 FeeRounding == "up"
 
 FeeRoundingModes == {"nearest", "up"}

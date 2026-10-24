@@ -70,8 +70,21 @@ expect = "pass"
 GasMode = '"gas"'
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
-Scns = '''{"zero_gas_child", "zero_gas_cb", "zero_gas_split", "panic_oog", "panic_plain",
-          "oog_and_broke", "per_action", "per_action_two", "per_action_panic", "ft_std_gas"}'''
+Scns = '''{"zero_gas_child", "zero_gas_cb", "zero_gas_share", "zero_gas_split", "panic_oog",
+          "panic_plain", "oog_and_broke", "per_action", "per_action_two", "per_action_panic",
+          "ft_std_gas"}'''
+
+# A weighted call whose share floors to 0 Ggas under "nearest" fails its creator; under
+# "up" (selftest_gas) it has a share, so the creator commits and the call runs out of gas.
+[[run]]
+name = "selftest_gas_share_nearest"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"zero_gas_share"}'
+"NearFees!FeeRounding" = '"nearest"'
 
 # FT 3.x gas shape (TokFtGasShape "reserve").
 [[run]]
