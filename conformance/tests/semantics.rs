@@ -70,7 +70,9 @@ fn contract_self_call_is_not_local() {
     let (hc, hb, hp) = (h(&sim.outcome(c)), h(&sim.outcome(b)), h(&sim.outcome(p)));
     println!("D2 self-call: chain's self-call mark at #{hc}, bob's at #{hb}, p's self-signed at #{hp}; marks = {}", marks(&sim));
     assert_eq!((hc, hb), (hp, hp), "all three run in one block");
-    assert!(marks(&sim).starts_with("p,"), "only the transaction's own receipt is local");
+    // p's transaction receipt is local and runs first; bob's receipt and
+    // chain's self-call arrive as incoming receipts, in that order.
+    assert_eq!(marks(&sim), "p,b,c,", "only the transaction's own receipt is local");
 }
 
 fn records(o: &TxOutcome) -> Vec<Value> {
@@ -82,23 +84,28 @@ fn records(o: &TxOutcome) -> Vec<Value> {
         .collect()
 }
 
-/// D1: every receipt of a transaction sees its signer and signer key,
-/// callbacks and cross-contract children included; the predecessor is the
-/// immediate creator.
+/// D1: every receipt of a transaction sees its signer and the key that
+/// signed it, callbacks and cross-contract children included; the
+/// predecessor is the immediate creator. alice holds two full-access keys
+/// and signs with the second.
 #[test]
 fn signer_propagates_to_children_and_callbacks() {
     let mut sim = world();
-    let pk = sim.secret_key(ALICE).public_key().to_string();
+    let first = sim.secret_key(ALICE).public_key();
+    let second = SecretKey::from_seed(KeyType::ED25519, "alice-second");
+    sim.tx(ALICE, ALICE).add_key(second.public_key(), AccessKey::full_access()).transact().assert_success();
     let kids = json!([{ "receiver": Q, "method": "record", "args": "{\"tag\":\"child\"}", "static_ggas": 10000, "weight": 1 }]);
     let cb = json!({ "method": "record", "args": "{\"tag\":\"cb\"}", "static_ggas": 10000, "weight": 1 });
-    let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kids, "cb": cb })).transact();
+    let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kids, "cb": cb })).sign_with(&second).transact();
     o.assert_success();
     let rs = records(&o);
     println!("D1 records: {rs:?}");
     assert_eq!(rs.len(), 2);
+    let pk = second.public_key().to_string();
+    assert_ne!(pk, first.to_string());
     for r in &rs {
         assert_eq!(r["signer"], ALICE);
-        assert_eq!(r["signer_pk"], pk.as_str());
+        assert_eq!(r["signer_pk"], pk.as_str(), "the signing key, not alice's first key");
         assert_eq!(r["predecessor"], P);
     }
     assert_eq!(rs[0]["current"], Q);

@@ -52,126 +52,274 @@ pub fn split(u_left: u64, ws: &[u64]) -> Vec<u64> {
     out
 }
 
-/// Send fee (gas) of an action-only receipt created by `parent_rx`:
-/// receipt creation plus each action's send fee (Transfer by receiver
-/// account type), and the exec fee the fee table predicts.
-pub fn action_only_fees(sim: &Sim, parent_rx: &str, r: &Value) -> Result<(u64, u64), String> {
+/// Send and exec fee (gas) of an action-only receipt created by
+/// `parent_rx`: receipt creation plus each action's fees. Transfer (by the
+/// receiver's account kind), CreateAccount, DeleteAccount, DeleteKey and
+/// Stake come from the fee table. AddKey and the deploy actions depend on
+/// arguments the outcome does not record (the key's permission and method
+/// names, the code size): one such action per receipt is solved from the
+/// exec fee the child was measured to prepay (full-access key, or base +
+/// per-byte * n with n whole), and its send fee priced from the same
+/// parameters (`derived` names what was solved). Anything else is an error.
+pub fn action_only_fees(sim: &Sim, parent_rx: &str, r: &Value) -> Result<AoFees, String> {
     use near_contract_sim::nearcore::near_parameters::ActionCosts;
     let rx = s(&r["receiver"]);
     let sir = parent_rx == rx;
+    let label = format!("{rx}[{}]", actions(r).join(","));
     let (rs, re) = crate::receipt_fees(sim, sir);
     let (mut send, mut exec) = (rs, re);
     let fees = &sim.config.runtime_config().fees;
+    let tab = |c: ActionCosts| (fees.fee(c).send_fee(sir).gas.as_gas(), fees.fee(c).exec_fee().gas.as_gas());
+    let mut open: Option<String> = None;
     for a in actions(r) {
         let (sf, ef) = match a.as_str() {
             "Transfer" => crate::transfer_fees(sim, sir, rx),
-            "Stake" => (fees.fee(ActionCosts::stake).send_fee(sir).gas.as_gas(), fees.fee(ActionCosts::stake).exec_fee().gas.as_gas()),
-            "DeleteKey" => (fees.fee(ActionCosts::delete_key).send_fee(sir).gas.as_gas(), fees.fee(ActionCosts::delete_key).exec_fee().gas.as_gas()),
-            "CreateAccount" => (fees.fee(ActionCosts::create_account).send_fee(sir).gas.as_gas(), fees.fee(ActionCosts::create_account).exec_fee().gas.as_gas()),
-            other => return Err(format!("action-only child with a {other} action: its send fee is not computed (calibrate it by hand)")),
+            "Stake" => tab(ActionCosts::stake),
+            "DeleteKey" => tab(ActionCosts::delete_key),
+            "CreateAccount" => tab(ActionCosts::create_account),
+            "DeleteAccount" => tab(ActionCosts::delete_account),
+            "AddKey" | "DeployContract" | "DeployGlobalContract" | "UseGlobalContract" => {
+                if open.is_some() {
+                    return Err(format!("action-only child {label}: two argument-dependent actions; their fees cannot be told apart"));
+                }
+                open = Some(a.clone());
+                (0, 0)
+            }
+            other => return Err(format!("action-only child {label}: no fee rule for a {other} action")),
         };
         send += sf;
         exec += ef;
     }
-    Ok((send, exec))
+    let mut derived = String::new();
+    if let Some(a) = open {
+        let measured = u(&r["exec_fees"]);
+        let rem = measured.checked_sub(exec).ok_or_else(|| format!("action-only child {label}: measured exec fee {measured} below the table's {exec}"))?;
+        // (name, send, exec) of each reading of `rem` that fits.
+        let mut fits: Vec<(String, u64, u64)> = vec![];
+        let per_byte = |name: &str, base: ActionCosts, byte: ActionCosts, fits: &mut Vec<(String, u64, u64)>| {
+            let ((bs, be), (ys, ye)) = (tab(base), tab(byte));
+            if rem >= be && ye > 0 && (rem - be) % ye == 0 {
+                let n = (rem - be) / ye;
+                fits.push((format!("{name}, {n} bytes"), bs + ys * n, rem));
+            }
+        };
+        match a.as_str() {
+            "AddKey" => {
+                let (fs, fe) = tab(ActionCosts::add_full_access_key);
+                if rem == fe {
+                    fits.push(("full-access key".into(), fs, fe));
+                }
+                per_byte("function-call key", ActionCosts::add_function_call_key_base, ActionCosts::add_function_call_key_byte, &mut fits);
+            }
+            "DeployContract" => per_byte("code", ActionCosts::deploy_contract_base, ActionCosts::deploy_contract_byte, &mut fits),
+            "DeployGlobalContract" => per_byte("code", ActionCosts::deploy_global_contract_base, ActionCosts::deploy_global_contract_byte, &mut fits),
+            _ => per_byte("identifier", ActionCosts::use_global_contract_base, ActionCosts::use_global_contract_byte, &mut fits),
+        }
+        if fits.len() != 1 {
+            return Err(format!("action-only child {label}: the measured exec fee leaves {rem} gas for {a}, which fits {} readings of the fee table", fits.len()));
+        }
+        let (what, sf, ef) = fits.pop().unwrap();
+        send += sf;
+        exec += ef;
+        derived = format!("{a}: {what}");
+    }
+    Ok(AoFees { send, exec, derived })
+}
+
+pub struct AoFees {
+    pub send: u64,
+    pub exec: u64,
+    /// What was solved from the measured exec fee (empty: all from the
+    /// fee table, so the exec fee is a check).
+    pub derived: String,
 }
 
 #[derive(Default, Debug)]
 pub struct SplitReport {
+    /// Function-call children whose attached gas was predicted.
     pub children: usize,
     pub mismatches: usize,
     pub worst: u64,
-    pub batch_children: usize,
-    pub batch_worst: u64,
+    /// Of those, children of multi-call receipts (checked per action).
+    pub multi_children: usize,
+    /// Parents skipped (a child without a declared static), and children
+    /// that could not be checked: both block a table.
+    pub skipped_parents: usize,
+    pub unchecked: usize,
+    /// Multi-call receipts: (flow, receipt key, burn of the last action,
+    /// burn of the earlier actions), Ggas, at the top of the grid.
+    pub per_action: Vec<(String, String, f64, f64)>,
+    /// Problems that block a table.
+    pub errors: Vec<String>,
+    /// Mismatch details (first few).
     pub notes: Vec<String>,
 }
 
-/// Recomputes every function-call child's attached gas from its parent's
-/// measured use (`burnt - exec_fees`), the children's exec fees and the
-/// declared statics and weights, at every point of `lines`.
+fn push_once(v: &mut Vec<String>, n: String) {
+    if !v.contains(&n) {
+        v.push(n);
+    }
+}
+
+/// One multi-call receipt at one grid point, for the per-action check.
+struct MultiPt {
+    gas: u64,
+    /// Gas of its last function-call action, as its creator split it.
+    last: Option<u64>,
+    /// Exec fees of its function-call children plus their statics.
+    costs: u64,
+    /// (child id, static, weight) per created function-call action.
+    acts: Vec<(String, u64, u64)>,
+    /// Child id -> (call key, attached).
+    kids: Vec<(String, String, u64)>,
+    used: u64,
+}
+
+/// Recomputes every function-call child's attached gas (nearcore's
+/// `distribute_gas`) at every point of `lines`, from the declared statics
+/// and weights:
+/// - a single-call parent's leftover is its attached gas minus its
+///   measured use (`burnt - exec_fees`), its children's exec fees and
+///   statics;
+/// - a multi-call parent splits per action: the children (all assumed to
+///   come from its last action) share that action's gas minus its burn,
+///   their exec fees and statics. The last action's burn is not in the
+///   outcome, so it is inferred at the top of the grid and the prediction
+///   checked at every other point.
 pub fn check_split(res: &Resolved, flow: &Flow, lines: &[Value], rep: &mut SplitReport) {
+    let mut multi: BTreeMap<String, Vec<MultiPt>> = BTreeMap::new();
     for v in lines {
         let rs: Vec<&Value> = v["receipts"].as_array().unwrap().iter().filter(|r| !r["conversion"].as_bool().unwrap()).collect();
-        // Predicted per-action gas of receipts seen as children (for
-        // prepaid-relative statics of their own children).
+        // Predicted per-action gas of receipts seen as children.
         let mut peract: HashMap<String, Vec<u64>> = HashMap::new();
         for p in &rs {
             if is_refund(p) || s(&p["status"]) != "ok" || methods(p).is_empty() {
                 continue;
             }
             let kids: Vec<&&Value> = rs.iter().filter(|c| c["parent"] == p["id"] && !is_refund(c)).collect();
-            if kids.is_empty() {
+            let fkids: Vec<&&Value> = kids.iter().copied().filter(|c| !methods(c).is_empty()).collect();
+            if fkids.is_empty() {
                 continue;
             }
             let pid = s(&p["id"]).to_owned();
             let pa = u(&p["attached"]);
-            let p_last = peract.get(&pid).and_then(|x| x.last().copied()).unwrap_or(pa);
+            let p_last = peract.get(&pid).and_then(|x| x.last().copied());
             let pkey = call_key(p);
             let mut acts: Vec<(String, u64, u64)> = vec![];
             let mut ok = true;
-            for c in &kids {
-                if methods(c).is_empty() {
-                    continue;
-                }
+            for c in &fkids {
                 let ck = call_key(c);
                 match res.static_of(flow, &pkey, &ck) {
                     Some(st) => {
                         if let Some(x) = st.prepaid_minus_ggas {
-                            acts.push((s(&c["id"]).to_owned(), p_last.saturating_sub(x * GGAS), st.weight));
+                            acts.push((s(&c["id"]).to_owned(), p_last.unwrap_or(pa).saturating_sub(x * GGAS), st.weight));
                         } else {
+                            if st.actions.len() != methods(c).len() {
+                                push_once(&mut rep.errors, format!("{}: static of {ck} declares {} actions, the receipt has {}", flow.name, st.actions.len(), methods(c).len()));
+                                ok = false;
+                            }
                             for a in &st.actions {
                                 acts.push((s(&c["id"]).to_owned(), a[0] * GGAS, a[1]));
                             }
                         }
                     }
                     None => {
-                        let n = format!("{}: no static declared for {ck} (created by {pkey})", flow.name);
-                        if !rep.notes.contains(&n) {
-                            rep.notes.push(n);
-                        }
+                        push_once(&mut rep.errors, format!("{}: no static declared for {ck} (created by {pkey})", flow.name));
                         ok = false;
                     }
                 }
             }
             if !ok {
+                rep.skipped_parents += 1;
+                rep.unchecked += fkids.len();
                 continue;
             }
             let used = u(&p["burnt"]) - u(&p["exec_fees"]);
-            let need = used + kids.iter().map(|c| u(&c["exec_fees"])).sum::<u64>() + acts.iter().map(|a| a.1).sum::<u64>();
-            let left = pa.saturating_sub(need);
+            let kid_exec: u64 = kids.iter().map(|c| u(&c["exec_fees"])).sum();
+            let statics: u64 = acts.iter().map(|a| a.1).sum();
+            if methods(p).len() > 1 {
+                let fexec: u64 = fkids.iter().map(|c| u(&c["exec_fees"])).sum();
+                let shape = fkids.iter().map(|c| call_key(c)).collect::<Vec<_>>().join(",");
+                multi.entry(format!("{pkey} -> {shape}")).or_default().push(MultiPt {
+                    gas: u(&v["gas"]),
+                    last: p_last,
+                    costs: fexec + statics,
+                    acts: acts.clone(),
+                    kids: fkids.iter().map(|c| (s(&c["id"]).to_owned(), call_key(c), u(&c["attached"]))).collect(),
+                    used,
+                });
+                // per-action gas of the children, for their own children
+                let sh = split(p_last.unwrap_or(0).saturating_sub(fexec + statics), &acts.iter().map(|a| a.2).collect::<Vec<_>>());
+                for ((cid, st, _), a) in acts.iter().zip(&sh) {
+                    peract.entry(cid.clone()).or_default().push(st + a);
+                }
+                continue;
+            }
+            let left = pa.saturating_sub(used + kid_exec + statics);
             let sh = split(left, &acts.iter().map(|a| a.2).collect::<Vec<_>>());
             let mut pred: HashMap<&str, u64> = HashMap::new();
             for ((cid, st, _), a) in acts.iter().zip(&sh) {
                 *pred.entry(cid.as_str()).or_default() += st + a;
                 peract.entry(cid.clone()).or_default().push(st + a);
             }
-            let batch = methods(p).len() > 1;
-            for c in &kids {
-                if methods(c).is_empty() {
-                    continue;
-                }
-                let d = u(&c["attached"]).abs_diff(*pred.get(s(&c["id"])).unwrap_or(&0));
-                if batch {
-                    rep.batch_children += 1;
-                    rep.batch_worst = rep.batch_worst.max(d);
-                    continue;
-                }
-                rep.children += 1;
-                rep.worst = rep.worst.max(d);
-                if d != 0 {
-                    rep.mismatches += 1;
-                    if rep.mismatches <= 8 {
-                        rep.notes.push(format!(
-                            "split mismatch {} at {:.1} Tgas: {pkey} -> {}: sim {} predicted {} (diff {d})",
-                            flow.name,
-                            u(&v["gas"]) as f64 / 1e12,
-                            call_key(c),
-                            u(&c["attached"]),
-                            pred.get(s(&c["id"])).unwrap_or(&0)
-                        ));
-                    }
-                }
+            for c in &fkids {
+                let want = *pred.get(s(&c["id"])).unwrap_or(&0);
+                record(rep, flow, u(&v["gas"]), &pkey, &call_key(c), u(&c["attached"]), want, false);
             }
+        }
+    }
+    for (key, pts) in multi {
+        let Some(top) = pts.iter().filter(|p| p.last.is_some()).max_by_key(|p| p.gas) else {
+            rep.unchecked += pts.iter().map(|p| p.kids.len()).sum::<usize>();
+            push_once(&mut rep.errors, format!("{}: {key}: the multi-call receipt's per-action gas is unknown (not created by a checked parent)", flow.name));
+            continue;
+        };
+        let w_sum: u64 = top.acts.iter().map(|a| a.2).sum();
+        // U at the top: what the weighted children got beyond their statics.
+        let u_top: u64 = top.kids.iter().map(|k| k.2).sum::<u64>().saturating_sub(top.acts.iter().map(|a| a.1).sum::<u64>());
+        let burn_last = if w_sum == 0 { 0 } else { top.last.unwrap().saturating_sub(top.costs + u_top) };
+        if w_sum > 0 {
+            rep.per_action.push((flow.name.clone(), key.clone(), burn_last as f64 / GGAS as f64, top.used.saturating_sub(burn_last) as f64 / GGAS as f64));
+        }
+        for p in &pts {
+            let Some(last) = p.last else {
+                rep.unchecked += p.kids.len();
+                continue;
+            };
+            let left = if w_sum == 0 { 0 } else { last.saturating_sub(p.costs + burn_last) };
+            let sh = split(left, &p.acts.iter().map(|a| a.2).collect::<Vec<_>>());
+            let mut pred: HashMap<&str, u64> = HashMap::new();
+            for ((cid, st, _), a) in p.acts.iter().zip(&sh) {
+                *pred.entry(cid.as_str()).or_default() += st + a;
+            }
+            let pkey = key.split(" -> ").next().unwrap();
+            for (cid, ck, att) in &p.kids {
+                if p.gas == top.gas && w_sum > 0 {
+                    continue; // the inference point
+                }
+                record(rep, flow, p.gas, pkey, ck, *att, *pred.get(cid.as_str()).unwrap_or(&0), true);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record(rep: &mut SplitReport, flow: &Flow, gas: u64, pkey: &str, ck: &str, got: u64, want: u64, multi: bool) {
+    let d = got.abs_diff(want);
+    rep.children += 1;
+    if multi {
+        rep.multi_children += 1;
+    }
+    rep.worst = rep.worst.max(d);
+    if d != 0 {
+        rep.mismatches += 1;
+        if rep.mismatches <= 8 {
+            rep.notes.push(format!(
+                "split mismatch {} at {:.1} Tgas: {pkey} -> {ck}: sim {got} predicted {want} (diff {d}){}",
+                flow.name,
+                gas as f64 / 1e12,
+                if multi { " [per action]" } else { "" }
+            ));
         }
     }
 }
@@ -197,6 +345,8 @@ pub struct Burns {
     /// Action-only exec fee checks: (receiver, measured, fee table).
     pub ao_checks: Vec<(String, String, u64, u64)>,
     pub notes: Vec<String>,
+    /// Problems that block a table.
+    pub errors: Vec<String>,
     /// Keys whose receipt never succeeded.
     pub never_ok: BTreeSet<String>,
 }
@@ -244,23 +394,19 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
             }
             let acct = res.name(s(&p["receiver"])).to_owned();
             let raw = methods(p).join("+");
-            let mkey = res.spec.world.keys.get(&raw).cloned().unwrap_or(raw);
+            let mkey = flow.keys.get(&raw).or_else(|| res.spec.world.keys.get(&raw)).cloned().unwrap_or(raw);
             let ck = call_key(p);
             let path = if !flow.path.is_empty() && (flow.path_for.is_empty() || flow.path_for.contains(&ck)) { flow.path.clone() } else { String::new() };
             let size = match size_of(res, flow, p) {
                 Ok(z) => z,
                 Err(e) => {
-                    if !b.notes.contains(&e) {
-                        b.notes.push(e);
-                    }
+                    push_once(&mut b.errors, format!("{}: {e}", flow.name));
                     flow.size
                 }
             };
             let key = (acct.clone(), mkey.clone(), shape(&rs, p));
-            if let Some(par) = rs.iter().find(|x| x["id"] == p["parent"]) {
-                if !methods(par).is_empty() || true {
-                    b.fees.entry(format!("{acct}.{mkey}")).or_default().insert(u(&p["exec_fees"]));
-                }
+            if rs.iter().any(|x| x["id"] == p["parent"]) {
+                b.fees.entry(format!("{acct}.{mkey}")).or_default().insert(u(&p["exec_fees"]));
             }
             if s(&p["status"]) != "ok" {
                 if !b.obs.contains_key(&key) {
@@ -271,17 +417,14 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
             let mut ao_send = 0u64;
             for c in rs.iter().filter(|c| c["parent"] == p["id"] && !is_refund(c) && methods(c).is_empty()) {
                 match action_only_fees(sim, s(&p["receiver"]), c) {
-                    Ok((send, exec)) => {
-                        ao_send += send;
+                    Ok(f) => {
+                        ao_send += f.send;
                         if u(&v["gas"]) == top {
-                            b.ao_checks.push((flow.name.clone(), format!("{}[{}]", s(&c["receiver"]), actions(c).join(",")), u(&c["exec_fees"]), exec));
+                            let label = format!("{}[{}]{}", s(&c["receiver"]), actions(c).join(","), if f.derived.is_empty() { String::new() } else { format!(" (solved: {})", f.derived) });
+                            b.ao_checks.push((flow.name.clone(), label, u(&c["exec_fees"]), f.exec));
                         }
                     }
-                    Err(e) => {
-                        if !b.notes.contains(&e) {
-                            b.notes.push(e)
-                        }
-                    }
+                    Err(e) => push_once(&mut b.errors, format!("{}: {e}", flow.name)),
                 }
             }
             let burn = u(&p["burnt"]) - u(&p["exec_fees"]) - ao_send;
@@ -336,7 +479,12 @@ fn fit(obs: &[Obs]) -> (f64, f64, f64) {
 
 /// With `merge`, accounts listed there get one key per method (the
 /// largest burn over shapes and paths), for models whose key is fixed.
-pub fn burn_rows(b: &Burns, merge: &[String]) -> Vec<BurnRow> {
+///
+/// Returns the rows and, for merged keys, warnings where the largest burn
+/// was only seen below the top of the grid (a path the calibration point
+/// does not reach): those block a table.
+pub fn burn_rows(b: &Burns, merge: &[String]) -> (Vec<BurnRow>, Vec<String>) {
+    let mut warn = vec![];
     let mut shapes: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
     for (a, m, sh) in b.obs.keys() {
         shapes.entry((a.clone(), m.clone())).or_default().insert(sh.clone());
@@ -357,6 +505,14 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> Vec<BurnRow> {
     for ((a, m), os) in &merged {
         let (mut base, per, resid) = fit(os);
         let spread = mspread[&(a.clone(), m.clone())];
+        let top_max = os.iter().map(|o| o.burn).max().unwrap_or(0);
+        if spread.1 > top_max {
+            warn.push(format!(
+                "{a}.{m}: largest burn {:.3} Tgas seen only below the top of the grid (top: {:.3}); add a flow whose top reaches that path",
+                spread.1 as f64 / 1e12,
+                top_max as f64 / 1e12
+            ));
+        }
         if per.round() == 0.0 {
             // One key for every path: the largest burn of any successful
             // receipt at any grid point (refund paths of a resolver, say,
@@ -412,7 +568,7 @@ pub fn burn_rows(b: &Burns, merge: &[String]) -> Vec<BurnRow> {
         }
     }
     rows.sort_by(|x, y| (&x.acct, &x.key).cmp(&(&y.acct, &y.key)));
-    rows
+    (rows, warn)
 }
 
 /// One pair of operators `<prefix>GasBurn` / `<prefix>GasCall`; with
@@ -422,7 +578,8 @@ pub struct Table {
     pub prefix: String,
     pub params: Vec<String>,
     pub rows: Vec<BurnRow>,
-    pub calls: Vec<(String, String, Vec<[u64; 2]>, u64)>,
+    /// (account, method key, [static, weight] per action, exec fee, comment)
+    pub calls: Vec<(String, String, Vec<[u64; 2]>, u64, String)>,
 }
 
 /// Writes a TLA+ module with the provenance header (CONTRACTS C4) and the
@@ -433,7 +590,9 @@ pub fn emit_tla(
     wasms: &[(String, String, String, String)],
     tables: &[Table],
     command: &str,
+    data: &[String],
     notes: &[String],
+    warnings: &[String],
 ) -> String {
     let mut o = String::new();
     let line = |o: &mut String, t: &str| {
@@ -458,17 +617,19 @@ pub fn emit_tla(
         line(&mut o, &format!("    sha256 {}", &sha[..32]));
         line(&mut o, &format!("           {}", &sha[32..]));
     }
-    let mut cl = String::from("  command:");
-    for w in command.split(' ') {
-        if cl.len() + 1 + w.len() > 72 {
-            line(&mut o, &cl);
-            cl = String::from("   ");
-        }
-        cl += " ";
-        cl += w;
+    wrap_line(&mut o, &format!("  command: {command}"));
+    for d in data {
+        wrap_line(&mut o, &format!("  {d}"));
     }
-    line(&mut o, &cl);
     line(&mut o, "");
+    if !warnings.is_empty() {
+        line(&mut o, "WARNING: PARTIAL CALIBRATION (--allow-partial). These checks failed,");
+        line(&mut o, "so some entries below are not backed by a passing split check:");
+        for w in warnings {
+            wrap_line(&mut o, &format!("  ! {w}"));
+        }
+        line(&mut o, "");
+    }
     for n in notes {
         line(&mut o, n);
     }
@@ -482,6 +643,23 @@ pub fn emit_tla(
     }
     let _ = writeln!(o, "{}", "=".repeat(77));
     o
+}
+
+/// A header comment line, wrapped at 72 columns (continuations indented).
+fn wrap_line(o: &mut String, t: &str) {
+    let indent = t.len() - t.trim_start().len() + 2;
+    let mut cl = String::new();
+    for w in t.split(' ') {
+        if !cl.is_empty() && cl.len() + 1 + w.len() > 72 {
+            let _ = writeln!(o, "(* {cl:<72}*)");
+            cl = " ".repeat(indent - 1);
+        }
+        if !cl.is_empty() {
+            cl += " ";
+        }
+        cl += w;
+    }
+    let _ = writeln!(o, "(* {cl:<72}*)");
 }
 
 fn emit_table(o: &mut String, t: &Table) {
@@ -519,16 +697,23 @@ fn emit_table(o: &mut String, t: &Table) {
         }
     }
     let _ = writeln!(o);
-    let mut call: Vec<String> = vec![];
-    for (acct, m, acts, fee) in calls {
+    let mut call: Vec<(String, String)> = vec![];
+    for (acct, m, acts, fee, cmt) in calls {
         let st: Vec<String> = acts.iter().map(|a| (a[0]).to_string()).collect();
         let wt: Vec<String> = acts.iter().map(|a| a[1].to_string()).collect();
-        call.push(format!("    {} :> [st |-> <<{}>>, wt |-> <<{}>>, fee |-> {}]", kexpr(acct, m), st.join(", "), wt.join(", "), fee));
+        call.push((format!("    {} :> [st |-> <<{}>>, wt |-> <<{}>>, fee |-> {}]", kexpr(acct, m), st.join(", "), wt.join(", "), fee), cmt.clone()));
     }
     let _ = writeln!(o, "{prefix}GasCall{args} ==");
     if call.is_empty() {
         let _ = writeln!(o, "    [k \\in {{}} |-> [st |-> <<>>, wt |-> <<>>, fee |-> 0]]");
     } else {
-        let _ = writeln!(o, "{}", call.join(" @@\n"));
+        for (i, (code, cmt)) in call.iter().enumerate() {
+            let sep = if i + 1 < call.len() { " @@" } else { "" };
+            if cmt.is_empty() {
+                let _ = writeln!(o, "{code}{sep}");
+            } else {
+                let _ = writeln!(o, "{code}{sep}  \\* {cmt}");
+            }
+        }
     }
 }

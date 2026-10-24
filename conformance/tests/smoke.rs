@@ -22,8 +22,10 @@ const FLOWS: &[&str] = &[
     "ft_call_return",
     "ft_call_panic",
     "wrap_call",
+    "wrap_call_return",
     "wrap_withdraw",
     "wrap_batch_DSC",
+    "ft_batch_C",
 ];
 
 fn resolved() -> Resolved {
@@ -53,14 +55,43 @@ fn smoke_grid_split_and_burns() {
     println!("split: {} children, {} mismatches, worst {} gas", split.children, split.mismatches, split.worst);
     assert!(split.children > 500, "{} children checked", split.children);
     assert_eq!(split.mismatches, 0, "{:?}", split.notes);
-    let rows = calib::burn_rows(&burns, &["ft".into(), "wrap".into()]);
+    assert!(split.errors.is_empty() && burns.errors.is_empty(), "{:?} {:?}", split.errors, burns.errors);
+    assert_eq!(split.skipped_parents + split.unchecked, 0);
+    assert!(split.multi_children > 0, "multi-call children checked per action");
+    let (rows, _) = calib::burn_rows(&burns, &["ft".into(), "wrap".into()]);
     let burn = |acct: &str, key: &str| rows.iter().find(|r| r.acct == acct && r.key == key).map(|r| r.base);
     // As in modules/CalibStd.tla.
-    assert_eq!(burn("ft", "ft_transfer_call"), Some(1587));
-    assert_eq!(burn("ft", "ft_resolve_transfer"), Some(858));
-    assert_eq!(burn("wrap", "ft_transfer_call"), Some(1588));
-    assert_eq!(burn("wrap", "near_withdraw"), Some(582));
-    assert_eq!(burn("wrap", "batch/DSC"), Some(2739));
+    // (1584 is the largest over all six ft_call flows; these two give 1583)
+    assert!(matches!(burn("ft", "ft_transfer_call"), Some(1583..=1584)));
+    assert_eq!(burn("ft", "ft_resolve_transfer"), Some(855));
+    assert_eq!(burn("ft", "batch/C"), Some(1587));
+    assert_eq!(burn("wrap", "ft_transfer_call"), Some(1585));
+    assert_eq!(burn("wrap", "ft_resolve_transfer"), Some(863));
+    assert_eq!(burn("wrap", "near_withdraw"), Some(578));
+    assert_eq!(burn("wrap", "batch/DSC"), Some(2729));
+    // the per-action check's inferred burn of the batch's last action
+    let last = split.per_action.iter().find(|x| x.0 == "wrap_batch_DSC").map(|x| x.2.round() as u64);
+    assert_eq!(last, Some(1546));
+}
+
+/// Action-only children with AddKey, CreateAccount and DeleteAccount
+/// (flows/actions.toml): every send fee is priced, every exec fee from the
+/// fee table matches the measured one.
+#[test]
+fn action_only_fees() {
+    let res = Resolved::new(&crate_dir().join("flows/actions.toml"), None);
+    let base = res.world();
+    let mut burns = Burns::default();
+    for flow in &res.spec.flows {
+        let lines = run(&res, &base, &flow.name, &grid::smoke());
+        calib::collect_burns(&base, &res, flow, &lines, &mut burns);
+    }
+    println!("{:#?}", burns.ao_checks);
+    assert!(burns.errors.is_empty(), "{:?}", burns.errors);
+    assert_eq!(burns.ao_checks.len(), 4);
+    for (f, rx, got, want) in &burns.ao_checks {
+        assert_eq!(got, want, "{f}: {rx}");
+    }
 }
 
 /// Window edges (Tgas) where the flow's status vector changes, on a 0.1

@@ -3,7 +3,12 @@
 
 Writes tla/build/MC_<flow>.tla and .cfg for every flow of
 flows/probes.toml (or the named ones): the flow's transaction as a model
-receipt for ProbeConf.tla, over the flow's prepaid-gas grid (Ggas)."""
+receipt for ProbeConf.tla, over the flow's prepaid-gas grid (Ggas).
+
+Every burn key the model will look up must be in tla/CalibProbes.tla; a
+missing one is an error unless the flow's `model_keys` maps it to another
+key (recorded in flows/probes.toml, e.g. for a path the sim never
+completes)."""
 import json, os, re, sys, tomllib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,7 +22,7 @@ NEAR = 10**24
 def grid(g):
     """TLA+ set expression of the grid, in Ggas."""
     if g == "standard":
-        return "{t * 100 : t \\in 50..1300} \\cup {t * 10000 : t \\in 14..30}"
+        return "{t * 100 : t \\in 5..1300} \\cup {t * 10000 : t \\in 14..30}"
     if g == "smoke":
         return "{t * 2500 : t \\in 2..52} \\cup {300000}"
     lo, hi, st = (round(float(x) * 10) for x in g.split(":"))
@@ -44,25 +49,34 @@ class Ctx:
         self.names = spec["world"]["names"]
         self.wkeys = spec["world"].get("keys", {})
         self.keys = keys
+        self.errors = []
         self.notes = []
 
     def n(self, sim_id):
         return self.names.get(sim_id, sim_id)
 
-    def key(self, acct, k):
-        """A burn key the calibration has, else the same method's key
-        with as many children (a path the sim never completed)."""
+    def key(self, flow, acct, k):
+        """The burn key `acct.k`, which the calibration must have, or the
+        flow's explicit `model_keys` substitute for it."""
         full = f"{acct}.{k}"
-        if full in self.keys:
-            return k
-        m, _, shape = k.partition("/")
-        cands = sorted(x for x in self.keys if x.startswith(f"{acct}.{m}/") and x.count(",") == shape.count(","))
-        if not cands:
-            self.notes.append(f"no burn key {full}")
-            return k
-        alt = cands[0].split(".", 1)[1]
-        self.notes.append(f"{full} never succeeded in the sim: using {alt}")
-        return alt
+        sub = flow.get("model_keys", {}).get(full)
+        if sub:
+            if not sub.startswith(acct + "."):
+                self.errors.append(f"{flow['name']}: model_keys {full} -> {sub}: not a key of {acct}")
+            elif sub not in self.keys:
+                self.errors.append(f"{flow['name']}: model_keys {full} -> {sub}: no such calibrated key")
+            self.notes.append(f"{flow['name']}: {full} -> {sub} (model_keys)")
+            return sub.split(".", 1)[1]
+        if full not in self.keys:
+            self.errors.append(f"{flow['name']}: no calibrated burn key {full} (the sim never completed that path?"
+                               " recalibrate, or map it in the flow's model_keys)")
+        return k
+
+    def path_of(self, flow, ck):
+        """The flow's path suffix, if it applies to call key `ck`."""
+        p = flow.get("path", "")
+        pf = flow.get("path_for", [])
+        return f"/{p}" if p and (not pf or ck in pf) else ""
 
 
 def pa(fields):
@@ -95,7 +109,7 @@ def first(ctx, flow):
         cb = a.get("cb")
         ms = [k["method"] for k in kids] + ([cb["method"]] if cb else [])
         f = {"kids": "<<" + ", ".join(kid(ctx, k, rx) for k in kids) + ">>",
-             "gk": q(ctx.key(here, "chain/" + ",".join(sorted(ms))))}
+             "gk": q(ctx.key(flow, here, "chain/" + ",".join(sorted(ms))))}
         if cb:
             f["cb"] = "<<" + kid(ctx, cb, rx) + ">>"
         assert len(kids) == 1 or a.get("detach"), "joined promises are not modelled"
@@ -106,12 +120,12 @@ def first(ctx, flow):
         if a.get("cb"):
             f["cb"] = "<<" + kid(ctx, {"method": "on_read", "static_ggas": a.get("cb_ggas", 0), "weight": 1}, rx) + ">>"
             shape += ",on_read"
-        f["gk"] = q(ctx.key(here, "send/" + shape))
+        f["gk"] = q(ctx.key(flow, here, "send/" + shape + ctx.path_of(flow, f"{rx}.send")))
         args = pa(f)
     elif m == "batch":
         calls = a["calls"]
         ms = "+".join(c["method"] for c in calls)
-        tk = ctx.wkeys.get(ms, ms)
+        tk = flow.get("keys", {}).get(ms) or ctx.wkeys.get(ms, ms)
         nd = sd = 0
         sd_acct, xf, rc, amt, msg = "", "", "", 0, ""
         for c in calls:
@@ -126,16 +140,16 @@ def first(ctx, flow):
         f = {"to": q(ctx.n(a["receiver"])), "kids": kids,
              "fee": f'ProbeGasCall[{q(ctx.n(a["receiver"]) + "." + tk)}].fee',
              "bargs": f"BatchArgs({nd}, {sd}, {q(sd_acct)}, {q(xf)}, {q(rc)}, {amt}, {q(msg)})",
-             "gk": q(ctx.key(here, "batch/" + ms))}
+             "gk": q(ctx.key(flow, here, "batch/" + ms))}
         args = pa(f)
     elif m in ("ft_transfer", "ft_transfer_call"):
         amt = 1 if here == "wrap" else int(a["amount"])
         args = f'FtArgs({q(ctx.n(a["receiver_id"]))}, {amt}, {q(a.get("msg", "").replace(":", ""))})'
-    elif m == "storage_deposit":
+    elif m in ("storage_deposit", "storage_balance_of", "ft_balance_of"):
         args = f'SdArgs({q(ctx.n(a.get("account_id", "")))})'
     elif m == "near_withdraw":
         args = f'NwArgs({dep(a["amount"])})'
-    elif m == "near_deposit":
+    elif m in ("near_deposit", "ft_total_supply"):
         args = "TA0"
     else:
         raise SystemExit(f"{flow['name']}: no model for {rx}.{m}")
@@ -205,6 +219,10 @@ def main():
         print(mod)
     for n in ctx.notes:
         print("note:", n, file=sys.stderr)
+    if ctx.errors:
+        for e in ctx.errors:
+            print("error:", e, file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -142,7 +142,7 @@ pub struct Flow {
     pub setup: Vec<Call>,
     /// The transaction swept over the grid (its `tgas` is ignored).
     pub tx: Call,
-    /// "standard" (5.0-130.0 by 0.1, 140-300 by 10), "smoke", or
+    /// "standard" (0.5-130.0 by 0.1, 140-300 by 10), "smoke", or
     /// "lo:hi:step" in Tgas.
     #[serde(default = "default_grid")]
     pub grid: String,
@@ -160,6 +160,14 @@ pub struct Flow {
     /// Keys (`"<receiver>.<method>"`) the `path` applies to; empty: all.
     #[serde(default)]
     pub path_for: Vec<String>,
+    /// Method-list -> model key for this flow only (over `world.keys`),
+    /// e.g. a one-call token batch `"ft_transfer" = "batch/T"`.
+    #[serde(default)]
+    pub keys: BTreeMap<String, String>,
+    /// Model side only (scripts/mkconf.py): burn key -> the key to use
+    /// instead, where the sim never completes the path the model takes.
+    #[serde(default)]
+    pub model_keys: BTreeMap<String, String>,
 }
 
 fn default_grid() -> String {

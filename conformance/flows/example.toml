@@ -62,16 +62,16 @@ key = "app.near.on_read"
 from = "result"
 div = 1000
 
-# One flow per path worth a burn key. `grid` is "standard" (5-130 Tgas by
+# One flow per path worth a burn key. `grid` is "standard" (0.5-130 Tgas by
 # 0.1, then 140-300 by 10), "smoke", or "lo:hi:step" in Tgas.
 [[flow]]
 name = "call_then_callback"
 about = "app calls callee.burn(2000), then its own on_read"
-grid = "smoke"
+grid = "standard"
 tx = { signer = "alice.near", receiver = "app.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":2000}", "static_ggas": 5000, "weight": 1, "receiver": "callee.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}' }
 
 [[flow]]
 name = "bigger_burn"
 about = "the same with callee.burn(8000): a second size for the fit"
-grid = "smoke"
+grid = "standard"
 tx = { signer = "alice.near", receiver = "app.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":8000}", "static_ggas": 5000, "weight": 1, "receiver": "callee.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}' }

@@ -16,6 +16,8 @@
 //! - `mark`: appends a tag to an on-chain list (receipt order);
 //! - `put` / `get` / `fail`: state writes and a panic (revert scope);
 //! - `batch_self`: a contract-created `[DeleteKey, FunctionCall]` batch;
+//! - `keys_self` / `spawn`: action-only children with AddKey, CreateAccount
+//!   and DeleteAccount (the calibrator's action-only fee rules);
 //! - `ft_on_transfer`: a NEP-141 receiver that keeps, returns, over-returns,
 //!   burns or panics, chosen by `msg`.
 //!
@@ -223,6 +225,31 @@ impl Probe {
             Gas::from_tgas(5),
             GasWeight(1),
         );
+    }
+
+    /// An action-only child to this account: `[AddKey(pk), DeleteKey(pk)]`,
+    /// the key full-access, or with `fc` a function-call key for `mark`.
+    pub fn keys_self(&self, pk: PublicKey, fc: Option<bool>) {
+        let me = env::current_account_id();
+        let p = if fc.unwrap_or(false) {
+            Promise::new(me.clone()).add_access_key_allowance_with_nonce(pk.clone(), near_sdk::Allowance::Unlimited, me, "mark".to_string(), 0)
+        } else {
+            Promise::new(me).add_full_access_key(pk.clone())
+        };
+        let _ = p.delete_key(pk);
+    }
+
+    /// An action-only child creating `<name>.<this account>`:
+    /// `[CreateAccount, Transfer(yocto), AddKey(pk)]`, and with `delete`
+    /// a final `DeleteAccount` (beneficiary: this account).
+    pub fn spawn(&self, name: String, pk: PublicKey, yocto: U128, delete: Option<bool>) {
+        let me = env::current_account_id();
+        let sub: AccountId = format!("{name}.{me}").parse().unwrap();
+        let mut p = Promise::new(sub).create_account().transfer(NearToken::from_yoctonear(yocto.0)).add_full_access_key(pk);
+        if delete.unwrap_or(false) {
+            p = p.delete_account(me);
+        }
+        let _ = p;
     }
 
     /// NEP-141 receiver. `msg`: "keep" (or ""), "return" (all unused),

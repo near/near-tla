@@ -16,7 +16,7 @@
 (*   on_read reads every result in full         (sz = result size, KB)    *)
 (*   on_count only counts its results                                     *)
 (*   send    a Transfer of amt to `to`, optionally then on_read           *)
-(*   batch   one receipt holding several function calls (a token batch)  *)
+(*   batch   one receipt holding the given function calls (a token batch) *)
 (*   ft_on_transfer  NEP-141 receiver; msg keep / return / over / panic / *)
 (*           burn20000 (burns 20 Tgas, keeps) / big2000 (2 KB, not a      *)
 (*           number)                                                      *)
@@ -50,7 +50,11 @@ ConfOnTransferWeight == [t \in {"ft", "wrap"} |-> 1]
 ConfOnTransferStatic == [t \in {"ft", "wrap"} |-> 0]
 
 \* Model units: 1 NEAR = 1000; the storage minimum is 1; 1 yocto is 1.
-Bal0(t) == [h \in Holders |-> IF h = "alice" THEN (IF t = "ft" THEN 1000000 ELSE 10000) ELSE 0]
+\* As after the spec's setup: alice minted 1000000 FT and sent p 100000;
+\* alice deposited 10 NEAR of wNEAR, p 1 NEAR.
+Bal0(t) == [h \in Holders |-> CASE h = "alice" -> (IF t = "ft" THEN 900000 ELSE 10000)
+                               [] h = "p"     -> (IF t = "ft" THEN 100000 ELSE 1000)
+                               [] OTHER       -> 0]
 Reg0(t) == IF t = "ft" THEN {"alice", "q", "p"} ELSE {"alice", "q", "p"}
 
 ----------------------------------------------------------------------------

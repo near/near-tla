@@ -156,9 +156,9 @@ pub fn dump(o: &TxOutcome) -> Value {
 
 /// Prepaid-gas grids, in gas.
 pub mod grid {
-    /// 5.0-130.0 Tgas in 0.1 steps, then 140-300 in steps of 10 (1268 points).
+    /// 0.5-130.0 Tgas in 0.1 steps, then 140-300 in steps of 10 (1313 points).
     pub fn standard() -> Vec<u64> {
-        range(50, 1300, 1).into_iter().chain((14..=30u64).map(|t| t * 10_000_000_000_000)).collect()
+        range(5, 1300, 1).into_iter().chain((14..=30u64).map(|t| t * 10_000_000_000_000)).collect()
     }
     /// `lo10..=hi10` tenths of a Tgas, every `step10` tenths.
     pub fn range(lo10: u64, hi10: u64, step10: u64) -> Vec<u64> {

@@ -1,0 +1,43 @@
+# Action-only children the calibrator must price (CONTRACTS D6: a burn
+# excludes the send fees of the receipt's action-only children). Run by
+# tests/smoke.rs; `calibrate --flows flows/actions.toml` prints the fee
+# check. AddKey's fee depends on the key's permission, which the outcome
+# does not record: its send fee is derived from the exec fee the child
+# prepaid (send = exec in the fee table, which the calibrator checks).
+
+[world]
+names = { "alice.near" = "alice", "p.near" = "p" }
+
+[[account]]
+id = "alice.near"
+near = 1000
+
+[[contract]]
+id = "p.near"
+wasm = "../probes/res/probe.wasm"
+source = "conformance/probes/probe (near-sdk 5.29.1)"
+near = 100
+
+[[flow]]
+name = "keys_full"
+about = "p.keys_self: [AddKey(full access), DeleteKey] to itself"
+grid = "smoke"
+tx = { signer = "alice.near", receiver = "p.near", method = "keys_self", args = '{"pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp"}' }
+
+[[flow]]
+name = "keys_fc"
+about = "p.keys_self: [AddKey(function call), DeleteKey] to itself"
+grid = "smoke"
+tx = { signer = "alice.near", receiver = "p.near", method = "keys_self", args = '{"pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "fc": true}' }
+
+[[flow]]
+name = "spawn"
+about = "p.spawn: [CreateAccount, Transfer, AddKey] to s.p.near"
+grid = "smoke"
+tx = { signer = "alice.near", receiver = "p.near", method = "spawn", args = '{"name": "s", "pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "yocto": "1000000000000000000000000"}' }
+
+[[flow]]
+name = "spawn_delete"
+about = "p.spawn: [CreateAccount, Transfer, AddKey, DeleteAccount] to s.p.near"
+grid = "smoke"
+tx = { signer = "alice.near", receiver = "p.near", method = "spawn", args = '{"name": "s", "pk": "ed25519:6E8sCci9badyRkXb3JoRpBj5p8C6Tw41ELDZoiihKEtp", "yocto": "1000000000000000000000000", "delete": true}' }
