@@ -103,8 +103,9 @@ fn fee(sim: &Sim, c: ActionCosts) -> (u64, u64) {
 /// 0.0001 N per code byte (10x the storage rate), on top of gas, and adds
 /// nothing to the owner's storage or code. The code becomes usable when
 /// the distribution receipt the deploy emits runs, a block later: a
-/// UseGlobalContract in the deploy's own batch fails. Short of the burn it
-/// fails with LackBalanceForState; only the account itself may deploy.
+/// UseGlobalContract in the deploy's own batch fails, and the failed batch
+/// burns gas only. Short of the burn it fails with LackBalanceForState
+/// (gas only, too); only the account itself may deploy.
 #[test]
 fn deploy_global() {
     let (a, _) = probe_wasm("probe");
@@ -177,6 +178,7 @@ fn deploy_global() {
     assert!(after_deploy && after_next);
 
     // Deploy and use in one batch: not published yet.
+    let b0 = sim.balance(OWNER);
     let o = sim
         .tx(OWNER, OWNER)
         .deploy_global(b.clone(), GlobalContractDeployMode::CodeHash)
@@ -185,12 +187,20 @@ fn deploy_global() {
     println!("[DeployGlobal(hash), UseGlobal(hash)] in one batch: {}", err(&o));
     assert!(err(&o).contains("GlobalContractDoesNotExist"), "{o}");
     assert!(sim.global_contract_code(by_hash(&b)).is_none(), "the batch rolled back");
+    let paid = yocto(b0) - yocto(sim.balance(OWNER));
+    let bburn = yocto(sim.global_storage_cost(b.len() as u64));
+    println!("  owner paid {paid} yN: gas {}, burn of {} bytes {bburn}", yocto(o.effects().gas_paid()), b.len());
+    assert_eq!(paid, yocto(o.effects().gas_paid()), "a failed batch burns gas only, not the {bburn} yN");
 
     // Short of the burn.
     sim.create_account("poor.near", near(1));
+    let p0 = sim.balance("poor.near");
     let o = sim.tx("poor.near", "poor.near").deploy_global(a.clone(), GlobalContractDeployMode::AccountId).transact();
     println!("poor.near (1 N) publishes {n} bytes: {}", err(&o));
     assert!(err(&o).contains("LackBalanceForState"), "{o}");
+    let paid = yocto(p0) - yocto(sim.balance("poor.near"));
+    println!("  poor.near paid {paid} yN, gas {}", yocto(o.effects().gas_paid()));
+    assert_eq!(paid, yocto(o.effects().gas_paid()), "gas only");
     let poor = GlobalContractIdentifier::AccountId("poor.near".parse().unwrap());
     assert!(sim.global_contract_code(poor).is_none());
 
@@ -261,7 +271,8 @@ fn use_global_storage() {
 /// the owner's redeploy changes every by-account user at once; a by-hash
 /// user keeps its code. Users' state and storage stay. The owner's deletion
 /// leaves the code in place for its users; an owner created again under the
-/// same id updates them. Two deploys in one block: the later one wins.
+/// same id updates them. Two deploys whose receipts run in one block: the
+/// later one wins.
 #[test]
 fn redeploy_updates_users() {
     let (a, _) = probe_wasm("probe");
@@ -313,11 +324,14 @@ fn redeploy_updates_users() {
     println!("{} after the owner is created again and deploys async_probe: {}", users[0], err(&o));
     assert!(not_found(&o), "{o}");
 
-    // Two deploys in one block: b then a; a wins.
+    // Two deploys whose receipts run in one block: b then a; a wins.
     let mut t = sim.clone();
-    t.tx(OWNER, OWNER).deploy_global(b.clone(), GlobalContractDeployMode::AccountId).submit();
-    t.tx(OWNER, OWNER).deploy_global(a.clone(), GlobalContractDeployMode::AccountId).submit();
+    let t1 = t.tx(OWNER, OWNER).deploy_global(b.clone(), GlobalContractDeployMode::AccountId).submit();
+    let t2 = t.tx(OWNER, OWNER).deploy_global(a.clone(), GlobalContractDeployMode::AccountId).submit();
     t.settle();
+    let ran = |h: CryptoHash| own(&t.outcome(h), OWNER).block_height;
+    println!("two deploys by account: their receipts ran in blocks {} and {}", ran(t1), ran(t2));
+    assert_eq!(ran(t1), ran(t2));
     let won = if t.global_contract_code(by_owner()) == Some(a.clone()) { "the later (probe)" } else { "the earlier" };
     println!("two deploys by account in one block: {won} wins");
     assert_eq!(t.global_contract_code(by_owner()), Some(a.clone()));
