@@ -28,7 +28,7 @@ env:
 
 jobs:
   conformance:
-    runs-on: warp-ubuntu-2404-x64-2x
+    runs-on: warp-ubuntu-2404-x64-4x
     timeout-minutes: 180
     defaults:
       run:
