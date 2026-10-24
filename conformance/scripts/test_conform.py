@@ -306,6 +306,8 @@ class Conform(unittest.TestCase):
         # only the refund's amount differs: 1 yocto in the sim, 2 NEAR in the model
         res = self.deposit_flow(1, 2000)
         self.assertProblem(res, "statuses differ at 3 points")
+        # whole milliNEAR on both sides, off by 1 NEAR: 2 NEAR in the sim, 1 in the model
+        self.assertProblem(self.deposit_flow(2 * 10**24, 1000), "statuses differ at 3 points")
         # the model's 1 for an amount under a milliNEAR matches the sim's 1 yocto
         self.assertEqual(self.deposit_flow(1, 1)["problems"], [])
         # a model whose report carries no deposits fails
