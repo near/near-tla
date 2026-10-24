@@ -947,7 +947,7 @@ Each rule has four fields:
   `:251-269` (`check_and_update_nonce`: older nonces dropped), `:288-333` (forwarded shard by
   shard); the distribution receipt `core/primitives/src/receipt.rs:538-548`; identifier bytes
   `core/primitives-core/src/account.rs:182-188`; the delete check
-  `runtime/runtime/src/actions.rs:426-440`; actor `:755-812`; dispatch
+  `runtime/runtime/src/actions.rs:342-369` (the identifier's bytes subtracted, `:426-440`); actor `:755-812`; dispatch
   `runtime/runtime/src/lib.rs:637-660`, the call's contract resolved at `:684-700`; fees
   `runtime/runtime/src/config.rs:171-191` (send), `:380-395` (exec),
   `core/parameters/res/runtime_configs/77.yaml:2-50`; compute `84.yaml:39-40`; validation
