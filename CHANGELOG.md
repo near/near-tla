@@ -578,8 +578,12 @@ them. A model that lists platform variables one by one must add each.
   `conformance/tests/gas.rs`.
 - **Least-gas and size sweeps in `tools/run.py`** (`[[sweep]]` in `runs.toml`, `--sweep`;
   ad hoc `--least-gas KNOB=FORM --gas-range LO:HI [--success ..]`): `kind = "least_gas"`
-  bisects a gas knob for the least value at which `success` holds (bracketed by a window
-  run's top bad value when `window_run` is given) and reports need − 1, need and need + 1;
+  bisects a gas knob for a boundary at which `success` starts to hold (bracketed by a window
+  run's top bad value when `window_run` is given) and reports need − 1, need and need + 1 as
+  `boundary N`: the least value only if success is monotone in the knob, which bisection
+  does not check; `exact = true` (or `--exact [--gas-step N]`) scans every value of the
+  bracket instead, reports `need N`, the least value at which `success` holds, and fails on
+  a failure above it (non-monotone);
   `kind = "size"` runs a size knob at 1, the contract's `cap` and the protocol `limit` (a
   number or a NearAsync limit name), ±1 each, against optional per-value expectations.
   Existing `runs.toml` files are unchanged (USAGE, "Least gas and size sweeps").

@@ -35,8 +35,9 @@ python3 tools/run.py examples/owed-effect --sweep  # also its least-gas and size
 python3 tools/run.py examples/owed-effect vault_gas_short --least-gas 'GasMenu={%d}' --gas-range 0:300000
 ```
 
-A `[[sweep]]` finds the least value of a gas knob at which a run's success invariants hold
-and reports need − 1, need and need + 1, or runs a size knob at 1, at the contract's cap and
+A `[[sweep]]` bisects a gas knob for the boundary at which a run's success invariants start
+to hold and reports need − 1, need and need + 1 (`exact = true` or `--exact` scans every
+value instead, for the least one when success is not monotone), or runs a size knob at 1, at the contract's cap and
 at the protocol limit, ±1 each ([Least gas and size
 sweeps](docs/USAGE.md#least-gas-and-size-sweeps)). A change that moves a gas or size edge
 keeps an example's sweeps as expected.

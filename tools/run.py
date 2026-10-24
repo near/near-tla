@@ -114,12 +114,20 @@ Sweeps (run with --sweep, after the plain runs; always validated)
   window_run = "vault_gas_win"   # optional: a print-only window run of this file; its
                               # windows' top value becomes lo and the next value hi
   # window_label = "OwedOK"   # optional: only that label's window
-  # expect_need = 8600        # optional: the need must be this
+  # expect_need = 8600        # optional: the need (or boundary) must be this
+  # exact = true              # optional: scan every value instead of bisecting
+  # step = 10                 # optional, with exact: scan lo..hi in steps of this (default 1)
   [sweep.constants]           # optional overrides of the base run's constants
-  It checks hi (must hold) and lo (must fail), bisects with one TLC run per value, then
-  reports need - 1, need and need + 1. The sweep fails unless need - 1 fails and need and
-  need + 1 hold (a failure at need + 1 is non-monotone), or if a job ends in anything but
-  pass or a violation of a success invariant.
+  It checks hi (must hold) and lo (must fail). By default it bisects with one TLC run per
+  value and reports the boundary: need - 1, need and need + 1 with their verdicts. Bisection
+  assumes success is monotone in the knob and does not check it (success at 20 and from
+  50 up is reported as boundary 50), so the result reads "boundary N", not "need N". The
+  sweep fails unless need - 1 fails and need and need + 1 hold, or if a job ends in
+  anything but pass or a violation of a success invariant. With exact (or --exact) it runs
+  every value of lo..hi in steps of `step` (hi included), reports each value where the
+  verdict flips and "need N", the least scanned value at which success holds; it fails if
+  success fails at some scanned value above N (non-monotone: the note gives the values and
+  the least value from which every scanned value holds).
 
   [[sweep]]                   # sizes: each value at 1, the cap and the protocol limit, +-1
   id = "memo"
@@ -162,7 +170,8 @@ A temporal formula goes in `specification` (not `spec`, which names the module).
 
 --sweep: after the plain runs, run every [[sweep]] whose base run is selected, and print
 a table. --least-gas 'KNOB=FORM' --gas-range LO:HI [--success INV,..] runs an ad-hoc
-least-gas sweep on each selected run.
+least-gas sweep on each selected run. --exact [--gas-step N] makes every least-gas sweep
+(ad hoc or [[sweep]]) scan instead of bisect.
 
 --anti-vacuity: after the plain runs, check every [[witness]] and [[mutant]] of the
 selected runs (a check of a run that did not match its expectation is skipped) and print
@@ -225,9 +234,9 @@ MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "libra
                "killed_by"}
 WITNESS_EXPECTS = ("reached", "unreachable")
 SWEEP_KEYS = {"id", "kind", "run", "knob", "form", "constants", "lo", "hi", "success", "window_run",
-              "window_label", "expect_need", "cap", "limit", "floor", "expect"}
+              "window_label", "expect_need", "exact", "step", "cap", "limit", "floor", "expect"}
 SWEEP_KINDS = ("least_gas", "size")
-LEAST_GAS_ONLY = {"lo", "hi", "success", "window_run", "window_label", "expect_need"}
+LEAST_GAS_ONLY = {"lo", "hi", "success", "window_run", "window_label", "expect_need", "exact", "step"}
 SIZE_ONLY = {"cap", "limit", "floor", "expect"}
 
 # Standard and community modules that declare no CONSTANTS.
@@ -324,6 +333,8 @@ class Sweep:
     window_run: str | None = None
     window_label: str | None = None
     expect_need: int | None = None
+    exact: bool = False
+    step: int = 1
     cap: int | None = None
     limit: int | str | None = None
     floor: int = 0
@@ -563,6 +574,12 @@ def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
             if sw.window_label is not None and sw.window_run is None:
                 raise ConfigError(f"{where}: window_label needs window_run")
             sw.expect_need = _typed(where, raw, "expect_need", int)
+            sw.exact = _typed(where, raw, "exact", bool, False)
+            sw.step = _typed(where, raw, "step", int, 1)
+            if sw.step < 1:
+                raise ConfigError(f"{where}: step must be at least 1")
+            if "step" in raw and not sw.exact:
+                raise ConfigError(f"{where}: step needs exact = true")
         else:
             sw.cap = _typed(where, raw, "cap", int)
             sw.limit = _typed(where, raw, "limit", (int, str))
@@ -1446,8 +1463,9 @@ def size_values(one_cap_limit: list[int | None], floor: int) -> list[int]:
 
 
 def search_least(ok, lo: int, hi: int) -> int:
-    """The least v in (lo, hi] with ok(v), given ok(hi) and not ok(lo); ok raises to abort.
-    Bisection: assumes success is monotone between lo and hi."""
+    """A boundary v in (lo, hi] with ok(v) and not ok(v - 1), given ok(hi) and not ok(lo); ok
+    raises to abort.  Bisection: the least such v only if ok is monotone between lo and hi,
+    which it does not check (scan_least does)."""
     while hi - lo > 1:
         mid = (lo + hi) // 2
         if ok(mid):
@@ -1455,6 +1473,22 @@ def search_least(ok, lo: int, hi: int) -> int:
         else:
             lo = mid
     return hi
+
+
+def scan_values(lo: int, hi: int, step: int) -> list[int]:
+    """lo, lo + step, ... below hi, then hi."""
+    return list(range(lo, hi, step)) + [hi]
+
+
+def scan_least(ok, vals: list[int]) -> tuple[int, int]:
+    """Exact scan: ok at every value (ascending, the last one holding); the least value where
+    ok holds, and the least from which it holds at every later value.  Equal when monotone."""
+    got = [ok(v) for v in vals]
+    least = vals[got.index(True)]
+    i = len(got)
+    while i > 0 and got[i - 1]:
+        i -= 1
+    return least, vals[i]
 
 
 def sweep_run(sw: Sweep, base: Run, v: int, invariants: list[str]) -> Run:
@@ -1522,6 +1556,7 @@ def do_sweep(sw: Sweep, by_name: dict[str, Run], jar: str, workers: int | None, 
 
     lo, hi = sw.lo, sw.hi
     notes: list[str] = []
+    word = "need" if sw.exact else "boundary"
     try:
         if sw.window_run:
             wr = by_name.get(sw.window_run)
@@ -1544,11 +1579,35 @@ def do_sweep(sw: Sweep, by_name: dict[str, Run], jar: str, workers: int | None, 
             raise Abort(f"success fails at hi = {hi}")
         if holds(lo):
             raise Abort(f"success already holds at lo = {lo}: lower lo")
-        need = search_least(holds, lo, hi)
-        holds(need + 1)
+        if sw.exact:
+            vals = scan_values(lo, hi, sw.step)
+            need, stable = scan_least(holds, vals)
+        else:
+            need = search_least(holds, lo, hi)
+            holds(need + 1)
     except Abort as e:
-        rows.append(row(None, "need" if sw.expect_need is None else f"need {sw.expect_need}", "error", False,
+        rows.append(row(None, word if sw.expect_need is None else f"{word} {sw.expect_need}", "error", False,
                         notes + [str(e)]))
+        return rows
+    if sw.exact:
+        verdict = {v: label(seen[v]) == "pass" for v in vals}
+        shown: set[int] = set()
+        for prev, v in zip(vals, vals[1:]):
+            if verdict[prev] != verdict[v]:
+                for x in (prev, v):
+                    if x not in shown:
+                        shown.add(x)
+                        rows.append(row(x, "-", label(seen[x]), True, ["verdict flips here"], seen[x]))
+        bad = [v for v in vals if v > need and not verdict[v]]
+        grid = f" in steps of {sw.step}" if sw.step > 1 else ""
+        more = [f"non-monotone: {', '.join(sw.knobs)} fails at {fmt_vals(bad)} above it; "
+                f"{', '.join(invs)} {'holds' if len(invs) == 1 else 'hold'} at every scanned value from {stable}"] \
+            if bad else []
+        good = not bad and (sw.expect_need is None or need == sw.expect_need)
+        rows.append(row(None, word if sw.expect_need is None else f"{word} {sw.expect_need}", f"need {need}", good,
+                        notes + [f"{len(seen)} TLC runs; exact scan of {lo}..{hi}{grid}: least scanned "
+                                 f"{', '.join(sw.knobs)} at which {', '.join(invs)} "
+                                 f"{'holds' if len(invs) == 1 else 'hold'}: {need}"] + more))
         return rows
     for v, want in ((need - 1, "fail"), (need, "pass"), (need + 1, "pass")):
         a = seen[v]
@@ -1556,10 +1615,25 @@ def do_sweep(sw: Sweep, by_name: dict[str, Run], jar: str, workers: int | None, 
         rows.append(row(v, "pass" if want == "pass" else "violation", label(a), ok,
                         ["non-monotone: success fails above need"] if v == need + 1 and not ok else [], a))
     good = all(o.ok for o in rows) and (sw.expect_need is None or need == sw.expect_need)
-    rows.append(row(None, "need" if sw.expect_need is None else f"need {sw.expect_need}", f"need {need}", good,
-                    notes + [f"{len(seen)} TLC runs; least {', '.join(sw.knobs)} at which "
-                             f"{', '.join(invs)} {'holds' if len(invs) == 1 else 'hold'}: {need}"]))
+    rows.append(row(None, word if sw.expect_need is None else f"{word} {sw.expect_need}", f"boundary {need}", good,
+                    notes + [f"{len(seen)} TLC runs; bisection boundary {need}: {', '.join(invs)} "
+                             f"{'fails' if len(invs) == 1 else 'fail'} at {need - 1} and "
+                             f"{'holds' if len(invs) == 1 else 'hold'} at {need} and {need + 1}; the least "
+                             f"{', '.join(sw.knobs)} only if success is monotone in it, not checked "
+                             f"(exact = true or --exact scans)"]))
     return rows
+
+
+def fmt_vals(vs: list[int]) -> str:
+    """Ascending values as runs of consecutive ones: 21..49, 60."""
+    out, i = [], 0
+    while i < len(vs):
+        j = i
+        while j + 1 < len(vs) and vs[j + 1] == vs[j] + 1:
+            j += 1
+        out.append(str(vs[i]) if i == j else f"{vs[i]}..{vs[j]}")
+        i = j + 1
+    return ", ".join(out)
 
 
 def run_sweeps(sweeps: list[Sweep], by_name: dict[str, Run], jar: str,
@@ -1642,6 +1716,9 @@ def main(argv=None) -> int:
                     help="ad-hoc least-gas sweep of each selected run (FORM: TLA+ text with %%d)")
     ap.add_argument("--gas-range", metavar="LO:HI", help="bracket for --least-gas (LO fails, HI holds)")
     ap.add_argument("--success", metavar="INV,..", help="success invariants for --least-gas (default: the run's)")
+    ap.add_argument("--exact", action="store_true",
+                    help="least-gas sweeps scan every value of the bracket instead of bisecting")
+    ap.add_argument("--gas-step", type=int, metavar="N", help="with --exact: scan in steps of N (default 1)")
     a = ap.parse_args(argv)
     try:
         if a.workers is not None and a.workers < 1:
@@ -1654,6 +1731,13 @@ def main(argv=None) -> int:
             if not a.gas_range:
                 raise ConfigError("--least-gas needs --gas-range LO:HI")
             sweeps += adhoc_sweeps(runs, a.least_gas, a.gas_range, a.success)
+        if a.gas_step is not None and (not a.exact or a.gas_step < 1):
+            raise ConfigError("--gas-step needs --exact and must be at least 1")
+        if a.exact:
+            for sw in sweeps:
+                if sw.kind == "least_gas":
+                    sw.exact = True
+                    sw.step = a.gas_step or sw.step
         lib = a.library or os.environ.get("NEAR_TLA_LIBRARY")
         if lib:
             for r in runs:

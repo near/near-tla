@@ -2015,19 +2015,35 @@ hi = 300000                   # a value where it holds
 success = ["OwedOK"]          # what "safe" means (default: the run's invariants)
 window_run = "vault_gas_win"  # optional: bracket from a window run's top bad value
 expect_need = 8600            # optional
+# exact = true                # optional: scan every value instead of bisecting
+# step = 100                  # optional, with exact: scan in steps of 100 (default 1)
 ```
 
 The runner checks that `success` holds at `hi` and fails at `lo`, bisects in between (about
 20 TLC runs over 0..1,000,000 Ggas; with `window_run`, the window's top bad value and the next
 menu step bracket it in a few), and reports `need − 1`, `need` and `need + 1` with their
 verdicts. The sweep fails unless `need − 1` fails and both `need` and `need + 1` hold; a
-failure at `need + 1` is reported as non-monotone. Give `success` explicitly when the run's
+failure at `need + 1` is reported as non-monotone.
+
+Bisection finds *a* boundary: a value where success fails one below and holds at it. That
+is the least gas only if success is monotone in the knob, and bisection does not check it:
+with success at 20 and again from 50 up, it can report 50. So the result reads `boundary N`.
+Gas is not always monotone: more gas for a parent can let a child commit that would
+otherwise have failed cleanly, and then run its owed callback short
+(`examples/trie-gas/leftover` has the same shape for trie gas). `exact = true` (or
+`--exact` on the command line, for every least-gas sweep it runs) scans every value of
+`lo..hi` (in steps of `step`, or `--gas-step N`; `hi` always included), one TLC run each,
+and reports `need N`, the least scanned value at which `success` holds, with the values
+where the verdict flips. It fails if success fails at a scanned value above `N` and says
+where (`non-monotone: ... fails at 21..49 above it; ... holds at every scanned value from
+50`). A scan costs one TLC run per value: narrow the bracket first (a bisection or a window
+run) and scan around it. Give `success` explicitly when the run's
 invariants also hold at low gas for the wrong reason: below the gas the first receipt needs,
 nothing happens and every invariant holds, so `lo` must sit in the failing region (the
 window's top value does). Any other verdict (an `Assert`, a deadlock, a timeout) stops the
 sweep with an error. The base run's own `expect` does not matter: a must-fail run is the
 natural base. `--least-gas 'GasMenu={%d}' --gas-range 0:300000 [--success OwedOK]` runs the
-same search ad hoc on each selected run.
+same search ad hoc on each selected run; add `--exact [--gas-step N]` to scan instead.
 
 **Sizes.**
 

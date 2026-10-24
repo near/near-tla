@@ -944,8 +944,10 @@ class SweepTest(unittest.TestCase):
 
     def test_load(self):
         _, (sw,) = self.load(LEAST + 'success = ["Small"]\nexpect_need = 7\n')
-        self.assertEqual((sw.kind, sw.run, sw.knobs, sw.form, sw.lo, sw.hi, sw.success, sw.expect_need),
-                         ("least_gas", "t_gas", ["Menu"], "{%d}", 0, 100, ["Small"], 7))
+        self.assertEqual((sw.kind, sw.run, sw.knobs, sw.form, sw.lo, sw.hi, sw.success, sw.expect_need, sw.exact),
+                         ("least_gas", "t_gas", ["Menu"], "{%d}", 0, 100, ["Small"], 7, False))
+        _, (sw,) = self.load(LEAST + 'exact = true\nstep = 5\n')
+        self.assertEqual((sw.exact, sw.step), (True, 5))
         _, (sz,) = self.load(SIZE + 'knob = ["N", "Menu"]\n'.replace("knob", "form = '%d'\nfloor = 1\n#"))
         self.assertEqual((sz.cap, sz.limit, sz.floor), (10, "MaxLogs", 1))
         bad = {
@@ -960,6 +962,10 @@ class SweepTest(unittest.TestCase):
             "bad expect verdict": SIZE + 'expect = { "10" = "fails" }\n',
             "window_run without window": LEAST + 'window_run = "t_gas"\n',
             "duplicate id": LEAST + LEAST,
+            "step without exact": LEAST + "step = 5\n",
+            "step 0": LEAST + "exact = true\nstep = 0\n",
+            "exact not a bool": LEAST + "exact = 1\n",
+            "exact on size": SIZE + "exact = true\n",
         }
         for what, text in bad.items():
             with self.subTest(what=what), self.assertRaises(run.ConfigError):
@@ -973,6 +979,13 @@ class SweepTest(unittest.TestCase):
             got = run.search_least(lambda v: seen.append(v) or v >= need, 0, 100)
             self.assertEqual(got, need)
             self.assertLessEqual(len(seen), 7)
+        # Not monotone (holds at 20 and from 50): bisection finds the boundary 50, the scan 20.
+        nm = lambda v: v == 20 or v >= 50
+        self.assertEqual(run.search_least(nm, 0, 100), 50)
+        self.assertEqual(run.scan_least(nm, run.scan_values(0, 100, 1)), (20, 50))
+        self.assertEqual(run.scan_least(lambda v: v >= 37, run.scan_values(0, 100, 1)), (37, 37))
+        self.assertEqual(run.scan_values(0, 25, 10), [0, 10, 20, 25])
+        self.assertEqual(run.fmt_vals([21, 22, 23, 49, 60, 61]), "21..23, 49, 60..61")
         by, (sz,) = self.load(SIZE)
         self.assertEqual(run.limit_value(sz, by["t_gas"]), 100)
 
@@ -982,8 +995,39 @@ class SweepTest(unittest.TestCase):
         rows = self.sweep(by, sw)
         self.assertEqual([(o.check, o.actual, o.ok) for o in rows],
                          [("need Menu=36", "violation Small", True), ("need Menu=37", "pass", True),
-                          ("need Menu=38", "pass", True), ("need", "need 37", True)])
+                          ("need Menu=38", "pass", True), ("need", "boundary 37", True)])
+        self.assertEqual(rows[-1].expect, "boundary 37")
+        self.assertIn("not checked", " ".join(rows[-1].notes))
         self.assertIn("const_Menu == {37}", "\n".join(self.calls))
+
+    def test_least_gas_non_monotone_bisection_vs_exact(self):
+        # Success at 20 and from 50 up.  Bisection reports the boundary 50 and passes (it
+        # cannot see 20), labelled as a boundary; the exact scan finds 20 and fails as
+        # non-monotone, naming 21..49 and 50.
+        self.outputs = lambda v: PASS if v == 20 or v >= 50 else INV
+        by, (sw,) = self.load(LEAST)
+        rows = self.sweep(by, sw)
+        self.assertEqual((rows[-1].actual, rows[-1].ok), ("boundary 50", True))
+        self.assertIn("only if success is monotone", " ".join(rows[-1].notes))
+        by, (sw,) = self.load(LEAST + "exact = true\n")
+        n0 = len(self.calls)
+        rows = self.sweep(by, sw)
+        self.assertEqual(len(self.calls) - n0, 101)  # every value of 0..100, each once
+        self.assertEqual([(o.check, o.actual) for o in rows[:-1]],
+                         [("need Menu=19", "violation Small"), ("need Menu=20", "pass"),
+                          ("need Menu=21", "violation Small"), ("need Menu=49", "violation Small"),
+                          ("need Menu=50", "pass")])
+        self.assertEqual((rows[-1].actual, rows[-1].ok), ("need 20", False))
+        self.assertIn("fails at 21..49 above it", " ".join(rows[-1].notes))
+        self.assertIn("every scanned value from 50", " ".join(rows[-1].notes))
+        # Monotone: the scan agrees with bisection, and expect_need is checked against it.
+        self.outputs = lambda v: PASS if v >= 37 else INV
+        by, (sw,) = self.load(LEAST + "exact = true\nstep = 10\nexpect_need = 40\n")
+        rows = self.sweep(by, sw)
+        self.assertEqual([(o.check, o.actual) for o in rows],
+                         [("need Menu=30", "violation Small"), ("need Menu=40", "pass"), ("need", "need 40")])
+        self.assertTrue(rows[-1].ok)
+        self.assertIn("in steps of 10", " ".join(rows[-1].notes))
 
     def test_least_gas_non_monotone_and_errors(self):
         by, (sw,) = self.load(LEAST)
@@ -1002,7 +1046,7 @@ class SweepTest(unittest.TestCase):
         by, (sw,) = self.load(LEAST + 'window_run = "t_win"\n')
         self.outputs = lambda v: PASS if v >= 37 else INV
         rows = self.sweep(by, sw)
-        self.assertEqual(rows[-1].actual, "need 37")
+        self.assertEqual(rows[-1].actual, "boundary 37")
         self.assertIn("top bad value 30", " ".join(rows[-1].notes))
 
     def test_size_end_to_end(self):
