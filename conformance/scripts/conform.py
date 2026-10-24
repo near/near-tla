@@ -154,9 +154,14 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
     return out, problems
 
 
+# Model receipt kinds that are one action, no function call: the sim lists
+# them by action (`receiver[Action]`) and they carry no attached gas.
+ACTION_ONLY = {"XFER": "Transfer", "DELEGATE": "Delegate"}
+
+
 def model_label(r, batch_methods):
-    if r["m"] == "XFER":
-        return label(r["tx"], f'{r["to"]}[Transfer]')
+    if r["m"] in ACTION_ONLY:
+        return label(r["tx"], f'{r["to"]}[{ACTION_ONLY[r["m"]]}]')
     if r["m"] == "REFUND":
         return None
     if r["m"] == "batch" and batch_methods and r["to"] in TOKENS:
@@ -172,7 +177,7 @@ def model_records(recs, batch_methods):
     for r in recs:
         l = model_label(r, batch_methods)
         if l:
-            out.append((l, STAT[r["st"]], r["g"] if r["m"] != "XFER" else None))
+            out.append((l, STAT[r["st"]], r["g"] if r["m"] not in ACTION_ONLY else None))
     return out
 
 

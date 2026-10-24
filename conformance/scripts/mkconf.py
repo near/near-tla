@@ -6,6 +6,8 @@ flows/probes.toml (or the named ones): the flow's transaction as a model
 receipt for ProbeConf.tla, over the flow's prepaid-gas grid (Ggas), and its
 `after` steps (ProbeConf's After: transactions at their own gas, or a block
 that times out the parked yield; the clock is one tick, YieldTicks = 1).
+A flow with `relay` sends its transaction as a delegate that account relays
+(ProbeConf's Relayer0; empty for the others).
 
 A flow's `path` suffixes the burn key of every receipt it applies to
 (`path_for`, empty: all), the leaves' too (their payload's gk).
@@ -251,6 +253,8 @@ CONSTANTS
   Contracts <- ConfContracts
   FirstRcpt <- mc_first
   Signer0 <- mc_signer
+  Relayer0 <- mc_relayer
+  KeyAccts <- ConfKeyAccts
   Grid <- mc_grid
   After <- mc_after
   MaxBlk <- mc_maxblk
@@ -283,6 +287,7 @@ def main():
             f.write("EXTENDS ProbeConf, CalibProbes\n")
             f.write('mc_staking == "p"\nmc_empty == {}\nmc_gas == "gas"\nmc_tokens == Toks\nmc_wnear == {"wnear_probe"}\n')
             f.write(f"mc_signer == {q(signer)}\n")
+            f.write(f"mc_relayer == {q(ctx.n(flow['relay']) if flow.get('relay') else '')}\n")
             f.write(f"mc_grid == {grid(g_override or flow.get('grid', 'standard'))}\n")
             f.write(f"mc_first == {rc}\n")
             f.write(f"mc_after == {after(ctx, flow)}\n")

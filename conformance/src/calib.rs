@@ -421,7 +421,9 @@ pub fn collect_burns(sim: &Sim, res: &Resolved, flow: &Flow, lines: &[Value], b:
                 }
             };
             let key = (acct.clone(), mkey.clone(), shape(&rs, p));
-            if rs.iter().any(|x| x["id"] == p["parent"]) {
+            // A child's exec fee is its creator's to pay; a delegated call's
+            // creator is the Delegate receipt (no method), which pays none.
+            if rs.iter().any(|x| x["id"] == p["parent"] && !methods(x).is_empty()) {
                 b.fees.entry(format!("{acct}.{mkey}")).or_default().insert(u(&p["exec_fees"]));
             }
             if s(&p["status"]) != "ok" {

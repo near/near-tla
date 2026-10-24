@@ -77,6 +77,14 @@ Each entry ends with its migration.
   consumes all its inputs, a yield every resume addressed to it, and a pending yield is never
   an orphan. Results for receipts without the new fields are unchanged. Migration: none,
   unless a model hand-wired several data receipts to one callback; use `AndThen` instead.
+- **Method name `"DELEGATE"` is reserved for delegate actions** (NEP-366, SEMANTICS K4).
+  `IsCall(r)` is FALSE for a receipt with `m = "DELEGATE"` (`DELEG`), and `Exec` and its
+  variants stop with an `Assert` on one: a Delegate receipt runs no code, so route it to
+  `NearKeys`' `ExecDelegate` in the dispatcher, before the handlers. Once a delegate has run,
+  the sender's key record carries a `nonce` field (`KeyNonce`); a model that compares a whole
+  key record (`keys[a][k] = FullPerm`) after a delegate must compare its permission fields
+  instead, or use `IsFull`. Migration: rename a contract method called `"DELEGATE"`; nothing
+  else changes for models without delegates.
 
 - **New platform variables `txsig` and `created` in `NearAsync`** (the transaction
   signer per tx id, and accounts created at run time by an implicit-account
@@ -268,7 +276,10 @@ Each entry ends with its migration.
   `JointMark`, `FailedRes`, `TimedOut`, `NRes`, `ResAt`, `AndThen`, `YieldRcpt`,
   `CanResume`, `PendingYields`, `PendingYieldRcpts`, `PendingYieldsAt`, `OResume`, `Rsm`,
   `ResumeData`, `BlockTick`, `BlockTs`, `PlatformInitClock`, `YieldDeadlinesInBound`,
-  `ClockHorizonOK`; and in the token modules: `OnTransferStatic`, `ReserveShort`,
+  `ClockHorizonOK`, `DELEG`, `IsDeleg`; in `NearKeys`, for v0.2: `NoExpiry`, `KeyNonce`,
+  `KeysWithNonce`, `SignedDelegate`, `DelegRcpt`, `SubmitDelegate`, `DelegMayExpire`,
+  `DelegMustExpire`, `DelegInner`, `DelegErr`, `ExecDelegate`; and in the token modules:
+  `OnTransferStatic`, `ReserveShort`,
   `TokFtGasShape`, `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`,
   `FtMaxResultLen`, `ResolveUnusedLim`, `ResolveRefundLim`, `TokResolveMaxLen`,
   `ResolveMaxLen`,
@@ -361,6 +372,39 @@ Each entry ends with its migration.
   resume, two resumes in the yielding call, timeout then resume, a resume in flight at the
   deadline, another account's resume, a returned yield, a yield callback with no gas). The
   script item `BTick` is one block.
+- **Delegate actions** (NEP-366 meta transactions, SEMANTICS K4), in `NearKeys`:
+  `SignedDelegate(s, k, n, mbh, c)` (the user's signature over nonce `n`, expiry height
+  `mbh` or `NoExpiry`, and the inner receipt `c`), `SubmitDelegate(id, tx, rl, k, sd)` (the
+  relayer's transaction, signed with its key `k`), and `ExecDelegate(r)`, which checks the
+  delegate on the user's account (existence, sender, key, nonce, function-call key scope,
+  expiry) and emits the inner receipt with predecessor the user and signer the relayer. The
+  relayer pays the deposit; it is refunded to the relayer if the delegate fails and to the
+  user if the inner call fails. Delegate nonces live in the key record (`KeyNonce`); expiry
+  reads `blk` (`DelegMayExpire`, `DelegMustExpire`; with no clock a delegate with an expiry
+  may expire at any time). Helpers: `DelegRcpt`, `DelegInner`, `DelegErr`, `KeysWithNonce`;
+  in `NearAsync`, `DELEG` and `IsDeleg`.
+- **`examples/meta-tx`** (`MetaTx`): a contract that credits `env::signer_account_id()` pays
+  the relayer instead of the user (`meta_trusts_signer`, must fail on `Credited`; the same
+  contract without relayed calls passes); one that credits the predecessor passes
+  (`meta_predecessor_ok`), also on a clock with expiring delegates (`meta_expiry_clock`). A
+  failing inner call refunds the relayer's deposit to the user (`meta_deposit_refund_to_user`,
+  must fail on `NoUserProfit`), and a mutant runtime without the nonce check lets the
+  relayer's replays credit a claim twice (`meta_no_nonce_check`, must fail on `Credited`).
+  Without a clock a delegate with an expiry may fail at any time (`meta_expiry_anytime`).
+- `examples/platform-selftest`: `selftest_deleg` and `selftest_deleg_gas`, 7 scenarios for
+  delegates: who the inner call sees, replays and nonce gaps, expiry on the clock, the refund
+  of a failed delegate (to the relayer) and of a failed inner call (to the user),
+  function-call key scope on the user's and on the relayer's side, and the outer checks (a
+  key deleted before the delegate runs, a missing sender account). The script item `Dl` is a
+  delegate.
+- **Conformance: delegate tests** in `conformance/tests/semantics.rs` (signer and predecessor
+  of the inner call, nonce replay, inclusive expiry and the relayer's refund, the user's
+  refund on inner failure, the key checked at execution, function-call key scope), and the
+  probe flow `relay_chain1`: `chain1` as a delegate relayed by `dave.near`, compared
+  receipt by receipt like the others. Flows take an optional `relay` key (the relayer
+  account); `ProbeConf` runs such a flow through `SubmitDelegate` / `ExecDelegate`. The
+  calibrator takes a child's exec fee only from a function-call parent, since a Delegate
+  receipt pays none.
 
 - `NearFees.tla`: action fees in Ggas per protocol version (84-88), with
   `FeeProtocol` as the single default. `NearAsync` uses it through the named

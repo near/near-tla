@@ -192,12 +192,14 @@ def call(rx, m, args="", st=0, wt=0, dep=0):
 def tomlmap(d):
     return "{ " + ", ".join(f'"{k}" = "{v}"' for k, v in d.items()) + " }"
 
-def flow(name, about, rx, m, args, dep="", statics=(), path="", path_for=(), signer="alice.near", grid="standard", keys=None, model_keys=None, comment="", after=()):
+def flow(name, about, rx, m, args, dep="", statics=(), path="", path_for=(), signer="alice.near", grid="standard", keys=None, model_keys=None, comment="", after=(), relay=None):
     s = comment + f'''[[flow]]
 name = "{name}"
 about = "{about}"
 grid = "{grid}"
 '''
+    if relay:
+        s += f'relay = "{relay}"\n'
     if keys:
         s += f"keys = {tomlmap(keys)}\n"
     if model_keys:
@@ -361,4 +363,11 @@ yflow("yield_cb_oog", "y.yield_create(on_yield static 100 w1), then y.resume: th
       100, 1, [RESUME], path="oog", path_for=[f"{Y}.yield_create"])
 yflow("yield_cb0", "y.yield_create(on_yield with static 0 and weight 0): a yield callback with no gas fails the creator",
       0, 0, keys={"yield_create": "yield_create/cb0"})
+# Delegate actions (NEP-366): chain1's transaction as a meta transaction.
+# alice signs a delegate for the call and dave.near relays it (Tx::relay).
+# The relayer's first receipt, the Delegate action on alice, is action-only;
+# the swept gas is the delegated call's, so the windows are chain1's.
+chain("relay_chain1", "chain1 relayed by dave.near: alice's delegate for p.chain(q.burn(2000) static 5000 w1, then p.on_read static 5000 w1)",
+      [call("q-probe.near", "burn", '{"ggas":2000}', 5000, 1)], call(None, "on_read", "", 5000, 1),
+      [("q-probe.near.burn", [[5000, 1]]), ("p-probe.near.on_read", [[5000, 1]])], relay="dave.near")
 open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "flows", "probes.toml"), "w").write("\n".join(out))

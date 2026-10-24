@@ -692,6 +692,69 @@ RunA(r) ==
 A model that signs such a receipt must also require a full-access key itself (`IsFull`),
 because `KeyCanSign` cannot see bundled key actions.
 
+### Delegate actions (meta transactions)
+
+In a meta transaction (NEP-366) a user signs a delegate and a relayer submits it, paying the
+gas and any deposit ([K4](SEMANTICS.md#k4-delegate-actions-nep-366-meta-transactions)). The
+inner call sees the **user as predecessor** (`r.fr`) and the **relayer as signer**
+(`Signer(r)`, `SignerKey(r)`), and so does everything it spawns. A contract that pays or
+authorises `env::signer_account_id()` serves the relayer here.
+
+- `SignedDelegate(s, k, n, mbh, c)` is user `s`'s signature with its key `k`: nonce `n`,
+  expiry height `mbh` (or `NoExpiry`), inner receipt `c` (built with `Rcpt`; its id, tx and
+  predecessor are filled in when it runs).
+- `SubmitDelegate(id, tx, rl, k, sd)` is relayer `rl`'s transaction, signed with its key `k`
+  (a full-access key: a function-call key cannot sign a Delegate).
+- `ExecDelegate(r)` runs the relayer's first receipt on the user's account. It fails it on a
+  missing account, a missing key, a nonce at or below the key's (`KeyNonce`), a
+  function-call key that could not sign `c`, or expiry; else it records the nonce and emits
+  the inner receipt. A failed delegate refunds the deposit to the relayer; a failed inner
+  call refunds it to the user, not to the relayer who paid it.
+
+From `examples/meta-tx/MetaTx.tla`:
+
+```tla
+\* The user's own step: its signature over the next nonce.
+Sign == \E u \in Users, bad \in BOOLEAN :
+          /\ nn[u] < MaxSign
+          /\ signed' = signed \cup {SignedDelegate(u, "k0", nn[u] + 1, Mbh, Claim(u, bad))}
+          /\ nn' = [nn EXCEPT ![u] = @ + 1]
+          ...
+
+\* The relayer submits any signed delegate, as often as it likes.
+Relay == /\ ntx < MaxTx
+         /\ \E sd \in signed : SubmitDelegate(nid, ntx + 1, RL, "r0", sd)
+         ...
+
+Run == \E r \in Runnable :
+         CASE IsBuiltin(r) -> ExecBuiltin(r) /\ UNCHANGED <<keyVars, mine>>
+           [] IsDeleg(r)   -> ExecDelegate(r) /\ UNCHANGED mine
+           [] OTHER        -> RunL(r)
+```
+
+What the model must do:
+
+- **Build a `SignedDelegate` only in a step of the user itself.** The model does not check
+  signatures: a relayer step that signs for a user is a forgery nearcore rejects
+  ([N-delegate-forgery](SEMANTICS.md#over-approximations)). Let the relayer replay what it
+  holds, as `Relay` does: replays are what the nonce check is for.
+- **Route `IsDeleg(r)` to `ExecDelegate` in the dispatcher, before the handlers.** `Exec`
+  stops with an `Assert` on a Delegate receipt.
+- **Put users in `KeyAccts`** with the key they sign with. For a user outside `KeyAccts`
+  there is no key, nonce or permission check, so replays succeed
+  ([N-delegate-unkeyed](SEMANTICS.md#over-approximations)).
+- **Expiry needs the clock.** With `MaxBlk = 0` a delegate with an expiry height may fail at
+  any time ([N-delegate-expiry](SEMANTICS.md#over-approximations)). With the clock it fails
+  when `blk > mbh`; for `ClockHorizonOK` that comparison counts `T = mbh + 1`
+  ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)). That is the general
+  bound. An absolute expiry height saturates: if no other comparison reads the clock, every
+  height above `mbh` behaves alike, so `MaxBlk = mbh + 1` covers every behaviour
+  (`meta_expiry_clock` in `examples/meta-tx`).
+- Delegate nonces are tracked per key and do not see the nonces of direct transactions with
+  the same key, and a re-added key starts again at 0
+  ([N-delegate-nonce](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs),
+  [N-delegate-rekey](SEMANTICS.md#over-approximations)).
+
 ## 11. Local-receipt priority
 
 A transaction whose signer is its receiver produces a **local** receipt, which nearcore runs

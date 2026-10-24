@@ -952,3 +952,16 @@ tx = { signer = "alice.near", receiver = "y-probe.near", method = "yield_create"
 [[flow.static]]
 child = "y-probe.near.on_yield"
 actions = [[0, 0]]
+
+[[flow]]
+name = "relay_chain1"
+about = "chain1 relayed by dave.near: alice's delegate for p.chain(q.burn(2000) static 5000 w1, then p.on_read static 5000 w1)"
+grid = "standard"
+relay = "dave.near"
+tx = { signer = "alice.near", receiver = "p-probe.near", method = "chain", args = '{"kids": [{"method": "burn", "args": "{\"ggas\":2000}", "static_ggas": 5000, "weight": 1, "receiver": "q-probe.near"}], "cb": {"method": "on_read", "args": "", "static_ggas": 5000, "weight": 1}}', deposit = "" }
+[[flow.static]]
+child = "q-probe.near.burn"
+actions = [[5000, 1]]
+[[flow.static]]
+child = "p-probe.near.on_read"
+actions = [[5000, 1]]

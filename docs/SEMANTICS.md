@@ -35,7 +35,7 @@ Each rule has four fields:
     [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. Rules the conformance flows were
     written to cover carry the marker `<!-- conformance -->` in the source of this page, and
     each such entry says what the sim checked, if anything. The run on the current library
-    (73 flows, 95,849 prepaid points, 222,918 sim receipts) found no status, window-edge or
+    (74 flows, 97,162 prepaid points, 227,922 sim receipts) found no status, window-edge or
     attached-gas mismatch ([results](../conformance/README.md#results-at-the-pins)). The
     comparison sees each receipt's status and attached gas, by transaction, the yields still
     parked at the end, and the window edges, but not the order in which receipts run; the
@@ -737,6 +737,79 @@ Each rule has four fields:
   `conformance/tests/semantics.rs` observes a failing DeleteKey of an absent key in the sim,
   with no model run.
 
+### K4. Delegate actions (NEP-366, meta transactions)
+
+- **Rule:** A relayer R sends a transaction to a user U carrying a delegate that U signed: the
+  inner receiver C, the inner actions, a nonce, `max_block_height`, and U's public key. R signs
+  the transaction and pays for it: its gas at conversion, and the deposits of the inner actions.
+  The outer receipt (predecessor R, signer R and R's key) runs on U and checks, in order:
+  - U exists and is initialised;
+  - U's signature;
+  - expiry: `block_height > max_block_height` fails, so the bound is inclusive;
+  - the delegate's sender is U;
+  - U's key exists;
+  - the nonce is above the key's (any gap is fine) and below `block_height × 1e6`;
+  - a function-call key allows only one zero-deposit FunctionCall to its receiver and
+    methods, the same rule as for a transaction (K2). Its allowance is neither checked nor
+    charged.
+
+  A failed check is an action error of the outer receipt: no inner receipt, the key's nonce
+  unchanged, and the deposit refunded to the outer receipt's predecessor, **R**. On success
+  the key's nonce becomes the delegate's and the inner receipt is created:
+  - its predecessor is **U** and its receiver C;
+  - its signer and signer key are **R**'s, so the inner call and every receipt it spawns see
+    `signer_account_id = R` and `predecessor_account_id = U` (in the inner call);
+  - it is a new outgoing receipt, never local, and has no `refund_to`;
+  - if it fails, its deposit is refunded to its predecessor, **U**, not to R, who paid it.
+
+  The relayer's transaction reports success even when the inner call fails. A function-call
+  key of R cannot sign R's transaction, since a Delegate is not a FunctionCall. A receipt holds
+  at most one Delegate, and a delegate cannot carry one. `DelegateV2` (gas-key nonces) is
+  refused for new transactions from 87.
+
+  Comment check: `config.rs:657-658` says a failed delegate's deposit "is refunded to Sender of
+  DelegateAction". That holds only when the inner receipt fails; when the outer one fails,
+  the refund (`lib.rs:1295-1303`, the same `total_deposit`) goes to the outer predecessor, R.
+- **nearcore:** `runtime/runtime/src/actions.rs:453-535` (`apply_delegate_action`: signature
+  `:474-477`, expiry `:479-482`, sender `:483-490`, the inner receipt `:500-512`, the deposit
+  comment `:514-519`), `:579-746` (`validate_delegate_action_key`: key `:587-602`, nonce
+  `:648-657`, upper bound `:659-666`, function-call key `:670-727`, nonce update `:729-733`),
+  `:862-887` (account existence; Delegate at `:868`); `runtime/runtime/src/config.rs:652-668`
+  (`total_deposit`: the relayer pays the inner deposits); `runtime/runtime/src/lib.rs:1295-1303`,
+  `:1402-1406` (deposit refund to `balance_refund_receiver`), `:1222-1234` (new receipts are
+  outgoing); `core/primitives/src/receipt.rs:343-364` (`from_tx`: the outer predecessor is the
+  signer), `:428-430` (`balance_refund_receiver`: the predecessor when there is no
+  `refund_to`); `runtime/runtime/src/function_call.rs:172-174` (the signer is copied to every
+  child); `runtime/runtime/src/verifier.rs:213-222` (a function-call key signs one
+  FunctionCall); `runtime/runtime/src/action_validation.rs:136-151` (one Delegate per
+  receipt); `core/primitives/src/action/delegate.rs:371-433` (`NonDelegateAction`);
+  `core/primitives-core/src/version.rs:612` (`FixDelegateActionDepositWithFunctionCallError`,
+  85: the deposit check returns at once); `runtime/runtime/src/access_keys.rs:46-49`, `:240`
+  (a new key's nonce is `(height − 1) × 1e6`).
+- **Model:** `NearKeys`: `SignedDelegate(s, k, n, mbh, c)` (the user's signature; `c` the inner
+  receipt, built with `Rcpt`, and `WithGas` in gas mode), `DelegRcpt`, `SubmitDelegate(id, tx,
+  rl, k, sd)` (through `SubmitSigned`, so the relayer pays the deposit and its key is checked),
+  `ExecDelegate(r)`, `DelegErr`, `DelegMayExpire` / `DelegMustExpire`, `KeyNonce`,
+  `KeysWithNonce`, `NoExpiry`. `NearAsync`: the receipt kind `DELEG` and `IsDeleg`; `IsCall`
+  is FALSE for it, and `Exec` on it is an `Assert`. The inner receipt stays in R's transaction,
+  so `Signer` and `SignerKey` give R with no new mechanism; its predecessor and refund account
+  are U, its `loc` FALSE. The outer receipt fails through `FailP`, which refunds its deposit to
+  `r.rto` = R. Expiry follows the block clock (`blk > mbh`) when `MaxBlk > 0`; without a clock
+  a delegate with an expiry may fail at any time. Nonces are abstract integers per key, in the
+  key record. For a user outside `KeyAccts` there is no key, nonce or permission check. The
+  signature is the modelling rule that only U's own step builds U's `SignedDelegate`.
+- **Validated:** nearcore reading. <!-- conformance --> `conformance/tests/semantics.rs`
+  observes in the sim, with no model run: the signer and predecessor the inner call and its
+  children see, a replay failing on the nonce, the inclusive expiry with the refund to the
+  relayer, the refund to the sender when the inner call fails, the key checked when the outer
+  receipt runs, and the function-call-key checks on both sides (`delegate_*`). The probe flow
+  `relay_chain1` (`chain1` relayed by `dave.near`) compares the model with the sim receipt by
+  receipt over the standard grid: the Delegate receipt, then the inner call tree, with
+  statuses, attached gas and edges equal (the same edges as `chain1`). It exercises only the
+  success path, and its statuses cannot show who the signer is.
+  `examples/platform-selftest` (`selftest_deleg`, `selftest_deleg_gas`) checks the model's
+  side.
+
 ### M1. Multi-action receipts are atomic
 
 - **Rule:** The actions of one receipt run in order, and the first failure stops the loop
@@ -1223,6 +1296,7 @@ against the current module code; some may be fixed in the modules later.
   `runtime/runtime/src/verifier.rs:254-280`), expiry (`runtime/runtime/src/lib.rs:2031-2034`),
   balance-for-cost and signature checks are absent. `Submit` always succeeds, so real
   executions are a subset (nonce reuse, replay protection and gas-key nonces are not modelled).
+  Delegate nonces are the exception: `ExecDelegate` checks them (K4).
 - **N-allowance. Access-key allowance.** Not tracked (K2). A transaction nearcore refuses for a
   short allowance is accepted by the model.
 - **N-fckey-one-action. Function-call keys and bundled key actions.** nearcore refuses a
@@ -1230,6 +1304,32 @@ against the current module code; some may be fixed in the modules later.
   (`runtime/runtime/src/verifier.rs:213-217`). `KeyCanSign` refuses Transfer, Stake, key
   actions and multi-call receipts, but cannot see key actions a model bundles into a call
   receipt with `WithKeyActs`; such a model must require a full-access key itself.
+- **N-delegate-rekey. A re-added key's delegate nonce starts at 0.** Delegate nonces live in the
+  key record (K4), so a DeleteKey followed by an AddKey of the same key id resets them, and a
+  delegate signed for the old key can run again. nearcore starts a new key at
+  `(h − 1) × 1e6`, where `h` is the AddKey's block height (`runtime/runtime/src/access_keys.rs:46-49`,
+  `:240`), which kills most old delegates: every one with a nonce at or below that. Not all of
+  them: a delegate may carry a nonce up to `h' × 1e6 − 1` at the height `h'` it runs at
+  (`runtime/runtime/src/actions.rs:659-666`), so one that ran in block `h` itself, before the
+  AddKey, can still be above the new key's nonce and run again later. The model allows every
+  such replay, which is sound. A per-key high-water mark that survives a re-add would forbid
+  that last replay, which nearcore allows: an under-approximation, so the model does not keep
+  one. A model that deletes and re-adds a key id may see replays nearcore refuses; replay
+  them in the sim.
+- **N-delegate-expiry. Delegate expiry without a clock.** With `MaxBlk = 0` a delegate that has
+  an expiry (`mbh # NoExpiry`) may fail at any time (`DelegMayExpire`). This also stands in for
+  the outer-receipt failures the model leaves out (`DelegateActionNonceTooLarge`, a racing
+  direct transaction of the same key; see N-delegate-nonce). With the clock it fails exactly
+  when `blk > mbh`; the outer receipt may then still run in its transaction's own block,
+  which nearcore allows only for a local receipt (N-time).
+- **N-delegate-unkeyed. Delegates from accounts without modelled keys.** For a user outside
+  `KeyAccts`, `ExecDelegate` checks no key, nonce or permission, as `SubmitSigned` checks no
+  key for such a signer. Every replay of such a user's delegate succeeds. Put delegating users
+  in `KeyAccts`.
+- **N-delegate-forgery. The user's signature is a modelling rule.** `SignedDelegate` can be built
+  for any account. A model must build a user's delegate only in that user's own step; a
+  relayer step that builds one for another account models a forgery, which nearcore rejects
+  (`DelegateActionInvalidSignature`, `runtime/runtime/src/actions.rs:474-477`).
 - **N-create-account. CreateAccount restrictions.** There is no `CreateAccount` action in the
   modules. Its rules (a short top-level id only by one privileged account, a sub-account only by its
   parent, no explicit creation of implicit ids; `runtime/runtime/src/actions.rs:166-202`,
@@ -1315,11 +1415,21 @@ against the current module code; some may be fixed in the modules later.
   Window edges closer together than that, and windows narrower than it, are not trustworthy.
   Conformance compares gas at 0.1 Tgas resolution with `FeeRounding` pinned to `"nearest"`,
   since it measures accuracy. Under `"up"` (with the split above) the same comparison differs
-  only where it should: 2 of 73 flows (`ft_storage_again`, `wnear_storage_again`, whose
+  only where it should: 2 of 74 flows (`ft_storage_again`, `wnear_storage_again`, whose
   `storage_deposit` refunds the excess by a Transfer) move their edge one grid point up, from
   1.0 to 1.1 Tgas. At 1.0 Tgas nearcore succeeds with 0.8 and 1.3 Ggas to spare, and the
   model, 3.6 Ggas over on the Transfer, runs out of gas. No other status or edge changes;
   attached gas moves within the 5 Ggas tolerance, never above the sim's (G3).
+- **N-delegate-nonce. Delegate nonces against direct transactions, and their upper bound.**
+  A user's direct transactions share the key's nonce with its delegates in nearcore
+  (`runtime/runtime/src/verifier.rs:254-280`), but `SubmitSigned` neither checks nor advances
+  it (N-tx-validity). So a delegate that a later-nonce direct transaction of the same key
+  would invalidate still runs in the model. Likewise `DelegateActionNonceTooLarge` (a nonce at
+  or above `block_height × 1e6`, `runtime/runtime/src/actions.rs:659-666`) is absent: the
+  model's nonces are abstract. Both hide a failure of the outer receipt (whose deposit goes
+  back to the relayer). Mitigation: give such delegates a finite expiry and run without a
+  clock (N-delegate-expiry), or advance the key's nonce in the model's own direct-transaction
+  step with `KeysWithNonce`.
 - **N-batch-oog. Per-action out-of-gas in batches.** nearcore checks each function-call action
   against its own gas and splits only that action's leftover (G3). `NearAsync` does the same
   for an outcome with `pa`, and the token batch emits it by default (`TokBatchPerAction`). A
@@ -1412,10 +1522,15 @@ against the current module code; some may be fixed in the modules later.
   `promise_and([p, p])`, or `p.then(A)` together with `promise_and([p, q]).then(B)`. nearcore
   sends `p`'s result to each receiver (`runtime/runtime/src/receipt_manager.rs:118-124`,
   `runtime/runtime/src/lib.rs:1146-1189`). A contract using either pattern cannot be modelled.
-- **N-delegate. Delegate actions / meta-transactions** (NEP-366;
-  `runtime/runtime/src/actions.rs:453`). With a relayer, the signer is the relayer and the
-  predecessor is the delegating user. Contracts that use `signer_account_id` for authorisation
-  behave differently.
+- **N-delegate. Delegate actions: what K4 leaves out.** The gas money of a meta transaction
+  (the relayer's NEAR spent on gas, and the inner actions' send fees, which the relayer pays
+  twice: `calculate_tx_cost`, `runtime/runtime/src/config.rs:481`, and `runtime/runtime/src/actions.rs:521-531`) is
+  not modelled (N-gas-money); for a fee estimate use `NearFeeTable!ActionFee("delegate", sir,
+  kind)`. `DelegateV2` and gas-key nonces (N-gas-keys), the ML-DSA signature-verification
+  surcharge, and the relayer's transaction status (a success even when the inner call fails)
+  are absent. The model's inner receipt is one receipt record: a delegate whose inner actions
+  bundle key actions with a call needs `WithKeyActs`, and `KeyCanSign` cannot see those
+  (N-fckey-one-action).
 - **N-global. Global contracts** (NEP-591; `runtime/runtime/src/global_contracts.rs:25`, `:65`).
   Code shared by hash or by account and updated in place is absent. An eth-implicit account's
   code is a global contract (A3), but only its existence matters to the model.

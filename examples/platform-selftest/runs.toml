@@ -223,3 +223,25 @@ MaxBlk = "2"
 YieldTicks = "1"
 OldDupCheck = "TRUE"
 Scns = '{"yield_id_same_call"}'
+
+# Delegate actions (NEP-366): who the inner call sees, the nonce and expiry checks, the two
+# deposit refund paths, function-call keys on either side.  MaxBlk 2 lets "deleg_expired"
+# script a block; the other scenarios have no expiry, so every one is deterministic.
+[[run]]
+name = "selftest_deleg"
+expect = "pass"
+[run.constants]
+MaxBlk = "2"
+Scns = '''{"deleg_ok", "deleg_replay", "deleg_expired", "deleg_inner_fail", "deleg_fc_key",
+          "deleg_fc_relayer", "deleg_checks"}'''
+
+# The same in gas mode: the inner call gets the delegate's gas (10 Tgas), its child a share.
+[[run]]
+name = "selftest_deleg_gas"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+MaxBlk = "2"
+Scns = '{"deleg_ok", "deleg_replay", "deleg_expired", "deleg_inner_fail"}'

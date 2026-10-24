@@ -201,6 +201,10 @@ pub struct Flow {
     /// parked yield (see `run_flow`).
     #[serde(default)]
     pub after: Vec<After>,
+    /// Send the swept transaction as a meta transaction (NEP-366): its
+    /// signer signs a delegate for the call, and this account relays it
+    /// (`Tx::relay`). The swept gas is the delegated call's.
+    pub relay: Option<String>,
 }
 
 /// One step after a flow's transaction: exactly one of `call` (a
@@ -345,7 +349,7 @@ impl Resolved {
 /// each read again at the end: a yield callback belongs to the transaction
 /// that yielded, whichever one resumed it.
 pub fn run_flow(sim: &mut Sim, flow: &Flow, gas: Gas) -> Vec<TxOutcome> {
-    let mut hashes = vec![run(sim, &flow.tx, Some(gas)).hash];
+    let mut hashes = vec![run_as(sim, &flow.tx, Some(gas), flow.relay.as_deref()).hash];
     for (i, a) in flow.after.iter().enumerate() {
         match (a.expire, &a.call) {
             (true, None) => {
@@ -365,6 +369,11 @@ pub fn run_flow(sim: &mut Sim, flow: &Flow, gas: Gas) -> Vec<TxOutcome> {
 
 /// Runs one call to completion, at `gas` (default: its `tgas`, else 300).
 pub fn run(sim: &mut Sim, c: &Call, gas: Option<Gas>) -> TxOutcome {
+    run_as(sim, c, gas, None)
+}
+
+/// `run`, or with `relay` the same call as a delegate that account relays.
+pub fn run_as(sim: &mut Sim, c: &Call, gas: Option<Gas>, relay: Option<&str>) -> TxOutcome {
     let dep: u128 = if c.deposit.is_empty() { 0 } else { c.deposit.parse().expect("deposit: yocto decimal") };
     let g = gas.unwrap_or_else(|| Gas::from_gas((c.tgas.unwrap_or(300.0) * 1e12).round() as u64));
     let args = c.args.json();
@@ -373,5 +382,9 @@ pub fn run(sim: &mut Sim, c: &Call, gas: Option<Gas>) -> TxOutcome {
         Args::None => tx,
         _ => tx.args_json(args),
     };
-    tx.deposit(Balance::from_yoctonear(dep)).gas(g).transact()
+    let tx = tx.deposit(Balance::from_yoctonear(dep)).gas(g);
+    match relay {
+        Some(r) => tx.relay(r),
+        None => tx.transact(),
+    }
 }

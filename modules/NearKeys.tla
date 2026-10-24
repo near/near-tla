@@ -24,6 +24,11 @@
 (*     account, fails.  NearAsync does this itself (Contracts, HasCode);   *)
 (*     FailNoCode is kept as an explicit step.                             *)
 (*  6. Ghost sigpaid[a]: transactions signed by a's keys (a pays the gas). *)
+(*  7. Delegate actions (NEP-366, meta transactions): a user signs a       *)
+(*     delegate (SignedDelegate), a relayer submits it (SubmitDelegate),   *)
+(*     ExecDelegate checks it on the user's account and emits the inner    *)
+(*     receipt (runtime/runtime/src/actions.rs:453-535).  Delegate nonces  *)
+(*     live in the key record (KeyNonce).                                  *)
 (*                                                                         *)
 (* A model that uses keys conjoins UNCHANGED keyVars to every step that    *)
 (* does not touch keys, like any contract variable.                        *)
@@ -155,4 +160,106 @@ ExecWithKeys(r, acts, O) ==
 \* Exec already fails such calls (NearAsync CallTargetOK); this is the same
 \* rule as an explicit step for dispatchers.
 FailNoCode(r) == IsCall(r) /\ ~HasCode(r.to) /\ FailP(r, FALSE)
+
+----------------------------------------------------------------------------
+(* Delegate actions (NEP-366, meta transactions).                          *)
+(* The user s signs a delegate with its key k: nonce n, expiry height mbh  *)
+(* and the inner receipt c (SignedDelegate).  A relayer rl sends a         *)
+(* transaction to s carrying it (SubmitDelegate): rl is the signer, pays   *)
+(* the gas and the inner deposit (runtime/runtime/src/config.rs:652-668).  *)
+(* Its first receipt (DELEG, predecessor rl) runs on s: ExecDelegate       *)
+(* checks the delegate and emits the inner receipt, with predecessor s,    *)
+(* receiver c.to, and the outer receipt's signer, rl                       *)
+(* (runtime/runtime/src/actions.rs:453-535, the receipt at :500-512).  The *)
+(* inner receipt stays in rl's transaction, so Signer / SignerKey of it    *)
+(* and of everything it spawns are rl and rl's key.  It is a new outgoing  *)
+(* receipt, never local (runtime/runtime/src/lib.rs:1222-1234).            *)
+(* Deposit refunds go to the failing receipt's predecessor                 *)
+(* (core/primitives/src/receipt.rs:428-430; runtime/runtime/src/lib.rs:    *)
+(* 1295-1303, :1402-1406): to rl if the outer receipt fails, to s if the   *)
+(* inner one does.                                                         *)
+(* A model builds a SignedDelegate only in a step of the user s itself     *)
+(* (that is its signature); a relayer step that builds one for another     *)
+(* account is a forgery, which nearcore rejects                            *)
+(* (DelegateActionInvalidSignature, actions.rs:474-477).  A dispatcher     *)
+(* routes IsDeleg(r) to ExecDelegate(r), before any contract handler (Exec *)
+(* asserts on a DELEG receipt).                                            *)
+
+\* mbh of a delegate without an expiry height.
+NoExpiry == -1
+
+\* Delegate nonces, per key, in the key record (field "nonce"; absent = 0).
+\* A key re-added after a DeleteKey starts again at 0 (KeysWith); nearcore
+\* starts a new key at (height - 1) * 1e6 (access_keys.rs:46-49, :240): an
+\* over-approximation, see docs/SEMANTICS.md (K4).
+KeyNonce(a, k) == IF "nonce" \in DOMAIN keys[a][k] THEN keys[a][k].nonce ELSE 0
+KeysWithNonce(a, k, n) == [keys EXCEPT ![a][k] = ("nonce" :> n) @@ @]
+
+\* The user s's signed delegate: its key k, nonce n (any integer; it must
+\* exceed the key's last delegate nonce when it runs), expiry height mbh
+\* (NoExpiry: none), and the inner receipt c, built with Rcpt: receiver,
+\* method, args, deposit, and in gas mode its gas (WithGas).  c's id, tx,
+\* fr, rto, cb and loc are set when the delegate runs.  A delegate cannot
+\* carry a delegate (core/primitives/src/action/delegate.rs:371-433).
+SignedDelegate(s, k, n, mbh, c) ==
+    IF IsDeleg(c) THEN Assert(FALSE, <<"a delegate cannot carry a delegate", s, n>>)
+    ELSE [snd |-> s, k |-> k, n |-> n, mbh |-> mbh, inner |-> c]
+
+\* The relayer rl's first receipt: to the user, predecessor rl, the inner
+\* deposit attached (paid by rl at submission; refunded to rl if this
+\* receipt fails).  Action-only: it never runs out of gas.
+DelegRcpt(id, tx, rl, sd) == Rcpt(id, tx, sd.snd, rl, DELEG, sd, sd.inner.dep, rl, 0)
+\* The relayer's transaction, signed with its key k.  A function-call key
+\* cannot sign it: it is not a function call (IsCall is FALSE;
+\* runtime/runtime/src/verifier.rs:213-222).
+SubmitDelegate(id, tx, rl, k, sd) == SubmitSigned(DelegRcpt(id, tx, rl, sd), rl, k)
+
+\* Expiry: the delegate fails when block_height > max_block_height
+\* (actions.rs:479-482), checked when the outer receipt runs.  With the
+\* block clock (MaxBlk > 0) that is blk > mbh; without one (MaxBlk = 0) a
+\* delegate with an expiry may fail at any time (an over-approximation).
+DelegMayExpire(sd)  == sd.mbh # NoExpiry /\ (MaxBlk = 0 \/ blk > sd.mbh)
+DelegMustExpire(sd) == sd.mbh # NoExpiry /\ MaxBlk > 0 /\ blk > sd.mbh
+
+\* The inner receipt as the key check sees it (predecessor = the user).
+DelegInner(r) == [r.a.inner EXCEPT !.fr = r.to]
+
+\* The first failing check of the outer receipt r other than expiry, or "".
+\* The account must exist and be initialised (actions.rs:861-886); the
+\* delegate's sender must be r's receiver (:483-490); for a user in KeyAccts,
+\* the key must exist (:587-602), the nonce must be above the key's
+\* (:648-657), and a function-call key allows one zero-deposit function call
+\* to its receiver and methods (:670-727; KeyCanSign, as for a transaction).
+\* A user outside KeyAccts gets no key, nonce or permission check.
+DelegErr(r) ==
+    LET sd == r.a  s == r.to IN
+    CASE ~AcctExists(s) \/ (s \in created /\ KindOf(s) = "universal") -> "AccountDoesNotExist"
+      [] sd.snd # s                                           -> "SenderDoesNotMatchTxReceiver"
+      [] s \in KeyAccts /\ ~KeyPresent(s, sd.k)               -> "AccessKeyNotFound"
+      [] s \in KeyAccts /\ sd.n <= KeyNonce(s, sd.k)          -> "InvalidNonce"
+      [] s \in KeyAccts /\ ~KeyCanSign(s, sd.k, DelegInner(r)) -> "AccessKeyError"
+      [] OTHER                                                -> ""
+
+\* Run the outer receipt r (IsDeleg(r)).  On success the key's nonce becomes
+\* the delegate's (actions.rs:729-733) and the inner receipt is created with
+\* a fresh id; the deposit travels with it.  On failure r fails like any
+\* receipt: its deposit is refunded to rl (r.rto), no inner receipt.  The
+\* contract conjoins UNCHANGED of its own variables.
+ExecDelegate(r) ==
+    /\ IsDeleg(r)
+    /\ LET sd == r.a
+           c  == [sd.inner EXCEPT !.id = nid, !.tx = r.tx, !.fr = r.to, !.rto = r.to,
+                                  !.cb = 0, !.res = NoRes, !.loc = FALSE]
+       IN \/ /\ ~DelegMustExpire(sd) /\ DelegErr(r) = ""
+             /\ rq'   = RemR(r) \cup {c}
+             /\ post' = RemP(r)
+             /\ data' = RemD(r)
+             /\ nid'  = nid + 1
+             /\ keys' = IF r.to \in KeyAccts THEN KeysWithNonce(r.to, sd.k, sd.n) ELSE keys
+             /\ rlog' = LogR(r, "ok")
+             /\ UNCHANGED <<near, locked, proposal, epoch, fails, paid, minted, oog, txsig, created,
+                            burnt, blk, sigpaid>>
+          \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
+             /\ FailP(r, FALSE)
+             /\ UNCHANGED keyVars
 =============================================================================

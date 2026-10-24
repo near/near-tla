@@ -34,6 +34,9 @@
 (*  - The transaction signer is inherited by every receipt of the tree     *)
 (*    (runtime/runtime/src/function_call.rs:172-174) and exposed to the    *)
 (*    contract next to the predecessor (function_call.rs:259-262).         *)
+(*  - Delegate actions (NEP-366) are a receipt kind here (DELEG) and run   *)
+(*    in NearKeys (ExecDelegate): the relayer's transaction tree, so the   *)
+(*    inner call's signer is the relayer, its predecessor the user.        *)
 (*  - Local receipts: a transaction whose signer is its receiver produces  *)
 (*    a local receipt, executed in the same chunk before delayed and       *)
 (*    incoming receipts (lib.rs:2316-2324, :2800-2821).  Receipts created  *)
@@ -291,10 +294,12 @@ REFND == "REFUND"   \* system refund receipt
 STAKE == "STAKE"    \* Stake action on StakingAcct; a.x1 = amount
 ADDK  == "ADDKEY"   \* AddKey action (executed by NearKeys)
 DELK  == "DELKEY"   \* DeleteKey action (executed by NearKeys)
+DELEG == "DELEGATE" \* Delegate action, NEP-366 (executed by NearKeys.ExecDelegate)
 IsBuiltin(r) == r.m \in {XFER, REFND, STAKE}
 IsKeyRcpt(r) == r.m \in {ADDK, DELK}
+IsDeleg(r)   == r.m = DELEG
 \* A function-call receipt (the rest).
-IsCall(r)    == ~IsBuiltin(r) /\ ~IsKeyRcpt(r)
+IsCall(r)    == ~IsBuiltin(r) /\ ~IsKeyRcpt(r) /\ ~IsDeleg(r)
 
 ----------------------------------------------------------------------------
 (* Receipt records.  All receipts have the same fields.                    *)
@@ -722,9 +727,11 @@ PoolCheck(r, O) ==
 \* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas).
 \* Order: the receiver check comes first (the call never starts); a panic
 \* the gas could not reach is "oog"; new-receipt validation and the storage
-\* check run after the call.
+\* check run after the call.  A Delegate receipt runs no code: a dispatcher
+\* that hands one to a contract handler is a modelling error (an Assert).
 Verdict(r, O) ==
-    IF ~PoolCheck(r, O) THEN "fail"
+    IF IsDeleg(r) THEN Assert(FALSE, <<"DELEGATE receipt passed to Exec; run it with NearKeys' ExecDelegate", r.id>>)
+    ELSE IF ~PoolCheck(r, O) THEN "fail"
     ELSE IF ~CallTargetOK(r) THEN "fail"
     ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "oog" ELSE "fail")
     ELSE IF ~GasOK(r, O) THEN "oog"

@@ -1,0 +1,92 @@
+# Delegate actions (NEP-366): who the inner call sees, who gets a deposit back, and what stops
+# a replay.  See MetaTx.tla.
+#
+#   python3 tools/run.py examples/meta-tx
+
+spec = "MetaTx"
+workers = 2
+library = "../../modules"
+budget_s = 120
+invariants = ["Credited", "NoUserProfit", "Sane"]
+tags = ["semantics:delegate"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"rl"'
+MinStake = "1"
+StorageFloor = "PFloor"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"fault"'
+GasCall = "NoGasTable"
+GasBurn = "NoGasTable"
+LogOn = "FALSE"
+KeyAccts = '{"u1", "u2", "rl"}'
+Contracts = '{"l"}'
+Users = '{"u1", "u2"}'
+RL = '"rl"'
+L = '"l"'
+MaxTx = "3"
+MaxSign = "1"
+Wrong = "FALSE"
+Dep = "0"
+Mbh = "NoExpiry"
+
+# L credits the predecessor.  The relayer replays every signed delegate up to MaxTx times;
+# the nonce check fails every replay.
+[[run]]
+name = "meta_predecessor_ok"
+expect = "pass"
+
+# L credits env::signer_account_id(): in a relayed claim that is the relayer.
+[[run]]
+name = "meta_trusts_signer"
+expect = "violation"
+invariant = "Credited"
+[run.constants]
+Wrong = "TRUE"
+
+# The same L with no delegates (direct calls only) passes: the bug needs a relayer.
+[[run]]
+name = "meta_trusts_signer_direct_ok"
+expect = "pass"
+[run.constants]
+Wrong = "TRUE"
+MaxSign = "0"
+
+# The relayer pays the deposit; a failing inner call refunds it to the user.
+[[run]]
+name = "meta_deposit_refund_to_user"
+expect = "violation"
+invariant = "NoUserProfit"
+[run.constants]
+Dep = "1"
+
+# Mutant runtime without the delegate nonce check: a replayed delegate credits twice.
+[[run]]
+name = "meta_no_nonce_check"
+expect = "violation"
+invariant = "Credited"
+[run.constants]
+NoNonceCheck = "TRUE"
+
+# Delegates with an expiry height and no clock (MaxBlk = 0): any relay may fail as expired
+# (the over-approximation N-delegate-expiry); the predecessor-crediting L still passes.
+[[run]]
+name = "meta_expiry_anytime"
+expect = "pass"
+[run.constants]
+Mbh = "1"
+
+# Delegates valid through height 1, on a block clock: a relay may run before or after expiry.
+# The only clock comparison is blk > 1 (ExecDelegate), so every height >= 2 behaves alike and
+# MaxBlk = 2 covers every behaviour.
+[[run]]
+name = "meta_expiry_clock"
+expect = "pass"
+[run.constants]
+Mbh = "1"
+MaxBlk = "2"

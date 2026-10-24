@@ -36,9 +36,9 @@
 (*     ft_probe,wnear_probe --batch-actions --tla tla/CalibProbes.tla      *)
 (*     --prefix Probe                                                      *)
 (* flows: probes.toml sha256                                               *)
-(*     052f7c3732359737aae8e597030235b8e1570c2d8ffc95653503488b2f459a93    *)
-(* grid: standard (1313 points), 73 flows                                  *)
-(* split check: 106608 children, 0 mismatches; 7408 per action             *)
+(*     4575b54dcb586a81c34d462e60238ef9d2c8413170eb06870430e00d63b06734    *)
+(* grid: standard (1313 points), 74 flows                                  *)
+(* split check: 108986 children, 0 mismatches; 7408 per action             *)
 (*                                                                         *)
 (* Burns depend on the contract's code and state: recalibrate for a real   *)
 (* deployment (conformance/README.md).                                     *)
@@ -84,14 +84,14 @@ ProbeGasBurn ==
     "p.chain/burn,on_count" :> [base |-> 1037, per |-> 0] @@  \* 1 pt; spread 1.037-1.037 Tgas; burn up to the failure (never succeeds)
     "p.chain/burn,on_count,ret/and" :> [base |-> 1462, per |-> 0] @@  \* 1 pt; spread 1.462-1.462 Tgas; burn up to the failure (never succeeds)
     "p.chain/burn,on_count,ret/and_cb0" :> [base |-> 1462, per |-> 0] @@  \* 1 pt; spread 1.462-1.462 Tgas; burn up to the failure (never succeeds)
-    "p.chain/burn,on_read" :> [base |-> 1037, per |-> 0] @@  \* 2 pts; spread 1.037-1.037 Tgas
+    "p.chain/burn,on_read" :> [base |-> 1037, per |-> 0] @@  \* 3 pts; spread 1.037-1.037 Tgas
     "p.chain/burn,on_read,ret/and" :> [base |-> 1463, per |-> 0] @@  \* 2 pts; spread 1.462-1.462 Tgas
     "p.chain/fail,on_order,ret/and_y" :> [base |-> 1456, per |-> 0] @@  \* 2 pts; spread 1.456-1.456 Tgas
     "p.chain/fail,on_read,ret/and" :> [base |-> 1463, per |-> 0] @@  \* 1 pt; spread 1.463-1.463 Tgas
     "p.chain/on_count,ret" :> [base |-> 1038, per |-> 0] @@  \* 2 pts; spread 1.037-1.037 Tgas
     "p.chain/on_read,ret" :> [base |-> 1038, per |-> 0] @@  \* 4 pts; spread 1.037-1.037 Tgas
     "p.on_count" :> [base |-> 260, per |-> 0] @@  \* 2 pts; spread 0.259-0.259 Tgas
-    "p.on_read" :> [base |-> 270, per |-> 3] @@  \* 9 pts; spread 0.260-0.552 Tgas; per exact 2.8413; max residual 17.5
+    "p.on_read" :> [base |-> 270, per |-> 3] @@  \* 10 pts; spread 0.260-0.552 Tgas; per exact 2.8400; max residual 17.5
     "p.on_read/and" :> [base |-> 291, per |-> 0] @@  \* 4 pts; spread 0.273-0.291 Tgas; max residual 18.3
     "p.send/[Transfer],on_read/eth_new" :> [base |-> 716, per |-> 0] @@  \* 1 pt; spread 0.716-0.716 Tgas
     "p.send/[Transfer],on_read/nobody" :> [base |-> 705, per |-> 0] @@  \* 1 pt; spread 0.705-0.705 Tgas
@@ -101,7 +101,7 @@ ProbeGasBurn ==
     "p.send/[Transfer]/nimp_new" :> [base |-> 307, per |-> 0] @@  \* 1 pt; spread 0.306-0.306 Tgas
     "p.send/[Transfer]/nobody" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas
     "p.send/[Transfer]/q" :> [base |-> 288, per |-> 0] @@  \* 1 pt; spread 0.288-0.288 Tgas
-    "q.burn" :> [base |-> 1, per |-> 1] @@  \* 3 pts; spread 1.000-2.000 Tgas; per exact 1.0002
+    "q.burn" :> [base |-> 1, per |-> 1] @@  \* 4 pts; spread 1.000-2.000 Tgas; per exact 1.0002
     "q.burn/and" :> [base |-> 1, per |-> 1] @@  \* 3 pts; spread 1.000-5.000 Tgas; per exact 1.0000
     "q.fail/and" :> [base |-> 360, per |-> 0] @@  \* 1 pt; spread 0.359-0.359 Tgas; burn up to the failure (never succeeds)
     "q.fail/and_y" :> [base |-> 360, per |-> 0] @@  \* 2 pts; spread 0.359-0.359 Tgas; burn up to the failure (never succeeds)

@@ -106,13 +106,13 @@ at this commit:
 
 | | |
 |---|---|
-| flows | 73, all match (58, plus 8 joint-promise and 7 yield/resume flows) |
-| prepaid points per flow | 1313 (95,849 points in all) |
-| receipts compared | 222,918 sim receipts |
+| flows | 74, all match (58, plus 8 joint-promise, 7 yield/resume flows and 1 relayed (delegate) flow) |
+| prepaid points per flow | 1313 (97,162 points in all) |
+| receipts compared | 227,922 sim receipts |
 | status mismatches | 0 (receipts matched by transaction; parked yields at the end: 0 at every point, on both sides) |
 | edge mismatches | 0 |
 | attached-gas differences above tolerance | 0 (tolerance 5 Ggas; largest 5 Ggas, from rounding up at two creation levels) |
-| split-check mismatches | 0 of 106,608 children (largest difference 0 gas) |
+| split-check mismatches | 0 of 108,986 children (largest difference 0 gas) |
 
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
 burns, `ft_transfer_call`'s gas behaviour) are in

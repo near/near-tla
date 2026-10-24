@@ -227,6 +227,22 @@ class Conform(unittest.TestCase):
                 self.assertProblem(res, "1 JSONL lines unreadable (no tx or yields field")
                 self.assertProblem(res, "1 grid points missing in the sweep")
 
+    def test_delegate_receipt_pairs_by_action(self):
+        # A relayed flow's first receipt: the model's DELEGATE receipt is the
+        # sim's action-only `alice[Delegate]`, with no attached gas on either side.
+        names = {"alice.near": "alice", "q-probe.near": "q"}
+        sim = conform.sim_records(dict(receipts=[
+            dict(tx=0, conversion=True, refund=None, receiver="dave.near", methods=[], actions=[], attached=0, status="ok"),
+            dict(tx=0, conversion=False, refund=None, receiver="alice.near", methods=[], actions=["Delegate"],
+                 attached=0, status="ok"),
+            dict(tx=0, conversion=False, refund=None, receiver="q-probe.near", methods=["work"],
+                 actions=["FunctionCall"], attached=10000 * 10**9, status="ok")]), names)
+        model = conform.model_records([dict(tx=1, m="DELEGATE", to="alice", st="ok", g=0),
+                                       dict(tx=1, m="work", to="q", st="ok", g=10000)], "")
+        self.assertEqual(sorted(sim), sorted(model))
+        self.assertIn(("tx1:alice[Delegate]", "ok", None), model)
+        self.assertEqual(conform.joint(model, sim), (True, 0))
+
     def test_joint_pairing(self):
         j = conform.joint
         self.assertEqual(j([("a", "ok", 1), ("a", "ok", 9)], [("a", "ok", 8), ("a", "ok", 2)]), (True, 1))

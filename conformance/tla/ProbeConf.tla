@@ -12,6 +12,11 @@
 (* sim's sweep.  Transactions are numbered 1, 2, ... in the order they    *)
 (* are sent, counting only transactions (an expire step is a block), as   *)
 (* the sim's sweep numbers them (from 0).                                 *)
+(* A relayed flow (Relayer0 # ""): the flow's transaction is a meta        *)
+(* transaction.  Signer0 signs a delegate for FirstRcpt (with the swept    *)
+(* gas) and Relayer0 submits it (SubmitDelegate); its first receipt, the   *)
+(* Delegate action on Signer0, runs with ExecDelegate.  alice's key is     *)
+(* modelled (KeyAccts), so the delegate's key and nonce checks run.        *)
 (*                                                                         *)
 (* The probe contract (conformance/probes/probe), on accounts "p" and "q": *)
 (*   chain   creates kids (each its own function call with the static gas *)
@@ -40,16 +45,17 @@
 (* Every receipt's burn key and size, and every child's exec fee, come    *)
 (* from the calibration (CalibProbes.tla).                                *)
 (***************************************************************************)
-EXTENDS Tokens
+EXTENDS Tokens, NearKeys
 
 CONSTANTS FirstRcpt,   \* the flow's transaction (its first receipt, gas set per run)
           Signer0,     \* its signer
+          Relayer0,    \* "" or the account that relays it as a delegate
           Grid,        \* prepaid values (Ggas)
           After        \* steps after it: [k |-> "tx" | "expire", to, m, a, fr, g]
 
 VARIABLES pp, sent, ai   \* ai: After steps done
 confVars == <<pp, sent, ai>>
-vars == <<platformVars, tk, confVars>>
+vars == <<platformVars, tk, keyVars, confVars>>
 
 ProbeAccts == {"p", "q"}
 Toks == {"ft_probe", "wnear_probe"}
@@ -66,6 +72,11 @@ ConfReserve == [t \in Toks |-> 0]
 
 \* Accounts with code (calls to any other account fail).
 ConfContracts == {"p", "q", "y"} \cup Toks
+
+\* Modelled keys: alice's, one full-access key (the key a relayed flow's
+\* delegate is signed with).
+ConfKeyAccts == {"alice"}
+ConfKeys0 == [a \in ConfKeyAccts |-> (DefaultKey :> FullPerm)]
 
 
 \* Model units: 1 NEAR = 1000; the storage minimum is 1; 1 yocto is 1.
@@ -181,7 +192,10 @@ PH(r) ==
 ----------------------------------------------------------------------------
 Start ==
     /\ ~sent
-    /\ SubmitAs(WithGas(FirstRcpt, pp), Signer0, DefaultKey)
+    /\ IF Relayer0 = ""
+       THEN SubmitAs(WithGas(FirstRcpt, pp), Signer0, DefaultKey) /\ UNCHANGED keyVars
+       ELSE SubmitDelegate(nid, 1, Relayer0, DefaultKey,
+                           SignedDelegate(Signer0, DefaultKey, 1, NoExpiry, WithGas(FirstRcpt, pp)))
     /\ sent' = TRUE
     /\ UNCHANGED <<tk, pp, ai>>
 
@@ -202,18 +216,20 @@ AfterStep ==
        IF s.k = "expire" THEN BlockTick
        ELSE SubmitAs(WithGas(Rcpt(nid, TxOf(ai + 1), s.to, s.fr, s.m, s.a, 0, s.fr, 0), s.g), s.fr, DefaultKey)
     /\ ai' = ai + 1
-    /\ UNCHANGED <<tk, pp, sent>>
+    /\ UNCHANGED <<tk, keyVars, pp, sent>>
 
 Run ==
     \E r \in Runnable :
-       /\ IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED tk
-          ELSE IF IsTokRcpt(r) THEN \E ch \in TokChoices(r) : TokStep(r, TokHandle(r, ch))
-          ELSE Exec(r, PH(r)) /\ UNCHANGED tk
+       /\ IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED <<tk, keyVars>>
+          ELSE IF IsDeleg(r) THEN ExecDelegate(r) /\ UNCHANGED tk
+          ELSE IF IsTokRcpt(r) THEN \E ch \in TokChoices(r) : TokStep(r, TokHandle(r, ch)) /\ UNCHANGED keyVars
+          ELSE Exec(r, PH(r)) /\ UNCHANGED <<tk, keyVars>>
        /\ UNCHANGED confVars
 
 Init ==
     /\ PlatformInit([a \in Accts |-> 1000000], 1..NTx)
     /\ tk = [t \in Toks |-> Ledger(Bal0(t), Reg0(t))]
+    /\ KeysInit(ConfKeys0)
     /\ pp \in Grid
     /\ sent = FALSE
     /\ ai = 0

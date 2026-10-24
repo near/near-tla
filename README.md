@@ -20,7 +20,7 @@ the runtime allows.
 - **Gas semantics and fees are checked per receipt against nearcore**, through
   near-contract-sim, which runs nearcore's own `Runtime::apply`. Probe contracts are swept over
   a grid of prepaid gas, and every receipt's status, attached gas and failure edge is compared
-  with the model: **73 flows × 1313 prepaid points, all matching; 106,608 child gas splits, 0
+  with the model: **74 flows × 1313 prepaid points, all matching; 108,986 child gas splits, 0
   mismatches**. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md).
 - **What is not modelled** is listed, item by item, with what each omission could hide:
   [Not modelled](docs/SEMANTICS.md#not-modelled).
@@ -129,10 +129,11 @@ to move to a new protocol version.
 - Per-sender-receiver ordering: dropped. nearcore keeps no per-pair order at protocol 88
   (SEMANTICS S4), so a pair-order switch would hide real bugs. Not every order the model
   allows is reachable, though: a counterexample's schedule still needs replaying.
+- Delegate actions (NEP-366 meta transactions), where the signer is the relayer and the
+  predecessor the user (SEMANTICS K4, `examples/meta-tx`).
 
 ### Planned (v0.2)
 
-- Delegate actions (NEP-366), where the signer is the relayer.
 - Per-byte storage staking instead of a fixed floor.
 
 ### Later

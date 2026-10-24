@@ -15,6 +15,9 @@
 (* do not exist; neither does the universal account 0u1.  The rule each    *)
 (* scenario checks is in docs/SEMANTICS.md with its nearcore citation      *)
 (* (b7b4737); the comments in Expect name the source file.                 *)
+(* Delegate actions (the deleg_ scenarios): a script entry Dl is a        *)
+(* relayer's transaction carrying a user's signed delegate; u relays with  *)
+(* its key "ku" (u's keys are not modelled), c and d are the users.        *)
 (***************************************************************************)
 EXTENDS Tokens, NearKeys
 
@@ -77,7 +80,7 @@ SGasBurn ==
     @@ ("c.multi/phuge" :> GB(4500)) @@ ("c.multi2/1" :> GB(1000)) @@ ("c.multi2/2" :> GB(1000))
     @@ ("j" :> GB(500)) @@ ("jcb" :> GB(0)) @@ ("req" :> GB(400)) @@ ("req2" :> GB(400))
     @@ ("reqr" :> GB(400)) @@ ("callreq" :> GB(300)) @@ ("ans" :> GB(100)) @@ ("ycb" :> GB(0))
-    @@ ("dcb" :> GB(0))
+    @@ ("dcb" :> GB(0)) @@ ("who" :> GB(100)) @@ ("whoc" :> GB(300))
 \* Path-specific burn keys (falling back to the method key when absent).
 SGasPath ==
        ("ft.storage_deposit/new" :> GB(3000)) @@ ("ft.storage_deposit" :> GB(500))
@@ -107,6 +110,8 @@ YidTaken(r, ps, k) ==
     ELSE \E p \in PendingYieldRcpts(r, ps) : YidOf(p) = k
 YieldId(id, r, k, gen) == YieldRcpt(id, r, "ycbid", YidArgs(k, gen), 0, 0)
 CbOf(r, id) == Rcpt(id, r.tx, r.to, r.to, "cb", G0, 0, r.to, r.cb)
+\* "who:<receiver><-<predecessor> signer <signer>/<signer key>", with the receipt's gas.
+Who(r) == Sn(r, "who:" \o r.to \o "<-" \o r.fr \o " signer " \o Signer(r) \o "/" \o SignerKey(r), GasOf(r))
 H(r) ==
   LET a == Ar(r) IN
   CASE r.m = "spawn" ->     \* d.work(a.w) with deposit a.cd and refund_to a.rto, then self.cb
@@ -241,6 +246,11 @@ H(r) ==
          IF a.cd # 0 THEN [O |-> Out0, s |-> {}]
          ELSE IF YidTaken(r, {}, a.amt) THEN [O |-> Out0, s |-> {Sn(r, "reyid", 0)}]
          ELSE [O |-> Outcome({}, {YieldId(nid, r, a.amt, 1)}, RVal(0), 0, 1), s |-> {Sn(r, "reyid", 1)}]
+    [] r.m = "who" ->       \* records receiver, predecessor, signer, signer key and its gas
+         [O |-> Out0, s |-> {Who(r)}]
+    [] r.m = "whoc" ->      \* the same, and d.who as a child (static 1000, weight 1)
+         [O |-> Outcome({WithCall(Rcpt(nid, r.tx, D, r.to, "who", G0, 0, r.to, 0), <<1000>>, <<1>>)},
+                        {}, RVal(0), 0, 1), s |-> {Who(r)}]
     [] r.m = "ycb" ->       \* the yield callback: returns the payload; panics on a timeout
          [O |-> IF IsFailed(r.res) THEN OErr(Out0, "timed out") ELSE Outcome({}, {}, RVal(r.res.v), 0, 0),
           s |-> {Sn(r, "ycb", NumOr(r.res, 0)), Sn(r, "ygas", GasOf(r))}]
@@ -266,6 +276,7 @@ RunKey(r) == ExecKeyAct(r, Ar(r).key, PermOf(Ar(r).key)) /\ UNCHANGED <<tk, mine
 Run == \E r \in Runnable :
          IF IsBuiltin(r) THEN ExecBuiltin(r) /\ UNCHANGED <<tk, keyVars, mine>>
          ELSE IF IsKeyRcpt(r) THEN RunKey(r)
+         ELSE IF IsDeleg(r) THEN ExecDelegate(r) /\ UNCHANGED <<tk, mine>>
          ELSE IF IsTokRcpt(r) THEN RunTok(r)
          ELSE IF r.m = "kbundle" THEN RunBundle(r)
          ELSE RunC(r)
@@ -282,6 +293,10 @@ Tick == Tx(V, V, "tick", G0, 0)   \* an epoch transition (EpochTick), not a tran
 BTick == Tx(C, C, "btick", G0, 0) \* one block (BlockTick), not a transaction
 Ans(to, y, v) == TxG(to, to, "ans", G("", "", "", y, v, "", ""), 0, 10000)   \* resume y with v
 Amt(n) == G("", "", "", n, 0, "", "")
+\* A relayer rl's transaction (signed with its key rk) carrying user s's delegate: key k,
+\* nonce n, expiry mbh; the inner call to.m with deposit dep and (gas mode) 10 Tgas.
+Dl(rl, rk, s, k, n, mbh, to, m, dep) ==
+    T(s, rl, DELEG, [k |-> k, n |-> n, mbh |-> mbh, ito |-> to, im |-> m], dep, 10000, rk, <<>>)
 
 Script(s) ==
   CASE s = "revert_children"  -> << Tx(C, U, "spawn", G("fail", "ok", "", 0, 0, "", ""), 2) >>
@@ -393,6 +408,29 @@ Script(s) ==
     [] s = "yield_id_recreate" -> << TxG(C, U, "reqid", YidArgs(7, 0), 0, 10000), Ans(C, 2, 5) >>
     [] s = "yield_id_recreate_timeout" -> << TxG(C, U, "reqid", YidArgs(7, 0), 0, 10000), BTick >>
     [] s = "yield_id_same_call" -> << TxG(C, U, "reqid2", YidArgs(7, 0), 0, 10000) >>
+    \* Delegate actions.  u relays; d (key k0) and c (keys k0, k1, k2) sign.
+    [] s = "deleg_ok"         -> << Dl(U, "ku", D, "k0", 1, NoExpiry, C, "whoc", 0),
+                                    Dl(U, "ku", D, "k0", 2, NoExpiry, W, XFER, 2) >>
+    [] s = "deleg_replay"     -> << Dl(U, "ku", D, "k0", 1, NoExpiry, C, "who", 1),
+                                    Dl(U, "ku", D, "k0", 1, NoExpiry, C, "who", 1),   \* replay
+                                    Dl(U, "ku", D, "k0", 5, NoExpiry, C, "who", 1),   \* a gap: ok
+                                    Dl(U, "ku", D, "k0", 3, NoExpiry, C, "who", 1) >> \* below 5
+    [] s = "deleg_expired"    -> << Dl(U, "ku", D, "k0", 1, 0, C, "who", 1),          \* at 0: ok
+                                    BTick,
+                                    Dl(U, "ku", D, "k0", 2, 0, C, "who", 1),          \* at 1: expired
+                                    Dl(U, "ku", D, "k0", 2, 1, C, "who", 1) >>        \* nonce 2 still free
+    [] s = "deleg_inner_fail" -> << Dl(U, "ku", D, "k0", 1, NoExpiry, C, "boom", 2) >>
+    [] s = "deleg_fc_key"     -> << Dl(U, "ku", C, "k1", 1, NoExpiry, C, "ping", 0),  \* ok
+                                    Dl(U, "ku", C, "k1", 2, NoExpiry, C, "ping", 1),  \* deposit
+                                    Dl(U, "ku", C, "k1", 2, NoExpiry, D, "ping", 0),  \* receiver
+                                    Dl(U, "ku", C, "k1", 2, NoExpiry, C, "pong", 0),  \* method
+                                    Dl(U, "ku", C, "k2", 1, NoExpiry, C, "pong", 0),  \* ok: any method
+                                    Dl(U, "ku", C, "k2", 2, NoExpiry, C, XFER, 1) >>  \* not a call
+    [] s = "deleg_fc_relayer" -> << Dl(C, "k2", C, "k0", 1, NoExpiry, C, "ping", 0),  \* c's FC key
+                                    Dl(C, "k0", C, "k0", 1, NoExpiry, C, "ping", 0) >>
+    [] s = "deleg_checks"     -> << Tx(C, C, "keyact", G("del", "", C, 0, 0, "", "k2"), 0),
+                                    Dl(U, "ku", C, "k2", 1, NoExpiry, C, "pong", 0),  \* key deleted
+                                    Dl(U, "ku", GH, "k0", 1, NoExpiry, C, "who", 1) >> \* no such sender
 
 Near0(s) == [a \in Accts |-> CASE a \in {U, W, V, FT} ->
                                   (IF s \in {"floor_locked", "liquid_negative"} /\ a = V THEN 4 ELSE 10)
@@ -409,6 +447,10 @@ MkTx(e, id, t) ==
        ELSE IF Len(e.gs) > 1 THEN [r1 EXCEPT !.g = e.gs]   \* one gas per function-call action
        ELSE WithGas(r1, e.gas)
 CanSign(a, k, r) == (a \in KeyAccts) => KeyCanSign(a, k, r)
+\* A delegate entry's signed delegate (the user's signature) and its inner call.
+DInner(e) == LET c == Rcpt(0, 0, e.a.ito, e.to, e.a.im, G0, e.dep, e.to, 0) IN
+             IF GasMode = "gas" /\ IsCall(c) THEN WithGas(c, e.gas) ELSE c
+SD(e) == SignedDelegate(e.to, e.a.k, e.a.n, e.a.mbh, DInner(e))
 
 \* A yield is pending and nothing can run except yield callbacks that have a
 \* resume payload (a parked yield, or receipts waiting on one, may remain).
@@ -424,6 +466,10 @@ Send ==
     /\ LET e == Script(scn)[ntx + 1]  r == MkTx(e, nid, ntx + 1) IN
        IF e.m = "tick" THEN EpochTick /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF e.m = "btick" THEN BlockTick /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
+       ELSE IF e.m = DELEG
+            THEN IF CanSign(e.fr, e.key, DelegRcpt(nid, ntx + 1, e.fr, SD(e)))
+                 THEN SubmitDelegate(nid, ntx + 1, e.fr, e.key, SD(e)) /\ acc' = Append(acc, TRUE)
+                 ELSE acc' = Append(acc, FALSE) /\ UNCHANGED <<platformVars, keyVars>>
        ELSE IF e.key = "" THEN Submit(r) /\ acc' = Append(acc, TRUE) /\ UNCHANGED keyVars
        ELSE IF CanSign(e.fr, e.key, r) THEN SubmitSigned(r, e.fr, e.key) /\ acc' = Append(acc, TRUE)
        ELSE acc' = Append(acc, FALSE) /\ UNCHANGED <<platformVars, keyVars>>
@@ -449,6 +495,7 @@ GV(g) == IF GasMode = "gas" THEN g ELSE 0
 S1(tag, n) == [tx |-> 1, tag |-> tag, n |-> n]
 S2(tag, n) == [tx |-> 2, tag |-> tag, n |-> n]
 S(t, tag, n) == [tx |-> t, tag |-> tag, n |-> n]
+TxsSeen == {x.tx : x \in seen}
 
 Expect(s) ==
   CASE s = "revert_children" ->   \* a failed receipt's children never run; deposit back
@@ -645,6 +692,35 @@ Expect(s) ==
     [] s = "yield_id_same_call" -> \* a second create_with_id of a pending id in the same call
          \* is a duplicate: u64::MAX, nothing created.  ext.rs:380-385, host.rs:4391-4399
          seen = {S1("yid", 1), S1("yid2", 0)} /\ Cardinality(post) = 1
+
+    \* Delegate actions (NEP-366).  TxsSeen: the transactions that recorded something.
+    [] s = "deleg_ok" ->          \* the inner call's predecessor is the user, its signer (and
+         \* every child's) the relayer with the relayer's key; the relayer pays the deposit;
+         \* the nonce is the delegate's.  actions.rs:500-512, :729-733; function_call.rs:172-174;
+         \* config.rs:652-668
+         /\ seen = {S1("who:c<-d signer u/ku", GV(10000)), S1("who:d<-c signer u/ku", GV(9700))}
+         /\ near[W] = 12 /\ near[U] = 8 /\ near[D] = 0 /\ sigpaid[U] = 2 /\ sigpaid[D] = 0
+         /\ KeyNonce(D, "k0") = 2
+    [] s = "deleg_replay" ->      \* a nonce at or below the key's fails the outer receipt; its
+         \* deposit goes back to the relayer, its predecessor; nonces may skip.
+         \* actions.rs:648-657; lib.rs:1295-1303, :1402-1406; receipt.rs:428-430
+         TxsSeen = {1, 3} /\ near[U] = 8 /\ near[C] = 7 /\ KeyNonce(D, "k0") = 5
+    [] s = "deleg_expired" ->     \* block height > max_block_height fails; the bound is
+         \* inclusive; a failed delegate leaves the nonce.  actions.rs:479-482, :729-733
+         TxsSeen = {1, 4} /\ near[U] = 8 /\ KeyNonce(D, "k0") = 2 /\ blk = 1
+    [] s = "deleg_inner_fail" ->  \* the inner call fails: its deposit goes to the user (the
+         \* inner predecessor), not to the relayer who paid it.  actions.rs:514-519, receipt.rs:428-430
+         near[D] = 2 /\ near[U] = 8 /\ near[C] = 5 /\ ran = {} /\ KeyNonce(D, "k0") = 1
+    [] s = "deleg_fc_key" ->      \* a function-call key signs one zero-deposit call to its
+         \* receiver and methods, as for a transaction.  actions.rs:670-727
+         /\ ran = {<<1, C, "ping">>, <<5, C, "pong">>} /\ near[U] = 10
+         /\ KeyNonce(C, "k1") = 1 /\ KeyNonce(C, "k2") = 1
+    [] s = "deleg_fc_relayer" ->  \* a function-call key cannot sign the relayer's transaction:
+         \* a Delegate is not a function call.  verifier.rs:213-222
+         acc = <<FALSE, TRUE>> /\ ran = {<<2, C, "ping">>} /\ sigpaid[C] = 1
+    [] s = "deleg_checks" ->      \* the key must exist when the outer receipt runs; so must the
+         \* sender.  actions.rs:587-602, :861-886
+         TxsSeen = {1} /\ ~\E x \in ran : x[3] = "pong" /\ DOMAIN keys[C] = {"k0", "k1"} /\ near[U] = 10
 
 Check == Done => Expect(scn)
 NoNegDeposit == \A x \in rq \cup post : x.dep >= 0

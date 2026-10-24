@@ -6,10 +6,13 @@
 //! payload limit, two resumes in one block, a resume after the timeout and
 //! a resume of another account's yield ("Yield and resume (NEP-519)",
 //! "N-yield-payload"); and a later receipt overtaking an earlier one on
-//! the same sender-receiver pair ("No per-pair order").
+//! the same sender-receiver pair ("No per-pair order"); and delegate
+//! actions (NEP-366, "Delegate actions"): the signer and predecessor the
+//! inner call sees, replay, expiry, the deposit refund paths, and the
+//! function-call-key checks on either side.
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
-use near_contract_sim::{AccessKey, CryptoHash, TxOutcome};
+use near_contract_sim::{AccessKey, AccessKeyPermission, CryptoHash, FunctionCallPermission, ReceiptOutcome, TxOutcome};
 use near_tla_conformance::probe_wasm;
 use serde_json::{Value, json};
 
@@ -356,4 +359,201 @@ fn later_receipt_overtakes_buffered() {
     }
     // The three made in the small one's block, before it (as in the sim's test).
     assert_eq!(overtaken, 3, "p -> q receipts made earlier and run later");
+}
+
+const RELAYER: &str = "relayer.near";
+
+/// The probe world plus a relayer.
+fn deleg_world() -> Sim {
+    let (wasm, _) = probe_wasm("probe");
+    Fixture::new()
+        .account(ALICE, Balance::from_near(100))
+        .account(BOB, Balance::from_near(100))
+        .account(RELAYER, Balance::from_near(100))
+        .contract(P, wasm.clone())
+        .contract(Q, wasm)
+        .build()
+}
+
+/// The transaction's status, `Debug`-formatted (the nearcore error names).
+fn status(o: &TxOutcome) -> String {
+    format!("{:?}", o.status)
+}
+
+/// The Delegate receipt (the relayer's first receipt, run on the sender).
+fn outer(o: &TxOutcome) -> &ReceiptOutcome {
+    o.receipts.iter().find(|r| r.actions.iter().any(|a| a.contains("Delegate"))).expect("a Delegate receipt")
+}
+
+fn yocto(b: Balance) -> i128 {
+    b.as_yoctonear() as i128
+}
+
+/// Delegate actions: the inner call and everything it spawns see the
+/// relayer as signer, with the relayer's key; the inner call's predecessor
+/// is the sender (runtime/runtime/src/actions.rs:500-512: the new receipt
+/// copies the outer receipt's signer_id and signer_public_key, predecessor
+/// = sender_id). The outer receipt runs on the sender with the relayer as
+/// predecessor (core/primitives/src/receipt.rs:343-364).
+#[test]
+fn delegate_signer_is_relayer_predecessor_is_sender() {
+    let mut sim = deleg_world();
+    let relayer_pk = sim.secret_key(RELAYER).public_key().to_string();
+    let kids = json!([{ "receiver": Q, "method": "record", "args": "{\"tag\":\"child\"}", "static_ggas": 10000, "weight": 1 }]);
+    let cb = json!({ "method": "record", "args": "{\"tag\":\"cb\"}", "static_ggas": 10000, "weight": 1 });
+    let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kids, "cb": cb })).relay(RELAYER);
+    o.assert_success();
+    let d = outer(&o);
+    println!("outer: on {} from {}", d.executor_id, d.predecessor_id);
+    assert_eq!((d.executor_id.as_str(), d.predecessor_id.as_str()), (ALICE, RELAYER));
+    let chain = o.receipt("chain").unwrap();
+    println!("inner: on {} from {}", chain.executor_id, chain.predecessor_id);
+    assert_eq!((chain.executor_id.as_str(), chain.predecessor_id.as_str()), (P, ALICE));
+    let rs = records(&o);
+    println!("records: {rs:?}");
+    assert_eq!(rs.len(), 2);
+    for r in &rs {
+        assert_eq!(r["signer"], RELAYER);
+        assert_eq!(r["signer_pk"], relayer_pk.as_str());
+        assert_eq!(r["predecessor"], P);
+    }
+    // The relayed call itself: predecessor alice, signer the relayer.
+    let o = sim.call(ALICE, P, "record").args_json(json!({ "tag": "direct" })).relay(RELAYER);
+    let rs = records(&o);
+    println!("records: {rs:?}");
+    assert_eq!((rs[0]["predecessor"].as_str(), rs[0]["signer"].as_str()), (Some(ALICE), Some(RELAYER)));
+}
+
+/// A replayed delegate fails on the nonce (actions.rs:648-657); the first
+/// run set the key's nonce to the delegate's (:729-733).
+#[test]
+fn delegate_replay_fails_on_the_nonce() {
+    let mut sim = deleg_world();
+    let pk = sim.secret_key(ALICE).public_key();
+    let h = sim.height();
+    let signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+    let n = signed.delegate_action.nonce;
+    sim.tx(RELAYER, ALICE).action(signed.clone()).transact().assert_success();
+    assert_eq!(sim.access_key(ALICE, &pk).unwrap().nonce, n);
+    let o = sim.tx(RELAYER, ALICE).action(signed).transact();
+    println!("replay: {}", status(&o));
+    assert!(status(&o).contains("DelegateActionInvalidNonce"), "{}", status(&o));
+    assert_eq!(marks(&sim), "a,", "the inner call ran once");
+}
+
+/// Expiry: the outer receipt fails when its block height exceeds
+/// max_block_height (actions.rs:479-482), so the bound is inclusive. The
+/// deposit of a failed outer receipt goes back to the relayer, its
+/// predecessor (runtime/runtime/src/lib.rs:1295-1303, :1402-1406;
+/// receipt.rs:428-430), and the sender pays nothing.
+#[test]
+fn delegate_expiry_inclusive_and_outer_refund_to_relayer() {
+    let base = deleg_world();
+    let h = base.height();
+    // Valid through the height it runs at.
+    let mut sim = base.clone();
+    let signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 2);
+    let o = sim.tx(RELAYER, ALICE).action(signed).transact();
+    println!("max_block_height {}: outer ran at #{}: {}", h + 2, outer(&o).block_height, status(&o));
+    o.assert_success();
+    assert_eq!(outer(&o).block_height, h + 2);
+    assert_eq!(marks(&sim), "a,");
+    // One block less: expired. With a deposit, which the relayer gets back.
+    let mut sim = base.clone();
+    let (alice, relayer) = (sim.balance(ALICE), sim.balance(RELAYER));
+    let signed = sim.call(ALICE, P, "fail").args_json(json!({ "key": "x" })).deposit(Balance::from_near(1)).sign_delegate(h + 1);
+    let o = sim.tx(RELAYER, ALICE).action(signed).transact();
+    println!("max_block_height {}: outer ran at #{}: {}", h + 1, outer(&o).block_height, status(&o));
+    assert!(status(&o).contains("DelegateActionExpired"), "{}", status(&o));
+    assert_eq!(outer(&o).block_height, h + 2);
+    assert!(o.receipt("fail").is_none(), "no inner receipt");
+    assert_eq!(sim.balance(ALICE), alice);
+    assert_eq!(yocto(relayer) - yocto(sim.balance(RELAYER)), yocto(o.tokens_burnt()), "the relayer lost only gas");
+}
+
+/// The inner call fails: its deposit, which the relayer paid
+/// (runtime/runtime/src/config.rs:652-668), is refunded to the sender, the
+/// inner receipt's predecessor (actions.rs:514-519; receipt.rs:428-430).
+/// The relayer's transaction still succeeds.
+#[test]
+fn delegate_inner_failure_refunds_sender() {
+    let mut sim = deleg_world();
+    let (alice, relayer) = (sim.balance(ALICE), sim.balance(RELAYER));
+    let one = Balance::from_near(1);
+    let o = sim.call(ALICE, P, "fail").args_json(json!({ "key": "x" })).deposit(one).relay(RELAYER);
+    println!("relayed fail with 1 NEAR: tx {}; inner {:?}", status(&o), o.receipt("fail").and_then(|r| r.failure()));
+    o.assert_success();
+    assert!(o.receipt("fail").unwrap().failure().is_some());
+    assert_eq!(yocto(sim.balance(ALICE)) - yocto(alice), yocto(one), "alice gains the deposit");
+    assert_eq!(yocto(relayer) - yocto(sim.balance(RELAYER)), yocto(one) + yocto(o.tokens_burnt()));
+}
+
+/// The key is checked when the outer receipt runs on the sender's shard,
+/// not when the delegate is signed or relayed (actions.rs:587-602): alice
+/// deletes the key in the same block as the relay, and the outer receipt,
+/// a block later, finds no key.
+#[test]
+fn delegate_key_checked_at_execution() {
+    let mut sim = deleg_world();
+    let second = SecretKey::from_seed(KeyType::ED25519, "alice-second");
+    sim.tx(ALICE, ALICE).add_key(second.public_key(), AccessKey::full_access()).transact().assert_success();
+    let h = sim.height();
+    let signed = mark(&mut sim, ALICE, "a").sign_with(&second).sign_delegate(h + 100);
+    let del = sim.tx(ALICE, ALICE).delete_key(second.public_key()).submit();
+    let rel = sim.tx(RELAYER, ALICE).action(signed).submit();
+    sim.settle();
+    let (od, or) = (sim.outcome(del), sim.outcome(rel));
+    od.assert_success();
+    let hd = od.receipts.iter().find(|r| r.actions.iter().any(|a| a.contains("DeleteKey"))).unwrap().block_height;
+    println!("DeleteKey at #{hd}, outer at #{}: {}", outer(&or).block_height, status(&or));
+    assert!(hd < outer(&or).block_height);
+    assert!(status(&or).contains("AccessKeyNotFound"), "{}", status(&or));
+    assert_eq!(marks(&sim), "");
+}
+
+/// A function-call key may sign a delegate for one zero-deposit call to
+/// its receiver and methods (actions.rs:670-727), and its allowance is not
+/// charged: the relayer pays. A function-call key of the relayer cannot
+/// sign the relayer's transaction: a Delegate is not a function call
+/// (runtime/runtime/src/verifier.rs:213-222).
+#[test]
+fn delegate_function_call_key_scope() {
+    let mut sim = deleg_world();
+    let fck = SecretKey::from_seed(KeyType::ED25519, "alice-fc");
+    let allowance = Balance::from_near(1);
+    let perm = FunctionCallPermission { allowance: Some(allowance), receiver_id: P.into(), method_names: vec!["mark".into()] };
+    let key = AccessKey { nonce: 0, permission: AccessKeyPermission::FunctionCall(perm) };
+    sim.tx(ALICE, ALICE).add_key(fck.public_key(), key).transact().assert_success();
+    let allowance_of = |sim: &Sim| match sim.access_key(ALICE, &fck.public_key()).unwrap().permission {
+        AccessKeyPermission::FunctionCall(p) => p.allowance,
+        _ => unreachable!(),
+    };
+    // In scope.
+    mark(&mut sim, ALICE, "a").sign_with(&fck).relay(RELAYER).assert_success();
+    assert_eq!(marks(&sim), "a,");
+    assert_eq!(allowance_of(&sim), Some(allowance), "the allowance is untouched");
+    // A deposit, another receiver, another method.
+    let o = mark(&mut sim, ALICE, "b").deposit(Balance::from_yoctonear(1)).sign_with(&fck).relay(RELAYER);
+    println!("with a deposit: {}", status(&o));
+    assert!(status(&o).contains("DepositWithFunctionCall"), "{}", status(&o));
+    let o = sim.call(ALICE, Q, "mark").args_json(json!({ "tag": "c" })).sign_with(&fck).relay(RELAYER);
+    println!("to {Q}: {}", status(&o));
+    assert!(status(&o).contains("ReceiverMismatch"), "{}", status(&o));
+    let o = sim.call(ALICE, P, "record").args_json(json!({ "tag": "d" })).sign_with(&fck).relay(RELAYER);
+    println!("method record: {}", status(&o));
+    assert!(status(&o).contains("MethodNameMismatch"), "{}", status(&o));
+    assert_eq!(marks(&sim), "a,");
+    // The relayer's own function-call key (receiver alice, any method).
+    let rk = SecretKey::from_seed(KeyType::ED25519, "relayer-fc");
+    let perm = FunctionCallPermission { allowance: None, receiver_id: ALICE.into(), method_names: vec![] };
+    sim.tx(RELAYER, RELAYER)
+        .add_key(rk.public_key(), AccessKey { nonce: 0, permission: AccessKeyPermission::FunctionCall(perm) })
+        .transact()
+        .assert_success();
+    let h = sim.height();
+    let signed = mark(&mut sim, ALICE, "e").sign_delegate(h + 100);
+    let o = sim.tx(RELAYER, ALICE).action(signed).sign_with(&rk).transact();
+    println!("relayer's function-call key: {}", status(&o));
+    assert!(status(&o).contains("RequiresFullAccess"), "{}", status(&o));
+    assert!(o.receipts.is_empty(), "an invalid transaction: no receipt");
 }
