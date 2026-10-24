@@ -28,10 +28,10 @@ cargo build --locked --target wasm32-unknown-unknown --release
 
 mkdir -p res
 out=$(mktemp -d)
-for c in probe ft wrap async_probe; do
+for c in probe ft wrap async_probe probe2; do
   cp "$target_dir/wasm32-unknown-unknown/release/$c.wasm" "$out/$c.wasm"
 done
-(cd "$out" && shasum -a 256 probe.wasm ft.wasm wrap.wasm async_probe.wasm) > "$out/SHA256SUMS"
+(cd "$out" && shasum -a 256 probe.wasm ft.wasm wrap.wasm async_probe.wasm probe2.wasm) > "$out/SHA256SUMS"
 
 if [ "$check" = "--check" ]; then
   if diff -u res/SHA256SUMS "$out/SHA256SUMS"; then

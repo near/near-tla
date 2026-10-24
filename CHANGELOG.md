@@ -424,6 +424,17 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **A second generic probe, `probe2`** (`conformance/probes/probe2`, `res/probe2.wasm`), for
+  the rule parts the other probes cannot reach, now sim-validated (`docs/SEMANTICS.md`):
+  `refund_to` (R5), a joint promise returned, appended to or given a `refund_to` (C5, C6),
+  one joint result read by index, nested joins past index 0 and each input arriving last
+  (C6), the timestamp a contract reads (S3), `promise_yield_create_with_id`, a yield's
+  deposit, a returned yield and the callback's signer (C7), the remainder to the last call
+  appended across promises (G3), and a callback after a Stake (B1). New tests in
+  `conformance/tests/receipts.rs`, `accounts.rs` and `semantics.rs`, with no model run. None
+  refuted a rule. The other probe wasms, `flows/probes.toml`, the sweeps' provenance (which
+  records only the wasms a flows file deploys) and the generated tables are unchanged.
+
 - **Conformance in CI** (`.github/workflows/conformance.yml`; docs/CONFORMANCE.md, "CI"):
   nightly and on demand, not on push, and nothing gates on it. near-contract-sim is fetched
   at its pinned rev with a read-only deploy key, then every sim test, a full sweep of the

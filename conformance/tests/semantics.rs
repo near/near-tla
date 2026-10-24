@@ -16,8 +16,10 @@
 //! failing after a payout), the 770-byte zero-balance allowance, and the
 //! signer's check at conversion; a local receipt that finds the chunk full
 //! queued behind the delayed receipts ("Local receipts first"); the yield
-//! deadline of 200 blocks; and the delegate's signature, sender, nonce
-//! bound and one-per-transaction checks.
+//! deadline of 200 blocks; on `probe2`, the `_with_id` yield's duplicate
+//! check and reuse, a yield's deposit, a returned yield and the callback's
+//! signer; and the delegate's signature, sender, nonce bound and
+//! one-per-transaction checks.
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
 use near_contract_sim::{
@@ -854,6 +856,196 @@ fn yield_times_out_at_200_blocks() {
     assert_eq!(cb.block_height, h + 201, "the timeout resolved at h + 200 runs the callback at h + 201");
     assert_eq!(cb.logs, ["timeout"]);
     assert_eq!(cb.predecessor_id.as_str(), Y);
+}
+
+const Z: &str = "z-probe.near";
+
+/// alice and bob; the generic probe on p, probe2 on z.
+fn z_world() -> Sim {
+    let (probe, _) = probe_wasm("probe");
+    let (probe2, _) = probe_wasm("probe2");
+    Fixture::new()
+        .account(ALICE, Balance::from_near(100))
+        .account(BOB, Balance::from_near(100))
+        .contract(P, probe)
+        .contract(Z, probe2)
+        .build()
+}
+
+fn z_yield<'a>(sim: &'a mut Sim, args: Value) -> Tx<'a> {
+    sim.call(ALICE, Z, "yield_id").args_json(args)
+}
+
+/// z.resume by custom id `id`, or the stored data id.
+fn z_resume<'a>(sim: &'a mut Sim, signer: &str, id: Option<&str>, bytes: u32) -> Tx<'a> {
+    sim.call(signer, Z, "resume").args_json(json!({ "id": id, "bytes": bytes }))
+}
+
+/// The logs of every `on_yield` of transaction `tx` that ran.
+fn z_callbacks(sim: &Sim, tx: CryptoHash) -> Vec<Vec<String>> {
+    sim.outcome(tx).receipts.iter().filter(|r| r.method_names == ["on_yield"]).map(|r| r.logs.clone()).collect()
+}
+
+/// What z.on_yield logs, signed by alice, with no deposit.
+fn on_yield_log(what: &str) -> String {
+    format!("on_yield signer {ALICE} predecessor {Z} deposit {:040} {what}", 0)
+}
+
+/// C7, `promise_yield_create_with_id` (near-vm-runner
+/// logic/host.rs:4330-4440): while a yield with the custom id is pending,
+/// another create with it returns `u64::MAX` (:4391-4399) and creates
+/// nothing, the call going on. That holds for a second create in the same
+/// call (runtime/runtime/src/ext.rs:375-385 sees the mapping the first
+/// wrote) and in a later call. `promise_yield_resume_with_yield_id`
+/// resumes it once (host.rs:4522-4567; ext.rs:432-444 maps the id to the
+/// data id, then as `promise_yield_resume`, :406-430). Once its callback has run, the id is
+/// free (runtime/runtime/src/lib.rs:1576-1591 removes the mapping): a new
+/// create succeeds, also from the callback itself.
+#[test]
+fn yield_with_id_duplicates_and_reuse() {
+    let base = z_world();
+    let mut sim = base.clone();
+    let o = z_yield(&mut sim, json!({ "id": "k", "cb_ggas": 5000, "twice": true })).transact();
+    let ys = sim.yields();
+    println!("two creates of id k in one call: {:?}; logs {:?}; {} parked", o.failure(), o.expect_receipt("yield_id").logs, ys.len());
+    o.assert_success();
+    assert_eq!(o.expect_receipt("yield_id").logs, ["yield created", "yield duplicate"]);
+    assert_eq!(ys.len(), 1);
+    let first = ys[0].data_id;
+
+    let o2 = z_yield(&mut sim, json!({ "id": "k", "cb_ggas": 5000 })).transact();
+    println!("a later create of k while pending: {:?}; logs {:?}; parked {:?}", o2.failure(), o2.expect_receipt("yield_id").logs, sim.yields().len());
+    o2.assert_success();
+    assert_eq!(o2.expect_receipt("yield_id").logs, ["yield duplicate"]);
+    assert_eq!(sim.yields().iter().map(|y| y.data_id).collect::<Vec<_>>(), [first]);
+
+    let r = z_resume(&mut sim, BOB, Some("k"), 3).transact();
+    let r2 = z_resume(&mut sim, BOB, Some("k"), 3).transact();
+    println!("resume k: {}, again: {}; callbacks {:?}", r.json::<bool>(), r2.json::<bool>(), z_callbacks(&sim, o.hash));
+    assert!(r.json::<bool>() && !r2.json::<bool>(), "true once, then false");
+    assert_eq!(z_callbacks(&sim, o.hash), [[on_yield_log("payload 3")]]);
+    assert!(sim.yields().is_empty());
+
+    let o3 = z_yield(&mut sim, json!({ "id": "k", "cb_ggas": 5000 })).transact();
+    let ys = sim.yields();
+    println!("create k after its callback ran: logs {:?}; {} parked", o3.expect_receipt("yield_id").logs, ys.len());
+    assert_eq!(o3.expect_receipt("yield_id").logs, ["yield created"]);
+    assert_eq!(ys.len(), 1);
+    assert_ne!(ys[0].data_id, first, "a new yield");
+
+    // The callback re-creates its own custom id.
+    let mut sim = base.clone();
+    let o = z_yield(&mut sim, json!({ "id": "r", "cb_ggas": 20000, "again": true })).transact();
+    let d1 = sim.yields()[0].data_id;
+    z_resume(&mut sim, BOB, Some("r"), 2).transact().assert_success();
+    let ys = sim.yields();
+    println!("the callback of r re-creates r: logs {:?}; {} parked", z_callbacks(&sim, o.hash), ys.len());
+    assert_eq!(z_callbacks(&sim, o.hash), [[on_yield_log("payload 2"), "again created".to_string()]]);
+    assert_eq!(ys.len(), 1);
+    assert_ne!(ys[0].data_id, d1);
+    assert_eq!(ys[0].callback_args, [br#"{"id":"r","again":false}"#.to_vec()]);
+    let r = z_resume(&mut sim, BOB, Some("r"), 1).transact();
+    println!("resume the re-created r: {}; parked {}", r.json::<bool>(), sim.yields().len());
+    assert!(r.json::<bool>());
+    assert!(sim.yields().is_empty());
+}
+
+/// C7, a yield's deposit. `promise_yield_create_with_id` takes a deposit
+/// from the yielding account at creation (near-vm-runner
+/// logic/host.rs:4423-4434 `deduct_balance`) and attaches it to the
+/// callback (:4435-4442), which receives it when it runs. At protocol 88 a
+/// contract earns no share of the gas it burns (`burnt_gas_reward` 0/1,
+/// core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:99-102)
+/// and the signer pays the gas, so z's balance moves by deposits only: the
+/// same yield with deposit 0 and 2 N leaves z 0 and 2 N lower while
+/// parked, and as it was once the callback, which read the deposit, has
+/// run.
+#[test]
+fn yield_deposit() {
+    let base = z_world();
+    for dep in [0u128, Balance::from_near(2).as_yoctonear()] {
+        let mut sim = base.clone();
+        let z0 = sim.balance(Z);
+        let o = z_yield(&mut sim, json!({ "id": "d", "deposit": dep.to_string(), "cb_ggas": 5000 })).transact();
+        o.assert_success();
+        let parked = yocto(sim.balance(Z)) - yocto(z0);
+        z_resume(&mut sim, ALICE, Some("d"), 3).transact().assert_success();
+        let after = yocto(sim.balance(Z)) - yocto(z0);
+        let out = sim.outcome(o.hash);
+        let cb = out.expect_receipt("on_yield");
+        println!("deposit {dep}: z changed {parked} while parked, {after} after; callback received {}, logged {:?}", cb.deposit, cb.logs);
+        assert_eq!(cb.logs, [format!("on_yield signer {ALICE} predecessor {Z} deposit {dep:040} payload 3")]);
+        assert_eq!(cb.deposit.as_yoctonear(), dep);
+        assert_eq!((parked, after), (-(dep as i128), 0));
+    }
+}
+
+/// C7, a returned yield: the caller's waiting receivers move onto the
+/// yield callback (runtime/runtime/src/lib.rs:1151-1168), so p's callback
+/// on z.yield_id reads the yield callback's result, after it ran: the 7
+/// bytes of the resume's payload (z.on_yield returns its payload; the
+/// call's own result would be empty), or, on a timeout, nothing.
+#[test]
+fn returned_yield_forwards_its_result() {
+    let base = z_world();
+    for resume in [Some(7u32), None] {
+        let mut sim = base.clone();
+        let kid = json!([{ "receiver": Z, "method": "yield_id", "args": json!({ "cb_ggas": 5000, "ret": true }).to_string(), "static_ggas": 30000, "weight": 1 }]);
+        let cb = json!({ "method": "on_read", "static_ggas": 10000, "weight": 1 });
+        let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kid, "cb": cb })).transact();
+        o.assert_success();
+        let waiting = o.receipt("on_read").is_none();
+        assert!(waiting, "p's callback waits for the yield");
+        match resume {
+            Some(n) => {
+                z_resume(&mut sim, BOB, None, n).transact().assert_success();
+            }
+            None => {
+                let y = sim.yields().pop().unwrap();
+                sim.expire(&y);
+            }
+        }
+        let out = sim.outcome(o.hash);
+        let (yc, rd, yi) = (out.expect_receipt("on_yield"), out.expect_receipt("on_read"), out.expect_receipt("yield_id"));
+        println!(
+            "resume {resume:?}: yield_id returned {:?}; on_yield at #{} logged {:?}; p.on_read at #{} read {} bytes",
+            yi.status,
+            yc.block_height,
+            yc.logs,
+            rd.block_height,
+            rd.value().map(|v| String::from_utf8_lossy(v).into_owned()).unwrap_or_default()
+        );
+        assert!(yi.is_success() && yi.value().is_none(), "it returned a promise, not a value");
+        assert_eq!(serde_json::from_slice::<u64>(rd.value().unwrap()).unwrap(), resume.unwrap_or(0) as u64);
+        assert!(rd.block_height > yc.block_height);
+    }
+}
+
+/// C7, the callback's signer and predecessor: the yielding transaction's
+/// signer, whoever resumes it, and the yielding account
+/// (runtime/runtime/src/function_call.rs:171-189). Alice yields; bob
+/// resumes, or the yield times out.
+#[test]
+fn yield_callback_signer_is_the_yielding_signer() {
+    let base = z_world();
+    for (how, resumer) in [("resumed by bob", Some(BOB)), ("timed out", None)] {
+        let mut sim = base.clone();
+        let o = z_yield(&mut sim, json!({ "id": "s", "cb_ggas": 5000 })).transact();
+        o.assert_success();
+        match resumer {
+            Some(b) => {
+                z_resume(&mut sim, b, Some("s"), 2).transact().assert_success();
+            }
+            None => {
+                let y = sim.yields().pop().unwrap();
+                sim.expire(&y);
+            }
+        }
+        let cb = sim.outcome(o.hash).expect_receipt("on_yield").clone();
+        println!("{how}: callback from {}: {:?}", cb.predecessor_id, cb.logs);
+        assert_eq!(cb.logs, [on_yield_log(if resumer.is_some() { "payload 2" } else { "timeout" })]);
+        assert_eq!(cb.predecessor_id.as_str(), Z);
+    }
 }
 
 /// K4, the remaining checks of the outer receipt

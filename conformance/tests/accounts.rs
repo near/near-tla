@@ -3,13 +3,14 @@
 //! uninitialised universal accounts (A1), fees by account pattern for
 //! deterministic and universal ids (A2), what an implicit Transfer creates
 //! and when (A3, A4), a call to an account without code (A5), function-call
-//! keys (K2), AddKey and DeleteKey failures (K3), Stake's checks (B1) and the
-//! locked balance in the storage check (B2). Each test prints what it
-//! observed; `cargo test --test accounts -- --nocapture` shows it.
+//! keys (K2), AddKey and DeleteKey failures (K3), Stake's checks and the
+//! result a callback reads after a Stake (B1) and the locked balance in the
+//! storage check (B2). Each test prints what it observed; `cargo test
+//! --test accounts -- --nocapture` shows it.
 //!
 //! nearcore references are at the pinned rev b7b4737 (README, "Pins").
-//! Every test runs on the existing probe wasms (`probes/res/`); none needs
-//! a new probe.
+//! Every test runs on the committed probe wasms (`probes/res/`); the
+//! contract-created Stake is on `probe2` (on `z-probe.near`).
 use near_contract_sim::nearcore::near_parameters::ActionCosts;
 use near_contract_sim::nearcore::near_primitives::action::StakeAction;
 use near_contract_sim::prelude::*;
@@ -22,6 +23,7 @@ use serde_json::json;
 const ALICE: &str = "alice.near";
 const BOB: &str = "bob.near";
 const P: &str = "p-probe.near";
+const Z: &str = "z-probe.near";
 
 /// Ids of each implicit kind (near-account-id 3.0.0 `src/validation.rs:96-132`):
 /// 64 hex (`nimp()`); `0x` + 40 hex; `0s` + 40 hex; `0u` + 52 Crockford
@@ -378,6 +380,39 @@ fn stake_rules() {
     o.assert_success();
     assert_eq!(a.locked, near(40), "nothing released now");
     assert_eq!(yocto(liq) - yocto(a.amount), yocto(o.tokens_burnt()));
+}
+
+/// B1, the result. A successful Stake receipt returns no value, so a
+/// callback on it reads `Successful` with empty bytes; a failed one
+/// (`TriesToStake`) gives `Failed` (runtime/runtime/src/lib.rs:1172-1176,
+/// `Ok(_)` sends empty data, an error none; :861-899). z stakes itself
+/// (`promise_batch_action_stake`, near-vm-runner logic/host.rs:3923-3953),
+/// then `z.on_at(0)` reads result 0: its size, -1 for `Failed`.
+#[test]
+fn callback_after_stake() {
+    let (wasm, _) = probe_wasm("probe2");
+    let base = Fixture::new().account(ALICE, near(1000)).contract(Z, wasm).build();
+    let pk = sk("validator").public_key();
+    for (n, want) in [(10u128, (0i64, "result 0 of 1: 0 bytes")), (1_000_000, (-1, "result 0 of 1: failed"))] {
+        let mut sim = base.clone();
+        let o = sim
+            .call(ALICE, Z, "stake_then")
+            .args_json(json!({ "amount": near(n).as_yoctonear().to_string(), "pk": pk.to_string(), "cb_ggas": 10000 }))
+            .transact();
+        let st = o.receipts.iter().find(|r| r.actions == ["Stake"]).unwrap();
+        let cb = o.expect_receipt("on_at");
+        let read = cb.value().map(|v| serde_json::from_slice::<i64>(v).unwrap());
+        let locked = sim.account(Z).unwrap().locked;
+        println!("z stakes {n} N: {:?}; on_at(0) read {read:?}, logged {:?}; locked {locked}", st.failure(), cb.logs);
+        assert_eq!((read, cb.logs[0].as_str()), (Some(want.0), want.1));
+        if n == 10 {
+            assert_eq!(st.value(), Some(&[][..]), "no return value: empty bytes");
+            assert_eq!(locked, near(10));
+        } else {
+            assert!(format!("{:?}", st.failure()).contains("TriesToStake"), "{:?}", st.failure());
+            assert_eq!(locked, Balance::ZERO);
+        }
+    }
 }
 
 /// B2, the locked part. The storage check counts liquid + locked

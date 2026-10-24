@@ -5,15 +5,17 @@
 //! the atomic step and its revert scope (R3, R4), refunds (R5, G5),
 //! callbacks reading `Failed` and the result shapes (C1, C3), the result
 //! size and its per-receiver fee (C4), a returned promise forwarding its
-//! result (C5), joint promises flattened, forwarding and limited to 128
-//! inputs (C6), the prepaid-gas ceiling (G1), the per-action panic label
-//! (G2), the floor-and-remainder split (G3) and the block clock (S3). Each
+//! result (C5), joint promises flattened, forwarding, read by index,
+//! limited to 128 inputs and not returnable, appendable or given a
+//! `refund_to` (C5, C6), `refund_to` (R5), the prepaid-gas ceiling (G1),
+//! the per-action panic label (G2), the floor-and-remainder split and its
+//! order across interleaved appends (G3) and the block clock (S3). Each
 //! test prints what it observed; `cargo test --test receipts --
 //! --nocapture` shows it.
 //!
 //! nearcore references are at the pinned rev b7b4737 (README, "Pins").
-//! Every test runs on the existing probe wasms (`probes/res/`); none needs
-//! a new probe.
+//! Every test runs on the committed probe wasms (`probes/res/`); the host
+//! calls the first probes do not make are on `probe2` (on `z-probe.near`).
 use near_contract_sim::nearcore::near_parameters::ActionCosts;
 use near_contract_sim::prelude::*;
 use near_contract_sim::{InvalidTxError, ReceiptOutcome, Refund};
@@ -26,6 +28,7 @@ const P: &str = "p-probe.near";
 const Q: &str = "q-probe.near";
 const Y: &str = "y-probe.near";
 const FT: &str = "ft-probe.near";
+const Z: &str = "z-probe.near";
 
 fn near(n: u128) -> Balance {
     Balance::from_near(n)
@@ -35,11 +38,13 @@ fn yocto(b: Balance) -> i128 {
     b.as_yoctonear() as i128
 }
 
-/// alice and bob; the generic probe on p and q, the async probe on y, the
-/// standard FT on ft-probe with p holding the supply and q registered.
+/// alice and bob; the generic probe on p and q, the async probe on y,
+/// probe2 on z, the standard FT on ft-probe with p holding the supply and
+/// q registered.
 fn world() -> Sim {
     let (probe, _) = probe_wasm("probe");
     let (async_probe, _) = probe_wasm("async_probe");
+    let (probe2, _) = probe_wasm("probe2");
     let (ft, _) = probe_wasm("ft");
     Fixture::new()
         .account(ALICE, near(1000))
@@ -47,6 +52,7 @@ fn world() -> Sim {
         .contract(P, probe.clone())
         .contract(Q, probe)
         .contract(Y, async_probe)
+        .contract(Z, probe2)
         .contract(FT, ft)
         .init("new", json!({ "owner_id": P, "total_supply": "1000000" }))
         .ft_register(FT, [Q])
@@ -125,8 +131,8 @@ fn data_receipt_carries_one_result() {
         assert_eq!((i0, total - i0), (x, y), "each result at its input's index");
     }
     // Three, joined pairwise ((a & b) & c): flattened to three results,
-    // the first input's at index 0 (indices 1 and 2 are not told apart:
-    // no probe reads a result past index 0 on its own).
+    // the first input's at index 0 (indices 1 and 2 one by one:
+    // `joint_result_by_index`).
     for sizes in [[1u64, 2, 4], [4, 1, 2]] {
         let kids = json!(sizes.map(|n| call(Q, "ret", json!({ "bytes": n }), 10000, 1)));
         let (i0, total, count) = joint_reads(&sim, &kids);
@@ -313,6 +319,34 @@ fn deposit_and_gas_refunds() {
     assert_eq!(sim.balance(P), p0);
 }
 
+/// R5, `refund_to`. A failed receipt's deposit goes back to its
+/// `refund_to` if set, else to its predecessor
+/// (core/primitives/src/receipt.rs:428-430 `balance_refund_receiver`;
+/// runtime/runtime/src/lib.rs:1303, :1402-1406), from `system`. z creates
+/// `z.paid` (2 N, panics) with and without `promise_set_refund_to(bob)`
+/// (near-vm-runner logic/host.rs:2660-2694); the call reads the target as
+/// `refund_to_account_id`, its predecessor when unset
+/// (runtime/runtime/src/function_call.rs:263).
+#[test]
+fn refund_to_receives_the_deposit_refund() {
+    let base = world();
+    let two = near(2).as_yoctonear();
+    let paid = json!({ "receiver": Z, "method": "paid", "args": json!({ "fail": true }).to_string(), "static_ggas": 10000, "weight": 1, "deposit": two.to_string() });
+    for (rto, want) in [(None, Z), (Some(BOB), BOB)] {
+        let mut sim = base.clone();
+        let b0 = sim.balance(BOB);
+        let o = sim.call(ALICE, Z, "refund_call").args_json(json!({ "c": paid, "refund_to": rto })).transact();
+        let r = o.expect_receipt("paid");
+        let refunds = deposit_refunds(&o);
+        let gained = yocto(sim.balance(BOB)) - yocto(b0);
+        println!("refund_to {rto:?}: paid logged {:?}, {}; deposit refunds {refunds:?}; bob gained {gained}", r.logs, rerr(r));
+        assert_eq!(r.logs, [format!("paid {two} refund_to {want} predecessor {Z}")]);
+        assert_eq!(r.failure(), Some(Failure::Panic("paid fail".into())));
+        assert_eq!(refunds, [(want.to_string(), "system".to_string(), near(2))]);
+        assert_eq!(gained, if want == BOB { two as i128 } else { 0 });
+    }
+}
+
 /// C4. A returned value may be up to `max_length_returned_data` = 4 MiB
 /// (core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:249);
 /// one byte more fails the call (near-vm-runner logic/host.rs:4711-4717).
@@ -431,6 +465,95 @@ fn joint_promise_input_limit() {
     }
 }
 
+/// z.join's callback `z.on_at(i)` on `kids` joined as `nest`, with the
+/// result of the `hold`th q.ret held back 3 blocks if given: what it
+/// returned (the size of result i, -1 for Failed) and its log.
+fn result_at(base: &Sim, kids: &Value, nest: &str, i: u64, hold: Option<usize>) -> (TxOutcome, Option<(i64, String)>) {
+    let mut sim = base.clone();
+    let cb = json!({ "receiver": Z, "method": "on_at", "args": json!({ "i": i }).to_string(), "static_ggas": 10000, "weight": 1 });
+    let mut tx = sim.call(ALICE, Z, "join").args_json(json!({ "kids": kids, "nest": nest, "cb": cb }));
+    if let Some(k) = hold {
+        tx = tx.inject(Receipts::occurrence(Q, "ret", k), Fault::HoldResult(3));
+    }
+    let o = tx.transact();
+    let got = o.receipt("on_at").filter(|r| r.is_success()).map(|r| (val(r).as_i64().unwrap(), r.logs[0].clone()));
+    if hold.is_some() {
+        assert_eq!(o.expect_receipt("on_at").result_held, Some(3), "the fault held an input");
+    }
+    (o, got)
+}
+
+/// C6, one result by index. A joint callback sees one result per input in
+/// `promise_and` order, nested joins flattened in argument order, an inner
+/// join's inputs where it stands (near-vm-runner logic/host.rs:2486-2535;
+/// runtime/runtime/src/lib.rs:861-899), each `Successful` or `Failed` on
+/// its own, whichever arrives last; an index past the end is
+/// `InvalidPromiseResultIndex` (host.rs:4616-4646). z.on_at(i) reads result
+/// i only. Inputs q.ret(1), q.ret(2), q.ret(4) (k0, k1, k2) give sizes that
+/// name them; `Fault::HoldResult` makes each input in turn arrive last.
+#[test]
+fn joint_result_by_index() {
+    let base = world();
+    let kids = json!([1, 2, 4].map(|n| call(Q, "ret", json!({ "bytes": n }), 10000, 1)));
+    for (nest, what, want) in [
+        ("flat", "k0 & k1 & k2", [1i64, 2, 4]),
+        ("left", "(k0 & k1) & k2", [1, 2, 4]),
+        ("right", "k0 & (k1 & k2)", [1, 2, 4]),
+        ("inner", "(k1 & k2) & k0", [2, 4, 1]),
+    ] {
+        for hold in [None, Some(0), Some(1), Some(2)] {
+            let got: Vec<(i64, String)> = (0..3).map(|i| result_at(&base, &kids, nest, i, hold).1.unwrap()).collect();
+            let held = hold.map_or("none held".to_string(), |k| format!("k{k} held 3 blocks"));
+            println!("{what}, {held}: results 0, 1, 2 have {:?} bytes", got.iter().map(|g| g.0).collect::<Vec<_>>());
+            for (i, (n, log)) in got.iter().enumerate() {
+                assert_eq!((*n, log.as_str()), (want[i], format!("result {i} of 3: {} bytes", want[i]).as_str()), "{what}, index {i}");
+            }
+        }
+        let (o, got) = result_at(&base, &kids, nest, 3, None);
+        let f = rerr(o.expect_receipt("on_at"));
+        println!("{what}: index 3: {f}");
+        assert_eq!(got, None);
+        assert!(f.contains("Accessed invalid promise result index: 3"), "{f}");
+    }
+    // A failed input in the middle: Failed at its index only.
+    let kids = json!([call(Q, "ret", json!({ "bytes": 1 }), 10000, 1), call(Q, "fail", json!({ "key": "f" }), 10000, 1), call(Q, "ret", json!({ "bytes": 4 }), 10000, 1)]);
+    let got: Vec<i64> = (0..3).map(|i| result_at(&base, &kids, "flat", i, None).1.unwrap().0).collect();
+    println!("q.ret(1) & q.fail & q.ret(4): results 0, 1, 2 read {got:?} (-1: Failed)");
+    assert_eq!(got, [1, -1, 4]);
+}
+
+/// C5, C6, the restrictions. A joint promise cannot be returned
+/// (near-vm-runner logic/host.rs:4659-4678, `CannotReturnJointPromise`),
+/// have an action appended (:2699-2715, `CannotAppendActionToJointPromise`)
+/// or be given a `refund_to` (:2660-2694, `CannotSetRefundToOnJointPromise`).
+/// Each is a host error: the creating call fails, so the inputs it made
+/// before do not exist (R4). With no misuse and no `.then`, `promise_and`
+/// adds nothing: only the inputs run.
+#[test]
+fn joint_promise_restrictions() {
+    let base = world();
+    let kids = json!(["j0", "j1"].map(|t| call(Q, "mark", json!({ "tag": t }), 10000, 1)));
+    let marks = |o: &TxOutcome| o.receipts.iter().filter(|r| r.method_names == ["mark"]).count();
+    for (misuse, want) in [
+        ("return", "Returning joint promise is currently prohibited."),
+        ("append", "Actions can only be appended to non-joint promise."),
+        ("refund_to", "Setting refund_to on a joint promise is prohibited."),
+    ] {
+        let mut sim = base.clone();
+        let o = sim.call(ALICE, Z, "join").args_json(json!({ "kids": kids, "misuse": misuse })).transact();
+        let f = rerr(o.expect_receipt("join"));
+        println!("join, then {misuse} on the joint promise: {f}; inputs run: {}", marks(&o));
+        assert_eq!(o.expect_receipt("join").failure(), Some(Failure::Host(want.into())));
+        assert_eq!(marks(&o), 0, "the failed creator made no inputs");
+    }
+    let mut sim = base.clone();
+    let o = sim.call(ALICE, Z, "join").args_json(json!({ "kids": kids })).transact();
+    let ran: Vec<String> = o.receipts.iter().filter(|r| r.refund.is_none() && !r.method_names.is_empty()).map(|r| format!("{}.{}", r.executor_id, r.method_names.join("+"))).collect();
+    println!("join with no misuse and no .then: {ran:?}");
+    o.assert_success();
+    assert_eq!(ran, [format!("{Z}.join"), format!("{Q}.mark"), format!("{Q}.mark")]);
+}
+
 /// G1. One transaction's prepaid gas is at most `max_total_prepaid_gas` =
 /// 1000 Tgas (core/parameters/res/runtime_configs/83.yaml:8); more is an
 /// invalid transaction (runtime/runtime/src/action_validation.rs:153-160,
@@ -534,12 +657,54 @@ fn leftover_split_floor_and_remainder() {
     assert_eq!(rems, [0, 1, 2]);
 }
 
+/// z.interleave's two q.mark children, A's (tag "a") and B's ("b"), by
+/// attached gas, and the leftover U, as in `shares`.
+fn interleaved(sim: &mut Sim, prepaid: Gas, order: &str) -> ([u64; 2], u64) {
+    let o = sim.call(ALICE, Z, "interleave").args_json(json!({ "receiver": Q, "method": "mark", "order": order })).gas(prepaid).transact();
+    o.assert_success();
+    let kid = |tag: &str| {
+        o.receipts
+            .iter()
+            .find(|r| r.executor_id.as_str() == Q && r.args_json::<Value>().map(|a| a["tag"] == tag).unwrap_or(false))
+            .unwrap()
+    };
+    let z = o.expect_receipt("interleave");
+    let used = z.gas_burnt.as_gas() - z.prepaid_exec_fees.as_gas() + kid("a").prepaid_exec_fees.as_gas() + kid("b").prepaid_exec_fees.as_gas();
+    ([kid("a").attached_gas.as_gas(), kid("b").attached_gas.as_gas()], z.attached_gas.as_gas() - used)
+}
+
+/// G3, "last" across promises. z creates A then B (both to q) and appends
+/// one weight-1 call to each: the remainder goes to the action appended
+/// last, whichever promise it is on (runtime/runtime/src/receipt_manager.rs:414-419
+/// pushes `gas_weights` at append time; :679-719 gives the last entry the
+/// remainder). In order "ba" that is A's, the earlier receipt; in "ab",
+/// B's. Two consecutive prepaid amounts give U odd once.
+#[test]
+fn remainder_goes_to_last_appended() {
+    let base = world();
+    let p0 = Gas::from_teragas(100).as_gas();
+    for order in ["ab", "ba"] {
+        let mut rems = Vec::new();
+        for d in 0..2u64 {
+            let mut sim = base.clone();
+            let ([a, b], u) = interleaved(&mut sim, Gas::from_gas(p0 + d), order);
+            let (first, last) = if order == "ab" { (a, b) } else { (b, a) };
+            println!("appended {order}, prepaid 100 Tgas + {d} gas: U = {u}; A gets {a}, B {b}; the last appended gets {} more", last - first);
+            assert_eq!(a + b, u, "the children share exactly U");
+            assert_eq!((first, last), (u / 2, u / 2 + u % 2), "the floor each, the remainder to the last appended");
+            rems.push(last - first);
+        }
+        rems.sort();
+        assert_eq!(rems, [0, 1]);
+    }
+}
+
 /// S3. Every receipt of a chunk sees the block's height (near-vm-runner
 /// logic/host.rs:827 `block_index`; the probe logs it); its outcome records
 /// the block's height and timestamp. A receipt created by a receipt runs in
 /// a later block (runtime/runtime/src/lib.rs:1222-1234: not instant, so
-/// outgoing). The timestamp a contract reads (:837 `block_timestamp`) is
-/// not checked: no probe logs it.
+/// outgoing). The timestamp a contract reads (:837 `block_timestamp`):
+/// `block_timestamp_read_by_contract`.
 #[test]
 fn block_height_and_timestamp() {
     let mut sim = world();
@@ -561,4 +726,36 @@ fn block_height_and_timestamp() {
     assert_eq!(child.block_height, parent.block_height + 1, "a created receipt runs in a later block");
     assert!(child.block_timestamp_ns > parent.block_timestamp_ns);
     assert!(parent.block_height > rs[0].block_height && parent.block_timestamp_ns > rs[0].block_timestamp_ns);
+}
+
+/// S3, the timestamp a contract reads (near-vm-runner logic/host.rs:837
+/// `block_timestamp`, from the apply state:
+/// runtime/runtime/src/function_call.rs:267). z.clock logs the height and
+/// timestamp it read. Two receipts of one chunk read the same timestamp,
+/// the one their outcomes record; the child alice's clock creates runs a
+/// block later and reads a larger one.
+#[test]
+fn block_timestamp_read_by_contract() {
+    let mut sim = world();
+    let txs: Vec<CryptoHash> = [(ALICE, true), (BOB, false)]
+        .iter()
+        .map(|(u, kid)| sim.call(*u, Z, "clock").args_json(json!({ "tag": u, "kid": kid })).submit())
+        .collect();
+    sim.settle();
+    let mut seen = Vec::new();
+    for t in &txs {
+        for r in sim.outcome(t).receipts.iter().filter(|r| r.method_names == ["clock"]) {
+            let w: Vec<&str> = r.logs[0].split(' ').collect();
+            let (h, ts): (u64, u64) = (w[2].parse().unwrap(), w[3].parse().unwrap());
+            println!("{} ran at #{} (outcome ts {}), read height {h}, timestamp {ts}", w[1], r.block_height, r.block_timestamp_ns);
+            assert_eq!((h, ts), (r.block_height, r.block_timestamp_ns), "it reads the block's height and timestamp");
+            seen.push((w[1].to_string(), h, ts));
+        }
+    }
+    let at = |tag: &str| seen.iter().find(|s| s.0 == tag).map(|s| (s.1, s.2)).unwrap();
+    let (a, b, kid) = (at(ALICE), at(BOB), at(&format!("{ALICE}+")));
+    assert_eq!(seen.len(), 3);
+    assert_eq!(a, b, "one chunk, one height and timestamp");
+    assert_eq!(kid.0, a.0 + 1, "the child runs a block later");
+    assert!(kid.1 > a.1, "and reads a larger timestamp");
 }

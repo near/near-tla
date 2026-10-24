@@ -173,8 +173,11 @@ Each rule has four fields:
 - **Validated:** sim (`conformance/tests/receipts.rs`, `deposit_and_gas_refunds`: a failed
   receipt's deposit comes back in a refund receipt from `system` to its predecessor, a user
   or a contract; `conformance/tests/lifecycle.rs`, `receipts_to_deleted`: a refund to a
-  deleted account fails and is burnt). `refund_to`: nearcore reading (no probe calls
-  `promise_set_refund_to`). <!-- conformance --> The comparison leaves refund receipts out on
+  deleted account fails and is burnt). `refund_to`: sim (`conformance/tests/receipts.rs`,
+  `refund_to_receives_the_deposit_refund`: a contract's call with a 2 N deposit that panics
+  is refunded from `system` to the account `promise_set_refund_to` named, which gains exactly
+  2 N, and without it to the predecessor; the call reads the target as
+  `refund_to_account_id`, the predecessor when unset). <!-- conformance --> The comparison leaves refund receipts out on
   both sides, so no flow checks this rule.
 
 ---
@@ -289,7 +292,9 @@ Each rule has four fields:
 - **Validated:** sim (`conformance/tests/receipts.rs`, `returned_promise_forwards_its_result`:
   p's callback on `ft_transfer_call` reads a result the size of the resolver's value, 4 bytes
   for `"10"` and 3 for `"0"`, not the call's own empty result, and runs after the resolver). The last action's result: sim under A8. `CannotReturnJointPromise`:
-  nearcore reading (no probe returns a joint promise). <!-- conformance --> In the flows,
+  sim (`conformance/tests/receipts.rs`, `joint_promise_restrictions`: returning a joint promise
+  fails the call with that host error, and none of the inputs it created runs).
+  <!-- conformance --> In the flows,
   `ft_transfer_call` and `near_withdraw` return promises only to the transaction, which the
   comparison does not see; no receipt there waits on a forwarded result.
 
@@ -341,10 +346,15 @@ Each rule has four fields:
   that returns a promise forwarding the result to its index (with two inputs, in both
   orders, each index's size asserted), and the 128-input limit: sim
   (`conformance/tests/receipts.rs`, `data_receipt_carries_one_result`,
-  `returned_promise_forwards_its_result`, `joint_promise_input_limit`). The order of indices
-  1 and 2 of a nested join: needs a probe that reads one result by index. The restrictions on
-  joint promises (no return, no appended actions, no `refund_to`): nearcore reading (no probe
-  tries them). `examples/platform-selftest` checks the order with the failing input first
+  `returned_promise_forwards_its_result`, `joint_promise_input_limit`). One result read by index, past index 0 too: sim
+  (`joint_result_by_index`: a callback reading only index i of three inputs of distinct sizes
+  gets input i's, joined flat, as `(a & b) & c` and as `a & (b & c)`, and `(b & c) & a` gives
+  b, c, a; the same with each input in turn held back to arrive last; a failed middle input
+  gives `Failed` at index 1 only; index 3 fails the callback with `InvalidPromiseResultIndex`).
+  The restrictions on joint promises: sim (`joint_promise_restrictions`: returning one,
+  appending an action to one and setting its `refund_to` each fail the creating call with its
+  own host error, and none of the inputs it created runs; `promise_and` with no `.then` adds
+  no receipt beyond its inputs). `examples/platform-selftest` checks the order with the failing input first
   (`and_order`), a starved input (`and_starved_leg`) and a joint callback with no gas
   (`and_zero_cb`). <!-- conformance -->
 
@@ -435,9 +445,18 @@ Each rule has four fields:
   payload limit ([N-yield-payload](#under-approximations-unsound-they-can-hide-bugs)); and
   (`yield_times_out_at_200_blocks`) the timeout of a yield made at h: still parked at
   h + 199, resolved at h + 200, and its callback run at exactly h + 201, reading `Failed`,
-  with the yielding account as its predecessor. The
-  `_with_id` form, a deposit, a returned yield and the callback's signer: nearcore reading
-  (the async probe has none of them and does not log the signer).
+  with the yielding account as its predecessor. On the
+  `probe2` contract, also without a model comparison: the `_with_id` form
+  (`yield_with_id_duplicates_and_reuse`: a create with a custom id that is pending, in the
+  same call or a later one, returns `u64::MAX` and parks no yield, and the call succeeds;
+  `promise_yield_resume_with_yield_id` returns 1, then 0; once the callback has run the id
+  parks a new yield, also when the callback re-creates it itself); a deposit
+  (`yield_deposit`: 2 N leaves the yielding account at creation, the callback receives it,
+  and the account's balance is back once the callback has run); a returned yield
+  (`returned_yield_forwards_its_result`: the caller's callback runs after the yield callback
+  and reads its result, the 7-byte payload, or, on a timeout, nothing); the callback's signer
+  (`yield_callback_signer_is_the_yielding_signer`: alice yields, and the callback's signer is
+  alice whether bob resumes it or it times out; its predecessor is the yielding account).
   `examples/platform-selftest` checks a second resume (`resume_twice`), two
   resumes in the yielding call (`resume_same_call`), a timeout then a resume
   (`timeout_then_resume`), a resume in flight at the deadline (`resume_beats_timeout`), a
@@ -576,7 +595,11 @@ Each rule has four fields:
   remainder, and one more prepaid gas gives one more leftover gas); the calibration's split
   check confirms it to the gas on every flow, against the formula rather than the model, and
   `examples/weight-split` covers it in the model under both modes. "Last" in host-call order
-  when appends interleave across promises: nearcore reading (no probe interleaves them). The tolerance is symmetric and cannot see the direction. In a
+  when appends interleave across promises: sim (`remainder_goes_to_last_appended`: a contract
+  creates promises A then B and appends one weight-1 call to each; appended B then A, A's
+  call, on the earlier receipt, gets `⌊U/2⌋ + U mod 2` and B's `⌊U/2⌋`, appended A then B the
+  reverse, each at two consecutive prepaid amounts, one with U odd; each receipt holds one
+  call). The tolerance is symmetric and cannot see the direction. In a
   one-off measurement against the sweep data (not a check `conform.py` runs), against the
   sim's unrounded attached gas with `"up"` substituted, the model's is at or
   below the sim's for every paired receipt of the 73 flows; with the remainder still handed
@@ -1387,8 +1410,9 @@ Each rule has four fields:
 - **Validated:** sim (`conformance/tests/receipts.rs`, `block_height_and_timestamp`: the
   receipts of one chunk read its height, which the probe logs; their outcomes record one height
   and one timestamp; a created receipt runs a block later, and both only grow). The
-  timestamp a contract reads: needs a probe that logs `block_timestamp` (the sim's outcome
-  metadata shows the block's, not what the host function returns). The epoch height: nearcore
+  timestamp a contract reads: sim (`block_timestamp_read_by_contract`: two receipts of one
+  chunk log the same `env::block_timestamp()`, which is the one their outcomes record, and a
+  child of one of them, a block later, logs a larger one). The epoch height: nearcore
   reading. `examples/yield-clock` shows
   `YieldDeadlinesInBound` and
   an early timeout failing at a too small bound, a bug that `TickAnytime = FALSE` hides, and
@@ -1527,8 +1551,9 @@ Each rule has four fields:
   `TriesToUnstake`, `ActorNoPermission`; an increase locked at once, a decrease changing
   nothing yet). `InsufficientStake`: not sim-testable (the sim has no minimum stake). The
   epoch-side release and rewards: nearcore reading (the sim simplifies epochs: one
-  validator, flat rewards). A callback reading a Stake's empty result: nearcore reading (no
-  probe stakes). <!-- conformance --> No flow stakes.
+  validator, flat rewards). A callback on a Stake: sim (`callback_after_stake`: a contract
+  stakes itself, then a callback reads result 0: `Successful` with 0 bytes after a Stake that
+  locked the amount, `Failed` after one that failed with `TriesToStake`). <!-- conformance --> No flow stakes.
 
 ### B2. Balance must cover storage (`LackBalanceForState`)
 
