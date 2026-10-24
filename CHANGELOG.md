@@ -424,6 +424,11 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **Conformance in CI** (`.github/workflows/conformance.yml`; docs/CONFORMANCE.md, "CI"):
+  nightly and on demand, not on push, and nothing gates on it. near-contract-sim is fetched
+  at its pinned rev with a read-only deploy key, then every sim test, a full sweep of the
+  probe flows, the four generated tables regenerated and diffed against the committed ones,
+  TLC on every flow and `conform.py`.
 - **33 rules now sim-validated** (`docs/SEMANTICS.md`; 19 from nearcore or source reading, 14
   extended from a partial check): new sim tests `conformance/tests/receipts.rs` (R1-R5, C1,
   C3-C6, G1-G3, G5, S3), `accounts.rs` (A1-A5, K2, K3, B1, B2) and `tokens.rs` (T1, T2, T4 on

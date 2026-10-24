@@ -79,7 +79,7 @@ outside this repo, and the runner still finds the library.
 | [`modules/`](modules/) | the library: one flat directory, passed to TLC as `-DTLA-Library` |
 | [`examples/`](examples/) | toy contracts, each with a `runs.toml` of must-pass and must-fail runs; `minimal` is the starting point, `platform-selftest` checks the library itself against known nearcore outcomes |
 | [`tools/`](tools/) | `run.py` (the runner), `sany.py` (parse check), `windows.py` (print-only gas windows), `tlctrace.py` (counterexample summaries), `tlcparse.py` (TLC output parsing), `check_links.py` (offline link check), `test_run.py` (the runner's self-tests) |
-| [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim and produces calibrated gas tables. Runs locally only |
+| [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim and produces calibrated gas tables. Runs locally, and nightly in CI (`conformance.yml`) |
 | [`docs/`](docs/) | [`SEMANTICS.md`](docs/SEMANTICS.md) (rules, citations, trust), [`USAGE.md`](docs/USAGE.md) (modelling a contract), [`CONFORMANCE.md`](docs/CONFORMANCE.md), [`VERSIONING.md`](docs/VERSIONING.md) |
 
 ### Modules
@@ -159,12 +159,12 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   provenance). A handler declares its bytes with `OStorKey(O, key, size)` instead of a hand
   count; `StorStd` holds the standard tokens' bytes, and a sim test pins
   `StdRegBytes(len) = 61 + len`.
+- The conformance suite in CI, nightly and on demand (`.github/workflows/conformance.yml`):
+  sim tests, a full sweep, the generated tables diffed against the committed ones, TLC and
+  `conform.py`.
 
 ### Later
 
-- **An optional conformance CI job.** The suite runs locally only today, because
-  near-contract-sim is a private git dependency. A job that runs it needs sim access through a
-  deploy key or an app token.
 - **Promote the rest of the rules to "sim" validation.** What the existing probes cannot
   reach needs new probe methods: `promise_set_refund_to` (R5), returning a joint promise or
   appending to one (C5, C6), reading one result of a joint promise by index (C6, the order

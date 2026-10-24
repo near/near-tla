@@ -184,17 +184,28 @@ A measured number is only meaningful with what it was measured on.
 - **A protocol bump** follows [`docs/VERSIONING.md`](VERSIONING.md), which includes
   recalibrating and re-running conformance.
 
-## Why it runs locally only
+## CI
 
-CI checks the TLA+ side only. It SANY-parses every module, every example spec and the
+CI on every push checks the TLA+ side only. It SANY-parses every module, every example spec and the
 conformance specs in `conformance/tla/` (`ProbeConf.tla`, `CalibProbes.tla`), and it runs every
 example's expectations. It also runs `conform.py`'s self-tests
 (`conformance/scripts/test_conform.py`), which use toy data. It neither runs TLC on the conformance flows nor builds the
-conformance crate, because near-contract-sim is a private git dependency and CI has no
-credentials for it. The calibrated tables are committed, so models and examples
-that use them run in CI without the sim.
+conformance crate, because near-contract-sim is a private git dependency that pulls in
+nearcore, so a cold build is slow. The calibrated tables are committed, so models and
+examples that use them run in CI without the sim.
 
-On the roadmap: an optional CI job that runs the conformance suite, given sim access through a
-deploy key or an app token stored as a CI secret. Until then, re-run the suite locally before
-merging any change to the gas rules, the fee table, the token modules or a calibrated table,
-and paste `conform.py`'s summary into the pull request.
+The whole suite runs nightly and on demand (`workflow_dispatch`) in
+`.github/workflows/conformance.yml`. It fetches near-contract-sim at the rev pinned in
+`Cargo.lock` with a read-only deploy key (the `NEAR_CONTRACT_SIM_DEPLOY_KEY` secret), which
+exists only for the fetch step; every later cargo step runs offline. It then:
+
+1. runs every sim test;
+2. sweeps every probe flow on the standard grid;
+3. regenerates `CalibProbes`, `CalibStd`, `StorStd` and `StorKv` and fails if any differs
+   from the committed file;
+4. runs TLC on every flow and `conform.py`.
+
+Nothing gates on it, so a failure does not block `main`. The nightly run comes after the
+merge, so still re-run the suite locally before merging any change to the gas rules, the fee
+table, the token modules or a calibrated table, and paste `conform.py`'s summary into the
+pull request.

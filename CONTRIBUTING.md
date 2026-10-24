@@ -55,8 +55,9 @@ SANY in v1.7.4 exits 0 even on semantic errors; `tools/sany.py` checks the outpu
 ## The conformance suite
 
 The Rust crate in `conformance/` checks the model's per-receipt predictions against nearcore's
-runtime through near-contract-sim. It also produces the calibrated gas tables. It runs locally
-only; CI does not build Rust. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) for how to run
+runtime through near-contract-sim. It also produces the calibrated gas tables. CI on push does not
+build Rust; the suite runs nightly and on demand (`.github/workflows/conformance.yml`) and
+locally. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) for how to run
 it and how to read a mismatch, and [`conformance/README.md`](conformance/README.md) for the
 flow-spec format used to add a probe flow.
 
