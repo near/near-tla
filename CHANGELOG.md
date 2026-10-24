@@ -417,7 +417,7 @@ them. A model that lists platform variables one by one must add each.
   `MaxMethodNameBytes`, `MethodBytesOK`; in `NearAsync`: `MaxActionsPerReceipt`,
   `MaxPromisesPerCall`, `MaxJointInputs`, `MaxReturnedData`, `AcActCount`, `NCalls`, `NActs`,
   `PromiseCount`, `RetTooLong`, `HostLimitErr`, `NewRcptLimitErr`, `MaxLogs`, `MaxLogBytes`,
-  `OLog`, `LogCount`, `LogBytes`, `LogsOver`, `RcptSum`, `RcptSumIn`, `OJoins`, `NJoins`,
+  `OLog`, `OLogs`, `LogCount`, `LogBytes`, `LogsOver`, `RcptSum`, `RcptSumIn`, `OJoins`, `NJoins`,
   `JoinsUpTo`, `MaxJoins`, `StatedJoins`, `CallPromisesOver`, `PAPartOK`, `Partitioned`,
   `PAJoins`, `PromisesOver`, `JoinsFieldOK`, `JoinsStatedOK`; in `NearKeys` also `SignedWith`, `AllowanceAddOK`,
   `AllowanceAddsOK`, `NonceHeight0`, `NoncePerHeight`, `NonceCeiling`, `NonceTooLarge`,
@@ -480,7 +480,7 @@ them. A model that lists platform variables one by one must add each.
   nearcore (see Breaking), the promises per call counting each `promise_and` (stated with
   `OJoins`, at least one per joint callback, else one per joint callback) and partitioned by `pa` in fault mode as in gas mode;
   so do 100 logs and 16384 bytes of logs per function call, opt-in:
-  a handler declares each log with `OLog(O, bytes)`, and logs over a limit in a receipt of
+  a handler declares each log with `OLog(O, bytes)` (or `n` of them with `OLogs(O, bytes, n)`), and logs over a limit in a receipt of
   several calls are an `Assert`; more than 2000 bytes of AddKey method names is an `Assert`, as
   the deploy limits already were. New sim tests `conformance/tests/limits.rs`: `actions_per_receipt` (a
   transaction and a receipt a contract creates, 100 and 101), `promises_per_function_call_action`
@@ -1024,6 +1024,8 @@ them. A model that lists platform variables one by one must add each.
   outside it); the same run passes at `-Xss640k` (6 of 6). The values are unchanged, and so is every run's verdict and
   state count. `examples/limits` now checks `NearConserved` on the 1024-receipt fan-out too
   (`limit_fan_1024`: 2 s to 9 s).
+- `examples/limits`: the `log` shape builds its N logs with the new `OLogs` instead of a
+  recursion once per log, which also overflowed the CI runner's stack (`limit_log_101`).
 - Docs: SEMANTICS N-order and N-resume-order were wrong. nearcore keeps no per-pair order at
   protocol 88: a new receipt bypasses the link's outgoing buffer whenever it fits
   (`congestion_control.rs:292-325`, `:451`), and missed chunks reverse the order across heights

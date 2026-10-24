@@ -553,7 +553,7 @@ its `promise_and` calls. Without `pa`, a receipt whose children could pass 1024 
 `Assert`.
 
 Logs count only if the handler declares them: `OLog(O, b)` adds one log of `b` bytes (UTF-8)
-to the outcome, and more than 100 logs or 16384 bytes of them fail the call, as in nearcore.
+to the outcome (`OLogs(O, b, n)` adds `n` of them), and more than 100 logs or 16384 bytes of them fail the call, as in nearcore.
 Declare them when a handler's logs grow with its input (an event per item, say); a model
 that declares none never hits the limit.
 

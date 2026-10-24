@@ -807,6 +807,8 @@ StorDelta(O) == IF "sb" \in DOMAIN O THEN O.sb ELSE 0
 LogCount(O) == IF "lgn" \in DOMAIN O THEN O.lgn ELSE 0
 LogBytes(O) == IF "lgb" \in DOMAIN O THEN O.lgb ELSE 0
 OLog(O, b) == [lgn |-> LogCount(O) + 1, lgb |-> LogBytes(O) + b] @@ O
+\* OLogs(O, b, n): n logs of b bytes each, without recursing once per log.
+OLogs(O, b, n) == [lgn |-> LogCount(O) + n, lgb |-> LogBytes(O) + n * b] @@ O
 \* Join outcome field (R6): OJoins(O, n) states that the call made n
 \* promise_and calls, nested ones included (PromisesOver).
 OJoins(O, n) == [nj |-> n] @@ O

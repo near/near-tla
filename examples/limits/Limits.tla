@@ -74,10 +74,6 @@ Start ==
                                 /\ UNCHANGED keyVars
          [] OTHER            -> Submit(Rcpt(nid, 1, D, U, "go", 0, 0, U, 0)) /\ UNCHANGED keyVars
 
-\* An outcome with n more logs of b bytes each.
-RECURSIVE Logs(_, _, _)
-Logs(O, b, n) == IF n = 0 THEN O ELSE Logs(OLog(O, b), b, n - 1)
-
 \* D's and P's handlers.
 H(r) ==
   CASE r.m = "go" /\ Shape = "batch" ->
@@ -100,7 +96,7 @@ H(r) ==
     [] r.m = "go" /\ Shape = "ret" ->
          Outcome({Rcpt(nid, 1, P, D, "blob", 0, 0, D, nid + 1)}, {Rcpt(nid + 1, 1, D, D, "got", 0, 0, D, 0)},
                  RVal(0), 0, 2)
-    [] r.m = "go" /\ Shape = "log" -> Logs(Outcome({}, {}, RVal(0), 0, 0), Bytes, N)
+    [] r.m = "go" /\ Shape = "log" -> OLogs(Outcome({}, {}, RVal(0), 0, 0), Bytes, N)
     [] r.m = "quote" -> Outcome({}, {}, RVal(1), 0, 0)
     [] r.m = "blob"  -> Outcome({}, {}, RValLen(1, Bytes), 0, 0)
     [] OTHER         -> Out0
