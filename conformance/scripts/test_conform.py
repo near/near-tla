@@ -18,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import conform  # noqa: E402
+import flowsets  # noqa: E402
 import tlcparse  # noqa: E402
 from mkconf import grid_points  # noqa: E402
 
@@ -103,7 +104,8 @@ class Conform(unittest.TestCase):
 
     def run_compare(self, subset=False):
         spec = conform.tomllib.loads(FLOWS)
-        return conform.compare("f", spec, conform.TOL, subset, self.flows_sha, self.data, self.build)
+        return conform.compare("f", spec, conform.TOL, subset, self.flows_sha, self.data, self.build,
+                               flows_file="probes.toml")
 
     def run_main(self, *args):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -243,6 +245,43 @@ class Conform(unittest.TestCase):
         self.assertIn(("tx1:alice[Delegate]", "ok", None), model)
         self.assertEqual(conform.joint(model, sim), (True, 0))
 
+    def test_stake_pairs_by_action(self):
+        names = {"z-probe.near": "z"}
+        sim = conform.sim_records(dict(receipts=[
+            dict(tx=0, conversion=False, refund=None, receiver="z-probe.near", methods=[], actions=["Stake"],
+                 attached=0, status="failed")]), names)
+        model = conform.model_records([dict(tx=1, m="STAKE", to="z", st="fail", g=0)], "")
+        self.assertEqual(sim, [("tx1:z[Stake]", "failed", None)])
+        self.assertEqual(sim, model)
+
+    def test_deposit_refunds_compared_only_in_a_set_with_refunds(self):
+        names = {"bob.near": "bob", "alice.near": "alice"}
+        line = dict(receipts=[
+            dict(tx=0, conversion=False, refund="Deposit", receiver="bob.near", methods=[], actions=["Transfer"],
+                 attached=0, status="ok"),
+            dict(tx=0, conversion=False, refund="Gas", receiver="alice.near", methods=[], actions=["Transfer"],
+                 attached=0, status="ok")])
+        model = [dict(tx=1, m="REFUND", to="bob", st="ok", g=0)]
+        self.assertEqual(conform.sim_records(line, names), [])
+        self.assertEqual(conform.model_records(model, ""), [])
+        want = [("tx1:bob[REFUND]", "ok", None)]
+        self.assertEqual(conform.sim_records(line, names, refunds=True), want)
+        self.assertEqual(conform.model_records(model, "", refunds=True), want)
+
+    def test_flow_sets(self):
+        fs, rest = flowsets.take(["--tol", "3", "f"])
+        self.assertEqual((fs.name, rest), ("probes", ["--tol", "3", "f"]))
+        self.assertEqual((fs.rel_flows, fs.rel_data, fs.rel_build, fs.refunds), ("flows/probes.toml", "data/probes", "tla/build", False))
+        fs2, rest = flowsets.take(["f", "--set", "probes2"])
+        self.assertEqual((fs2.name, rest), ("probes2", ["f"]))
+        # a flow name may recur across sets: nothing of one set is the other's
+        for k in ("flows", "data", "build", "calib", "conf", "prefix"):
+            self.assertNotEqual(getattr(fs, k), getattr(fs2, k), k)
+        with self.assertRaises(SystemExit):
+            flowsets.take(["--set", "nope"])
+        with self.assertRaises(SystemExit):
+            flowsets.take(["--set"])
+
     def test_joint_pairing(self):
         j = conform.joint
         self.assertEqual(j([("a", "ok", 1), ("a", "ok", 9)], [("a", "ok", 8), ("a", "ok", 2)]), (True, 1))
@@ -359,7 +398,11 @@ class Conform(unittest.TestCase):
             json.dump(m, f)
         self.assertProblem(self.run_compare(), "lacks jsonl_sha256")
         self.write_sim(text, flows_sha256="0" * 64)
-        self.assertProblem(self.run_compare(), "another flows/probes.toml")
+        self.assertProblem(self.run_compare(), "another version of the flows file")
+        # a sweep of another set's flows file, even with this file's sha256
+        self.write_sim(text, flows_file="probes2.toml")
+        self.assertProblem(self.run_compare(), "not 'probes.toml' (another flow set)")
+        self.assertEqual(self.run_main(), 1)
         # swept on another grid than the flow declares
         self.write_sim(text, grid="smoke")
         self.assertProblem(self.run_compare(), "on grid 'smoke'")
@@ -370,7 +413,7 @@ class Conform(unittest.TestCase):
         self.write_sim(read(os.path.join(self.data, "f.jsonl")), meta={})
         self.assertEqual(json.loads(read(os.path.join(self.data, "f.meta.json"))), {})
         res = self.run_compare()
-        self.assertProblem(res, ".meta.json lacks flows_sha256, grid, points, jsonl_sha256")
+        self.assertProblem(res, ".meta.json lacks flows_sha256, grid, points, jsonl_sha256, flows_file")
         self.assertEqual(self.run_main(), 1)
 
     def test_meta_missing_any_field_fails(self):

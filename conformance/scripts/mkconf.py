@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mkconf.py [--grid standard|smoke|lo:hi:step] [flow ...]
+"""mkconf.py [--set NAME] [--grid standard|smoke|lo:hi:step] [flow ...]
 
 Writes tla/build/MC_<flow>.tla and .cfg for every flow of
 flows/probes.toml (or the named ones): the flow's transaction as a model
@@ -21,13 +21,17 @@ The fee table runs with FeeRounding "nearest" (pinned in the cfg), not the
 library's default "up": conformance measures accuracy, and "up" overstates
 an action-only child's fee by up to 4 Ggas, which moves a creator's edge
 onto the next 0.1 Tgas grid point where the margin is that thin (two
-storage_deposit refund flows). Those shifts are on the safe side only."""
+storage_deposit refund flows). Those shifts are on the safe side only.
+
+With --set NAME (scripts/flowsets.py; default probes), the set's flows
+file, table and driver instead: probes2 writes tla/build/probes2/ from
+flows/probes2.toml for Probe2Conf.tla and CalibProbes2.tla."""
 import json, os, re, sys, tomllib
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPEC = os.path.join(HERE, "flows", "probes.toml")
-CALIB = os.path.join(HERE, "tla", "CalibProbes.tla")
-BUILD = os.path.join(HERE, "tla", "build")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import flowsets  # noqa: E402
+
+HERE = flowsets.HERE
 REG = 1250000000000000000000
 NEAR = 10**24
 
@@ -128,7 +132,86 @@ def kid(ctx, c, here, flow=None):
         # runs; TLC asserts every key a run looks up)
         path = ctx.path_of(flow, f"{rx}.{m}")
         gk = m + path if path else ""
-    return f'KidRec({q(to)}, {q(m)}, {leaf_args(m, c.get("args", ""), gk)}, {c.get("static_ggas", 0)}, {c.get("weight", 0)}, {dep(c.get("deposit", "0"))})'
+    if to == "z":
+        a = zargs(ctx, flow, rx, m, json.loads(c["args"]) if c.get("args") else {})
+    else:
+        a = leaf_args(m, c.get("args", ""), gk)
+    return f'KidRec({q(to)}, {q(m)}, {a}, {c.get("static_ggas", 0)}, {c.get("weight", 0)}, {dep(c.get("deposit", "0"))})'
+
+
+def za(fields):
+    if not fields:
+        return "ZA(Z0)"
+    return "ZA([Z0 EXCEPT " + ", ".join(f"!.{k} = {v}" for k, v in fields.items()) + "])"
+
+
+def path_key(ctx, flow, acct, m, path):
+    """The calibrated key of `acct.m` with flow path `path` ("/<p>"), with
+    the child shape the calibration put in it, if any: the one key
+    `m/<p>` or `m/<shape>/<p>` (the handler cannot tell which shape the
+    sim saw, e.g. none for a create that failed)."""
+    ks = [k for k in ctx.keys if k.startswith(f"{acct}.{m}/") and k.endswith(path) and k.count("/") <= 2]
+    if len(ks) != 1:
+        ctx.errors.append(f"{flow['name']}: {len(ks)} calibrated keys {acct}.{m}[/<shape>]{path}: {ks}")
+        return f"{m}{path}"
+    return ks[0].split(".", 1)[1]
+
+
+def zargs(ctx, flow, rx, m, a):
+    """The payload of a call to probe2 (Probe2Conf's Z0), its burn key
+    checked where the flow fixes it (the handler picks the rest: TLC
+    asserts every key a run looks up)."""
+    here = ctx.n(rx)
+    path = ctx.path_of(flow, f"{rx}.{m}") if flow is not None else ""
+    f = {}
+    if m == "refund_call":
+        f["kids"] = "<<" + kid(ctx, a["c"], rx, flow) + ">>"
+        f["rto"] = q(ctx.n(a["refund_to"]) if a.get("refund_to") else "")
+        f["gk"] = q(ctx.key(flow, here, m + path))
+    elif m == "join":
+        kids, cb = a["kids"], a["cb"]
+        f["kids"] = "<<" + ", ".join(kid(ctx, k, rx, flow) for k in kids) + ">>"
+        f["cb"] = "<<" + kid(ctx, cb, rx, flow) + ">>"
+        f["nest"] = q(a.get("nest", "flat"))
+        if f["nest"] == q("inner") and len(kids) != 3:
+            raise SystemExit(f"{flow['name']}: an inner join takes three kids")
+        shape = ",".join(sorted([k["method"] for k in kids] + [cb["method"]]))
+        k = f"{m}/{shape}{path}" if f"{here}.{m}/{shape}{path}" in ctx.keys else f"{m}{path}"
+        f["gk"] = q(ctx.key(flow, here, k))
+    elif m == "on_expect":
+        if "len" not in a or "bytes" in a:
+            raise SystemExit(f"{flow['name']}: the model has on_expect by len only")
+        # the model's sizes are KB: a result of under 1000 bytes is 0
+        f["i"], f["n"] = a["i"], (a["len"] // 1000 if a["len"] >= 0 else -1)
+    elif m == "yield_id":
+        f["id"] = q(a.get("id") or "")
+        f["dep"] = dep(a.get("deposit"))
+        f["st"] = a["cb_ggas"]
+        for b in ("twice", "ret", "again"):
+            if a.get(b):
+                f[b] = "TRUE"
+        if path:
+            f["gk"] = q(path_key(ctx, flow, here, m, path))
+    elif m == "resume":
+        if a["bytes"] > 1024:
+            raise SystemExit(f"{flow['name']}: a payload over 1024 bytes fails the resumer in nearcore; the model does not check it")
+        f["id"] = q(a.get("id") or "")
+        f["n"] = a["bytes"]
+        ctx.key(flow, here, "resume/ok")
+    elif m == "stake_then":
+        if a.get("expect") is None:
+            raise SystemExit(f"{flow['name']}: the model has stake_then with expect only")
+        cb = {"receiver": rx, "method": "on_expect", "args": json.dumps({"i": 0, "len": a["expect"]}),
+              "static_ggas": a["cb_ggas"], "weight": 1}
+        f["amt"] = dep(a["amount"])
+        f["cb"] = "<<" + kid(ctx, cb, rx, flow) + ">>"
+        f["gk"] = q(ctx.key(flow, here, m + path))
+    elif m == "paid":
+        if path:
+            f["gk"] = q(m + path)
+    else:
+        raise SystemExit(f"{flow['name']}: no model for {rx}.{m}")
+    return za(f)
 
 
 # The async probe's keys the model picks by what happens (ProbeConf).
@@ -145,6 +228,13 @@ def after(ctx, flow):
         c = st["call"]
         to, m = ctx.n(c["receiver"]), c["method"]
         a = json.loads(c["args"]) if c.get("args") else {}
+        if to == "z":
+            if m not in ("resume", "yield_id"):
+                raise SystemExit(f"{flow['name']}: no model for an after step {to}.{m}")
+            g = round(float(c.get("tgas", 300)) * 1000)
+            steps.append(f'[k |-> "tx", to |-> {q(to)}, m |-> {q(m)}, a |-> {zargs(ctx, flow, c["receiver"], m, a)}, '
+                         f'fr |-> {q(ctx.n(c["signer"]))}, g |-> {g}]')
+            continue
         if m != "resume":
             raise SystemExit(f"{flow['name']}: no model for an after step {to}.{m}")
         if a["bytes"] > 1024:
@@ -157,12 +247,23 @@ def after(ctx, flow):
     return "<<" + ", ".join(steps) + ">>"
 
 
+# A flow's own setup the model does not run: it starts from the world, so
+# the setup must leave the model's state as it found it. These calls do,
+# in pairs: a yield created, then resumed (its callback runs in the setup).
+NEUTRAL_SETUP = [("z", "yield_id"), ("z", "resume")]
+
+
 def first(ctx, flow):
+    setup = [(ctx.n(c["receiver"]), c["method"]) for c in flow.get("setup", [])]
+    if setup and setup != NEUTRAL_SETUP:
+        raise SystemExit(f"{flow['name']}: no model for the flow's setup {setup}")
     tx = flow["tx"]
     rx, m = tx["receiver"], tx["method"]
     a = json.loads(tx["args"]) if tx.get("args") else {}
     here = ctx.n(rx)
-    if m == "chain":
+    if here == "z":
+        args = zargs(ctx, flow, rx, m, a)
+    elif m == "chain":
         kids = a["kids"]
         cb = a.get("cb")
         ms = [k["method"] for k in kids] + ([cb["method"]] if cb else [])
@@ -267,25 +368,37 @@ INVARIANTS
 """
 
 
+def cfg(fs):
+    """The cfg of set `fs`: its table's operators, and its replacements of
+    the driver's definitions (TLC rejects a replaced definition on the
+    right of another `<-`: those take the replacement directly)."""
+    t = CFG.replace("<- ProbeGas", f"<- {fs.prefix}Gas")
+    for k, v in fs.over.items():
+        t = re.sub(rf"<- {k}$", f"<- {v}", t, flags=re.M)
+    over = "".join(f"  {k} <- {v}\n" for k, v in fs.over.items())
+    return t.replace("INVARIANTS\n", over + "INVARIANTS\n")
+
+
 def main():
-    args = sys.argv[1:]
+    fs, args = flowsets.take(sys.argv[1:])
     g_override = None
     if args[:1] == ["--grid"]:
         g_override, args = args[1], args[2:]
-    spec = tomllib.load(open(SPEC, "rb"))
-    keys = set(re.findall(r'^\s+"([^"]+)" :> \[base', open(CALIB).read(), re.M))
+    spec = tomllib.load(open(fs.flows, "rb"))
+    keys = set(re.findall(r'^\s+"([^"]+)" :> \[base', open(fs.calib).read(), re.M))
     ctx = Ctx(spec, keys)
-    os.makedirs(BUILD, exist_ok=True)
+    build = fs.build
+    os.makedirs(build, exist_ok=True)
     for flow in spec["flow"]:
         if args and flow["name"] not in args:
             continue
         name = flow["name"]
         signer, rc = first(ctx, flow)
         mod = f"MC_{name}"
-        with open(os.path.join(BUILD, mod + ".tla"), "w") as f:
-            f.write(f"---- MODULE {mod} ----\n\\* generated by scripts/mkconf.py from flows/probes.toml: {flow.get('about', '')}\n")
-            f.write("EXTENDS ProbeConf, CalibProbes\n")
-            f.write('mc_staking == "p"\nmc_empty == {}\nmc_gas == "gas"\nmc_tokens == Toks\nmc_wnear == {"wnear_probe"}\n')
+        with open(os.path.join(build, mod + ".tla"), "w") as f:
+            f.write(f"---- MODULE {mod} ----\n\\* generated by scripts/mkconf.py from {fs.rel_flows}: {flow.get('about', '')}\n")
+            f.write(f"EXTENDS {fs.conf}, {fs.calib_module}\n")
+            f.write(f'mc_staking == {q(fs.staking)}\nmc_empty == {{}}\nmc_gas == "gas"\nmc_tokens == Toks\nmc_wnear == {{"wnear_probe"}}\n')
             f.write(f"mc_signer == {q(signer)}\n")
             f.write(f"mc_relayer == {q(ctx.n(flow['relay']) if flow.get('relay') else '')}\n")
             f.write(f"mc_grid == {grid(g_override or flow.get('grid', 'standard'))}\n")
@@ -293,8 +406,8 @@ def main():
             f.write(f"mc_after == {after(ctx, flow)}\n")
             f.write("mc_one == 1\nmc_maxblk == 1 + Len(mc_after)\n")
             f.write('mc_fee_rounding == "nearest"\n====\n')
-        with open(os.path.join(BUILD, mod + ".cfg"), "w") as f:
-            f.write(CFG)
+        with open(os.path.join(build, mod + ".cfg"), "w") as f:
+            f.write(cfg(fs))
         print(mod)
     for n in ctx.notes:
         print("note:", n, file=sys.stderr)

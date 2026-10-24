@@ -19,7 +19,8 @@
 //!   once more;
 //! - `interleave`: two promises created A then B, and one weighted call
 //!   appended to each in a chosen order;
-//! - `stake_then`: a Stake of this account, then `on_at(0)` on its result;
+//! - `stake_then`: a Stake of this account, then `on_at(0)` or `on_expect`
+//!   on its result;
 //! - `yield_id`: a yield, by `promise_yield_create_with_id` (a custom id, a
 //!   deposit, optionally a second create with the same id) or by
 //!   `promise_yield_create`; optionally returned;
@@ -313,16 +314,21 @@ impl Probe2 {
     }
 
     /// A `[Stake(amount, pk)]` receipt to this account, then `on_at(0)` on
-    /// its result (static `cb_ggas`, weight 1).
-    pub fn stake_then(&self, amount: U128, pk: PublicKey, cb_ggas: u64) {
+    /// its result, or with `expect` `on_expect(0, expect)` (static
+    /// `cb_ggas`, weight 1).
+    pub fn stake_then(&self, amount: U128, pk: PublicKey, cb_ggas: u64, expect: Option<i64>) {
         let me = env::current_account_id();
         let p = create(me.as_str());
         let k = pk.as_bytes();
         unsafe { sys::promise_batch_action_stake(p, &amount.0 as *const u128 as _, k.len() as _, k.as_ptr() as _) };
+        let (method, args) = match expect {
+            Some(n) => ("on_expect", format!("{{\"i\":0,\"len\":{n}}}")),
+            None => ("on_at", "{\"i\":0}".to_string()),
+        };
         let c = Call {
             receiver: None,
-            method: "on_at".into(),
-            args: "{\"i\":0}".into(),
+            method: method.into(),
+            args,
             static_ggas: cb_ggas,
             weight: 1,
             deposit: U128(0),

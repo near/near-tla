@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""conform.py [--tol GGAS] [--subset] [flow ...]
+"""conform.py [--set NAME] [--tol GGAS] [--subset] [flow ...]
 
 Model (TLC logs tla/build/<flow>.log of ProbeConf) vs sim
-(data/probes/<flow>.jsonl), per receipt and per prepaid point:
+(data/probes/<flow>.jsonl), per receipt and per prepaid point; with --set,
+the set's flows file, sweeps and logs (scripts/flowsets.py; default
+probes):
   - status: ok / oog / failed, or not created;
   - attached gas of every function-call receipt (Ggas, sim rounded),
     compared jointly with the status: see `joint`;
@@ -10,7 +12,10 @@ Model (TLC logs tla/build/<flow>.log of ProbeConf) vs sim
     sweep's `yields`, the model's Parked), part of the status vector;
   - edges: the grid points where the status vector changes, over the
     sim's whole grid (a point the model lacks is its own status).
-Refund receipts are left out on both sides. A receipt's label carries
+Refund receipts are left out on both sides, except in a set with
+`refunds` (probes2), whose deposit refunds are compared too, each as an
+action-only receipt `tx<n>:<receiver>[REFUND]` (gas refunds, which the
+model does not make, stay out). A receipt's label carries
 its transaction (1 for the swept one, then the `after` transactions in
 order; the sweep's `tx` + 1), so receipts of different transactions never
 pair, in the statuses, the gas or the edges.
@@ -19,8 +24,9 @@ A flow passes only if
   - TLC finished without error (the log is read once: completion and
     reports come from the same bytes);
   - the sweep is bound to its provenance: the .meta.json is a JSON object
-    with every field of META_FIELDS, it names the current flows file and
-    the flow's declared grid, and its point count and sha256 are the
+    with every field of META_FIELDS, it names the current flows file (its
+    name and sha256) and the flow's declared grid, and its point count and
+    sha256 are the
     JSONL's (a missing field fails: `{}` binds nothing);
   - the sweep holds every point of the flow's declared grid exactly once
     (an empty or truncated sweep fails);
@@ -38,17 +44,17 @@ import collections, hashlib, json, math, os, sys, tomllib
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "scripts"))
+import flowsets  # noqa: E402
 from mkconf import grid_points  # noqa: E402
 from tlcparse import parse  # noqa: E402
 
 TOL = 5
 TOKENS = {"ft_probe", "wnear_probe"}  # model names of the token accounts
-FLOWS = os.path.join(HERE, "flows", "probes.toml")
-DATA = os.path.join(HERE, "data", "probes")
-BUILD = os.path.join(HERE, "tla", "build")
+_DEFAULT = flowsets.FlowSet(flowsets.DEFAULT)
+DATA, BUILD = _DEFAULT.data, _DEFAULT.build
 MISSING = "<no model point>"
 # The .meta.json fields conform.py checks; a meta without any of them fails.
-META_FIELDS = ("flows_sha256", "grid", "points", "jsonl_sha256")
+META_FIELDS = ("flows_sha256", "grid", "points", "jsonl_sha256", "flows_file")
 
 
 def label(tx, body):
@@ -57,18 +63,22 @@ def label(tx, body):
     return f"tx{tx}:{body}"
 
 
-def sim_records(v, names):
+def sim_records(v, names, refunds=False):
     """(label, status, attached Ggas or None) of every non-refund receipt
-    of one sweep line. The sweep numbers transactions from 0."""
+    of one sweep line, and with `refunds` of every deposit refund. The
+    sweep numbers transactions from 0."""
     recs = []
     for r in v["receipts"]:
-        if r["conversion"] or r["refund"]:
+        if r["conversion"] or (r["refund"] and not (refunds and r["refund"] == "Deposit")):
             continue
         tx = r["tx"]
         if not isinstance(tx, int) or isinstance(tx, bool) or tx < 0:
             raise ValueError(f"bad tx {tx!r}")
         to = names.get(r["receiver"], r["receiver"])
-        if r["methods"]:
+        if r["refund"]:
+            body = f"{to}[REFUND]"
+            g = None
+        elif r["methods"]:
             body = f"{to}::{'+'.join(r['methods'])}"
             g = round(r["attached"] / 1e9)
         else:
@@ -86,10 +96,11 @@ def parked_of(v):
     return n
 
 
-def load_sweep(flow, gname, data_dir, flows_sha, names):
+def load_sweep(flow, gname, data_dir, flows_sha, names, refunds=False, flows_file=None):
     """The sweep of `flow` as {prepaid Ggas: (records, parked)}, and what is wrong
-    with it: its meta must be bound to it and it must hold the declared
-    grid `gname`, every point once."""
+    with it: its meta must be bound to it (to the flows file `flows_file`,
+    when given) and it must hold the declared grid `gname`, every point
+    once."""
     problems = []
     jp = os.path.join(data_dir, f"{flow}.jsonl")
     mp = os.path.join(data_dir, f"{flow}.meta.json")
@@ -115,7 +126,9 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
         if lacks:
             problems.append(f".meta.json lacks {', '.join(lacks)} (re-run calibrate)")
         if "flows_sha256" in m and m["flows_sha256"] != flows_sha:
-            problems.append("sweep is from another flows/probes.toml (re-run calibrate)")
+            problems.append("sweep is from another version of the flows file (re-run calibrate)")
+        if flows_file and "flows_file" in m and m["flows_file"] != flows_file:
+            problems.append(f"sweep is of {m['flows_file']!r}, not {flows_file!r} (another flow set)")
         if "grid" in m and m["grid"] != gname:
             problems.append(f"sweep is on grid {m['grid']!r}, the flow declares {gname!r}")
         if "jsonl_sha256" in m and m["jsonl_sha256"] != hashlib.sha256(raw).hexdigest():
@@ -129,7 +142,7 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
             v = json.loads(line)
             gas = v["gas"]
             assert v["flow"] == flow and isinstance(gas, int) and gas % 10**9 == 0
-            recs = sim_records(v, names)
+            recs = sim_records(v, names, refunds)
             parked = parked_of(v)
         except (ValueError, KeyError, TypeError, AssertionError):
             bad += 1
@@ -156,14 +169,14 @@ def load_sweep(flow, gname, data_dir, flows_sha, names):
 
 # Model receipt kinds that are one action, no function call: the sim lists
 # them by action (`receiver[Action]`) and they carry no attached gas.
-ACTION_ONLY = {"XFER": "Transfer", "DELEGATE": "Delegate"}
+ACTION_ONLY = {"XFER": "Transfer", "DELEGATE": "Delegate", "STAKE": "Stake"}
 
 
-def model_label(r, batch_methods):
+def model_label(r, batch_methods, refunds=False):
     if r["m"] in ACTION_ONLY:
         return label(r["tx"], f'{r["to"]}[{ACTION_ONLY[r["m"]]}]')
     if r["m"] == "REFUND":
-        return None
+        return label(r["tx"], f'{r["to"]}[REFUND]') if refunds else None
     if r["m"] == "batch" and batch_methods and r["to"] in TOKENS:
         return label(r["tx"], f'{r["to"]}::{batch_methods}')
     return label(r["tx"], f'{r["to"]}::{r["m"]}')
@@ -172,12 +185,12 @@ def model_label(r, batch_methods):
 STAT = {"ok": "ok", "oog": "oog", "fail": "failed", "forced": "forced"}
 
 
-def model_records(recs, batch_methods):
+def model_records(recs, batch_methods, refunds=False):
     out = []
     for r in recs:
-        l = model_label(r, batch_methods)
+        l = model_label(r, batch_methods, refunds)
         if l:
-            out.append((l, STAT[r["st"]], r["g"] if r["m"] not in ACTION_ONLY else None))
+            out.append((l, STAT[r["st"]], r["g"] if r["m"] not in ACTION_ONLY and r["m"] != "REFUND" else None))
     return out
 
 
@@ -231,7 +244,7 @@ def empty_row(flow, problem):
                 problems=[problem])
 
 
-def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
+def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD, refunds=False, flows_file=None):
     names = spec["world"].get("names", {})
     fl = next(f for f in spec["flow"] if f["name"] == flow)
     gname = fl.get("grid", "standard")
@@ -247,7 +260,7 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
         text = f.read()
     if not tlc_ok(text):
         res["problems"].append("TLC did not finish without error")
-    sim, sweep_problems = load_sweep(flow, gname, data_dir, flows_sha, names)
+    sim, sweep_problems = load_sweep(flow, gname, data_dir, flows_sha, names, refunds, flows_file)
     res["problems"] += sweep_problems
     model, nondet = parse(text)
     if nondet:
@@ -268,7 +281,7 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
             sm = MISSING
             mrecs = []
         else:
-            mrecs = model_records(model[pp][0], bm)
+            mrecs = model_records(model[pp][0], bm, refunds)
             sm = sig(mrecs, model[pp][1])
         res["n"] += 1
         res["receipts"] += len(srecs)
@@ -297,8 +310,14 @@ def compare(flow, spec, tol, subset, flows_sha, data_dir=DATA, build_dir=BUILD):
     return res
 
 
-def main(argv=None, flows_path=FLOWS, data_dir=DATA, build_dir=BUILD):
-    args = list(sys.argv[1:] if argv is None else argv)
+def shown(path):
+    """`path` as the messages show it: relative to conformance/ if inside."""
+    return os.path.relpath(path, HERE) if os.path.abspath(path).startswith(HERE + os.sep) else path
+
+
+def main(argv=None, flows_path=None, data_dir=None, build_dir=None):
+    fs, args = flowsets.take(sys.argv[1:] if argv is None else argv)
+    flows_path, data_dir, build_dir = flows_path or fs.flows, data_dir or fs.data, build_dir or fs.build
     tol, subset = TOL, False
     while args and args[0].startswith("--"):
         if args[0] == "--tol":
@@ -317,16 +336,17 @@ def main(argv=None, flows_path=FLOWS, data_dir=DATA, build_dir=BUILD):
     for f in flows:
         problem = None
         if f not in known:
-            problem = "no such flow in flows/probes.toml"
+            problem = f"no such flow in {shown(flows_path)}"
         elif not os.path.exists(os.path.join(data_dir, f"{f}.jsonl")):
-            problem = f"no sim data data/probes/{f}.jsonl (run calibrate first: README.md, Running)"
+            problem = f"no sim data {shown(os.path.join(data_dir, f + '.jsonl'))} (run calibrate first: README.md, Running)"
         elif not os.path.exists(os.path.join(build_dir, f"{f}.log")):
-            problem = f"no TLC log tla/build/{f}.log (run scripts/mkconf.py and scripts/tlc.sh first)"
+            problem = (f"no TLC log {shown(os.path.join(build_dir, f + '.log'))} "
+                       f"(run scripts/mkconf.py and scripts/tlc.sh first, with --set {fs.name})")
         if problem:
             rows.append(empty_row(f, problem))
             print(f"\n== {f}: FAIL: {problem}")
             continue
-        c = compare(f, spec, tol, subset, flows_sha, data_dir, build_dir)
+        c = compare(f, spec, tol, subset, flows_sha, data_dir, build_dir, fs.refunds, os.path.basename(flows_path))
         rows.append(c)
         print(f"\n== {f}: {'PASS' if not c['problems'] else 'FAIL: ' + '; '.join(c['problems'])}")
         print(f"   {c['n']} points compared ({c['missing']} missing in the model{', skipped: --subset' if subset and c['missing'] else ''}), "
@@ -354,9 +374,9 @@ def main(argv=None, flows_path=FLOWS, data_dir=DATA, build_dir=BUILD):
           f"{sum(c['missing'] for c in rows)} model points missing")
     bad = [c["flow"] for c in rows if c["problems"]]
     if bad:
-        print(f"\nconform: {len(bad)} of {len(rows)} flows FAIL: {' '.join(bad)}", file=sys.stderr)
+        print(f"\nconform: {len(bad)} of {len(rows)} flows of set {fs.name} FAIL: {' '.join(bad)}", file=sys.stderr)
         return 1
-    print(f"\nconform: all {len(rows)} flows pass{' (subset of the grid)' if subset else ''}")
+    print(f"\nconform: all {len(rows)} flows of set {fs.name} pass{' (subset of the grid)' if subset else ''}")
     return 0
 
 
