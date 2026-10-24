@@ -1581,7 +1581,7 @@ Each rule has four fields:
   cover, on an account growing by full-access keys (`storage_zero_balance_allowance`); the
   byte counts of full-access and function-call keys, with and without an allowance
   (`storage_key_bytes`); the signer refused at conversion
-  (`storage_signer_checked_at_conversion`); and 182 / 132 bytes for created NEAR-implicit and
+  (`storage_signer_checked_at_conversion`); 182 / 132 bytes for created NEAR-implicit and
   eth-implicit accounts (`storage_implicit_account_bytes`); and the locked part of the
   balance (`conformance/tests/accounts.rs`, `storage_counts_locked_balance`: past 770 bytes,
   a liquid balance below the cover passes with 5 N locked and fails without).
