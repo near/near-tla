@@ -42,18 +42,25 @@ FullPerm == [rcv |-> "", ms |-> {}, all |-> TRUE, full |-> TRUE]
 IsFull(p) == "full" \in DOMAIN p /\ p.full
 
 KeyPresent(a, k) == k \in DOMAIN keys[a]
+\* The cases are written with IF so that they are mutually exclusive: an
+\* overlapping disjunction in an action makes TLC generate the same
+\* successor once per true disjunct.
 KeyAllows(a, k, to, m) ==
     /\ KeyPresent(a, k)
-    /\ \/ IsFull(keys[a][k])
-       \/ /\ keys[a][k].rcv = to
-          /\ (keys[a][k].all \/ keys[a][k].ms = {} \/ m \in keys[a][k].ms)
+    /\ IF IsFull(keys[a][k]) THEN TRUE
+       ELSE /\ keys[a][k].rcv = to
+            /\ IF keys[a][k].all \/ keys[a][k].ms = {} THEN TRUE ELSE m \in keys[a][k].ms
 KeysWithout(a, k) == [keys EXCEPT ![a] = [x \in DOMAIN keys[a] \ {k} |-> keys[a][x]]]
 KeysWith(a, k, p)  == [keys EXCEPT ![a] = (k :> p) @@ keys[a]]
 
 \* Init helper: keys0 : [KeyAccts -> (key id -> permission)].
 KeysInit(keys0) == keys = keys0 /\ sigpaid = [a \in Accounts |-> 0]
 
-\* A receipt with more than one function-call action (a batch).
+\* A receipt with more than one function-call action (a batch).  Receipt
+\* records carry no action list, so this reads the per-call gas lists: in
+\* fault mode give a multi-call transaction one static per call
+\* (WithStatic(r, <<0, 0>>)), or a function-call key will be allowed to
+\* sign it.
 IsMultiCall(r) == Len(r.gs) > 1 \/ Len(r.g) > 1
 
 \* Can key k of a sign the transaction whose first receipt is r?  A
@@ -62,10 +69,10 @@ IsMultiCall(r) == Len(r.gs) > 1 \/ Len(r.g) > 1
 \* key actions into a call receipt (WithKeyActs) must also require IsFull.
 KeyCanSign(a, k, r) ==
     /\ KeyAllows(a, k, r.to, r.m)
-    /\ \/ IsFull(keys[a][k])
-       \/ /\ IsCall(r)
-          /\ ~IsMultiCall(r)
-          /\ r.dep = 0
+    /\ IF IsFull(keys[a][k]) THEN TRUE
+       ELSE /\ IsCall(r)
+            /\ ~IsMultiCall(r)
+            /\ r.dep = 0
 
 \* Submit a signed transaction.  A key of a \in KeyAccts must be able to sign it.
 SubmitSigned(r, a, k) ==

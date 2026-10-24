@@ -115,10 +115,11 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TrackSigner` | `TRUE` | the model never reads the signer: `FALSE` saves states (reading the signer then is a TLC error, not a wrong value) |
 | `BurnLostRefunds` | `TRUE` | never, unless keeping older behaviour (a refund to a missing account stays in flight) |
 | `DefaultKey` | `"default"` | your key ids differ and you use `Submit` |
-| `TokFtGasShape` | `"standard"` per token | the token is near-contract-standards 3.x style: `"reserve"` |
+| `TokFtGasShape` | `"standard"` per token | the token is near-contract-standards 3.x/4.x style: `"reserve"`. This can change verdicts, not only gas windows; tokens built on 3.x/4.x (many older deployments) use the reserve shape, so check your token's version |
 | `TokOnTransferStatic`, `TokOnTransferWeight` | -1 per token (the shape's default) | the token gives `ft_on_transfer` a different static or weight |
 | `TokResolveStatic` | 5000 Ggas per token | the token's resolver has a different static gas (standard shape) |
-| `TokBatchPerAction` | `FALSE` | token batches should be checked per action ([section 12](#per-action-gas-pa)) |
+| `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
+| `PooledGasOK` | `FALSE` | a receipt with several function calls and no `pa` should pool their gas: `TRUE` (otherwise an `Assert`) |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`:
 
@@ -442,10 +443,13 @@ can make a callback run out while its call succeeded. In gas mode:
   `GasBurn[key] = [base, per]` (`base + per * size`); each child's static, weight and exec fee
   come from `GasCall[key] = [st, wt, fee]`, looked up as `"acct.method"`, then `"method"`;
 - if the need exceeds the attached gas, the receipt runs out of gas and fails like any
-  failure. A panic the gas could not reach is labelled out of gas too;
+  failure. A panic whose outcome names its panic-path burn key (`OPanicKey(O, k)`) is
+  labelled out of gas when that burn plus the children created before the panic exceeds the
+  attached gas; without a panic key a panic is always a plain failure;
 - otherwise the leftover is split over the children's function-call actions by weight; the
   last weighted action also gets the remainder;
-- a child function call left with 0 gas fails its creator;
+- a child function call left with 0 gas fails its creator; one with no static gas at all
+  (no `GasCall` entry, no `WithCall`) is a TLC assertion;
 - action-only children cost their creator the fee table's send + exec fee by default
   (`XFER`: `TransferFeeTotal` by the receiver's account kind; `STAKE`: `OneActionReceiptFee`;
   key actions: `KeyFee`). A `GasCall` entry wins: `"XFER" :> NoGas` makes Transfers free.
@@ -467,8 +471,11 @@ O2 == WithPA(O, << [gk |-> "c.first",  sz |-> 0, kids |-> {nid}],
 
 Each action is checked against its own gas `r.g[k]` with its own burn key, and its children
 share only its leftover. The creator must give such a receipt one static/weight entry per
-action (`WithCall(r, <<s1, s2>>, <<w1, w2>>)`). The token modules emit `pa` for batches when
-`TokBatchPerAction <- TRUE`.
+action (`WithCall(r, <<s1, s2>>, <<w1, w2>>)`); `pa` must have exactly that many records, with
+disjoint `kids` (both are assertions). A receipt with several gas entries and no `pa` is an
+assertion unless `PooledGasOK <- TRUE`. For a panic in action `i`, `OPanicAt(O, i, k)` names
+the panic-path burn key. The token modules emit `pa` for batches (`TokBatchPerAction`,
+default `TRUE`), with burn keys `"<acct>.batch/<shape>#<method>"`.
 
 ## 13. The forced-fault switch and labels
 
@@ -529,11 +536,13 @@ run uses them. Caveats:
 
 - They were measured on the repo's probe builds of those contracts, in the sim's world, at the
   pinned nearcore and protocol 88. A deployed token's build, version and state differ.
-- One key per method: where a burn depends on the path (registration, refunds) the key holds
-  the largest burn seen. That over-charges the cheaper paths, so an out-of-gas the model
-  reports near an edge may not happen on the cheaper path.
-- Batch keys are whole-receipt burns; the per-call keys (`#method`) are for
-  `TokBatchPerAction`.
+- Where a burn depends on the path, the modules look up a path key first and fall back to
+  the method key: `storage_deposit/registered|new`, `near_deposit/registered|new`,
+  `ft_resolve_transfer/refund|norefund` (e.g. `"ft.storage_deposit/new"`). A method key
+  alone holds the largest burn seen, which over-charges the cheaper paths, so an out-of-gas
+  the model reports near an edge may not happen on the cheaper path.
+- The per-call batch keys (`#method`) are what the default per-action batch reads; the
+  whole-batch keys are for `TokBatchPerAction <- FALSE`.
 - `ft_on_transfer`'s exec fee belongs to the **receiver's** `GasCall` entry, not the token's.
 - Your contract's own entries are still yours to measure.
 
@@ -696,7 +705,7 @@ All examples are toy contracts written for this repo.
   `ft_transfer_call` and reconciles in its callback. Fault-mode runs over every receiver
   behaviour and two token deviations; gas-mode runs with the out-of-gas edge, a print-only
   window, and the same window on the measured `CalibStd` table. Start here.
-- **`examples/platform-selftest`**: 35 deterministic scenarios with known nearcore outcomes
+- **`examples/platform-selftest`**: 49 deterministic scenarios with known nearcore outcomes
   (receipts, results, accounts, refunds, staking, storage, keys, gas, tokens). It checks the
   library, and it is a catalogue of how to drive each operator.
 - **The semantic examples**, each a must-pass and a must-fail pair for one rule:

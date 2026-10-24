@@ -240,13 +240,20 @@ Each rule has four fields:
   receipt: new receipts are validated after the call (`FunctionCallZeroAttachedGas`).
 - **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:3578` (`prepay_gas(gas)` in
   `promise_batch_action_function_call_weight`), `:3564-3577` (base and per-byte fees first);
-  `runtime/near-vm-runner/src/logic/gas_counter.rs:126-150`, `:155-174`, `:205-213`;
+  `runtime/near-vm-runner/src/logic/gas_counter.rs:126-150`, `:136-141` (the burn limit is
+  prepaid − promises gas), `:155-174`, `:205-213`;
   `runtime/runtime/src/action_validation.rs:350-351` (zero gas), applied at
   `runtime/runtime/src/lib.rs:968-978`.
 - **Model:** `Need = Burn(r, O) + Σ_children (c.gf + Σ c.gs)` (`KidsCost`); `GasOK(r, O)` is
   `Need ≤ Σ r.g`. Otherwise the verdict is `"oog"` and `FailOOG` applies. A failing outcome
-  (`err`) whose burn key exceeds the attached gas is labelled `"oog"` (`PanicOOG`; only the
-  label differs). `ZeroGasKid` fails the creator when a child call gets 0 gas.
+  with an explicit panic-path burn key (`OPanicKey(O, k)`; per action `OPanicAt(O, i, k)`) is
+  labelled `"oog"` when that burn plus the children created before the panic exceeds the
+  attached gas (`PanicOOG`; per action: the actions before `i` against their own need, and
+  action `i` against the panic burn). Only the label differs. Without a panic key a panic is
+  always `"fail"`: the success-path burn says nothing about where the panic happens.
+  `ZeroGasKid` fails the creator when a child call gets 0 gas, ready or callback. In gas mode a
+  function-call child must have one static (and weight) per call, from `GasCall` or `WithCall`;
+  an empty list is an `Assert` (`GasListsOK`).
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ### G3. Weight and the leftover split (`distribute_gas`)
@@ -269,7 +276,10 @@ Each rule has four fields:
   children it created (`runtime/runtime/src/function_call.rs:61`, `:343-345`; the rest is
   refunded, `runtime/runtime/src/lib.rs:1311-1315`). An outcome with `pa` (one
   `[gk, sz, kids]` record per action) gets this per-action check and split (`PerAction`,
-  `ActNeed`, `Alloc`); without `pa` a receipt is one action. Per-call defaults are
+  `ActNeed`, `Alloc`); `pa` must have one record per entry of `r.g`, with disjoint kid sets
+  (`PAOK`, an `Assert`). Without `pa` a receipt is one action; a receipt with several gas
+  entries and no `pa` would pool them, which is an `Assert` unless `PooledGasOK <- TRUE`
+  (`PoolCheck`; a plain panic is exempt). Per-call defaults are
   `GasCall[key] = [st, wt, fee]`
   (`CallKey`/`CallDef2` look up `"acct.method"`, then `"method"`), overridden by `WithCall`,
   `WithStatic`, `WithWeight` and `WithFee`.
@@ -492,7 +502,9 @@ Each rule has four fields:
   receipts are built after rollback from the error).
 - **Model:** `NearKeys`: `ExecWithKeys`, `KeyActsOK`, `WithKeyActs`. Token batches: `"batch"`
   in the token modules is one atomic receipt (a deposit mismatch fails the receipt); its gas
-  is one pool unless `TokBatchPerAction <- TRUE` (G3, N-batch-oog).
+  is accounted per action, with burn keys `"<acct>.batch/<shape>#<method>"` (G3); a
+  single-call batch uses `"<acct>.batch/<shape>"`. `TokBatchPerAction <- FALSE` makes it one
+  pool with the whole-batch key (N-batch-oog).
 - **Validated:** nearcore reading. <!-- conformance -->
 
 ---
@@ -646,10 +658,17 @@ locally.
 - **Model:** per-token `TokFtGasShape[t]`: `"standard"` (the default, 5.x: `ft_on_transfer`
   static 0 and weight 1, no reserve check, resolver static `TokResolveStatic[t]` = 5 Tgas and
   weight 0) or `"reserve"` (older: static prepaid − `TokCallReserve[t]`, weight 0, prepaid ≤
-  reserve panics, resolver gas from `GasCall`). `TokOnTransferStatic[t]` /
+  reserve panics, resolver gas from `GasCall`, else `TokResolveStatic[t]` and weight 0).
+  The resolver's burn key is `"<t>.ft_resolve_transfer/refund"` when it refunds and
+  `"/norefund"` when not, each falling back to `"<t>.ft_resolve_transfer"`.
+  `TokOnTransferStatic[t]` /
   `TokOnTransferWeight[t]` override the shape (-1 = its default); a `GasCall` entry for the
   resolver wins in both shapes. `Nep245` keeps the reserve shape. The measured values per
-  version come from `conformance/` (`docs/CONFORMANCE.md`).
+  version come from `conformance/` (`docs/CONFORMANCE.md`). The shape can change verdicts,
+  not only gas windows: under `"standard"` `ft_on_transfer` takes the leftover gas, so an
+  out-of-gas path of the reserve shape can disappear. Tokens built on
+  near-contract-standards 3.x/4.x (many older deployments) use the reserve shape; check your
+  token's version and set `TokFtGasShape` to "reserve" for those.
 - **Validated:** 5.x read; the older behaviour is recalled. <!-- conformance -->
 
 ### T4. NEP-145 `storage_deposit`
@@ -669,7 +688,8 @@ locally.
   `storage_balance_of(account_id)` returns the `StorageBalance` or `null`.
 - **Sources:** NEP-145 `:378-415`; near-contract-standards 5.29.1
   `fungible_token/storage_impl.rs:8-36` (`internal_storage_unregister`), `:51-78`, `:81-116`.
-- **Model:** `Nep145`: `SdAct`, `SuAct` (`SuArgs(force)`; both booleans are `NONEMPTY` bytes,
+- **Model:** `Nep145`: `SdAct` (burn key `"<t>.storage_deposit/registered"` or `"/new"`,
+  falling back to `"<t>.storage_deposit"`), `SuAct` (`SuArgs(force)`; both booleans are `NONEMPTY` bytes,
   `ev.unreg` / `ev.unregBurnt` say what happened), `SbAct` (`Some` is the number `total` = min,
   `null` is `NONEMPTY`). Deviation `sdRefundToAccount` refunds to `account_id` instead.
 - **Validated:** source read.
@@ -688,7 +708,8 @@ locally.
   rest; it returns nothing (`EMPTY`). `near_withdraw` needs 1 yocto, burns `amount`, and
   returns a Transfer of the amount to the caller (`RProm`).
 - **Sources:** none local. Recalled.
-- **Model:** `WNear`. The shipped gas keys come from the repo's wNEAR-like probe
+- **Model:** `WNear` (`near_deposit` burn key `"<t>.near_deposit/registered"` or `"/new"`,
+  falling back to `"<t>.near_deposit"`). The shipped gas keys come from the repo's wNEAR-like probe
   (`conformance/`); recalibrate for a real deployment.
 - **Validated:** recalled. <!-- conformance --> The probe checks the probe, not a production
   deployment.
@@ -812,10 +833,10 @@ against the current module code; some may be fixed in the modules later.
   rounding of sizes ([Units](#units)) adds to this when sizes feed fees or burns.
 - **N-batch-oog. Per-action out-of-gas in batches.** nearcore checks each function-call action
   against its own gas and splits only that action's leftover (G3). `NearAsync` does the same
-  for an outcome with `pa`; the token batch emits it with `TokBatchPerAction <- TRUE`. By default
-  (and with the whole-receipt `batch/<shape>` keys `CalibStd` measures) a batch is one pool: a
-  batch where one action is starved while another has slack fails in nearcore but not in the
-  model, and the leftover split can differ.
+  for an outcome with `pa`, and the token batch emits it by default (`TokBatchPerAction`). A
+  model's own multi-call receipt without `pa`, or a token batch with `TokBatchPerAction <- FALSE`
+  (and `PooledGasOK <- TRUE`), is one pool: a batch where one action is starved while another
+  has slack fails in nearcore but not in the model, and the leftover split can differ.
 - **N-burn. Trie and storage gas variation.** Burns are constants per (method, path), affine in
   one size variable at most, measured in one sim world. Real burns move with trie shape, key
   count, argument length and network (trie-node pricing). A real out-of-gas at a prepaid amount

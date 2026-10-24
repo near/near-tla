@@ -26,13 +26,15 @@
 (*                                                                         *)
 (* Gas burn keys (GasBurn, gas mode): "<acct>.<method>", and for a batch   *)
 (* "<acct>.batch/<shape>" with shape = [D][S](T|C) for the actions present.*)
-(* A batch is accounted as one action by default: its attached gas is one  *)
-(* pool for all its function calls.  nearcore gives each function call     *)
-(* its own gas, and an action's leftover goes only to the children that    *)
-(* action created (function_call.rs:61, :343-345).  Set                    *)
-(* TokBatchPerAction <- TRUE for that: the outcome then carries pa, the    *)
-(* burn keys are the per-method ones, and the creator must give the batch  *)
-(* receipt one gas entry per action (WithCall / r.g of matching length).   *)
+(* A batch is accounted per action by default (TokBatchPerAction, Nep145): *)
+(* each function call has its own gas and only its own leftover reaches    *)
+(* the children it created (function_call.rs:61, :343-345).  The outcome   *)
+(* carries pa with burn keys "<acct>.batch/<shape>#<method>" (a call burns *)
+(* differently at different places in a batch).  The creator gives the     *)
+(* batch receipt one gas entry per call: r.g of the same length (WithCall  *)
+(* statics for a child, [r EXCEPT !.g = ...] for a transaction).  A batch  *)
+(* with a single call is one action and uses "<acct>.batch/<shape>".       *)
+(* TokBatchPerAction <- FALSE: one pool and the "<acct>.batch/<shape>" key.*)
 (***************************************************************************)
 EXTENDS WNear
 
@@ -41,9 +43,12 @@ BatchKey(a) ==
              \o (CASE a.xf = "ft_transfer" -> "T" [] a.xf = "ft_transfer_call" -> "C" [] OTHER -> "")
 
 \* Per-action records of a batch: burn key and the ids of the children each
-\* action created (ids n0..n1-1 for the first, and so on).
+\* action created (ids n0..n1-1 for the first, and so on).  The burn key of
+\* a call is "<acct>.batch/<shape>#<method>": a call burns differently at
+\* different places in a batch (CalibStd measures each one).
+BatchCallKey(r, a, m) == CallKey(r.to, BatchKey(a) \o "#" \o m)
 BatchPA(r, a, n0, n1, n2, n3) ==
-    LET Act(m, lo, hi) == <<[gk |-> CallKey(r.to, m), sz |-> 0, kids |-> lo..(hi - 1)]>> IN
+    LET Act(m, lo, hi) == <<[gk |-> BatchCallKey(r, a, m), sz |-> 0, kids |-> lo..(hi - 1)]>> IN
     (IF a.nd > 0 THEN Act("near_deposit", n0, n1) ELSE <<>>)
     \o (IF a.sd > 0 THEN Act("storage_deposit", n1, n2) ELSE <<>>)
     \o (IF a.xf # "" THEN Act(a.xf, n2, n3) ELSE <<>>)

@@ -1,12 +1,13 @@
 -------------------------------- MODULE WNear --------------------------------
 (***************************************************************************)
 (* wNEAR (the near/core-contracts w-near contract):                        *)
-(* an FT (Nep141 + Nep145) whose supply is backed by the NEAR the token   *)
+(* an FT (Nep141 + Nep145) whose supply is backed by the NEAR the token    *)
 (* account holds natively.                                                 *)
 (*                                                                         *)
 (* near_deposit()  payable, deposit > 0.  Predecessor not registered:      *)
 (*   deposit >= storage min, register, mint deposit - min; else mint all.  *)
-(*   Returns () = EMPTY.                                                   *)
+(*   Returns () = EMPTY.  Burn key "<t>.near_deposit/registered" or        *)
+(*   "/new" when GasBurn has it, else "<t>.near_deposit" (PathKey).        *)
 (* near_withdraw(amount)  1 yocto; burn from predecessor (panics if not    *)
 (*   registered / short), returns Promise::transfer(amount + 1 yocto) to   *)
 (*   the predecessor, so a .then callback sees the Transfer's EMPTY bytes. *)
@@ -23,11 +24,13 @@ NearDepositAct(acc, r, x) ==
          THEN Assert(FALSE, <<"near_deposit from an account outside TokHolders", r.to, p>>)
     ELSE IF p \in L.reg
          THEN [acc EXCEPT !.L = [L EXCEPT !.bal[p] = @ + x, !.sup = @ + x],
-                          !.ret = RVal(EMPTY), !.ev.nd = @ + x]
+                          !.ret = RVal(EMPTY), !.ev.nd = @ + x,
+                          !.key = PathKey(r, "near_deposit", "registered")]
     ELSE IF x < min THEN AE(acc, "ERR_DEPOSIT_TOO_SMALL")
     ELSE [acc EXCEPT !.L = [L EXCEPT !.reg = @ \cup {p}, !.bal[p] = @ + (x - min),
                                      !.sup = @ + (x - min)],
-                     !.ret = RVal(EMPTY), !.ev.nd = @ + x]
+                     !.ret = RVal(EMPTY), !.ev.nd = @ + x,
+                     !.key = PathKey(r, "near_deposit", "new")]
 
 NearWithdrawAct(acc, r, x) ==
     LET L == acc.L  p == r.fr IN

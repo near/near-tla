@@ -19,7 +19,7 @@ MinStake = "2"
 StorageFloor = "SFloor"
 MayFail = "{}"
 MaxFails = "0"
-MaxEpoch = "0"
+MaxEpoch = "1"          # epoch ticks happen only where a script has Tick
 MaxReward = "0"
 Exists = "SExists"
 Contracts = "SCode"
@@ -44,7 +44,8 @@ expect = "pass"
 [run.constants]
 Scns = '''{"revert_children", "waiter_failed", "cb_chain", "refund_to", "named_not_created",
           "implicit_created", "universal", "refund_burnt", "no_code", "nopr_vs_zero", "transfer_empty",
-          "result_size", "stake_ok", "stake_actor", "stake_fails", "floor_locked"}'''
+          "result_size", "stake_ok", "stake_actor", "stake_signer", "stake_fails", "stake_restake",
+          "floor_locked", "liquid_negative"}'''
 
 # Access keys: AddKey / DeleteKey rules and what a function-call key may sign.
 [[run]]
@@ -61,7 +62,7 @@ expect = "pass"
 Scns = '''{"ft_rules", "storage", "wnear", "batch", "views", "resolve_private",
           "unregister_force", "resolver_burn"}'''
 
-# Gas: zero-gas child, panic vs out of gas, per-action leftover, FT 5.x gas shape.
+# Gas: zero-gas children, panic vs out of gas, per-action leftover and panics, FT 5.x gas shape.
 [[run]]
 name = "selftest_gas"
 expect = "pass"
@@ -69,7 +70,8 @@ expect = "pass"
 GasMode = '"gas"'
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
-Scns = '{"zero_gas_child", "panic_oog", "per_action", "ft_std_gas"}'
+Scns = '''{"zero_gas_child", "zero_gas_cb", "zero_gas_split", "panic_oog", "panic_plain",
+          "oog_and_broke", "per_action", "per_action_two", "per_action_panic", "ft_std_gas"}'''
 
 # FT 3.x gas shape (TokFtGasShape "reserve").
 [[run]]
@@ -82,8 +84,20 @@ GasBurn = "SGasBurn"
 TokFtGasShape = "ReserveShapes"
 Scns = '{"ft_reserve_gas"}'
 
-# Token batch accounted per action (TokBatchPerAction): near_deposit and ft_transfer_call
-# each have their own gas; only ft_transfer_call's leftover reaches ft_on_transfer.
+# The same without a GasCall entry for the resolver: TokResolveStatic, weight 0.
+[[run]]
+name = "selftest_gas_reserve_nocall"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+TokFtGasShape = "ReserveShapes"
+Scns = '{"ft_reserve_gas"}'
+
+# Token batch accounted per action (TokBatchPerAction, the default): near_deposit and
+# ft_transfer_call each have their own gas and "ft.batch/DC#<method>" burn key; only
+# ft_transfer_call's leftover reaches ft_on_transfer.
 [[run]]
 name = "selftest_gas_batch"
 expect = "pass"
@@ -91,5 +105,56 @@ expect = "pass"
 GasMode = '"gas"'
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
-TokBatchPerAction = "TRUE"
 Scns = '{"batch_per_action"}'
+
+# TokBatchPerAction <- FALSE (the earlier default): one pool, the whole-batch key "ft.batch/DC".
+[[run]]
+name = "selftest_gas_batch_pooled"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+TokBatchPerAction = "FALSE"
+PooledGasOK = "TRUE"
+Scns = '{"batch_pooled"}'
+
+# Path-specific burn keys: storage_deposit/new, near_deposit/registered,
+# ft_resolve_transfer/refund; the other paths fall back to the method key.
+[[run]]
+name = "selftest_gas_paths"
+expect = "pass"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasPath"
+Scns = '{"path_keys"}'
+
+# Misuse is an Assert, not a wrong verdict: a multi-call receipt without pa (PoolCheck),
+# pa with fewer records than gas entries (PAOK), a call child without static gas (GasListsOK).
+[[run]]
+name = "selftest_assert_pool"
+expect = "assert"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"assert_pool"}'
+
+[[run]]
+name = "selftest_assert_pa_len"
+expect = "assert"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"assert_pa_len"}'
+
+[[run]]
+name = "selftest_assert_empty_gs"
+expect = "assert"
+[run.constants]
+GasMode = '"gas"'
+GasCall = "SGasCall"
+GasBurn = "SGasBurn"
+Scns = '{"assert_empty_gs"}'

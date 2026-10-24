@@ -14,6 +14,8 @@
 (*   otherwise deposit < min     -> panic                                  *)
 (*   otherwise register; deposit - min refunded to predecessor             *)
 (*   returns StorageBalance JSON (NONEMPTY)                                *)
+(*   burn key "<t>.storage_deposit/registered" or "/new" when GasBurn has  *)
+(*   it, else "<t>.storage_deposit" (PathKey)                              *)
 (* Deviation "sdRefundToAccount": refunds go to account_id instead.        *)
 (* storage_balance_of(account_id): Some(StorageBalance) is encoded as the  *)
 (*   number `total` (= min), None (JSON null) as NONEMPTY.                 *)
@@ -71,7 +73,17 @@ TAcc0(r) == [L |-> tk[r.to], n |-> nid, rd |-> {}, ps |-> {}, out |-> 0,
              ret |-> RVal(EMPTY), err |-> "", ev |-> TEv0, key |-> r.m, pa |-> <<>>]
 
 \* Overridable: account a "batch" receipt per action (Tokens header).
-TokBatchPerAction == FALSE
+\* TRUE (nearcore's behaviour): each call has its own gas and burn key
+\* "<acct>.batch/<shape>#<method>".  FALSE: one pool, key "<acct>.batch/<shape>".
+TokBatchPerAction == TRUE
+
+\* Path-specific burn keys (gas mode): "<method>/<path>" when GasBurn has
+\* "<acct>.<method>/<path>", else "<method>".  Paths: storage_deposit and
+\* near_deposit "registered" (already registered) / "new" (registers);
+\* ft_resolve_transfer "refund" (refund > 0) / "norefund".
+PathKey(r, m, path) ==
+    IF GasMode = "gas" /\ CallKey(r.to, m \o "/" \o path) \in DOMAIN GasBurn
+    THEN m \o "/" \o path ELSE m
 Live(acc) == acc.err = ""
 AE(acc, e) == IF acc.err = "" THEN [acc EXCEPT !.err = e] ELSE acc
 
@@ -103,12 +115,14 @@ SdAct(acc, r, acct0, x) ==
             THEN Assert(FALSE, <<"storage_deposit for an account outside TokHolders", r.to, a>>)
        ELSE IF a \in acc.L.reg
             THEN [TokRefund(acc, r, to, x) EXCEPT !.ret = RVal(NONEMPTY),
-                    !.ev.stoRefund = @ + x, !.ev.stoTo = to, !.ev.stoAcct = a]
+                    !.ev.stoRefund = @ + x, !.ev.stoTo = to, !.ev.stoAcct = a,
+                    !.key = PathKey(r, "storage_deposit", "registered")]
        ELSE IF x < min
             THEN AE(acc, "The attached deposit is less than the minimum storage balance")
        ELSE [TokRefund([acc EXCEPT !.L.reg = @ \cup {a}], r, to, x - min)
                EXCEPT !.ret = RVal(NONEMPTY), !.ev.stoKept = @ + min,
-                      !.ev.stoRefund = @ + (x - min), !.ev.stoTo = to, !.ev.stoAcct = a]
+                      !.ev.stoRefund = @ + (x - min), !.ev.stoTo = to, !.ev.stoAcct = a,
+                      !.key = PathKey(r, "storage_deposit", "new")]
 
 \* storage_balance_of(acct): Some(total) is encoded as the number, null as NONEMPTY.
 SbAct(acc, r, acct0) ==

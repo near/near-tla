@@ -85,8 +85,9 @@
 (*      without `pa` the whole receipt is one action.                      *)
 (*    * a created function call left with 0 gas fails the creating receipt *)
 (*      (action_validation.rs:350-351, applied at lib.rs:968-978).         *)
-(*    * a panic is labelled out-of-gas when the burn before it exceeds     *)
-(*      the attached gas (gas_counter.rs:155-174, :205-213).               *)
+(*    * a panic is labelled out-of-gas when its explicit panic-path burn   *)
+(*      (OPanicKey) plus the children created before it exceeds the        *)
+(*      attached gas (gas_counter.rs:136-141, :155-174, :205-213).         *)
 (*    * action-only receipts never run out of gas.                         *)
 (*  The forced switch is kept in both modes: a receipt whose method is in  *)
 (*  MayFail may fail, at most MaxFails times; counted in `fails`.  A real  *)
@@ -170,6 +171,11 @@ TrackSigner == TRUE
 \* TRUE: a refund to a missing account is burnt (lib.rs:1046-1054).  FALSE:
 \* it stays pending (older models).
 BurnLostRefunds == TRUE
+
+\* Gas mode: a receipt with several function calls (Len(r.g) > 1) whose
+\* outcome has no pa would pool their gas, unlike nearcore (function_call.rs:61).
+\* FALSE: that is an Assert.  TRUE: pool silently (older models).
+PooledGasOK == FALSE
 
 \* Account type by id pattern: "named", "near_implicit" (64 hex chars),
 \* "eth_implicit" ("0x" + 40 hex chars), "deterministic" ("0s" + 40 hex) or
@@ -324,11 +330,18 @@ SignerKey(r) == txsig[r.tx].k          \* env::signer_account_pk()
 (*   ids   : number of fresh ids consumed                                  *)
 (*   err   : "" or the panic message                                       *)
 (*   gk    : burn key ("" = r.m); sz : size for the burn (KB)              *)
-(* Optional field, for a receipt with several function-call actions:       *)
-(*   pa    : one record per action, in order:                              *)
+(* Optional fields:                                                        *)
+(*   pa    : for a receipt with several function-call actions, one record  *)
+(*           per action, in order (as many as r.g has entries):            *)
 (*           [gk |-> burn key, sz |-> size, kids |-> ids of the children   *)
-(*            that action created]                                         *)
+(*            that action created]  (kid sets disjoint)                    *)
 (*           With pa, gas is checked and split per action (see GasOK).     *)
+(*   pk    : panic-path burn key of a failing outcome (OPanicKey): the     *)
+(*           burn up to the panic, without the fees of the children made   *)
+(*           before it (KidsCost adds those, as for gk); without pk a      *)
+(*           panic is always "fail".                                       *)
+(*   pi    : with pa, the index of the action that panics (default the     *)
+(*           last one; OPanicAt).                                          *)
 RVal(v)       == [k |-> "val", v |-> v, sz |-> 0]
 RValSz(v, n)  == [k |-> "val", v |-> v, sz |-> n]
 RProm         == [k |-> "prom", v |-> 0, sz |-> 0]
@@ -342,6 +355,10 @@ Outcome(rd, ps, ret, out, ids) ==
 OErr(O, e) == IF O.err = "" THEN [O EXCEPT !.err = e] ELSE O
 OKey(O, k) == [O EXCEPT !.gk = k]
 OSz(O, n)  == [O EXCEPT !.sz = n]
+\* A failing outcome's burn up to its panic (burn key k in GasBurn, with size
+\* O.sz).  List in O only the children created before the panic.
+OPanicKey(O, k)   == [pk |-> k] @@ O
+OPanicAt(O, i, k) == [pk |-> k, pi |-> i] @@ O
 
 \* Balances after the receipt.  The receiver cannot spend more than it has
 \* (BalanceExceeded inside the call), and liquid + locked must cover its
@@ -375,7 +392,16 @@ Need(r, O) == Burn(r, O) + KidsCost(Kids(O))
 \* that action's leftover (function_call.rs:343-345); the leftover of other
 \* actions is refunded (lib.rs:1311-1315).  Used when the outcome has pa
 \* with more than one action; otherwise the receipt is one action.
-PerAction(r, O) == GasMode = "gas" /\ "pa" \in DOMAIN O /\ Len(O.pa) > 1
+PAOK(r, O) ==
+    IF Len(O.pa) # Len(r.g)
+    THEN Assert(FALSE, <<"pa has", Len(O.pa), "actions but the receipt has", Len(r.g), "gas entries", r.m>>)
+    ELSE IF \E i, j \in DOMAIN O.pa : i < j /\ O.pa[i].kids \cap O.pa[j].kids # {}
+    THEN Assert(FALSE, <<"pa kid sets overlap", r.m>>)
+    ELSE TRUE
+PerAction(r, O) ==
+    /\ GasMode = "gas" /\ "pa" \in DOMAIN O /\ O.pa # <<>>
+    /\ PAOK(r, O)
+    /\ Len(O.pa) > 1
 ActGas(r, k) == IF k \in DOMAIN r.g THEN r.g[k] ELSE 0
 ActBurn(O, k) ==
     LET key == O.pa[k].gk IN
@@ -393,19 +419,37 @@ GasOK(r, O) ==
     \/ IF PerAction(r, O) THEN \A k \in DOMAIN O.pa : ActGas(r, k) >= ActNeed(O, k)
        ELSE GasOf(r) >= Need(r, O)
 
-\* A panicking receipt that could not reach its panic ran out of gas first
-\* (gas_counter.rs:155-174, :205-213 GasExceeded).  Checked only when the
-\* panic path has a burn key.
+\* A panicking receipt that could not reach its panic ran out of gas first:
+\* the burn up to the panic plus the gas reserved by the promises created
+\* before it exceeds the attached gas (gas_counter.rs:126-150, :136-141 limit
+\* prepaid - promises_gas, :155-174, :205-213 GasExceeded).  Only for an
+\* outcome with an explicit panic-path key (OPanicKey / OPanicAt); the
+\* success-path key says nothing about where the panic happens.  Per action:
+\* the actions before the panicking one, and that one up to its panic.
+HasPanicKey(O) == "pk" \in DOMAIN O /\ O.pk # ""
+PanicBurn(O) ==
+    IF O.pk \in DOMAIN GasBurn THEN GasBurn[O.pk].base + GasBurn[O.pk].per * O.sz
+    ELSE Assert(FALSE, <<"no GasBurn entry for panic key", O.pk>>)
+PanicAct(O) == IF "pi" \in DOMAIN O THEN O.pi ELSE Len(O.pa)
 PanicOOG(r, O) ==
     /\ GasMode = "gas"
+    /\ HasPanicKey(O)
     /\ IF PerAction(r, O)
-       THEN \E k \in DOMAIN O.pa : O.pa[k].gk \in DOMAIN GasBurn /\ ActGas(r, k) < ActBurn(O, k)
-       ELSE BurnKey(r, O) \in DOMAIN GasBurn /\ GasOf(r) < Burn(r, O)
+       THEN LET f == PanicAct(O) IN
+            \/ \E k \in 1..(f - 1) : ActGas(r, k) < ActNeed(O, k)
+            \/ ActGas(r, f) < PanicBurn(O) + KidsCost(ActKids(O, f))
+       ELSE GasOf(r) < PanicBurn(O) + KidsCost(Kids(O))
 
 \* Weighted function-call actions of a set of children: <<id, action index, weight>>.
+\* In gas mode a function-call child needs one static (and one weight) per
+\* call: a GasCall entry for it, or WithCall / WithStatic.  An empty list
+\* would give it no gas and skip the zero-gas check, so it is an error.
 GasListsOK(c) ==
-    IF Len(c.gs) = Len(c.gw) THEN TRUE
-    ELSE Assert(FALSE, <<"static and weight lists differ in length", c.m, c.id>>)
+    IF Len(c.gs) # Len(c.gw)
+    THEN Assert(FALSE, <<"static and weight lists differ in length", c.m, c.id>>)
+    ELSE IF GasMode = "gas" /\ IsCall(c) /\ c.gs = <<>>
+    THEN Assert(FALSE, <<"function-call child without static gas (add a GasCall entry or WithCall)", c.to, c.m>>)
+    ELSE TRUE
 EntriesOf(S) ==
     UNION { IF GasListsOK(c) THEN { <<c.id, k, c.gw[k]>> : k \in {j \in DOMAIN c.gw : c.gw[j] > 0} } ELSE {}
             : c \in S }
@@ -444,12 +488,21 @@ ZeroGasKid(r, O) ==
     /\ GasMode = "gas"
     /\ \E c \in Kids(O) : \E k \in DOMAIN c.gs : Alloc(r, O, c).g[k] = 0
 
+\* A receipt with several function-call actions and no pa would pool their
+\* gas; that is only allowed with PooledGasOK.  A failing outcome without a
+\* panic key does not use the gas, so it is exempt.
+PoolCheck(r, O) ==
+    IF GasMode # "gas" \/ Len(r.g) <= 1 \/ ("pa" \in DOMAIN O /\ O.pa # <<>>) \/ PooledGasOK
+       \/ (O.err # "" /\ ~HasPanicKey(O)) THEN TRUE
+    ELSE Assert(FALSE, <<"receipt with several function calls but no pa (per-action gas); PooledGasOK <- TRUE to pool", r.to, r.m>>)
+
 \* "ok" | "fail" (panic, action error, balance) | "oog" (ran out of its real gas).
 \* Order: the receiver check comes first (the call never starts); a panic
 \* the gas could not reach is "oog"; new-receipt validation and the storage
 \* check run after the call.
 Verdict(r, O) ==
-    IF ~CallTargetOK(r) THEN "fail"
+    IF ~PoolCheck(r, O) THEN "fail"
+    ELSE IF ~CallTargetOK(r) THEN "fail"
     ELSE IF O.err # "" THEN (IF PanicOOG(r, O) THEN "oog" ELSE "fail")
     ELSE IF ~GasOK(r, O) THEN "oog"
     ELSE IF ZeroGasKid(r, O) THEN "fail"

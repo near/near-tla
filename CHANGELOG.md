@@ -73,7 +73,14 @@ Each entry ends with its migration.
   now an overridable `NearAsync` definition, default `Accounts`, so `NearKeys` no
   longer declares it as a CONSTANT; a cfg `Contracts = {...}` or
   `Contracts <- Def` still sets it. Migration: `CallsNeedCode <- FALSE` restores
-  the old behaviour; otherwise add called accounts to `Exists`.
+  the old behaviour; otherwise add called accounts to `Exists`. Check this: with
+  `CallsNeedCode` TRUE and an `Exists` that omits the contracts a model calls,
+  every call to them fails, and safety invariants can then pass vacuously.
+- **`NearKeys.FailNoCode(r)` is `IsCall(r) /\ ~HasCode(r.to) /\ FailP(r, FALSE)`**:
+  it now also fails calls to missing accounts and to accounts created by a
+  Transfer (except eth-implicit ones); it tested `r.to \notin Contracts`.
+  `Exec` already applies the rule. Migration: list every called account in
+  `Exists` (and in `Contracts`).
 - **A Stake receipt's result is empty bytes (`EMPTY`), not 0** (`lib.rs:1172-1176`).
   Migration: callbacks on a Stake test `IsEmpty(r.res)` instead of `IsNum`.
 - **Only the account itself may stake** (`actions.rs:755-801`, ActorNoPermission):
@@ -84,20 +91,69 @@ Each entry ends with its migration.
   `NearConserved(total0)` now reads `... = total0 + minted - burnt`.
   Migration: initialise `burnt = 0` (`PlatformInit*` and `PlatformInitExtra` do);
   steps that list platform variables one by one add `burnt` to `UNCHANGED`;
-  `BurnLostRefunds <- FALSE` restores the pending refund.
+  `BurnLostRefunds <- FALSE` restores the pending refund. The burn is a step of
+  `ExecTransferFail` (part of `ExecBuiltin`): a model that runs `REFND`
+  receipts with its own step, or only with `ExecTransfer`, keeps such a refund
+  pending; route them through `ExecBuiltin`.
 - **Gas mode: a function-call child left with 0 gas fails its creator**
   (`action_validation.rs:350-351`, applied at `lib.rs:968-978`). Migration: give
   such a child static gas or an unused-gas weight; there is no switch.
-- **Gas mode: a panic the receipt could not reach is labelled out of gas**
-  (`gas_counter.rs:155-174`, `:205-213`): when the outcome has `err` and its burn
-  key exceeds the attached gas, `oog` and `rlog` record "oog" instead of "fail".
-  The state change is the same. Migration: none (labels only).
+- **Gas mode: a panic the receipt could not reach can be labelled out of gas**
+  (`gas_counter.rs:136-141`, `:155-174`, `:205-213`): when the outcome names its
+  panic-path burn key with `OPanicKey(O, k)` (per action: `OPanicAt(O, i, k)`) and
+  that burn plus the static gas and fees of the children created before the panic
+  exceeds the attached gas (per action: an action before `i` exceeds its own gas,
+  or action `i` cannot reach the panic), `oog` and `rlog` record "oog" instead of
+  "fail". Without a panic key a panic is "fail", as before; the success-path key
+  (`gk`) is never used for this. The state change is the same either way.
+  Migration: none (labels only); to get the label, put the panic path's key in
+  `GasBurn` and mark the outcome with `OPanicKey`. Like a success-path key, the
+  panic key's burn excludes the fees of the children created before the panic
+  (send fees are burnt in nearcore, but the model adds them through `KidsCost`).
+- **Verdict order: a receipt that is both out of gas and over its balance or
+  storage is "oog"** (gas is checked during the call, the balance and storage
+  after it: `gas_counter.rs:155-174`, `lib.rs:1008-1023`). It was "fail".
+  Migration: none (labels only).
+- **Gas mode: a function-call child without static gas is an `Assert`**
+  (`GasListsOK`): an empty static list gave it no gas and skipped the zero-gas
+  check. Migration: add a `GasCall` entry for the child's `"acct.method"` or
+  `"method"`, or build it with `WithCall(c, <<s>>, <<w>>)`.
+- **Gas mode: per-action `pa` is checked** (`PAOK`): `Len(O.pa)` must equal
+  `Len(r.g)` and the `kids` sets must be disjoint, else an `Assert`. Migration:
+  give the receipt one gas entry per function-call action, and attribute each
+  child to one action.
+- **Gas mode: a receipt with several gas entries and no `pa` is an `Assert`**
+  (`PoolCheck`) unless `PooledGasOK <- TRUE`: nearcore gives each function-call
+  action its own gas (`function_call.rs:61`, `:343-345`), so pooling them is
+  approximate. A failing outcome without a panic key is exempt. Migration:
+  add `pa` to the outcome, or `PooledGasOK <- TRUE` to keep pooling.
+- **Token batches are accounted per action by default** (`TokBatchPerAction`
+  is now TRUE; `function_call.rs:61`, `:343-345`). Each call of a `"batch"`
+  receipt is checked against its own entry of `r.g` with the burn key
+  `"<acct>.batch/<shape>#<method>"` (`BatchCallKey`), because a call burns
+  differently by its position in the batch; a single-call batch is one action
+  with the whole-batch key `"<acct>.batch/<shape>"`. Migration:
+  `TokBatchPerAction <- FALSE` (and `PooledGasOK <- TRUE` if the batch receipt
+  has several gas entries) restores one pool with the whole-batch keys
+  `"<acct>.batch/<shape>"` in `GasBurn`.
+- **Reserve-shape resolver without a `GasCall` entry gets `TokResolveStatic`**
+  (static 5 Tgas, weight 0) instead of an empty static list, which gave it no
+  gas (and is now an `Assert`). Migration: a `GasCall["t.ft_resolve_transfer"]`
+  entry still wins; add one with the old values.
+- **`ExecStake` asserts that the receipt is for `StakingAcct`**. The model has
+  one staking account; a Stake to another account used to update `locked`
+  anyway. Migration: route Stake receipts only to `StakingAcct`.
 - **Token gas defaults follow near-contract-standards 5.x**
   (`fungible_token/core_impl.rs:13`, `:142-151`): `ft_on_transfer` gets static 0
   and unused-gas weight 1, with no reserve check; `ft_resolve_transfer` gets
   static 5 Tgas (`TokResolveStatic`) and weight 0 unless `GasCall` has an entry
   for it. `TokOnTransferWeight` now defaults to -1 (the shape's default);
-  explicit values keep their meaning. Migration: `TokFtGasShape <- Shapes` with
+  explicit values keep their meaning. **This can change verdicts, not only gas
+  windows**: under the 5.x shape `ft_on_transfer` takes the leftover gas, so an
+  out-of-gas path that the reserve shape has can disappear. Tokens built on
+  near-contract-standards 3.x/4.x (many older deployments) use the reserve shape;
+  check your token's version and set `TokFtGasShape` to "reserve" for those.
+  Migration: `TokFtGasShape <- Shapes` with
   `Shapes == [t \in TokenAccts |-> "reserve"]` restores the 3.x shape (static
   prepaid - `TokCallReserve`, weight 0, prepaid <= reserve panics, resolver gas
   from `GasCall`). `Nep245` keeps the reserve shape.
@@ -130,6 +186,9 @@ Each entry ends with its migration.
   modules: `OnTransferStatic`, `ReserveShort`, `TokFtGasShape`,
   `TokResolveStatic`, `FtShape`, `ReserveShape`, `TokKnob`, `ResolveGas`, `SuAct`,
   `SuArgs`, `TokBatchPerAction`, `BatchPA`, `MtOnStatic`, `MtReserveShort`.
+  Batch 2 adds, in `NearAsync`: `OPanicKey`, `OPanicAt`, `HasPanicKey`,
+  `PanicBurn`, `PanicAct`, `PAOK`, `PoolCheck`, `PooledGasOK`; in the token
+  modules: `BatchCallKey`, `PathKey`.
   Migration: rename the model's own definition. A model-local local-receipt rule
   is not always replaceable by `LocalPriorityOK`: a rule that lets **every**
   top-level receipt skip the wait admits more interleavings than the library
@@ -175,9 +234,15 @@ Each entry ends with its migration.
 - Per-action gas accounting (`function_call.rs:61`, `:343-345`): an outcome may
   carry `pa`, one `[gk, sz, kids]` record per function-call action; with two or
   more, gas is checked and the leftover split per action. Without `pa` a receipt
-  is one action, as before. `Tokens` batches use it when
-  `TokBatchPerAction <- TRUE` (default FALSE: one pool and the whole-receipt
-  `batch/<shape>` burn key, which is what `CalibStd` measures).
+  is one action, as before. `Tokens` batches use it by default (see Breaking).
+- `OPanicKey(O, k)` / `OPanicAt(O, i, k)`: the burn key of a failing outcome's
+  panic path (and the panicking action), for the out-of-gas label.
+- Path-specific burn keys with fallback to the method key (`PathKey`):
+  `"<t>.storage_deposit/registered"` / `"/new"`, `"<t>.near_deposit/registered"` /
+  `"/new"`, `"<t>.ft_resolve_transfer/refund"` / `"/norefund"`. Without the path
+  key the method key `"<t>.<method>"` is used, as before.
+- `PooledGasOK` (overridable, default FALSE): allow a multi-call receipt without
+  `pa` to pool its gas.
 - `storage_unregister(force)` in `Nep145` / `Tokens` (near-contract-standards
   5.29.1 `fungible_token/storage_impl.rs:8-36`), which makes the NEP-141
   resolver's burn path reachable. `SuArgs(force)`; `ev.unreg` / `ev.unregBurnt`.
@@ -188,7 +253,7 @@ Each entry ends with its migration.
   ones are also uninitialised, `:880-887`), so calls to it fail.
 - `NoOrphans` (no callback waits on nothing, no data without a waiting
   callback) and `ExecNoCode(r)`.
-- `examples/platform-selftest`: 35 deterministic scenarios (receipts, results,
+- `examples/platform-selftest`: 49 deterministic scenarios (receipts, results,
   accounts, refunds, staking, storage, keys, tokens, gas) with their expected
   nearcore end state. `NearConserved` / `GasBounded` are now checked in every
   example; `eth-implicit-fee` pins the Transfer fees as literals (8146 / 446
@@ -204,8 +269,10 @@ Each entry ends with its migration.
   key check also accepts full-access keys (which may attach a deposit).
 - `IsTokRcpt` / `IsMtRcpt` are `IsCall(r)` on a token account (no Transfer,
   refund, Stake or key action).
-- `NearKeys.FailNoCode(r)` is `IsCall(r) /\ ~HasCode(r.to) /\ FailP(r, FALSE)`
-  (also fails calls to missing accounts); `Exec` already applies the rule.
+- `NearKeys.KeyAllows` / `KeyCanSign` use `IF` for their cases, so they no longer
+  overlap (a key with `all` and an empty method list, or a full-access key signing
+  a call, made TLC generate the same successor twice). Verdicts and distinct
+  states are unchanged; generated-state counts drop.
 - `Tokens` `"batch"`: when the deposit mismatch is not about the 1-yocto action
   (`xf = ""` or `TokYocto = 0`) the error now says so.
 - Token outcomes (`TokOut`) always carry `pa` (`<<>>` unless `TokBatchPerAction`);

@@ -29,12 +29,16 @@
 (*      TokResolveStatic[t] (5 Tgas) and weight 0.                         *)
 (*  "reserve" (near-contract-standards 3.x): ft_on_transfer gets static    *)
 (*      prepaid - TokCallReserve[t] and weight 0; prepaid <= reserve       *)
-(*      panics; the resolver's static / weight come from GasCall.          *)
+(*      panics; the resolver gets static TokResolveStatic[t], weight 0     *)
+(*      (GAS_FOR_RESOLVE_TRANSFER).                                        *)
 (* Overrides (overridable definitions; -1 = the shape's default):          *)
 (*   TokOnTransferStatic[t], TokOnTransferWeight[t]  ft_on_transfer        *)
-(*   TokResolveStatic[t]     resolver static in the standard shape         *)
+(*   TokResolveStatic[t]     resolver static (both shapes)                 *)
 (* A GasCall entry "t.ft_resolve_transfer" (or "ft_resolve_transfer")      *)
 (* wins for the resolver in both shapes; its .fee is the exec fee.         *)
+(* Burn keys: "<t>.<method>"; ft_resolve_transfer uses                     *)
+(* "<t>.ft_resolve_transfer/refund" or "/norefund" when GasBurn has it     *)
+(* (PathKey, Nep145).                                                      *)
 (***************************************************************************)
 EXTENDS Nep145
 
@@ -79,9 +83,9 @@ OnTransferStatic(r) ==
 ReserveShort(r) ==
     /\ GasMode = "gas" /\ ReserveShape(r)
     /\ TokCallReserve[r.to] > 0 /\ LastGas(r) <= TokCallReserve[r.to]
-\* The resolver receipt: GasCall wins; else the standard shape's 5 Tgas, weight 0.
+\* The resolver receipt: GasCall wins; else TokResolveStatic (5 Tgas), weight 0.
 ResolveGas(r, res) ==
-    IF GasMode # "gas" \/ HasCallDef(r.to, "ft_resolve_transfer") \/ ReserveShape(r) THEN res
+    IF GasMode # "gas" \/ HasCallDef(r.to, "ft_resolve_transfer") THEN res
     ELSE WithCall(res, <<TMax(TokKnob(TokResolveStatic, r.to), 0)>>, <<0>>)
 
 FtTransferCallAct(acc, r, rc, amt, msg) ==
@@ -109,7 +113,8 @@ FtResolveAct(acc, r) ==
     IN IF ~Live(acc) THEN acc
        ELSE IF r.fr # r.to THEN AE(acc, "Method ft_resolve_transfer is private")
        ELSE [acc EXCEPT !.L = L1, !.ret = RVal(TMax(used, 0)),   \* "resolveNoCap" may refund > amount
-                        !.ev.s = s, !.ev.rc = rc, !.ev.refund = refund, !.ev.credited = sReg]
+                        !.ev.s = s, !.ev.rc = rc, !.ev.refund = refund, !.ev.credited = sReg,
+                        !.key = PathKey(r, "ft_resolve_transfer", IF refund > 0 THEN "refund" ELSE "norefund")]
 \* Views.
 FtBalanceOfAct(acc, r, acct) ==
     IF ~Live(acc) THEN acc
