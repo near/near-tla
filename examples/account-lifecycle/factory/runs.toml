@@ -1,4 +1,5 @@
-# An account factory: the batch [CreateAccount, Transfer, FunctionCall(init)] is atomic and
+# An account factory: the batch [CreateAccount, Transfer, DeployContract, FunctionCall(init)]
+# is atomic and
 # its deposit returns to the factory.  See Factory.tla.
 #
 #   python3 tools/run.py examples/account-lifecycle/factory
@@ -21,7 +22,6 @@ MaxEpoch = "0"
 MaxReward = "0"
 Exists = "{F, U1, U2}"
 Contracts = "FCode"
-CallsNeedCode = "FALSE"    # no DeployContract: init is assumed to find code
 AcctParent = "FParents"
 GasMode = '"fault"'
 GasCall = "NoTable"
@@ -68,6 +68,29 @@ Users = "{U1}"
 Name = "X"
 Checks = "FALSE"
 
+# Per-byte storage (1 NEAR per 100 KB): the child's 300 KB contract needs more than the 2 NEAR
+# the batch brings, so the batch fails LackBalanceForState every time; F repays the user, who
+# never gets an account.
+[[run]]
+name = "factory_underfunds_code"
+expect = "violation"
+invariant = "Served"
+invariants = ["Served", "Sane"]
+[run.constants]
+Users = "{U1}"
+StoragePerByte = "TRUE"
+CodeLen = '("child" :> 300000)'
+
+# The same with a 100 KB contract, which 2 NEAR covers: the user is served.
+[[run]]
+name = "factory_funds_code"
+expect = "pass"
+invariants = ["Served", "UserFundsBack", "PaidImpliesAccount", "Sane"]
+[run.constants]
+Users = "{U1}"
+StoragePerByte = "TRUE"
+CodeLen = '("child" :> 100000)'
+
 # ---- anti-vacuity: python3 tools/run.py examples/account-lifecycle/factory --anti-vacuity ----
 
 # Both users' batches in flight at once (the race).
@@ -93,6 +116,18 @@ runs = ["factory_cb_refunds"]
 id = "callback_before_refund"
 expr = '~(\E r \in Runnable : r.m = "on_create" /\ IsFailed(r.res) /\ \E y \in rq : y.m = REFND /\ y.to = F)'
 runs = ["factory_cb_refunds"]
+
+# The child runs the deployed code.
+[[witness]]
+id = "batch_deploys"
+expr = '~(CodeOf(N) = "child" /\ owner[N] # "")'
+runs = ["factory_cb_refunds", "factory_funds_code"]
+
+# The underfunded batch's deposit on its way back to F.
+[[witness]]
+id = "underfunded_batch_refunded"
+expr = '~(\E r \in rq : r.m = REFND /\ r.to = F)'
+runs = ["factory_underfunds_code"]
 
 # The user repaid by on_create.
 [[witness]]
@@ -149,3 +184,14 @@ replace = "/\\ near' = [near EXCEPT ![a] = 0]\n    /\\ nid'  = nid + O.ids + (IF
 class = "dropped effect (library)"
 killed_by = ["Sane"]
 runs = ["factory_cb_refunds"]
+
+# The library: init does not see the code its batch deployed (every batch fails).
+[[mutant]]
+id = "lib_init_ignores_deploy"
+file = "NearAsync.tla"
+library = true
+find = 'IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN Dpl(r)'
+replace = 'IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN NoCode'
+class = "platform rule dropped (library)"
+killed_by = ["Served"]
+runs = ["factory_funds_code"]

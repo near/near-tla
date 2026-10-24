@@ -171,7 +171,7 @@ ExecKeyAct(r, k, p) ==
                /\ rlog' = LogR(r, "ok")
                /\ stor' = IF StoragePerByte THEN [stor EXCEPT ![r.to] = @ + KeyActBytes(r, k, p)] ELSE stor
                /\ UNCHANGED <<locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created,
-                              burnt, blk, deleted, sigpaid>>
+                              burnt, blk, deleted, code, sigpaid>>
           ELSE FailP(r, FALSE) /\ UNCHANGED keyVars
 
 ----------------------------------------------------------------------------
@@ -245,8 +245,9 @@ OkK(r, O)   == OkWithKeys(r, AcKeyActs(r), O)
 
 \* A function call to an account that has no contract (or does not exist).
 \* Exec already fails such calls (NearAsync CallTargetOK); this is the same
-\* rule as an explicit step for dispatchers.
-FailNoCode(r) == IsCall(r) /\ ~HasCode(r.to) /\ FailP(r, FALSE)
+\* rule as an explicit step for dispatchers.  The code is the one the call
+\* sees (CodeSeen): after the receipt's CreateAccount and DeployContract.
+FailNoCode(r) == IsCall(r) /\ ~CodeSeen(r) /\ FailP(r, FALSE)
 
 ----------------------------------------------------------------------------
 (* Accounts: key actions in an ACCOUNT receipt, deletion, implicit keys    *)
@@ -408,7 +409,7 @@ ExecDelegate(r) ==
              /\ keys' = IF r.to \in KeyAccts THEN KeysWithNonce(r.to, sd.k, sd.n) ELSE keys
              /\ rlog' = LogR(r, "ok")
              /\ UNCHANGED <<near, locked, proposal, epoch, fails, paid, minted, oog, txsig, created,
-                            burnt, blk, stor, deleted, sigpaid>>
+                            burnt, blk, stor, deleted, code, sigpaid>>
           \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
              /\ FailP(r, FALSE)
              /\ UNCHANGED keyVars

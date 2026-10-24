@@ -357,6 +357,8 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
 | `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
 | `CodeSize` | 0 bytes for every account | with `StoragePerByte` and DeleteAccount: the code bytes in each contract's `StorageInit`, which the 10,000-byte delete limit leaves out |
+| `CodeLen` | 0 bytes for every code tag | with `StoragePerByte` and DeployContract: the bytes of each code tag a model deploys, `("child" :> 300000)` ([section 16](#16-creating-and-deleting-accounts)) |
+| `InitCode` | `"code"` for every account | a model reads `CodeOf` and its contracts start with different code: each account's tag at the start (only the accounts in `Contracts` have code) |
 | `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
 | `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); `KeyBytes` for a key with an allowance (+16) |
 | `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
@@ -1086,8 +1088,9 @@ before `Submit`, since an uncovered `Submit` is a disabled step.
 
 ## 16. Creating and deleting accounts
 
-The rules are [A6](SEMANTICS.md#a6-createaccount), [A7](SEMANTICS.md#a7-deleteaccount) and
-[A8](SEMANTICS.md#a8-account-actions-in-a-call-receipt). Worked examples:
+The rules are [A6](SEMANTICS.md#a6-createaccount), [A7](SEMANTICS.md#a7-deleteaccount),
+[A8](SEMANTICS.md#a8-account-actions-in-a-call-receipt) and
+[A9](SEMANTICS.md#a9-deploycontract). Worked examples:
 [`account-lifecycle`](../examples/account-lifecycle/) and its `instant/` and `factory/`.
 Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 
@@ -1099,6 +1102,8 @@ Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 | `NearKeys.WithAcctKeys(r, acts)` | adds key actions (`AddKeyAct`, `DelKeyAct`) after the Transfer, e.g. the new account's first key |
 | `WithCreate(r)` | puts `[CreateAccount, Transfer(r.dep)]` before the call of a call receipt `r` (the factory batch, A8); the call's own deposit becomes 0 (set `r.dep` afterwards for one) |
 | `WithDeleteTo(r, b)` on a call receipt | puts `DeleteAccount(b)` after its call (sent by the account itself, or after a CreateAccount) |
+| `WithDeploy(r, t)` | adds `DeployContract(t)` to an ACCOUNT or call receipt, after its CreateAccount and Transfer, before its call and DeleteAccount (A9) |
+| `DeployRcpt(id, tx, acct, a, t, cb)` | `[DeployContract(t)]` on `acct`, sent by `acct` itself |
 
 In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee
 table, the prepaid reservation, whether the receipt succeeds or fails (nearcore refunds a
@@ -1135,6 +1140,12 @@ What the library does:
   the deleted account). The account joins `deleted`: calls, key actions and Stake to it fail,
   it cannot sign (`CanSubmit`), a Transfer to it is refunded unless its id is implicit (then
   the Transfer creates it again).
+- **Deploy.** Only the account itself (or after a CreateAccount in the same receipt). A code
+  is a tag, `t`, with `CodeLen[t]` bytes (override `CodeLen`, default 0); the account's
+  bytes lose the old code's and gain the new code's, its data stays. `CodeOf(a)` is the
+  account's code (`InitCode` for the accounts in `Contracts` at the start, else none); a
+  deleted account loses its code and an account created again has none. Your handler is the
+  same TLA+ either way: branch on `CodeOf(r.to)` if the contract changes at run time.
 - **What survives.** Postponed callbacks, data and yields addressed to a deleted account stay
   in flight. They fail while it is deleted and run against the new account once it is
   created again. `NoOrphans` keeps holding: the callbacks still run.
@@ -1163,8 +1174,10 @@ RunBatch(r) == /\ Exec(r, InitOut(r))
                /\ owner' = IF Ok(r, InitOut(r)) THEN [owner EXCEPT ![r.to] = r.a.u] ELSE owner
 ```
 
-Three things to know. The new account has no code, since DeployContract is not modelled, so
-`init` fails unless the run sets `CallsNeedCode <- FALSE` (N-deploy). A failed batch returns
+Three things to know. The new account has no code, so `init` fails unless the batch deploys
+first: `WithDeploy(WithCreate(Rcpt(..)), "child")`, the batch `[CreateAccount, Transfer,
+DeployContract, FunctionCall(init)]`. With `StoragePerByte` the deposit must cover the code's
+`CodeLen` bytes, or the whole batch fails (`factory_underfunds_code`). A failed batch returns
 its deposit to the factory, not to the user, and the factory's callback may run before that
 refund arrives (S4), so a factory that repays the user from its callback needs a reserve
 (`examples/account-lifecycle/factory`, `factory_no_reserve`). After a DeleteAccount the

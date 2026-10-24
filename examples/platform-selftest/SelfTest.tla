@@ -29,7 +29,8 @@
 (* (CreateAccount, Transfer, key actions, DeleteAccount); s.c, nimp and    *)
 (* 0u1 have modelled keys (universal_off: without UniversalOn 0u1 is an    *)
 (* ordinary id).  The lifecycle_storage run gives w 10,001 bytes and v     *)
-(* 10,500, 600 of them code, at 2,000 bytes a unit.                        *)
+(* 10,500, 600 of them code, at 2,000 bytes a unit.  A script entry AcD    *)
+(* adds a DeployContract(t) (A9); the code tags' sizes are SCodeLen.       *)
 (***************************************************************************)
 EXTENDS Tokens, NearKeys
 
@@ -72,6 +73,8 @@ SCost     == <<1, 100>>
 LStor     == [a \in Accts |-> CASE a = W -> 10001 [] a = V -> 10500 [] OTHER -> 0]
 LCost     == <<1, 2000>>
 LCode     == [a \in Accts |-> IF a = V THEN 600 ELSE 0]
+\* DeployContract: the code tags' bytes.
+SCodeLen  == ("big" :> 1000) @@ ("tiny" :> 10) @@ ("huge" :> 10000) @@ ("child" :> 0)
 STokBytes == [t \in {FT} |-> [h \in STokHolders[t] |-> IF h = W THEN 180 ELSE 150]]   \* ids of different lengths
 Tok0 == [t \in {FT} |-> Ledger([h \in {U, W, C, D} |-> CASE h = U -> 5 [] h = C -> 3 [] OTHER -> 0],
                                {U, C, D})]
@@ -192,9 +195,10 @@ H(r) ==
          [O |-> Outcome({CreateAcctRcpt(nid, r.tx, a.to, r.to, G0, a.amt, nid + 1)},
                         {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
     [] r.m = "mkinit" ->    \* the factory batch [CreateAccount, Transfer(a.amt), AddKey(a.key)?,
-                            \* FunctionCall(init), DeleteAccount(a.rto)?] on a.to, init adding
-                            \* a.cd bytes; then self.cb
-         LET c0 == WithCreate(Rcpt(nid, r.tx, a.to, r.to, "init", G("", "", "", a.cd, 0, "", ""), a.amt, r.to, nid + 1))
+                            \* DeployContract(a.w)?, FunctionCall(init), DeleteAccount(a.rto)?]
+                            \* on a.to, init adding a.cd bytes; then self.cb
+         LET cc == WithCreate(Rcpt(nid, r.tx, a.to, r.to, "init", G("", "", "", a.cd, 0, "", ""), a.amt, r.to, nid + 1))
+             c0 == IF a.w = "" THEN cc ELSE WithDeploy(cc, a.w)
              c1 == IF a.key = "" THEN c0 ELSE WithAcctKeys(c0, <<AddKeyAct(a.key, PermOf(a.key))>>)
              c  == IF a.rto = "" THEN c1 ELSE WithDeleteTo(c1, a.rto) IN
          [O |-> Outcome({c}, {CbOf(r, nid + 1)}, RVal(0), a.amt, 2), s |-> {}]
@@ -393,6 +397,9 @@ Dl(rl, rk, s, k, n, mbh, to, m, dep) ==
 \* An ACCOUNT transaction from fr to to: [CreateAccount if mk, Transfer(dep) if dep > 0,
 \* the key actions ka, DeleteAccount(bnf) if bnf # ""].
 Ac(to, fr, mk, dep, bnf, ka) == T(to, fr, ACCT, [mk |-> mk, bnf |-> bnf, ka |-> ka], dep, 0, "", <<>>)
+\* The same with DeployContract(t) after the key actions.
+AcD(to, fr, mk, dep, bnf, ka, t) ==
+    T(to, fr, ACCT, [mk |-> mk, bnf |-> bnf, ka |-> ka, dpl |-> t], dep, 0, "", <<>>)
 AddK(k) == AddKeyAct(k, PermOf(k))
 
 Script(s) ==
@@ -615,6 +622,22 @@ Script(s) ==
                                     Ac(UA, UA, FALSE, 0, "", <<AddK("k1")>>),            \* a key action
                                     Dl(U, "ku", UA, "k1", 1, NoExpiry, C, "ping", 0),    \* a delegate (k1)
                                     Ac(UA, UA, FALSE, 0, W, <<>>) >>                     \* a delete
+    \* DeployContract (A9).
+    [] s = "deploy_self"      -> << AcD(W, W, FALSE, 0, "", <<>>, "wc"),                 \* w deploys
+                                    Tx(W, U, "foo", G0, 1) >>                            \* and runs code
+    [] s = "deploy_actor"     -> << AcD(C, U, FALSE, 0, "", <<>>, "x") >>                \* u on c
+    [] s = "deploy_init"      -> << Tx(C, U, "mkinit", G("", "child", SB, 2, 0, "", ""), 0) >>
+    [] s = "deploy_recreate"  -> << AcD(SB, C, TRUE, 2, "", <<AddK("k0")>>, "child"),
+                                    Ac(SB, SB, FALSE, 0, C, <<>>),
+                                    Ac(SB, C, TRUE, 1, "", <<>>),
+                                    Tx(SB, U, "foo", G0, 1) >>                           \* no code now
+    [] s = "deploy_bytes"     -> << AcD(SB, C, TRUE, 1, "", <<AddK("k0")>>, "big") >>
+    [] s = "deploy_replace"   -> << AcD(V, V, FALSE, 0, "", <<>>, "big"),
+                                    AcD(V, V, FALSE, 0, "", <<>>, "tiny") >>
+    [] s = "deploy_del_large" -> << AcD(V, V, FALSE, 0, "", <<>>, "big"),
+                                    Ac(V, V, FALSE, 0, U, <<>>) >>
+    [] s = "deploy_del_same"  -> << AcD(V, V, FALSE, 0, U, <<>>, "big") >>
+    [] s = "deploy_lackstate" -> << AcD(W, W, FALSE, 0, "", <<>>, "huge") >>
     [] s = "acct_bytes"       -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>) >>
     [] s = "acct_bytes_del"   -> << Ac(SB, C, TRUE, 1, "", <<AddK("k0")>>),
                                     Ac(SB, SB, FALSE, 0, C, <<>>) >>
@@ -632,7 +655,8 @@ MkTx(e, id, t) ==
     LET r0 == Rcpt(id, t, e.to, e.fr, e.m, e.a, e.dep, e.fr, 0)
         r1 == IF e.gs # <<>> THEN WithStatic(r0, e.gs) ELSE r0
     IN IF e.m = ACCT   \* an action-only receipt: no gas of its own
-       THEN WithAcctKeys(AcctRcpt(id, t, e.to, e.fr, G0, e.dep, 0, e.a.mk, e.a.bnf), e.a.ka)
+       THEN LET a0 == WithAcctKeys(AcctRcpt(id, t, e.to, e.fr, G0, e.dep, 0, e.a.mk, e.a.bnf), e.a.ka) IN
+            IF "dpl" \in DOMAIN e.a THEN WithDeploy(a0, e.a.dpl) ELSE a0
        ELSE IF GasMode # "gas" THEN r1
        ELSE IF Len(e.gs) > 1 THEN [r1 EXCEPT !.g = e.gs]   \* one gas per function-call action
        ELSE WithGas(r1, e.gas)
@@ -1005,7 +1029,10 @@ Expect(s) ==
              \* A8: a call receipt's account actions add their send + exec fees to the call's.
              c0 == Rcpt(0, 0, SB, C, "init", G0, 1, C, 0)
              c1 == WithCreate(c0)
-             c2 == WithDeleteTo(Rcpt(0, 0, C, C, "last", G0, 0, C, 0), U) IN
+             c2 == WithDeleteTo(Rcpt(0, 0, C, C, "last", G0, 0, C, 0), U)
+             \* A9: [DeployContract] of 1000 bytes ("big") on w by w; the same in a factory batch.
+             d0 == DeployRcpt(0, 0, W, G0, "big", 0)
+             c3 == WithDeploy(c1, "big") IN
          GasMode = "gas" =>
            /\ r1.gf = NearFeeTable!TransferFeeTotal(FALSE, "near_implicit")
            /\ c1.gf = c0.gf + NearFeeTable!ActionFee("create_account", FALSE, "named")
@@ -1014,6 +1041,8 @@ Expect(s) ==
                 /\ r1.gf = 8354 /\ r2.gf = 514
                 /\ c1.gf - c0.gf = 7700 + NearFeeTable!ActionFee("transfer", FALSE, "named")
                 /\ c2.gf - Rcpt(0, 0, C, C, "last", G0, 0, C, 0).gf = 296
+                \* receipt base 218, deploy_base 370, 1000 bytes 72 (same account) or 113
+                /\ d0.gf = 660 /\ c3.gf - c1.gf = 370 + 113
     [] s = "del_beneficiary" ->   \* only the account deletes itself; its balance goes to the
          \* beneficiary in a later receipt.  actions.rs:776-783, :380-386
          deleted = {W} /\ near[W] = 0 /\ near[U] = 20 /\ near[C] = 5 /\ burnt = 0
@@ -1078,6 +1107,33 @@ Expect(s) ==
     [] s = "accall_lackstate" ->  \* 100 + 1000 bytes on 0 balance: LackBalanceForState, all reverted.
          \* lib.rs:1008-1031
          created = {} /\ stor[SB] = 0 /\ near[C] = 5 /\ S1("fail", 0) \in seen
+    \* DeployContract (docs/SEMANTICS.md A9; sim: lifecycle.rs deploy_storage_delta).
+    [] s = "deploy_self" ->       \* w deploys code to itself; a call then runs.  actions.rs:290-328
+         code = (W :> "wc") /\ HasCode(W) /\ <<2, W, "foo">> \in ran /\ near[W] = 11 /\ near[U] = 9
+    [] s = "deploy_actor" ->      \* only the account deploys to itself: ActorNoPermission.
+         \* actions.rs:755-776
+         DOMAIN code = {} /\ CodeOf(C) = "code" /\ near[U] = 10 /\ acc = <<TRUE>>
+    [] s = "deploy_init" ->       \* the factory batch with DeployContract: init finds code
+         \* (CallsNeedCode = TRUE) and runs on s.c.  actions.rs:202-208, :290-328
+         created = {SB} /\ code = (SB :> "child") /\ near[SB] = 2 /\ near[C] = 3
+         /\ S1("init", 1) \in seen /\ S1("num", 7) \in seen
+    [] s = "deploy_recreate" ->   \* deleted with its code; created again it has none, so the call
+         \* fails.  core/store/src/utils/mod.rs:504-510
+         created = {SB} /\ deleted = {} /\ DOMAIN code = {} /\ ~HasCode(SB) /\ near[SB] = 1
+         /\ near[C] = 4 /\ near[U] = 10 /\ <<4, SB, "foo">> \notin ran /\ acc = <<TRUE, TRUE, TRUE, TRUE>>
+    [] s = "deploy_bytes" ->      \* 100 + key 82 + code 1000 bytes
+         created = {SB} /\ code = (SB :> "big") /\ stor[SB] = 1182 /\ near[SB] = 1
+    [] s = "deploy_replace" ->    \* usage - old code + new code; data kept: 10,500 - 600 + 1000,
+         \* then - 1000 + 10.  actions.rs:300-310, :426-451
+         code = (V :> "tiny") /\ stor[V] = 9910
+    [] s = "deploy_del_large" ->  \* after the deploy v holds 10,900 bytes, 1000 of them code: 9,900
+         \* besides it, so the delete passes (with the initial 600 it would not).  actions.rs:342-369
+         deleted = {V} /\ DOMAIN code = {} /\ near[U] = 20
+    [] s = "deploy_del_same" ->   \* the same in one receipt: the delete subtracts the new code
+         deleted = {V} /\ DOMAIN code = {} /\ near[U] = 20
+    [] s = "deploy_lackstate" ->  \* 10,001 + 10,000 bytes need more than w's 10 NEAR: the deploy
+         \* fails LackBalanceForState, nothing changes.  lib.rs:1008-1031
+         DOMAIN code = {} /\ stor[W] = 10001 /\ near[W] = 10 /\ acc = <<TRUE>>
     [] s = "accall_prom" ->       \* [FunctionCall(lastp), DeleteAccount(u)]: lastp returns a
          \* promise; the receipt succeeds, its Transfer child runs, and d.cb gets the delete's
          \* empty bytes, not the promise's result.  lib.rs:507-514, :1146-1189

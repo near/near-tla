@@ -690,10 +690,12 @@ Each rule has four fields:
   `CodeDoesNotExist`); `runtime/runtime/src/actions.rs:874-887` (`AccountDoesNotExist`,
   `AccountNotInitialized`).
 - **Model:** `Exec` fails a function call whose receiver is missing or has no code before the
-  handler's outcome counts (`CallTargetOK`, `HasCode`); the accounts with code are the
-  overridable definition `Contracts` (default `Accounts`). `CallsNeedCode <- FALSE` turns the
-  code half of the rule off for older models; a missing, deleted or uninitialised receiver
-  still fails the call. `NearKeys.FailNoCode` and `ExecNoCode` are the same rule as an
+  handler's outcome counts (`CallTargetOK`, `HasCode`); the accounts with code at the start
+  are the overridable definition `Contracts` (default `Accounts`), and a DeployContract gives
+  an account code at run time (A9; the call sees the code its receipt's earlier actions leave,
+  `CodeSeen`). `CallsNeedCode <- FALSE` turns the code half of the rule off for older models;
+  a missing, deleted or uninitialised receiver still fails the call. `NearKeys.FailNoCode`
+  and `ExecNoCode` are the same rule as an
   explicit step.
 - **Validated:** nearcore reading. <!-- conformance --> No flow calls an account without code,
   so the sim does not check this rule.
@@ -744,8 +746,8 @@ Each rule has four fields:
   top-level) and `TopCreator` (the `registrar_account_id`, overridable) (N-acct-ids). The
   receipt's `gf` is its whole send + exec fee, the reservation (`AcctFee`). An ACCOUNT receipt
   never creates an implicit account: a batched Transfer to an absent id fails (A4;
-  N-universal). A call receipt can carry a CreateAccount too, the factory batch (A8);
-  DeployContract is not modelled (N-deploy).
+  N-universal). A call receipt can carry a CreateAccount too, the factory batch (A8), and
+  either kind of receipt a DeployContract (A9).
 - **Validated:** sim (`conformance/tests/lifecycle.rs`: `create_account_rules`,
   `create_batch_atomic`, with the early-failure burn, `account_action_fees`);
   `examples/platform-selftest` (the `acct_` scenarios).
@@ -789,7 +791,8 @@ Each rule has four fields:
   (`ExecTransfer` credits a present beneficiary, `RefundBurn` burns it otherwise).
   `CallTargetOK`, `ExecStake`, `ExecKeyAct`, `CanSubmit` and `DelegErr` refuse a deleted
   account even with `CallsNeedCode = FALSE`. The large-state check reads `stor`, so it needs
-  `StoragePerByte` and `CodeSize` (N-delete-large). The library wipes only its own state; the
+  `StoragePerByte` and the code bytes: `CodeSize` for the code at the start, `CodeLen` for
+  deployed code (A9, N-delete-large). A deleted account loses its deployed code (`code`). The library wipes only its own state; the
   model resets its own variables for the account, using `DeletesAcct(r)` (N-wipe).
 - **Validated:** sim (`conformance/tests/lifecycle.rs`: `delete_beneficiary`,
   `delete_actor_and_staking`, `delete_large_state`, `receipts_to_deleted`,
@@ -806,7 +809,7 @@ Each rule has four fields:
   and the DeleteAccount's checks (actor, staking, 10,000 bytes) see the state the call left.
   The call runs on the account the earlier actions left: after a CreateAccount that is a new
   account with **no code**, so `init` fails (`CodeDoesNotExist`) unless the batch deploys code
-  first (DeployContract, not modelled). The receipt is atomic (A6): a failure anywhere reverts
+  first (DeployContract, A9). The receipt is atomic (A6): a failure anywhere reverts
   all of it and the deposit goes back to the predecessor, the factory. The storage check runs
   once, after all actions, and is skipped if the receipt deleted the account. The receipt's
   result is its **last action's**: after a `DeleteAccount` that is empty bytes, whatever the
@@ -833,10 +836,10 @@ Each rule has four fields:
   transaction, counted by `NearConserved`. `Verdict` gets a first branch: the
   account actions' checks (`AcCallErr`, which is `AcctErr` with the call's and the keys' bytes
   for the delete's large-state check) fail the receipt before anything else; then
-  `CallTargetOK` on the account after the create (no code: the call fails unless
-  `CallsNeedCode <- FALSE`, also when the id was deleted before); then the usual order.
-  Without a create, `CallTargetOK` fails a call to a missing, deleted or uninitialised
-  receiver whatever `CallsNeedCode` says. This
+  `CallTargetOK` on the account after the create and the deploy (`CodeSeen`: no code, the
+  call fails unless `CallsNeedCode <- FALSE`, also when the id was deleted before); then the
+  usual order. Without either, `CallTargetOK` fails a call to a missing, deleted or
+  uninitialised receiver whatever `CallsNeedCode` says. This
   branch is deterministic, so it never yields "either", and `Ok` / `Committed` read the commit
   as before (a delete's payout is not one of the call's children). `Affordable`
   (`AcAffordable`): a new account starts at 0 balance and 100 bytes, plus the keys' and the
@@ -860,6 +863,50 @@ Each rule has four fields:
   `examples/platform-selftest` (`selftest_accall`, `selftest_accall_code_off`,
   `selftest_accall_storage`, and `acct_fee` in `selftest_lifecycle_gas`);
   `examples/account-lifecycle/factory`.
+
+### A9. DeployContract
+
+- **Rule:** `DeployContract(code)` sets the account's code. The account must exist and be
+  initialised, and the actor must be the account itself (`ActorNoPermission`): its own
+  transactions and receipts, or a CreateAccount earlier in the receipt, the factory batch
+  `[CreateAccount, Transfer, DeployContract, FunctionCall(init)]`. The old code's bytes leave
+  the storage usage and the new code's bytes join it; the contract's data stays. A
+  FunctionCall later in the receipt runs the new code. The storage check runs once, after all
+  actions (A6), so a deposit that does not cover the code fails the whole receipt
+  (`LackBalanceForState`). A DeleteAccount after it subtracts the new code from its
+  10,000-byte check (A7); the deleted account loses its code, and an account created again
+  has none. At most 10 deploys per receipt and 4 MiB per contract (N-limits).
+  **Fee:** `deploy_contract_base` (185 + 185 Ggas at 88, "up") plus `deploy_contract_byte`
+  per byte (send 6.8 Mgas on the same account, 47.7 on another; exec 64.6).
+- **nearcore:** `runtime/runtime/src/actions.rs:290-328` (`action_deploy_contract`: the old
+  code's bytes cleared at `:300`, the new length added at `:302-310`), `:426-451`
+  (`get_contract_storage_usage`, `clear_account_contract_storage_usage`), `:755-776` (actor),
+  `:862-887` (existence, initialised); dispatch `runtime/runtime/src/lib.rs:624-636`; fees
+  `runtime/runtime/src/config.rs:99-108` (send), `:343-350` (exec); limits
+  `runtime/runtime/src/action_validation.rs:21-37`, `:128-129` (deploys per receipt, new
+  receipts only), `:305-318` (`max_contract_size`),
+  `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:245`,
+  `:250`; the code removed with the account `core/store/src/utils/mod.rs:504-510`.
+- **Model:** a code is a tag (a string), its size `CodeLen[t]` (overridable, default 0
+  bytes). The platform variable `code` is a partial function from account to the tag deployed
+  at run time; `CodeOf(a)` reads it, else the code at the start (`InitCode`, default
+  `"code"`, for the accounts in `Contracts`), and `HasCode` is unchanged while nothing is
+  deployed. `WithDeploy(r, t)` adds DeployContract(t) to an ACCOUNT receipt or a call
+  receipt, after its CreateAccount and Transfer and before its call and DeleteAccount, and
+  adds its fee to `gf`; `DeployRcpt(id, tx, acct, a, t, cb)` is a lone deploy. The checks are
+  `AcctErr`'s (existence, initialised, actor); the bytes are `stor` less the old code
+  (`CodeBytes`: the deployed tag's `CodeLen`, else `CodeSize`) plus the new one (`DplDelta`),
+  checked by `AcctStorOK` / `AcAffordable`; on success `code` maps the account to `t`
+  (`CodeNext`; a delete or a create without a deploy removes it). The call sees `CodeAfter(r)`
+  (`CodeSeen`), and so does `NearKeys.FailNoCode`. The handler is still the model's TLA+
+  code: a model whose contract changes at run time branches on `CodeOf(r.to)`. A receipt has
+  at most one deploy (a second `WithDeploy` is an Assert); a tag whose `CodeLen` exceeds
+  4 MiB is an Assert.
+- **Validated:** sim (`conformance/tests/lifecycle.rs`, `deploy_storage_delta`: usage less
+  the old code plus the new, data kept, ActorNoPermission, 10 deploys pass and 11 are refused,
+  a factory batch whose deposit does not cover the code fails); `examples/platform-selftest`
+  (`selftest_deploy`, `selftest_deploy_storage`, the deploy fees in `acct_fee`);
+  `examples/account-lifecycle/factory` (`factory_underfunds_code`, `factory_funds_code`).
 
 ---
 
@@ -1786,8 +1833,8 @@ against the current module code; some may be fixed in the modules later.
     uncovered is accepted. Receivers pay no gas, and from 87 earn no share of it
     (`burnt_gas_reward` 0, `core/parameters/res/runtime_configs/87.yaml:1-7`), so their check is
     not affected;
-  - the bytes of DeployContract, global contracts and gas-key nonces are absent with those
-    features (Scope limits). CreateAccount and DeleteAccount bytes are counted (A6, A7).
+  - the bytes of global contracts and gas-key nonces are absent with those features (Scope
+    limits). CreateAccount, DeleteAccount and DeployContract bytes are counted (A6, A7, A9).
 - **N-gas-money. Gas price and gas money.** Gas is a quantity, not NEAR. Purchase, the price
   floor (`min_gas_purchase_price`), price changes between blocks, the account-creation charge
   (A3) and burning are absent (`runtime/runtime/src/config.rs:481` `calculate_tx_cost`;
@@ -1833,7 +1880,11 @@ against the current module code; some may be fixed in the modules later.
   and 1024 promises per function-call action, a joint promise counting as one
   (`host.rs:610-622`). Also the per-receipt storage-proof limit (feature at 86, all actions at 87;
   `runtime/runtime/src/lib.rs:925-948`, `:987-999`). Exceeding any of them fails the receipt in
-  nearcore; the model does not fail for them.
+  nearcore; the model does not fail for them. Deploys: at most 10 per receipt, checked when
+  the receipt is made (`runtime/runtime/src/action_validation.rs:21-37`, `:128-129`), and 4 MiB
+  of code (`:305-318`; `.snap:245`, `:250`). The model has at most one deploy per receipt
+  (`WithDeploy` asserts on a second) and asserts on a larger `CodeLen`, so it never reaches
+  either refusal (A9).
 - **N-one-yocto. `one_yocto_on_promise` (85+).** A contract with zero balance may attach
   exactly 1 yocto to a promise function call without having it
   (`runtime/near-vm-runner/src/logic/host.rs:3579-3593`;
@@ -1866,7 +1917,8 @@ against the current module code; some may be fixed in the modules later.
   `StoragePerByte` the model has no byte counts, so `DeleteAccountWithLargeState` (A7) never
   happens and a delete nearcore refuses succeeds. Put `ACCT` in `MayFail` to explore the
   failure anyway. With `StoragePerByte`, `CodeSize` must state each contract's code bytes
-  (counted in its `StorageInit`), or the deletes of large contracts fail falsely.
+  (counted in its `StorageInit`), or the deletes of large contracts fail falsely; deployed
+  code counts its `CodeLen` (A9).
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
   touched. A model whose accounts can be deleted and created again must reset them, with
@@ -1900,14 +1952,6 @@ against the current module code; some may be fixed in the modules later.
   `core/primitives-core/src/version.rs:615`). Absent, and with them DeleteAccount's
   `GasKeyBalanceTooHigh` refusal and its burn of the gas keys' balance
   (`runtime/runtime/src/actions.rs:370-379`, `:388-391`).
-- **N-deploy. DeployContract and code upgrades mid-flow.** Code is the TLA+ handler; it does
-  not change during a run. An account created at run time has no code (A5, A6), so a
-  factory's `[CreateAccount, Transfer, FunctionCall(init)]` (A8) always fails at `init`, where
-  in nearcore a `DeployContract` before it would give the account code. To model a factory
-  whose child runs code, set `CallsNeedCode <- FALSE` (every account is then taken to have
-  code, so calls to accounts without code are no longer refused anywhere;
-  `examples/account-lifecycle/factory`). Deploying (a code variable, storage deltas, the
-  deploy fees) is planned.
 - **N-compute. Compute costs versus gas.** Some actions charge more compute than gas (for
   example deploy, `core/parameters/res/runtime_configs/84.yaml`). This affects chunk packing,
   that is timing only, which the free ordering covers with the local-priority switch OFF.

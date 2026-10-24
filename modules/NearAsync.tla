@@ -164,16 +164,17 @@ VARIABLES
     burnt,     \* ghost: NEAR burnt by refunds to missing accounts
     blk,       \* block height, env::block_height() (BlockTick); stays 0 unless MaxBlk > 0
     stor,      \* [Accounts -> Int] storage usage in bytes; stays StorageInit unless StoragePerByte
-    deleted    \* accounts deleted by DeleteAccount and not created again since
+    deleted,   \* accounts deleted by DeleteAccount and not created again since
+    code       \* code deployed at run time: a partial function account -> code tag (CodeOf)
 \* Every platform variable must be initialised: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
-\* platform variable such as txsig, blk, stor or deleted shown as null,
+\* platform variable such as txsig, blk, stor, deleted or code shown as null,
 \* means PlatformInitExtra (or its parts PlatformInitSigner /
 \* PlatformInitAccounts / PlatformInitClock / PlatformInitStorage) is missing.
 
 platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog, rlog,
-                  txsig, created, burnt, blk, stor, deleted>>
+                  txsig, created, burnt, blk, stor, deleted, code>>
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
@@ -497,9 +498,13 @@ TimedOut(p) == /\ IsYield(p)
 \* InstantFirst <- FALSE: no receipt is instant (the earlier behaviour, an
 \* over-approximation: N-instant).
 InstantFirst == TRUE
+\* No code (CodeOf); the code a receipt with account actions deploys, if any
+\* (WithDeploy; the optional field dpl of ac).
+NoCode == ""
+Dpl(r) == IF "dpl" \in DOMAIN r.ac THEN r.ac.dpl ELSE NoCode
 IsInstantShape(c) ==
     /\ IsAcctRcpt(c)
-    /\ ~c.ac.mk /\ c.ac.bnf # "" /\ c.ac.ka = <<>> /\ c.dep = 0
+    /\ ~c.ac.mk /\ c.ac.bnf # "" /\ c.ac.ka = <<>> /\ Dpl(c) = NoCode /\ c.dep = 0
 InstantTag(c) == IF InstantFirst /\ IsInstantShape(c) THEN [inst |-> TRUE] @@ c ELSE c
 \* For a postponed child: only a joint callback with no inputs.
 InstantTagP(c) == IF IsJoint(c) /\ c.ins = <<>> THEN InstantTag(c) ELSE c
@@ -561,23 +566,50 @@ InflightDeposits == Sum(rq) + Sum(post)
 \* unless deleted since (DeleteAccount; a later creation removes the id
 \* from deleted again).
 AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
-\* Can a function call on a run?  An account created by a Transfer has no
-\* code, except an eth-implicit one, which gets a protocol-defined global
-\* contract (actions.rs:221-290); a universal one is also uninitialised
-\* (UninitUniversal; actions.rs:880-887, AccountNotInitialized).
-HasCode(a) == /\ AcctExists(a)
-              /\ a \in Contracts
-              /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
+\* An account's code, as a tag ("code" names no particular contract; a model
+\* that deploys picks its own tags): the code deployed at run time (the
+\* platform variable code, DeployContract, A9), else InitCode[a] for an
+\* account in Contracts, except one created at run time, which has no code
+\* unless it is eth-implicit: a Transfer gives that one a protocol-defined
+\* global contract (actions.rs:221-290).  A universal account created by a
+\* Transfer is also uninitialised (UninitUniversal; actions.rs:880-887,
+\* AccountNotInitialized).  DeleteAccount drops the account's entry in code,
+\* so an account created again starts with none.
+\* InitCode (overridable): the initial accounts' code tags, default "code".
+\* CodeLen (overridable): a code tag's length in bytes, default 0 (the bytes
+\* a DeployContract adds and pays the per-byte fee for).
+InitCode == [a \in Accounts |-> "code"]
+CodeLen  == [t \in {} |-> 0]
+CodeLenOf(t) == IF t \in DOMAIN CodeLen THEN CodeLen[t] ELSE 0
+CodeOf(a) ==
+    IF a \in DOMAIN code THEN code[a]
+    ELSE IF a \in Contracts /\ ~(a \in created /\ KindOf(a) # "eth_implicit")
+         THEN (IF a \in DOMAIN InitCode THEN InitCode[a] ELSE "code")
+    ELSE NoCode
+\* Can a function call on a run?  (The same as before DeployContract while
+\* code is empty.)
+HasCode(a) == AcctExists(a) /\ CodeOf(a) # NoCode
+\* The code a receipt's call sees: what its earlier actions leave (a
+\* DeployContract's code, a CreateAccount's new account with none), else the
+\* receiver's.  CodeSeen(r): the call finds code.
+CodeAfter(r) ==
+    IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN Dpl(r)
+    ELSE IF "ac" \in DOMAIN r /\ r.ac.mk THEN NoCode
+    ELSE CodeOf(r.to)
+CodeSeen(r) ==
+    IF "ac" \in DOMAIN r /\ (r.ac.mk \/ Dpl(r) # NoCode) THEN CodeAfter(r) # NoCode
+    ELSE HasCode(r.to)
 \* A missing or deleted receiver fails the call even with CallsNeedCode =
 \* FALSE (AccountDoesNotExist, actions.rs:874-879), as does an uninitialised
 \* universal one (AccountNotInitialized, :883-887).  A call in the same receipt
-\* as a CreateAccount (HasAc, the factory batch) sees the new account,
-\* which has no code (actions.rs:202-208): it fails unless CallsNeedCode is
-\* FALSE, also when the id was deleted before.
+\* as a CreateAccount or DeployContract (HasAc, the factory batch) sees the
+\* account they leave (CodeAfter): a new account has no code
+\* (actions.rs:202-208) unless the batch deploys some first; this holds also
+\* when the id was deleted before (the existence checks are AcctErr's).
 CallTargetOK(r) ==
     \/ ~IsCall(r)
-    \/ IF "ac" \in DOMAIN r /\ r.ac.mk THEN ~CallsNeedCode
-       ELSE AcctExists(r.to) /\ ~UninitUniversal(r.to) /\ (~CallsNeedCode \/ HasCode(r.to))
+    \/ IF "ac" \in DOMAIN r /\ (r.ac.mk \/ Dpl(r) # NoCode) THEN ~CallsNeedCode \/ CodeSeen(r)
+       ELSE AcctExists(r.to) /\ ~UninitUniversal(r.to) /\ (~CallsNeedCode \/ CodeSeen(r))
 
 \* The transaction signer, inherited by every receipt of the transaction.
 SignerOf(t)  == txsig[t]               \* [a |-> account, k |-> key id]
@@ -746,10 +778,10 @@ TopCreator == "top-creator"
 \* 32-byte global contract hash; other created accounts have no code.
 MaxDeleteBytes == 10000
 CodeSize == [a \in Accounts |-> 0]
-CodeBytes(a) == IF a \in created /\ KindOf(a) = "eth_implicit" THEN 32
+CodeBytes(a) == IF a \in DOMAIN code THEN CodeLenOf(code[a])
+                ELSE IF a \in created /\ KindOf(a) = "eth_implicit" THEN 32
                 ELSE IF ~HasCode(a) THEN 0
                 ELSE IF a \in DOMAIN CodeSize THEN CodeSize[a] ELSE 0
-LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
 
 \* Fees (gas mode).  gf convention: an ACCOUNT receipt's gf is the whole
 \* receipt's send + exec fees, ReceiptFee plus each action's ActionFee
@@ -790,6 +822,25 @@ WithDeleteTo(r, b) ==
     THEN Assert(FALSE, <<"WithDeleteTo needs an ACCOUNT or call receipt without a DeleteAccount, and a beneficiary", r.id>>)
     ELSE LET r1 == IF "ac" \in DOMAIN r THEN r ELSE [ac |-> [mk |-> FALSE, bnf |-> "", ka |-> <<>>]] @@ r IN
          [r1 EXCEPT !.ac.bnf = b, !.gf = @ + AcctActsFee(r.fr, r.to, FALSE, 0, b)]
+\* WithDeploy(r, t) adds DeployContract(t) to an ACCOUNT or call receipt,
+\* after its CreateAccount and Transfer and before its call and
+\* DeleteAccount (A9).  t is a code tag; CodeLen[t] its bytes (overridable,
+\* default 0), at most max_contract_size (4 MiB, action_validation.rs
+\* :305-318; a larger one is rejected, which the model does not represent).
+\* Its fee is deploy_base plus deploy_byte per byte (config.rs:99-108).
+\* DeployRcpt: [DeployContract(t)] on acct from acct itself.
+MaxContractSize == 4194304
+WithDeploy(r, t) ==
+    IF ~(IsAcctRcpt(r) \/ IsCall(r)) \/ t = NoCode \/ ("ac" \in DOMAIN r /\ Dpl(r) # NoCode)
+    THEN Assert(FALSE, <<"WithDeploy needs an ACCOUNT or call receipt without a DeployContract, and a code tag", r.id>>)
+    ELSE IF CodeLenOf(t) > MaxContractSize
+    THEN Assert(FALSE, <<"WithDeploy: code above max_contract_size", t>>)
+    ELSE LET r1 == IF "ac" \in DOMAIN r THEN r ELSE [ac |-> [mk |-> FALSE, bnf |-> "", ka |-> <<>>]] @@ r
+             fee == IF GasMode # "gas" THEN 0
+                    ELSE NearFeeTable!ActionFee("deploy_base", r.fr = r.to, KindOf(r.to))
+                         + NearFeeTable!DeployBytesFee(r.fr = r.to, CodeLenOf(t)) IN
+         [r1 EXCEPT !.ac = [dpl |-> t] @@ @, !.gf = @ + fee]
+DeployRcpt(id, tx, acct, a, t, cb) == WithDeploy(AcctRcpt(id, tx, acct, acct, a, 0, cb, FALSE, ""), t)
 
 \* The actor after the CreateAccount (the new account) or without one (the
 \* predecessor) (actions.rs:202; lib.rs:599-610).
@@ -799,6 +850,23 @@ AcctActor(r) == IF r.ac.mk THEN r.to ELSE r.fr
 \* (actions.rs:880-887).
 AcctThere(r) == r.ac.mk \/ AcctExists(r.to)
 AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
+
+\* DeployContract (A9): the code bytes before and after a receipt's account
+\* actions, and the receiver's bytes after them.  A deploy replaces the
+\* code: usage less the old code's size plus the new one's (actions.rs
+\* :300-311, the old size :426-440); data stays.
+CodeBytesBefore(r) == IF r.ac.mk THEN 0 ELSE CodeBytes(r.to)
+CodeBytesAfter(r)  == IF Dpl(r) # NoCode THEN CodeLenOf(Dpl(r)) ELSE CodeBytesBefore(r)
+DplDelta(r)        == CodeBytesAfter(r) - CodeBytesBefore(r)
+AcctBytes(r, kb)   == (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + kb + DplDelta(r)
+\* code after a committed receipt with account actions: a DeleteAccount
+\* drops the account's entry (remove_account, core/store/src/utils/mod.rs
+\* :504-575), as does a CreateAccount (a new account has none), unless a
+\* DeployContract sets it.
+CodeNext(r) ==
+    IF r.ac.bnf # "" \/ (r.ac.mk /\ Dpl(r) = NoCode) THEN [x \in DOMAIN code \ {r.to} |-> code[x]]
+    ELSE IF Dpl(r) # NoCode THEN (r.to :> Dpl(r)) @@ code
+    ELSE code
 
 \* The first failing action check, as nearcore's error name, or "".  Per
 \* action: existence, then the actor, then the action (lib.rs:599-610).
@@ -811,22 +879,25 @@ AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
 \*    creates an implicit account, see ExecTransfer).
 \*  Key actions: exist, initialised, actor = the account (:862-886,
 \*    :755-801), each one applies (access_keys.rs:84, :158).
+\*  DeployContract: exists, initialised, actor = the account (:755-776).
 \*  DeleteAccount: exists; actor = the account (:776-783, ActorNoPermission);
-\*    nothing locked (:784-790, DeleteAccountStaking); not large state.
+\*    nothing locked (:784-790, DeleteAccountStaking); not large state, the
+\*    code it then has subtracted (a DeployContract before it: the new code).
 AcctErr(r, kb, kok) ==
-    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf
-        bytes == (IF r.ac.mk THEN AccountBytes ELSE stor[a]) + kb IN
+    LET a == r.to  ka == r.ac.ka  b == r.ac.bnf  t == Dpl(r)
+        bytes == AcctBytes(r, kb) IN
     \* (IF, not CASE: the first failing check wins.)
     IF r.ac.mk /\ AcctExists(a) THEN "AccountAlreadyExists"
     ELSE IF r.ac.mk /\ IsImplicit(a) THEN "OnlyImplicitAccountCreationAllowed"
     ELSE IF r.ac.mk /\ ParentOf(a) = NoParent /\ r.fr # TopCreator THEN "CreateAccountOnlyByRegistrar"
     ELSE IF r.ac.mk /\ ParentOf(a) # NoParent /\ ParentOf(a) # r.fr THEN "CreateAccountNotAllowed"
-    ELSE IF (DepTotal(r) > 0 \/ ka # <<>> \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
-    ELSE IF (ka # <<>> \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
-    ELSE IF (ka # <<>> \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
+    ELSE IF (DepTotal(r) > 0 \/ ka # <<>> \/ t # NoCode \/ b # "") /\ ~AcctThere(r) THEN "AccountDoesNotExist"
+    ELSE IF (ka # <<>> \/ t # NoCode \/ b # "") /\ ~AcctInit(r) THEN "AccountNotInitialized"
+    ELSE IF (ka # <<>> \/ t # NoCode \/ b # "") /\ AcctActor(r) # a THEN "ActorNoPermission"
     ELSE IF ka # <<>> /\ ~kok THEN "AddKeyAlreadyExists or DeleteKeyDoesNotExist"
     ELSE IF b # "" /\ LockedOf(a) > 0 THEN "DeleteAccountStaking"
-    ELSE IF b # "" /\ LargeState(a, bytes) THEN "DeleteAccountWithLargeState"
+    ELSE IF b # "" /\ StoragePerByte /\ bytes - CodeBytesAfter(r) > MaxDeleteBytes
+         THEN "DeleteAccountWithLargeState"
     ELSE ""
 
 \* Call receipts that carry account actions (HasAc on a call: the factory
@@ -856,7 +927,7 @@ AcCallErr(r, O) == AcctErr(r, StorDelta(O), TRUE)
 \* at 0 and 100 bytes).
 AcBal(r, O)   == (IF r.ac.mk THEN 0 ELSE near[r.to]) + DepTotal(r) - O.out
 AcBytes(r, O) ==
-    LET b == (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + StorDelta(O) IN
+    LET b == AcctBytes(r, StorDelta(O)) IN
     IF b < 0 THEN Assert(FALSE, <<"storage usage below 0 bytes", r.to, r.m, b>>) ELSE b
 \* The storage check runs once, after all actions, and not on an account
 \* the receipt deleted (lib.rs:1008-1031, the skip at :1010).
@@ -1123,6 +1194,7 @@ CommitAc(r, O) ==
     /\ stor' = IF ~StoragePerByte THEN stor ELSE [stor EXCEPT ![a] = IF b # "" THEN 0 ELSE AcBytes(r, O)]
     /\ created' = IF mk THEN created \cup {a} ELSE created
     /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
+    /\ code' = CodeNext(r)
     /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk>>
 
 \* Commit: platform part.  The contract conjoins its own state update.
@@ -1136,7 +1208,7 @@ Commit(r, O) ==
     /\ nid'  = nid + O.ids
     /\ rlog' = LogR(r, "ok")
     /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted>>
+    /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code>>
 
 \* Fail: receipt state reverted; deposit refunded; callback gets Failed.
 \* lbl: "fail" (panic, action error), "forced" (MayFail switch), "oog" (real gas).
@@ -1150,7 +1222,7 @@ FailL(r, lbl) ==
     /\ fails' = IF lbl = "forced" THEN fails + 1 ELSE fails
     /\ oog'   = IF lbl = "oog" THEN oog \cup {<<r.tx, r.m>>} ELSE oog
     /\ rlog'  = LogR(r, lbl)
-    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, paid, minted, txsig, created, burnt, blk, stor, deleted, code>>
 
 FailP(r, gas) == FailL(r, IF gas THEN "forced" ELSE "fail")
 FailOOG(r)    == FailL(r, "oog")
@@ -1203,7 +1275,7 @@ ExecTransfer(r) ==
     /\ created' = IF AcctExists(r.to) THEN created ELSE created \cup {r.to}
     /\ deleted' = IF AcctExists(r.to) THEN deleted ELSE deleted \ {r.to}
     /\ stor' = IF StoragePerByte /\ ~AcctExists(r.to) THEN [stor EXCEPT ![r.to] = CreatedBytes(r.to)] ELSE stor
-    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk>>
+    /\ UNCHANGED <<locked, proposal, epoch, nid, fails, minted, oog, txsig, burnt, blk, code>>
 
 \* A refund to a missing account fails and its amount is burnt
 \* (lib.rs:1046-1054); refunds never create accounts (actions.rs:930-933).
@@ -1213,7 +1285,7 @@ RefundBurn(r) ==
     /\ data'  = RemD(r) \cup DataOf(r, FALSE, 0)
     /\ burnt' = burnt + r.dep
     /\ rlog'  = LogR(r, "fail")
-    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted>>
+    /\ UNCHANGED <<near, locked, proposal, epoch, nid, fails, paid, minted, oog, txsig, created, blk, stor, deleted, code>>
 
 \* A Transfer to a missing named account fails (AccountDoesNotExist,
 \* actions.rs:842-850); the deposit is refunded to r.rto and the callback
@@ -1249,7 +1321,7 @@ ExecStake(r) ==
             /\ locked' = IF amt > locked THEN amt ELSE locked
             /\ proposal' = amt
             /\ rlog' = LogR(r, "ok")
-            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted>>
+            /\ UNCHANGED <<epoch, nid, fails, paid, minted, oog, txsig, created, burnt, blk, stor, deleted, code>>
 
 \* All built-in receipts as one step (the contract conjoins UNCHANGED of its vars).
 ExecBuiltin(r) == ExecTransfer(r) \/ ExecTransferFail(r) \/ ExecStake(r)
@@ -1267,7 +1339,7 @@ AcctBal(r) == (IF r.ac.mk THEN 0 ELSE near[r.to]) + r.dep
 AcctStorOK(r, kb) ==
     IF r.ac.bnf # "" THEN TRUE
     ELSE IF StoragePerByte
-    THEN StorageCovers(AcctBal(r) + LockedOf(r.to), (IF r.ac.mk THEN AccountBytes ELSE stor[r.to]) + kb)
+    THEN StorageCovers(AcctBal(r) + LockedOf(r.to), AcctBytes(r, kb))
     ELSE AcctBal(r) + LockedOf(r.to) >= StorageFloor[r.to]
 AcctOK(r, kb, kok) == AcctErr(r, kb, kok) = "" /\ AcctStorOK(r, kb)
 
@@ -1303,8 +1375,8 @@ ExecAcctWith(r, kb, kok) ==
             /\ created' = IF mk THEN created \cup {a} ELSE created
             /\ deleted' = IF b # "" THEN deleted \cup {a} ELSE IF mk THEN deleted \ {a} ELSE deleted
             /\ stor' = IF ~StoragePerByte THEN stor
-                       ELSE [stor EXCEPT ![a] = IF b # "" THEN 0
-                                                ELSE (IF mk THEN AccountBytes ELSE @) + kb]
+                       ELSE [stor EXCEPT ![a] = IF b # "" THEN 0 ELSE AcctBytes(r, kb)]
+            /\ code' = CodeNext(r)
             /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk>>
        ELSE FailP(r, FALSE)
 \* Without key actions (NearKeys.ExecAcctK runs them).
@@ -1335,7 +1407,7 @@ EpochTick ==
          /\ locked' = newLocked + rw
          /\ near'   = [near EXCEPT ![StakingAcct] = @ + release]
          /\ minted' = minted + rw
-    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted>>
+    /\ UNCHANGED <<rq, post, data, proposal, nid, fails, paid, oog, rlog, txsig, created, burnt, blk, stor, deleted, code>>
 
 \* Block clock: one block passes (the model adds BlockTick /\ UNCHANGED of its
 \* own variables to Next).  Every receipt that runs at one value of blk sees
@@ -1349,7 +1421,7 @@ BlockTick ==
     /\ TickAnytime \/ \E p \in post : IsYield(p) /\ p.ydl > blk
     /\ blk' = blk + 1
     /\ UNCHANGED <<rq, post, data, near, locked, proposal, epoch, nid, fails, paid, minted, oog,
-                   rlog, txsig, created, burnt, stor, deleted>>
+                   rlog, txsig, created, burnt, stor, deleted, code>>
 BlockTs == TsOf(blk)
 
 ----------------------------------------------------------------------------
@@ -1378,7 +1450,7 @@ SubmitAs(r, a, k) ==
     /\ near'  = [near EXCEPT ![a] = @ - DepTotal(r)]
     /\ nid'   = nid + 1
     /\ txsig' = IF TrackSigner THEN (r.tx :> [a |-> a, k |-> k]) @@ txsig ELSE txsig
-    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted>>
+    /\ UNCHANGED <<post, data, locked, proposal, epoch, fails, paid, minted, oog, rlog, created, burnt, blk, stor, deleted, code>>
 
 \* A transaction signed by its predecessor r.fr with the default key.
 Submit(r) == SubmitAs(r, r.fr, DefaultKey)
@@ -1426,7 +1498,7 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ nid = 1 /\ fails = 0 /\ minted = 0
     /\ paid = [t \in txIds |-> [a \in Accounts |-> 0]]
     /\ oog = {} /\ rlog = {}
-    /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ deleted = {} /\ blk = 0
+    /\ txsig = <<>> /\ created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode] /\ blk = 0
     /\ stor = StorageInit /\ StorageInitOK(near0, locked0)
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
@@ -1436,7 +1508,7 @@ PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 \* PlatformInitClock and PlatformInitStorage alone.  PlatformInitStorage
 \* does not check the initial cover: list StorageCovered as an invariant.
 PlatformInitSigner   == txsig = <<>>
-PlatformInitAccounts == created = {} /\ burnt = 0 /\ deleted = {}
+PlatformInitAccounts == created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode]
 PlatformInitClock    == blk = 0
 PlatformInitStorage  == stor = StorageInit
 PlatformInitExtra    == PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock

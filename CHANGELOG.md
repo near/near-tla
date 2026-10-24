@@ -146,6 +146,20 @@ Each entry ends with its migration.
   `deleted` to the list; conjoin `PlatformInitAccounts` (`created = {} /\ burnt = 0 /\
   deleted = {}`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
   hand-written `vars`, use `platformVars` or add `deleted`.
+- **New platform variable `code` in `NearAsync`** (the code tag deployed to each account at
+  run time, a partial function; SEMANTICS A9). It stays empty unless a model deploys, so
+  models that do not are unchanged: every example run kept its verdict and its generated,
+  distinct and depth counts (all 132 runs compared at one worker). It is in `platformVars`,
+  and `PlatformInit`, `PlatformInitStaked`, `PlatformInitAccounts` and `PlatformInitExtra`
+  initialise it. Like `blk`, `stor` and `deleted`: a step that lists platform variables one
+  by one in `UNCHANGED` must add `code` (in the library: `NearKeys.ExecKeyAct`,
+  `ExecDelegate`), a hand-written `Init` must set it, and a hand-written `vars` must include
+  it. Migration: write `UNCHANGED platformVars` or add `code` to the list; conjoin
+  `PlatformInitAccounts` (now `created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in
+  {} |-> NoCode]`) to a hand-written `Init` that does not use `PlatformInitExtra`; in a
+  hand-written `vars`, use `platformVars` or add `code`. `NearKeys.FailNoCode(r)` is now
+  `IsCall(r) /\ ~CodeSeen(r) /\ FailP(r, FALSE)`: it sees the code a receipt's own
+  CreateAccount and DeployContract leave (it used `HasCode(r.to)`).
 - **`CallsNeedCode = FALSE` no longer lets a call reach a missing account** (nor an
   uninitialised universal one): `CallTargetOK` requires `AcctExists` and not
   `UninitUniversal` whatever the switch says, as nearcore does (`AccountDoesNotExist`,
@@ -410,8 +424,29 @@ Each entry ends with its migration.
   `factory_no_reserve`, `factory_assumes_created` and `factory_not_parent` must fail; with
   witnesses and mutants); `selftest_accall_prom` (a promise-returning call before a
   DeleteAccount), init's attached deposit in `accall_init`, and three library mutants in
-  `platform-selftest`. Sim: `promise_call_then_delete`, `batch_call_sees_own_deposit`. DeployContract is still not modelled (N-deploy, updated): a
-  factory's `init` finds code only with `CallsNeedCode <- FALSE`.
+  `platform-selftest`. Sim: `promise_call_then_delete`, `batch_call_sees_own_deposit`. A
+  factory's `init` finds code once its batch deploys it (the DeployContract entry below).
+- **DeployContract** (SEMANTICS A9; docs/USAGE.md section 16). A code is a tag with
+  `CodeLen[t]` bytes (overridable, default 0); the new platform variable `code` maps an
+  account to the tag deployed at run time, `CodeOf(a)` falls back to `InitCode` (overridable,
+  default `"code"`) for the accounts in `Contracts`, and `HasCode` is `AcctExists(a) /\
+  CodeOf(a) # NoCode`, equal to the old definition while nothing is deployed.
+  `WithDeploy(r, t)` adds DeployContract(t) to an ACCOUNT or call receipt (after its
+  CreateAccount and Transfer, before its call and DeleteAccount; a second one, or a tag over
+  4 MiB, is an Assert) with its fee, deploy_base plus deploy_byte per byte (`d0.gf = 660`
+  Ggas for 1000 bytes on the same account); `DeployRcpt(id, tx, acct, a, t, cb)` is a lone
+  deploy. The checks are `AcctErr`'s (existence, initialised, actor = the account); the bytes
+  lose the old code and gain the new (`CodeBytes` reads `code`, `DplDelta`, `AcctBytes`), so
+  the storage check and the DeleteAccount's 10,000-byte check see them; on success `code`
+  changes (`CodeNext`: a delete, or a create without a deploy, drops the entry). A call sees
+  the code its receipt leaves (`CodeAfter`, `CodeSeen`, used by `CallTargetOK` and
+  `NearKeys.FailNoCode`, which ignored account actions before). Every example run kept its
+  verdict and its generated, distinct and depth counts (all 132 runs compared at one worker),
+  `account-lifecycle/factory` included, whose batch now deploys its child's code and no
+  longer sets `CallsNeedCode <- FALSE`. New runs `selftest_deploy`, `selftest_deploy_storage`
+  (9 scenarios, a fee check in `acct_fee`, five library mutants), `factory_underfunds_code`
+  (must fail: a 300 KB child contract that the batch's 2 NEAR does not cover) and
+  `factory_funds_code`. N-deploy is gone; N-limits states the 10-deploy and 4 MiB limits.
 - **Instant receipts** (SEMANTICS S5; docs/USAGE.md section 16). A lone DeleteAccount
   (`IsInstantShape`) that a receipt creates, in its outcome's ready set, as a joint callback
   with no inputs in its postponed set (`.then` on an empty `promise_and`, `InstantTagP`) or as

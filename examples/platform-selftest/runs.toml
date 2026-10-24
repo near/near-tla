@@ -336,6 +336,7 @@ name = "selftest_lifecycle_gas"
 expect = "pass"
 [run.constants]
 GasMode = '"gas"'
+CodeLen = "SCodeLen"
 GasCall = "SGasCall"
 GasBurn = "SGasBurn"
 Scns = '{"acct_fee", "acct_keys", "acct_top", "del_beneficiary", "del_absent", "recreate"}'
@@ -376,6 +377,27 @@ expect = "pass"
 [run.constants]
 CallsNeedCode = "FALSE"
 Scns = '{"accall_init", "accall_exists", "accall_recreate", "accall_not_parent", "accall_create_del"}'
+
+# DeployContract (A9): a self-deploy, the actor check, the factory batch with code (calls need
+# code), deletion dropping the code.
+[[run]]
+name = "selftest_deploy"
+expect = "pass"
+[run.constants]
+Scns = '{"deploy_self", "deploy_actor", "deploy_init", "deploy_recreate"}'
+
+# Per-byte storage: a deploy's bytes (usage - old code + new code), the delete limit with the
+# deployed code subtracted, an unaffordable deploy.
+[[run]]
+name = "selftest_deploy_storage"
+expect = "pass"
+[run.constants]
+StoragePerByte = "TRUE"
+StorageInit = "LStor"
+StorageByteCost = "LCost"
+CodeSize = "LCode"
+CodeLen = "SCodeLen"
+Scns = '{"deploy_bytes", "deploy_replace", "deploy_del_large", "deploy_del_same", "deploy_lackstate"}'
 
 # A call that returns a promise, then DeleteAccount: the child runs, the callback gets the
 # delete's empty bytes (the child wired to the callback is not forwarded).
@@ -473,8 +495,64 @@ runs = ["selftest_accall_code_off"]
 id = "lib_code_off_any_receiver"
 file = "NearAsync.tla"
 library = true
-find = "ELSE AcctExists(r.to) /\\ ~UninitUniversal(r.to) /\\ (~CallsNeedCode \\/ HasCode(r.to))"
-replace = "ELSE r.to \\notin deleted /\\ (~CallsNeedCode \\/ HasCode(r.to))"
+find = "ELSE AcctExists(r.to) /\\ ~UninitUniversal(r.to) /\\ (~CallsNeedCode \\/ CodeSeen(r))"
+replace = "ELSE r.to \\notin deleted /\\ (~CallsNeedCode \\/ CodeSeen(r))"
 class = "platform rule dropped (library)"
 killed_by = ["Check"]
 runs = ["selftest_code_off_missing"]
+
+# The library, DeployContract (A9): the delete's large-state check reads the initial code
+# size, not the deployed code's.
+[[mutant]]
+id = "lib_codebytes_ignores_deploy"
+file = "NearAsync.tla"
+library = true
+find = "CodeBytes(a) == IF a \\in DOMAIN code THEN CodeLenOf(code[a])"
+replace = "CodeBytes(a) == IF FALSE THEN 0"
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_deploy_storage"]
+
+# ... a deploy adds no bytes.
+[[mutant]]
+id = "lib_deploy_no_bytes"
+file = "NearAsync.tla"
+library = true
+find = "DplDelta(r)        == CodeBytesAfter(r) - CodeBytesBefore(r)"
+replace = "DplDelta(r)        == 0"
+class = "dropped effect (library)"
+killed_by = ["Check"]
+runs = ["selftest_deploy_storage"]
+
+# ... a DeleteAccount keeps the account's code.
+[[mutant]]
+id = "lib_delete_keeps_code"
+file = "NearAsync.tla"
+library = true
+find = 'IF r.ac.bnf # "" \/ (r.ac.mk /\ Dpl(r) = NoCode) THEN'
+replace = 'IF r.ac.mk /\ Dpl(r) = NoCode THEN'
+class = "dropped effect (library)"
+killed_by = ["Check"]
+runs = ["selftest_deploy_storage"]
+
+# ... anyone may deploy to an account.
+[[mutant]]
+id = "lib_deploy_actor_unchecked"
+file = "NearAsync.tla"
+library = true
+find = '(ka # <<>> \/ t # NoCode \/ b # "") /\ AcctActor(r) # a'
+replace = '(ka # <<>> \/ b # "") /\ AcctActor(r) # a'
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_deploy"]
+
+# ... a call does not see the code its receipt deployed.
+[[mutant]]
+id = "lib_call_ignores_deploy"
+file = "NearAsync.tla"
+library = true
+find = 'IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN Dpl(r)'
+replace = 'IF "ac" \in DOMAIN r /\ Dpl(r) # NoCode THEN NoCode'
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_deploy"]

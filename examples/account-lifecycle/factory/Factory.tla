@@ -4,8 +4,9 @@
 (* account (docs/SEMANTICS.md, A6, A8).                                    *)
 (*                                                                         *)
 (* Users call F.create() with a deposit D.  F sends the factory batch      *)
-(* [CreateAccount, Transfer(D), FunctionCall(init(user))] to the name      *)
-(* (WithCreate) and chains its own on_create(user, D).  The batch is       *)
+(* [CreateAccount, Transfer(D), DeployContract(child), FunctionCall(init(  *)
+(* user))] to the name (WithCreate, WithDeploy) and chains its own         *)
+(* on_create(user, D).  The batch is                                       *)
 (* atomic: if any action fails (the name exists, F is not its parent) the  *)
 (* account is not created, init does not run, and D returns to F, the      *)
 (* batch's predecessor, not to the user (lib.rs:946-1005, :1303).  So F's  *)
@@ -16,8 +17,8 @@
 (* reserve (Reserve; factory_no_reserve: without it the refund to the     *)
 (* user fails when the callback runs first, UserFundsBack fails).          *)
 (*                                                                         *)
-(* The new account's code: the model has no DeployContract (N-deploy), so  *)
-(* these runs set CallsNeedCode <- FALSE: init is assumed to find code.    *)
+(* init runs the code the batch deploys (A9); its bytes (CodeLen) count   *)
+(* against the new account's balance, D, with per-byte storage.           *)
 (*                                                                         *)
 (* factory_cb_refunds: two users race for one name; the loser is repaid.   *)
 (* factory_assumes_created: on_create keeps D on failure: the loser's     *)
@@ -26,6 +27,10 @@
 (*   records the owner without looking at the result: every create fails  *)
 (*   CreateAccountNotAllowed and reg names an owner of no account          *)
 (*   (PaidImpliesAccount fails).                                           *)
+(* factory_underfunds_code: per-byte storage, a 300 KB child contract and  *)
+(*   D = 2 NEAR: the batch fails LackBalanceForState every time; the user  *)
+(*   is repaid but never gets an account (Served fails).                   *)
+(* factory_funds_code: a 100 KB contract, which D covers: Served holds.    *)
 (***************************************************************************)
 EXTENDS NearAsync
 
@@ -58,7 +63,8 @@ TxOf(u) == IF u = U1 THEN 1 ELSE 2
 
 \* F's create: the factory batch to Name, then self.on_create(user, D).
 Create(r) ==
-    LET batch == WithCreate(Rcpt(nid, r.tx, Name, F, "init", [u |-> r.fr], r.dep, F, nid + 1))
+    LET batch == WithDeploy(WithCreate(Rcpt(nid, r.tx, Name, F, "init", [u |-> r.fr], r.dep, F, nid + 1)),
+                            "child")
         cb    == Rcpt(nid + 1, r.tx, F, F, "on_create", [u |-> r.fr, d |-> r.dep], 0, F, 0)
     IN Outcome({batch}, {cb}, RVal(0), r.dep, 2)
 \* F's on_create: [O |-> outcome, reg |-> registry after it].
@@ -78,8 +84,8 @@ RunF(r) ==
         /\ Exec(r, h.O)
         /\ reg' = IF Ok(r, h.O) THEN h.reg ELSE reg
         /\ UNCHANGED <<owner, sent>>
-\* The batch (HasAc): Exec runs its CreateAccount and Transfer, then init on
-\* the new account, which records its owner.
+\* The batch (HasAc): Exec runs its CreateAccount, Transfer and
+\* DeployContract, then init on the new account, which records its owner.
 RunBatch(r) ==
     /\ Exec(r, Out0)
     /\ owner' = IF Ok(r, Out0) THEN [owner EXCEPT ![r.to] = r.a.u] ELSE owner
@@ -106,5 +112,7 @@ UserFundsBack ==
               near[u] = 10 - (IF \E n \in Names : AcctExists(n) /\ owner[n] = u THEN D ELSE 0)
 \* F's registry names only owners of accounts that exist.
 PaidImpliesAccount == \A n \in Names : reg[n] # "" => AcctExists(n) /\ owner[n] = reg[n]
+\* Once all is settled, every user who called create owns an account.
+Served == Idle => \A u \in sent : \E n \in Names : owner[n] = u
 Sane == NearConserved(Total0) /\ NoOrphans
 =============================================================================
