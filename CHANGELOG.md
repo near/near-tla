@@ -449,7 +449,9 @@ Each entry ends with its migration.
   the code its receipt leaves (`CodeAfter`, `CodeSeen`, used by `CallTargetOK` and
   `NearKeys.FailNoCode`, which ignored account actions before). An eth-implicit account
   created at run time (also again, after a deletion) has `EthWalletCode` (overridable,
-  `"eth_wallet"`), not its initial tag (`selftest_eth_recreate`). Every example run kept its
+  `"eth_wallet"`), not its initial tag (`selftest_eth_recreate`), and gets it whether or not
+  the model lists it in `Contracts` (it had code only if listed; `selftest_eth_wallet`; no
+  example run changed, all 138 compared at one worker on this change alone). Every example run kept its
   verdict and its generated, distinct and depth counts (all 132 runs compared at one worker),
   `account-lifecycle/factory` included, whose batch now deploys its child's code and no
   longer sets `CallsNeedCode <- FALSE`. New runs `selftest_deploy`, `selftest_deploy_storage`

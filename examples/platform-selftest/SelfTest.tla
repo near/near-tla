@@ -639,6 +639,8 @@ Script(s) ==
                                     Ac(V, V, FALSE, 0, U, <<>>) >>
     [] s = "deploy_del_same"  -> << AcD(V, V, FALSE, 0, U, <<>>, "big") >>
     [] s = "deploy_lackstate" -> << AcD(W, W, FALSE, 0, "", <<>>, "huge") >>
+    [] s = "eth_wallet_call"  -> << Tx(C, U, "send", G("", "", E2, 1, 0, "", ""), 0),    \* 0xf (not in SCode)
+                                    Tx(E2, U, "foo", G0, 1) >>
     [] s = "eth_recreate_code"-> << AcD(EA, EA, FALSE, 0, "", <<>>, "local"),             \* 0xa's own code
                                     Ac(EA, EA, FALSE, 0, U, <<>>),                       \* deleted
                                     Tx(C, U, "send", G("", "", EA, 1, 0, "", ""), 0),    \* 0xa again
@@ -1141,6 +1143,9 @@ Expect(s) ==
     [] s = "deploy_lackstate" ->  \* 10,001 + 10,000 bytes need more than w's 10 NEAR: the deploy
          \* fails LackBalanceForState, nothing changes.  lib.rs:1008-1031
          DOMAIN code = {} /\ stor[W] = 10001 /\ near[W] = 10 /\ acc = <<TRUE>>
+    [] s = "eth_wallet_call" ->   \* a Transfer creates an eth-implicit account with the wallet
+         \* contract, also one the model lists without code (outside Contracts).  actions.rs:255-268
+         created = {E2} /\ CodeOf(E2) = EthWalletCode /\ <<2, E2, "foo">> \in ran /\ near[E2] = 2
     [] s = "eth_recreate_code" -> \* an eth-implicit account created again by a Transfer gets the
          \* protocol's wallet contract, not its earlier code (initial or deployed).
          \* actions.rs:255-268

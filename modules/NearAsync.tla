@@ -576,9 +576,10 @@ AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
 \* An account's code, as a tag ("code" names no particular contract; a model
 \* that deploys picks its own tags): the code deployed at run time (the
 \* platform variable code, DeployContract, A9), else InitCode[a] for an
-\* account in Contracts, except one created at run time, which has no code
-\* unless it is eth-implicit: a Transfer gives that one a protocol-defined
-\* global contract (actions.rs:221-290).  A universal account created by a
+\* account in Contracts.  An account created at run time has no code unless
+\* it is eth-implicit: a Transfer gives that one the protocol's wallet
+\* global contract (EthWalletCode), whether or not it is in Contracts
+\* (actions.rs:255-268).  A universal account created by a
 \* Transfer is also uninitialised (UninitUniversal; actions.rs:880-887,
 \* AccountNotInitialized).  DeleteAccount drops the account's entry in code,
 \* so an account created again starts with none.
@@ -595,8 +596,8 @@ EthWalletCode == "eth_wallet"
 CodeLenOf(t) == IF t \in DOMAIN CodeLen THEN CodeLen[t] ELSE 0
 CodeOf(a) ==
     IF a \in DOMAIN code THEN code[a]
-    ELSE IF a \notin Contracts THEN NoCode
     ELSE IF a \in created THEN (IF KindOf(a) = "eth_implicit" THEN EthWalletCode ELSE NoCode)
+    ELSE IF a \notin Contracts THEN NoCode
     ELSE IF a \in DOMAIN InitCode THEN InitCode[a] ELSE "code"
 \* Can a function call on a run?  (The same as before DeployContract while
 \* code is empty.)

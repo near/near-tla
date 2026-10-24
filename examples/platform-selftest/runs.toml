@@ -399,6 +399,14 @@ CodeSize = "LCode"
 CodeLen = "SCodeLen"
 Scns = '{"deploy_bytes", "deploy_replace", "deploy_del_large", "deploy_del_same", "deploy_lackstate"}'
 
+# An eth-implicit account created by a Transfer runs the wallet contract even when the model
+# does not list it in Contracts.
+[[run]]
+name = "selftest_eth_wallet"
+expect = "pass"
+[run.constants]
+Scns = '{"eth_wallet_call"}'
+
 # An eth-implicit account with its own code, deleted and created again by a Transfer: it runs
 # the protocol's wallet contract (EthWalletCode), not its earlier code.
 [[run]]
@@ -586,3 +594,15 @@ replace = 'BalSeen(r) == (IF "ac" \in DOMAIN r /\ r.ac.mk THEN 0 ELSE near[r.to]
 class = "wrong effect (library)"
 killed_by = ["Check"]
 runs = ["selftest_accall_code_off"]
+
+# ... an eth-implicit account created by a Transfer has code only if the model lists it in
+# Contracts.
+[[mutant]]
+id = "lib_eth_wallet_needs_contracts"
+file = "NearAsync.tla"
+library = true
+find = "ELSE IF a \\in created THEN (IF KindOf(a) = \"eth_implicit\" THEN EthWalletCode ELSE NoCode)\n    ELSE IF a \\notin Contracts THEN NoCode"
+replace = "ELSE IF a \\notin Contracts THEN NoCode\n    ELSE IF a \\in created THEN (IF KindOf(a) = \"eth_implicit\" THEN EthWalletCode ELSE NoCode)"
+class = "platform rule dropped (library)"
+killed_by = ["Check"]
+runs = ["selftest_eth_wallet"]

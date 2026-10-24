@@ -657,7 +657,8 @@ Each rule has four fields:
   (`account_creation_charge`).
 - **Model:** `ExecTransfer` creates a missing implicit receiver as an existing account (in
   `created`); it does not check the "only action" condition (built-in Transfer receipts hold one
-  action). A created account has no code (`HasCode`) unless it is eth-implicit, so calls to a
+  action). A created account has no code (`HasCode`) unless it is eth-implicit (the wallet
+  contract, `EthWalletCode`, whether or not the account is in `Contracts`), so calls to a
   created NEAR-implicit, deterministic or universal account fail. The NEAR-implicit key is
   added by `NearKeys.ExecTransferK` (key id `ImplicitKeyId`) for an account in `KeyAccts`;
   `ExecTransfer` alone leaves keys to the model. The rest of the universal uninitialised state
@@ -896,9 +897,10 @@ Each rule has four fields:
   `"code"`, for the accounts in `Contracts`), and `HasCode` is unchanged while nothing is
   deployed. An eth-implicit account created at run time by a Transfer, also one created
   again after a deletion, has the protocol's wallet contract, `EthWalletCode` (overridable,
-  default `"eth_wallet"`; `actions.rs:255-268`), not its initial or deployed code. `WithDeploy(r, t)` adds DeployContract(t) to an ACCOUNT receipt or a call
-  receipt, after its CreateAccount and Transfer and before its call and DeleteAccount, and
-  adds its fee to `gf`; `DeployRcpt(id, tx, acct, a, t, cb)` is a lone deploy. The checks are
+  default `"eth_wallet"`; `actions.rs:255-268`), not its initial or deployed code, and
+  whether or not it is in `Contracts`. `WithDeploy(r, t)` adds DeployContract(t) to an
+  ACCOUNT receipt or a call receipt, after its CreateAccount and Transfer and before its
+  call and DeleteAccount, and adds its fee to `gf`; `DeployRcpt(id, tx, acct, a, t, cb)` is a lone deploy. The checks are
   `AcctErr`'s (existence, initialised, actor); the bytes are `stor` less the old code
   (`CodeBytes`: the deployed tag's `CodeLen`, else `CodeSize`) plus the new one (`DplDelta`),
   checked by `AcctStorOK` / `AcAffordable`; on success `code` maps the account to `t`
