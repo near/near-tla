@@ -1085,7 +1085,7 @@ LargeState(a, bytes) == StoragePerByte /\ bytes - CodeBytes(a) > MaxDeleteBytes
 \* receipt at its failing action (lib.rs:1001-1003) and burns the receipt's
 \* exec fee plus the exec fees of the actions it attempted (each burns its
 \* own as it starts, :588-592); the exec fees of the actions after it come
-\* back with the gas refund (:1296-1307).  Gas refunds, like the creation
+\* back with the gas refund (:1299-1309).  Gas refunds, like the creation
 \* charge withheld on failure, are gas money, which is not modelled
 \* (N-gas-money; sim lifecycle.rs account_action_fees, create_batch_atomic).
 \* NearKeys.WithAcctKeys adds the key actions' fees.

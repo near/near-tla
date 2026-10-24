@@ -732,7 +732,7 @@ Each rule has four fields:
   `lib.rs:946-1031`; `core/parameters/res/runtime_configs/64.yaml:2`; near-account-id 3.0.0
   `src/validation.rs:6-8`, `src/account_id_ref.rs:153-155`, `:216-221`. Fees
   `runtime/runtime/src/config.rs:98-108`, `:143`; on failure `lib.rs:588-592` (each action
-  burns its exec fee as it starts), `:1001-1003` (the loop stops), `:1296-1307` (the gas
+  burns its exec fee as it starts), `:1001-1003` (the loop stops), `:1299-1309` (the gas
   refund).
 - **Model:** an ACCOUNT receipt (`m = ACCT`, `IsAcctRcpt`) holds `[CreateAccount]?
   [Transfer(dep)]? [key actions]* [DeleteAccount]?`, recorded in its `ac` field.

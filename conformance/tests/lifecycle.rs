@@ -259,9 +259,9 @@ fn create_batch_atomic() {
     // Early failure: the same batch on the account that now exists fails at
     // its first action. nearcore stops at the failing action (lib.rs:1001-1003);
     // each attempted action burns its exec fee as it starts (lib.rs:588-592),
-    // so the receipt burns its base exec fee (lib.rs:908) plus create_account's.
+    // so the receipt burns its base exec fee (lib.rs:911) plus create_account's.
     // The Transfer's and AddKey's exec fees, never attempted, come back with
-    // the gas refund (prepaid exec gas less gas_burnt, lib.rs:1296-1307).
+    // the gas refund (prepaid exec gas less gas_burnt, lib.rs:1299-1309).
     let o = sim
         .tx(ALICE, "d.alice.near")
         .create_account()
