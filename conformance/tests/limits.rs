@@ -146,7 +146,12 @@ fn actions_per_receipt() {
 /// calls: :2534 `promise_and`, :2581 `promise_batch_create`, :2645
 /// `promise_batch_then`, :4297, :4407 the yields). The 1025th fails the call
 /// there (HostError NumberPromisesExceeded), as a panic would, and the call
-/// creates nothing.
+/// creates nothing. The count is per function-call action, not per receipt:
+/// each action runs the VM afresh, with its own promise list
+/// (runtime/runtime/src/function_call.rs:76, :281; runtime/near-vm-runner/src/logic/host.rs:96).
+/// A receipt of two `many` calls, 600 promises each, succeeds; 1024 then
+/// 1025 fails the receipt, and the first call's 1024 receipts are not sent
+/// either.
 #[test]
 fn promises_per_function_call_action() {
     let base = world();
@@ -164,6 +169,21 @@ fn promises_per_function_call_action() {
         } else {
             assert!(rerr(first).contains("The number of promises within a FunctionCall 1025 exceeds the limit 1024"), "{}", rerr(first));
             assert_eq!(kids, 0, "the failed call created nothing");
+        }
+    }
+    for (a, b) in [(600, 600), (lim, lim + 1)] {
+        let mut sim = base.clone();
+        let o = sim.tx(ALICE, W).call("many").args(vec![b'x'; a as usize]).call("many").args(vec![b'x'; b as usize]).transact();
+        let first = o.first_call().unwrap();
+        assert_eq!(first.actions.len(), 2, "one receipt of two function calls");
+        let kids = o.receipts.iter().filter(|r| r.executor_id.as_str() == BOB && r.actions.is_empty()).count();
+        println!("w makes {a} then {b} promises in one receipt: {}; {kids} empty receipts ran on bob", rerr(first));
+        if b <= lim {
+            assert!(first.is_success(), "{o}");
+            assert_eq!(kids, (a + b) as usize, "more than 1024 in the receipt, at most 1024 per call");
+        } else {
+            assert!(rerr(first).contains("The number of promises within a FunctionCall 1025 exceeds the limit 1024"), "{}", rerr(first));
+            assert_eq!(kids, 0, "the failed receipt sent nothing, the first call's receipts included");
         }
     }
 }
@@ -211,7 +231,11 @@ fn add_key_method_name_bytes() {
 /// (HostError NumberOfLogsExceeded, TotalLogLengthExceeded). The single log
 /// is the `probe`'s `record`, which logs "record " and the JSON it returns,
 /// so its length is set by the tag; `w`'s `log_split` writes two logs and
-/// `logs` one-byte logs.
+/// `logs` one-byte logs. Both limits are per function-call action, not per
+/// receipt (each action runs the VM afresh, runtime/runtime/src/function_call.rs:76,
+/// :281, with no logs yet, runtime/near-vm-runner/src/logic/logic.rs:45-54):
+/// a receipt of two calls may log 120 logs, or 18000 bytes, in all, and
+/// fails only when one call goes over.
 #[test]
 fn logs_per_function_call_action() {
     let base = world();
@@ -265,6 +289,41 @@ fn logs_per_function_call_action() {
         } else {
             assert!(rerr(first).contains(&format!("The number of logs will exceed the limit {max_logs}")), "{}", rerr(first));
             assert_eq!(first.logs.len(), max_logs as usize, "the failed call keeps the logs it wrote");
+        }
+    }
+
+    // Per action: one receipt of two `logs` calls, then of two `log_split` calls.
+    for (a, b) in [(60, 60), (max_logs, max_logs + 1)] {
+        let mut sim = base.clone();
+        let o = sim.tx(ALICE, W).call("logs").args(vec![b'x'; a as usize]).call("logs").args(vec![b'x'; b as usize]).transact();
+        let first = o.first_call().unwrap();
+        assert_eq!(first.actions.len(), 2, "one receipt of two function calls");
+        println!("w writes {a} then {b} logs in one receipt: {}; {} logs", rerr(first), first.logs.len());
+        if b <= max_logs {
+            assert!(first.is_success(), "{o}");
+            assert_eq!(first.logs.len(), (a + b) as usize, "more than 100 in the receipt, at most 100 per call");
+        } else {
+            assert!(rerr(first).contains(&format!("The number of logs will exceed the limit {max_logs}")), "{}", rerr(first));
+            assert_eq!(first.logs.len(), (a + max_logs) as usize, "the failed receipt keeps the first call's logs and the second's 100");
+        }
+    }
+    for (a, b) in [(9000usize, 9000usize), (max_len as usize, max_len as usize + 1)] {
+        let mut sim = base.clone();
+        let o = sim.tx(ALICE, W).call("log_split").args(vec![b'c'; a]).call("log_split").args(vec![b'c'; b]).transact();
+        let first = o.first_call().unwrap();
+        assert_eq!(first.actions.len(), 2, "one receipt of two function calls");
+        let logged: usize = first.logs.iter().map(|l| l.len()).sum();
+        println!("w.log_split of {a} then {b} bytes in one receipt: {}; {} logs, {logged} bytes", rerr(first), first.logs.len());
+        if b as u64 <= max_len {
+            assert!(first.is_success(), "{o}");
+            assert_eq!(logged, a + b, "more than 16384 bytes in the receipt, at most 16384 per call");
+        } else {
+            assert!(rerr(first).contains(&format!("The length of a log message {b} exceeds the limit {max_len}")), "{}", rerr(first));
+            assert_eq!(
+                first.logs.iter().map(|l| l.len()).collect::<Vec<_>>(),
+                [a / 2, a - a / 2, b / 2],
+                "the failed receipt keeps the first call's two logs and the second's first"
+            );
         }
     }
 }

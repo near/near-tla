@@ -6,8 +6,10 @@
 (* transaction is public: the network delivers any of them, any number of  *)
 (* times, in any order (Deliver), so it replays them and lets a later one  *)
 (* overtake an earlier one.  nearcore refuses a delivery whose nonce is    *)
-(* not above the key's (TxErr = "InvalidNonce"); the model records a       *)
-(* payment refused before it ever landed as lost.                          *)
+(* not above the key's (TxErr = "InvalidNonce"), or at or above the        *)
+(* nonce ceiling, block height x 1e6 (TxErr = "NonceTooLarge"; a model     *)
+(* input, NonceHeight0 and NoncePerHeight, off by default); the model      *)
+(* records a payment refused before it ever landed as lost.                *)
 (*                                                                         *)
 (* Parallel = FALSE: the wallet signs the next payment only once the       *)
 (* previous one has landed.  Parallel = TRUE: it signs them all at once;   *)
@@ -55,7 +57,7 @@ Deliver ==
          THEN /\ SubmitTx(s)
               /\ landed' = landed \cup {st.n} /\ ntx' = ntx + 1
               /\ UNCHANGED <<signed, nn, lost, credits>>
-         ELSE /\ TxErr(s) = "InvalidNonce" /\ st.n \notin landed \cup lost
+         ELSE /\ TxErr(s) \in {"InvalidNonce", "NonceTooLarge"} /\ st.n \notin landed \cup lost
               /\ lost' = lost \cup {st.n}
               /\ UNCHANGED <<platformVars, keyVars, signed, nn, landed, credits, ntx>>
 

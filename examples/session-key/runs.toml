@@ -33,6 +33,8 @@ Refund = "2"
 Cap = "3"
 MaxTx = "8"
 Allow = "5"
+Stated = "TRUE"
+NewKey = '""'
 
 # Allow = Cost + (Cap - 1) * (Cost - Refund) = 5: plays at 5, 4 and 3; the fourth needs 3 and
 # finds 2.
@@ -56,6 +58,30 @@ expect = "pass"
 [run.constants]
 Allow = "9"
 Refund = "0"
+
+# The plays state no cost: an Assert (nearcore's cost is never 0, so the library needs it).
+[[run]]
+name = "session_cost_unstated"
+expect = "assert"
+[run.constants]
+Stated = "FALSE"
+
+# U deletes "s" and adds it again: once a play has been signed with "s", the AddKey is an
+# Assert (its late refunds would go to the new key in nearcore).
+[[run]]
+name = "session_rekey_same_id"
+expect = "assert"
+[run.constants]
+NewKey = '"s"'
+MaxTx = "5"
+
+# A fresh id for the new key is fine.
+[[run]]
+name = "session_rekey_fresh_id"
+expect = "pass"
+[run.constants]
+NewKey = '"s2"'
+MaxTx = "5"
 
 # ---- anti-vacuity: python3 tools/run.py examples/session-key --anti-vacuity ----
 # Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
@@ -114,11 +140,28 @@ replace = '!.al = @ - TxCost(r)'
 class = "refund lost"
 runs = ["session_sized"]
 
+# The fresh key is added after a play has been signed with "s".
+[[witness]]
+id = "fresh_key_after_play"
+expr = '~(KeyPresent(U, "s2") /\ plays >= 1)'
+runs = ["session_rekey_fresh_id"]
+
+# The library: every key id counts as having signed, so the fresh id asserts too.
+[[mutant]]
+id = "rekey_check_any_id"
+file = "NearKeys.tla"
+library = true
+find = 'SignedWith(a, k) == ~TrackSigner \/ \E t \in DOMAIN txsig : txsig[t].a = a /\ txsig[t].k = k'
+replace = 'SignedWith(a, k) == TRUE'
+class = "removed precondition"
+runs = ["session_rekey_fresh_id"]
+killed_by = ["assert"]
+
 # The model: the app signs plays with U's full-access key, which has no allowance.
 [[mutant]]
 id = "plays_on_full_key"
 file = "Session.tla"
-find = '/\ SubmitSigned(PlayTx(nid, ntx + 1), U, "s")'
-replace = '/\ SubmitSigned(PlayTx(nid, ntx + 1), U, "k0")'
+find = '/\ SubmitSigned(PlayTx(nid, ntx + nk + 1), U, "s")'
+replace = '/\ SubmitSigned(PlayTx(nid, ntx + nk + 1), U, "k0")'
 class = "wrong argument"
 runs = ["session_sized"]

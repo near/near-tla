@@ -536,12 +536,21 @@ When a handler also computes new state, return both: `<<O, newState>>`, as `Pay.
 order is in `Verdict`.
 
 `Exec` also fails a call that breaks a protocol limit ([R6](SEMANTICS.md#r6-protocol-limits)):
-more than 1024 receipts and joint callbacks from one function-call action, a joint callback
-on more than 128 results, a returned value over 4 MiB (state its bytes with `RValLen` near
+more than 1024 promises from one function-call action (its receipts and its `promise_and`
+calls), a joint callback on more than 128 results, a returned value over 4 MiB (state its bytes with `RValLen` near
 the limit; 4195 KB is an `Assert`), or a child receipt of more than 100 actions. A handler
 that splits a large batch keeps each receipt at 100 actions or fewer; `examples/limits` shows
 each limit at its boundary. Deploys (one per receipt) and AddKey method names (2000 bytes)
 are `Assert`s.
+
+The model sees receipts, not `promise_and` calls. It counts one per joint callback, which is
+right when each `promise_and` feeds one `.then` directly. A nested one,
+`promise_and(promise_and(a, b), c)`, is two promises; state the count with
+`OJoins(O, n)`. Near the limit an unstated count that nesting could take past 1024 is an
+`Assert`. The limit is per function call: in a receipt of several calls give the outcome
+`pa` ([section 12](#per-action-gas-pa)), in fault mode too, with `nj` in each record for
+its `promise_and` calls. Without `pa`, a receipt whose children could pass 1024 in all is an
+`Assert`.
 
 Logs count only if the handler declares them: `OLog(O, b)` adds one log of `b` bytes (UTF-8)
 to the outcome, and more than 100 logs or 16384 bytes of them fail the call, as in nearcore.
@@ -726,20 +735,24 @@ A transaction of more than 100 actions is invalid
 `WithAllowance(Perm(...), n)` gives a function-call key an allowance of `n`
 ([K2](SEMANTICS.md#k2-full-access-versus-function-call-keys)). `SubmitSigned` and `SubmitTx`
 refuse a transaction that costs more than the key's allowance (`AllowanceOK`; equal is
-enough), and charge the cost less its gas refund. State both on the first receipt with
-`WithTxCost(r, cost, refund)`, in the allowance's units:
+enough), and charge the cost less its gas refund. State both on the first receipt of every
+transaction such a key signs, with `WithTxCost(r, cost, refund)`, in the allowance's units
+(`cost > 0`, `0 ≤ refund ≤ cost`); without it the library asserts, since nearcore's cost is
+never 0:
 
 ```tla
 PlayTx(id, t) == WithTxCost(Rcpt(id, t, G, U, "play", 0, 0, U, 0), Cost, Refund)
 Play == SubmitSigned(PlayTx(nid, ntx + 1), U, "s") /\ ...
 ```
 
-The refund comes back at once, not when nearcore's refund receipt runs. Without
-`WithTxCost` the refund is the whole cost, so the allowance is never used up. If your
-property depends on the allowance running out, state both, and do not state a refund lower
-than nearcore's: that hides transactions nearcore lets through
+The refund comes back at once, not when nearcore's refund receipt runs. Do not state a
+refund lower than nearcore's: that hides transactions nearcore lets through
 ([N-allowance](SEMANTICS.md#over-approximations)). `examples/session-key` sizes an
 allowance for a number of plays. `KeyAllowance(a, k)` reads what is left.
+
+To replace a key that has an allowance, add the new one under a fresh key id. Adding a key
+with an allowance under an id that has already signed a transaction is an `Assert`: nearcore
+would add the old transactions' late gas refunds to the new key, which the model cannot.
 
 ### Nonces: `SignedTx`, `SubmitTx`, `TxErr`
 
@@ -750,7 +763,8 @@ signed transactions can land out of order, needs `SubmitTx`
 - `SignedTx(a, k, n, r)` is a signed transaction, a value your model can keep, hand to an
   attacker or submit again.
 - `TxErr(st)` is nearcore's first refusal of it, or `""`: `"InvalidNonce"` when `n` is not
-  above the key's nonce, and the others in nearcore's order (K5).
+  above the key's nonce, `"NonceTooLarge"` at or above the nonce ceiling (below), and the
+  others in nearcore's order (K5).
 - `SubmitTx(st)` submits it if `TxErr(st) = ""` and sets the key's nonce to `n`.
 
 Branch on `TxErr` rather than letting `SubmitTx` disable the step, so the refusal is a state
@@ -767,6 +781,15 @@ ELSE /\ TxErr(s) = "InvalidNonce" /\ st.n \notin landed \cup lost
 ```
 
 Nonces are abstract integers, from 0 for a new key; the key's delegates share them (K4).
+nearcore also refuses a nonce at or above `block_height × 1e6`. The model's heights and
+nonces are not on that scale, so the ceiling is off by default. A model whose nonces can run
+ahead of the chain sets it in `runs.toml`: the first refused nonce at model height `blk` is
+`(NonceHeight0 + blk) × NoncePerHeight` (`examples/tx-nonce`, `nonce_too_large`):
+
+```toml
+"NearKeys!NonceHeight0" = "1"
+"NearKeys!NoncePerHeight" = "2"
+```
 
 ### Key actions as child receipts
 
@@ -779,8 +802,9 @@ Your contract can change its own keys with child receipts built by
 - Adding a key that is present, or deleting one that is absent, fails the receipt.
 - In gas mode, these constructors give the receipt its fee-table fee (`KeyFee`). For a
   function-call permission that includes the per-byte fee on its method names, counted as
-  written (`Σ (len + 1)`, one byte per character); if your names are placeholders or not
-  ASCII, give the real UTF-8 byte count with
+  written (`Σ (len + 1)`, one byte per character). A name with a character outside
+  printable ASCII is an `Assert` (TLC counts characters, nearcore UTF-8 bytes); for such
+  names, or placeholders for longer ones, give the real byte count with
   `WithMethodBytes(perm, n)` ([N-keyfee](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)).
   A key-action receipt built with plain `Rcpt(..., ADDK, ...)` costs its creator nothing
   unless you add `WithFee`.
@@ -980,6 +1004,9 @@ Apply `WithPA` after `OErr`, `OKey` and `OSz`. Rules:
 - A receipt with several gas entries and no `pa` is an assertion unless
   `PooledGasOK <- TRUE`.
 - For a panic in action `i`, `OPanicAt(O, i, k)` names the panic-path burn key.
+- The promise limit (1024 per call, R6) is counted per record. In fault mode `pa` serves
+  only that, so its records need only `kids` (and `nj`, the call's `promise_and` count, if
+  any); the model reads it only when the receipt's children could pass 1024 in all.
 
 The token modules emit `pa` for batches by default (`TokBatchPerAction`, default `TRUE`).
 Their burn keys are:

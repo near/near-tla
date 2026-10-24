@@ -94,7 +94,8 @@ them. A model that lists platform variables one by one must add each.
   (`AddKeyFcBytesFee`, self-directed) on `Σ (len(name) + 1)` bytes over the permission's method
   names (`utils.rs:4-6`; `host.rs:4078-4091`); it used to charge only the base fee (2,000
   bytes: 424 Ggas against nearcore's 428.26; now 432). The names are counted as written, one
-  byte per character (nearcore counts UTF-8 bytes);
+  byte per character (nearcore counts UTF-8 bytes; a name outside printable ASCII is an
+  `Assert`);
   `WithMethodBytes(p, n)` states a real byte count (it adds an `mb` field to the permission,
   which the added key keeps: compare permission fields, not whole records). Only `AddKeyRcpt` uses `KeyFee`; no
   example or conformance flow does. Migration: a model whose `AddKeyRcpt` budgets sat within
@@ -416,7 +417,11 @@ them. A model that lists platform variables one by one must add each.
   `MaxMethodNameBytes`, `MethodBytesOK`; in `NearAsync`: `MaxActionsPerReceipt`,
   `MaxPromisesPerCall`, `MaxJointInputs`, `MaxReturnedData`, `AcActCount`, `NCalls`, `NActs`,
   `PromiseCount`, `RetTooLong`, `HostLimitErr`, `NewRcptLimitErr`, `MaxLogs`, `MaxLogBytes`,
-  `OLog`, `LogCount`, `LogBytes`, `LogsOver`, `RcptSum`, `RcptSumIn`.
+  `OLog`, `LogCount`, `LogBytes`, `LogsOver`, `RcptSum`, `RcptSumIn`, `OJoins`, `NJoins`,
+  `JoinsUpTo`, `MaxJoins`, `StatedJoins`, `CallPromisesOver`, `PAPartOK`, `Partitioned`,
+  `PAJoins`, `PromisesOver`; in `NearKeys` also `SignedWith`, `AllowanceAddOK`,
+  `AllowanceAddsOK`, `NonceHeight0`, `NoncePerHeight`, `NonceCeiling`, `NonceTooLarge`,
+  `AsciiChars`, `AsciiName`.
   Migration: rename the model's own definition. A model-local local-receipt rule
   is not always replaceable by `LocalPriorityOK`: a rule that lets **every**
   top-level receipt skip the wait admits more interleavings than the library
@@ -428,11 +433,17 @@ them. A model that lists platform variables one by one must add each.
   creates a receipt of more than 100 actions, more than 1024 receipts and joint callbacks
   from one function-call action, a joint callback on more than 128 inputs, or a returned
   value over 4 MiB now fails (`Verdict`: `HostLimitErr`, `NewRcptLimitErr`). A returned
-  value of exactly 4195 KB with no byte count, and a function-call AddKey of more than 2000
-  method-name bytes, are `Assert`s. Every example run has the same verdict and state counts
-  as before: none comes near a limit. Migration: a model that exceeded a limit was modelling
-  something nearcore refuses; keep its receipts within the limits, give a returned value near
-  4 MiB its bytes with `RValLen`, and give an AddKey's real byte count with `WithMethodBytes`.
+  value of exactly 4195 KB with no byte count, a function-call AddKey of more than 2000
+  method-name bytes, a promise count that nested `promise_and` calls could take past 1024
+  when the handler does not state them (`OJoins`), and a receipt of several function calls
+  whose children could pass 1024 in all without `pa`, are `Assert`s. The limits are
+  unconditional: an older model that crosses one changes behaviour, a call that committed
+  before now fails (and its receipts are dropped) or the run stops on an `Assert`, so its
+  verdicts can change. Every example run has the same verdict and state counts as before:
+  none comes near a limit. Migration: a model that crosses a limit was modelling something
+  nearcore refuses; keep its receipts within the limits, give a returned value near 4 MiB its
+  bytes with `RValLen`, an AddKey's real byte count with `WithMethodBytes`, a call's
+  `promise_and` count with `OJoins`, and a receipt of several calls a `pa` (in fault mode too).
 - **`tools/run.py`: an `expect = "pass"` run needs at least one invariant.** Properties alone
   no longer count: a run with an empty INVARIANTS section can pass without looking at a state.
   No run in the repo was affected. Migration: add an invariant, or set
@@ -444,15 +455,20 @@ them. A model that lists platform variables one by one must add each.
   `WithAllowance(perm, n)` gives a function-call key an allowance. `SubmitSigned` refuses a
   transaction that costs more (`AllowanceOK`; an allowance equal to the cost is enough, as
   nearcore's `checked_sub`) and charges the cost, adding the gas refund back at once
-  (`Charged`). `WithTxCost(r, cost, refund)` states both on the first receipt; by default the
-  refund is the whole cost, so a key's allowance is never used up and existing models are
-  unchanged. `KeyBytes` counts an allowance's 16 bytes (it was an override). New sim test
+  (`Charged`). `WithTxCost(r, cost, refund)` states both on the first receipt, and a
+  transaction signed with a key that has an allowance must carry it (an `Assert` otherwise,
+  and for a cost of 0: nearcore's cost is never 0). An AddKey of a key with an allowance under
+  a key id that has signed a transaction is an `Assert` (`AllowanceAddOK`): nearcore adds the
+  old transactions' late gas refunds to the new key; use a fresh id. A model without
+  allowances is unchanged. `KeyBytes` counts an allowance's 16 bytes (it was an override). New sim test
   `conformance/tests/accounts.rs`, `allowance_charge_refund_and_boundary`: the exact charge
   (`total_cost`, with the purchase price at `max(gas price, min_gas_purchase_price)`), the
   settled allowance, the boundary at the cost and one yocto below it, the 16 bytes.
 - **Transaction nonces** (SEMANTICS K5, N-tx-validity; `examples/tx-nonce`), opt-in:
   `SignedTx(a, k, n, r)` is a signed transaction any step may submit again; `TxErr(st)` is
-  nearcore's first refusal of it in nearcore's order (`InvalidNonce` among them) and
+  nearcore's first refusal of it in nearcore's order (`InvalidNonce` among them, then
+  `NonceTooLarge` past a nonce ceiling the model sets with `NonceHeight0` and
+  `NoncePerHeight`, off by default; delegates check it too) and
   `SubmitTx(st)` submits it and sets the key's nonce, the one its delegates are checked
   against (K4). `SubmitSigned` is unchanged and checks no nonce. New sim test
   `conformance/tests/accounts.rs`, `transaction_nonces`: replay and lower nonces refused with
@@ -460,7 +476,9 @@ them. A model that lists platform variables one by one must add each.
   behind a direct transaction failing.
 - **Protocol limits** (SEMANTICS R6, N-limits; `examples/limits`): 100 actions per receipt,
   1024 promises per function-call action, 128 joint inputs and 4 MiB returned fail as in
-  nearcore (see Breaking); so do 100 logs and 16384 bytes of logs per function call, opt-in:
+  nearcore (see Breaking), the promises per call counting each `promise_and` (stated with
+  `OJoins`, else one per joint callback) and partitioned by `pa` in fault mode as in gas mode;
+  so do 100 logs and 16384 bytes of logs per function call, opt-in:
   a handler declares each log with `OLog(O, bytes)`, and logs over a limit in a receipt of
   several calls are an `Assert`; more than 2000 bytes of AddKey method names is an `Assert`, as
   the deploy limits already were. New sim tests `conformance/tests/limits.rs`: `actions_per_receipt` (a
@@ -468,7 +486,13 @@ them. A model that lists platform variables one by one must add each.
   (1024 and 1025, on a WAT contract; `wat` is a new dev-dependency, already in the lock),
   `add_key_method_name_bytes` (2000 and 2001), `logs_per_function_call_action` (one log of
   16384 and 16385 bytes on the `probe`'s `record`, two logs reaching the total, 100 and 101
-  logs; a failed call keeps the logs it wrote). None refuted a rule.
+  logs; a failed call keeps the logs it wrote). Both limits are shown per call on receipts of
+  two function calls: 600 + 600 promises pass and 1024 + 1025 fail with nothing sent; 60 + 60
+  logs and 9000 + 9000 bytes pass, 100 + 101 logs and 16384 + 16385 bytes fail. None refuted
+  a rule. Method names outside printable ASCII are an `Assert` unless `WithMethodBytes` gives
+  their bytes (TLC counts characters, nearcore UTF-8 bytes). New runs in `examples/limits`
+  (`limit_nest_*`, `limit_multi_*`), `examples/session-key` (`session_cost_unstated`,
+  `session_rekey_*`) and `examples/tx-nonce` (`nonce_below_ceiling`, `nonce_too_large`).
 
 - **Flow sets, and model-vs-sim flows for `probe2`** (`conformance/scripts/flowsets.py`,
   `flows/probes2.toml` from `scripts/gen_probes2.py`, `tla/Probe2Conf.tla`,

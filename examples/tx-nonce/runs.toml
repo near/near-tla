@@ -55,6 +55,24 @@ invariant = "PaidOnce"
 [run.constants]
 NoNonce = "TRUE"
 
+# The nonce ceiling: at nearcore height 1 with 3 nonces per height (a scaled-down 1e6), nonces 1
+# and 2 are below it and both payments land ...
+[[run]]
+name = "nonce_below_ceiling"
+expect = "pass"
+[run.constants]
+"NearKeys!NonceHeight0" = "1"
+"NearKeys!NoncePerHeight" = "3"
+
+# ... and with 2 per height, payment 2 is refused (NonceTooLarge) and lost.
+[[run]]
+name = "nonce_too_large"
+expect = "violation"
+invariant = "NoLostPayment"
+[run.constants]
+"NearKeys!NonceHeight0" = "1"
+"NearKeys!NoncePerHeight" = "2"
+
 # ---- anti-vacuity: python3 tools/run.py examples/tx-nonce --anti-vacuity ----
 # Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
 # M has no callback and reads no result: the dropped .then and result check classes have
@@ -91,6 +109,22 @@ find = '[keys EXCEPT ![a][k] = ("nonce" :> st.n) @@ Charged(@, st.r)]'
 replace = '[keys EXCEPT ![a][k] = Charged(@, st.r)]'
 class = "effect never happens"
 runs = ["nonce_sequential"]
+
+# Payment 2 lands just below the ceiling.
+[[witness]]
+id = "below_ceiling_lands"
+expr = '~(2 \in landed)'
+runs = ["nonce_below_ceiling"]
+
+# The library: the ceiling refuses one nonce early.
+[[mutant]]
+id = "nonce_ceiling_tight"
+file = "NearKeys.tla"
+library = true
+find = 'NonceTooLarge(n) == NonceHeight0 >= 0 /\ n >= NonceCeiling(blk)'
+replace = 'NonceTooLarge(n) == NonceHeight0 >= 0 /\ n + 1 >= NonceCeiling(blk)'
+class = "off-by-one"
+runs = ["nonce_below_ceiling"]
 
 # The model: the wallet signs its first payment with the key's current nonce, not the next.
 [[mutant]]

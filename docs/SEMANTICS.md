@@ -217,7 +217,11 @@ Each rule has four fields:
   (`:2581`), `promise_batch_then` (`:2645`) and the yields (`:4297`, `:4407`). Joint inputs:
   `host.rs:2523-2532`; `runtime/runtime/src/verifier.rs:749-754` for a receipt. Returned
   value: `host.rs:4711-4717`. Deploys: `action_validation.rs:21-37`, `:128-129`, `:305-318`.
-  Method names: `action_validation.rs:456-474`. Logs: `log_utf8` and `log_utf16`
+  Method names: `action_validation.rs:456-474` (`method_name.len()`, UTF-8 bytes). Per
+  function call: each action runs the VM afresh (`runtime/runtime/src/function_call.rs:76`,
+  `:281`), with no promises yet (`runtime/near-vm-runner/src/logic/host.rs:96`, in `HostCtx::new`) and
+  no logs (`runtime/near-vm-runner/src/logic/logic.rs:45-54`);
+  `promise_and` pushes one promise (`host.rs:2486-2535`). Logs: `log_utf8` and `log_utf16`
   (`host.rs:4792-4800`, `:4816-4825`) check the count first
   (`runtime/near-vm-runner/src/logic/logic.rs:81-88`), then the message against what is left
   as it is read (`host.rs:486-512`, `:548-578`), then the total (`logic.rs:90-101`).
@@ -231,11 +235,19 @@ Each rule has four fields:
     `Verdict` fails a call that creates a receipt of more than 100 (`NewRcptLimitErr`),
     after the call, as for a zero-gas child (G2).
   - `HostLimitErr(r, O)` fails the call as a panic does when the outcome creates a joint
-    callback with more than 128 inputs, more than 1024 promises, or returns more than 4 MiB.
-    The promise count is the receipts an action creates plus one `promise_and` per joint
-    callback (`AndThen`), with the receipts of an outcome without per-action accounting
-    (`pa`) counted as one action's. A contract that nests `promise_and` makes more promises
-    than that, so the count is a lower bound (N-limits). A returned value is measured in
+    callback with more than 128 inputs, more than 1024 promises in one function call, or
+    returns more than 4 MiB. The promise count (`PromisesOver`) is the receipts a call
+    creates plus its `promise_and` calls, nested ones included. The handler states those
+    with `OJoins(O, n)` (for a receipt of several calls, a field `nj` in each `pa` record);
+    without it the model counts one per joint callback (`NJoins`, exact when each
+    `promise_and` feeds one callback directly), and asserts where nesting could cross the
+    limit: a joint callback on `n` inputs stands for up to `n − 1` nested `promise_and`
+    calls (`MaxJoins`, assuming each joins two promises or more). A `promise_and` no
+    callback uses, or one of a single promise, is beyond that bound and must be stated. In a
+    receipt of several function calls the count is per call, as `pa` partitions the
+    children (`Partitioned`), in fault mode as in gas mode; without `pa`, a receipt whose
+    total could cross 1024 is an `Assert`. Outcomes that cannot reach 1024 even at the
+    upper bound are decided without looking further. A returned value is measured in
     bytes when the outcome states them (`RValLen`); from its KB size, 4196 KB fails and
     4195 KB, which may be either, is an `Assert`.
   - Logs: a handler declares each log it writes with `OLog(O, b)` (b bytes), and
@@ -250,14 +262,21 @@ Each rule has four fields:
   - Method names: `NearKeys` asserts (`MethodBytesOK`) on a function-call AddKey of more than
     2000 bytes (`MethodBytes`) in `AddKeyAct`, `AddKeyRcpt` and `ExecKeyAct`. nearcore refuses
     it where it is created, a transaction or the call whose new receipt carries it, and the
-    model sees the key only where the action is built or run.
+    model sees the key only where the action is built or run. nearcore counts UTF-8 bytes
+    and TLC's `Len` counts characters, so `MethodBytes` counts a name as written only when
+    every character is printable ASCII (`AsciiName`; the backquote excepted, SANY takes no
+    backquote in a string) and asserts otherwise; `WithMethodBytes(p, n)` states the bytes
+    instead (N-keyfee).
 - **Validated:** sim (`conformance/tests/limits.rs`, `actions_per_receipt`: a transaction of
   100 Transfers succeeds and one of 101 is refused with `TotalNumberOfActionsExceeded`, no
   receipt and no charge; a contract's batch of 100 function calls arrives as one receipt of
   100 actions, and one of 101 fails its creator with
   `NewReceiptValidationError(TotalNumberOfActionsExceeded)` and no child;
   `promises_per_function_call_action`: 1024 promises in one call succeed and send 1024
-  receipts, and 1025 fail the call with `NumberPromisesExceeded` and send none;
+  receipts, and 1025 fail the call with `NumberPromisesExceeded` and send none; one receipt
+  of two function calls making 600 promises each succeeds and sends 1200 receipts, and one
+  making 1024 then 1025 fails with `NumberPromisesExceeded` and sends none, the first call's
+  included;
   `add_key_method_name_bytes`: 2000 bytes of method names are accepted and 2001 refused with
   `AddKeyMethodNamesNumberOfBytesExceeded`, the key not added; `conformance/tests/receipts.rs`,
   `joint_promise_input_limit`: 128 inputs pass and 129 fail the call, which creates no child;
@@ -268,10 +287,16 @@ Each rule has four fields:
   bytes, the `probe`'s `record`, passes and one of 16385 fails the call with
   `TotalLogLengthExceeded`; two logs of 8192 bytes pass, 8192 and 8193 fail on the second,
   which is not kept while the first is; 100 one-byte logs pass, and the 101st fails the call
-  with `NumberOfLogsExceeded`, the 100 kept). Each test reads the value
-  from the sim's config and asserts protocol 88's. The delegate's inner actions, 4 MiB of
-  code and the yields' promises: nearcore reading. `examples/limits` checks the model's side
-  at each boundary. <!-- conformance --> No flow reaches a limit.
+  with `NumberOfLogsExceeded`, the 100 kept; one receipt of two function calls writing 60
+  logs each succeeds with 120 logs, and one of two calls writing 9000 bytes each, in two
+  logs per call, succeeds with 18000 bytes, so both limits are per call; 100 then 101 logs
+  fails with `NumberOfLogsExceeded`, keeping 200 logs, and 16384 then 16385 bytes fails
+  with `TotalLogLengthExceeded`, keeping the first call's two logs and the second's first).
+  Each test reads the value from the sim's config and asserts protocol 88's. The
+  delegate's inner actions, 4 MiB of code, the yields' promises and the count of nested
+  `promise_and` calls: nearcore reading. `examples/limits` checks the model's side at each
+  boundary, a nested `promise_and` (`limit_nest_*`) and a receipt of two calls
+  (`limit_multi_*`) included. <!-- conformance --> No flow reaches a limit.
 
 ---
 
@@ -1254,8 +1279,11 @@ Each rule has four fields:
   `WithAllowance(p, n)` gives a function-call key one. `SubmitSigned` and `SubmitTx` (K5)
   refuse a transaction whose cost exceeds it (`AllowanceOK`; `TxErr` gives
   `NotEnoughAllowance`) and charge the cost with the refund added back at once (`Charged`).
-  `WithTxCost(r, c, f)` states a transaction's cost and refund; the defaults and the refund's
-  timing are in N-allowance. It does not check key actions a model bundles into a call
+  `WithTxCost(r, c, f)` states a transaction's cost `c > 0` and refund `0 ≤ f ≤ c`; a
+  transaction signed with a key that has an allowance must carry it (`TxCost` is an `Assert`
+  otherwise), since nearcore's cost is never 0. An AddKey of a key with an allowance under a
+  key id that has signed a transaction is an `Assert` (`AllowanceAddOK`): nearcore would add
+  the old transactions' late refunds to the new key. The refund's timing is in N-allowance. It does not check key actions a model bundles into a call
   receipt (N-fckey-one-action). There is no bootstrap path.
 - **Validated:** sim (`conformance/tests/accounts.rs`, `function_call_key_scope`: one
   zero-deposit FunctionCall to the key's receiver and methods, an empty list allowing every
@@ -1269,7 +1297,9 @@ Each rule has four fields:
   passes, and one yocto less is refused with `NotEnoughAllowance`, no receipt, and the key's
   nonce and allowance unchanged; a key with an allowance stores 16 bytes more). The bootstrap
   exception: nearcore reading (no test sends a state-init transaction).
-  `examples/session-key` checks the model's side of the allowance. <!-- conformance --> No
+  `examples/session-key` checks the model's side of the allowance, and its two `Assert`s
+  (`session_cost_unstated`, `session_rekey_same_id`). The re-added key's refund: nearcore
+  reading. <!-- conformance --> No
   flow signs with a function-call key, so the comparison does not check this rule.
 
 ### K3. AddKey and DeleteKey
@@ -1352,7 +1382,8 @@ Each rule has four fields:
   `r.rto` = R. Expiry follows the block clock (`blk > mbh`) when `MaxBlk > 0`; without a clock
   a delegate with an expiry may fail at any time. Nonces are abstract integers per key, in the
   key record, shared with the key's transactions submitted by `SubmitTx` (K5); `SubmitSigned`
-  neither checks nor sets them (N-delegate-nonce). For a user outside `KeyAccts` there is no
+  neither checks nor sets them (N-delegate-nonce). The upper bound is the model input of K5
+  (`NonceTooLarge`, off by default), checked at the height the outer receipt runs. For a user outside `KeyAccts` there is no
   key, nonce or permission check. The
   signature is the modelling rule that only U's own step builds U's `SignedDelegate`.
 - **Validated:** sim (`conformance/tests/semantics.rs`, `delegate_*`: the signer and
@@ -1382,31 +1413,38 @@ Each rule has four fields:
   again, or one with a nonce at or below one already accepted, is refused: no receipt, no
   charge. A refused transaction leaves the nonce unchanged, so its nonce stays free. Each key
   has its own nonce, and the key's delegates are checked against the same one (K4). The
-  checks run in this order: the actions (R6), the signer and its key, the nonce, the
-  balance, the allowance (K2), the storage (B2), the function-call key's scope (K2); the first
-  that fails names the error.
-- **nearcore:** `runtime/runtime/src/verifier.rs:254-280` (`verify_nonce`: `:262-264`
-  `InvalidNonce`, `:272-277` `NonceTooLarge`), `:92-104` (the actions), `:164-195` (signer and
+  checks run in this order: the actions (R6), the signer and its key, the nonce (first
+  `InvalidNonce`, then `NonceTooLarge`), the balance, the allowance (K2), the storage (B2),
+  the function-call key's scope (K2); the first that fails names the error.
+- **nearcore:** `runtime/runtime/src/verifier.rs:254-280` (`verify_nonce`: `:261-264`
+  `InvalidNonce`, then `:271-278` `NonceTooLarge` against `block_height ×
+  ACCESS_KEY_NONCE_RANGE_MULTIPLIER`, 1e6 at `core/primitives-core/src/account.rs:812`), `:92-104` (the actions), `:164-195` (signer and
   key), `:343-393` (nonce, balance, allowance, storage, permission), `:402` (the new nonce,
   applied at `runtime/runtime/src/lib.rs:350-352`); `runtime/runtime/src/actions.rs:648-657`
   (a delegate against the same nonce).
 - **Model:** `NearKeys`: `SignedTx(a, k, n, r)` is a signed transaction as a value, which any
   step may submit any number of times. `TxErr(st)` is the first check that refuses it, in
   nearcore's order, or `""`: `TotalNumberOfActionsExceeded`, `SignerDoesNotExist`,
-  `AccessKeyNotFound`, `InvalidNonce`, `NotEnoughBalance`, `NotEnoughAllowance`,
+  `AccessKeyNotFound`, `InvalidNonce`, `NonceTooLarge`, `NotEnoughBalance`, `NotEnoughAllowance`,
   `LackBalanceForState`, `AccessKeyError` (the scope); the balance covers the deposits
   only, as in `CanSubmit` (N-gas-money). `SubmitTx(st)` requires `TxErr(st) =
   ""`, submits `st.r` signed by `a` with `k`, sets the key's nonce to `n` and charges its
   allowance. A model branches on `TxErr` to see a refusal (`examples/tx-nonce`). Nonces are
-  abstract integers in the key record (`KeyNonce`, 0 for a new key). `Submit` and
-  `SubmitSigned` check no nonce, and a signer outside `KeyAccts` has none (N-tx-validity).
+  abstract integers in the key record (`KeyNonce`, 0 for a new key). The model's heights
+  (`blk`, from 0) and nonces are not on nearcore's scale, so the upper bound is a model
+  input: `NonceTooLarge(n)` is `n ≥ NonceCeiling(blk) = (NonceHeight0 + blk) ×
+  NoncePerHeight`, and the default `NonceHeight0 = −1` turns it off (`NoncePerHeight` is
+  nearcore's 1e6 unless a model scales it down). `Submit` and `SubmitSigned` check no
+  nonce, and a signer outside `KeyAccts` has none (N-tx-validity).
 - **Validated:** sim (`conformance/tests/accounts.rs`, `transaction_nonces`: a nonce 5 above
   the key's is accepted and becomes the key's nonce; the same transaction again, and an
   unused lower nonce, are refused with `InvalidNonce`, no receipt and the nonce unchanged; a
   transaction refused for its balance leaves its nonce free, and the next one with it is
   accepted; a second key of the account keeps its own nonce; a delegate below a direct
-  transaction's nonce fails, K4). The order of the checks and `NonceTooLarge`: nearcore
-  reading. `examples/tx-nonce` checks the model's side. <!-- conformance --> No flow sets a nonce.
+  transaction's nonce fails, K4). The order of the checks and `NonceTooLarge` for a
+  transaction: nearcore reading (the delegate's bound is sim, K4). `examples/tx-nonce`
+  checks the model's side, the ceiling included (`nonce_below_ceiling`,
+  `nonce_too_large`). <!-- conformance --> No flow sets a nonce.
 
 ### M1. Multi-action receipts are atomic
 
@@ -2063,24 +2101,34 @@ against the current module code; some may be fixed in the modules later.
 - **N-tx-validity. Transaction validity outside K5.** Nonces are checked only for a
   transaction submitted with `SubmitTx` by a signer in `KeyAccts` (K5). `Submit` and
   `SubmitSigned` check none, so with them a replayed or out-of-order transaction runs again.
-  Also absent: the nonce's upper bound (`NonceTooLarge`, `runtime/runtime/src/verifier.rs:272-277`),
+  The nonce's upper bound (`NonceTooLarge`, `runtime/runtime/src/verifier.rs:271-278`) is
+  off unless the model sets `NonceHeight0` (K5): the model's nonces are abstract, so by
+  default a transaction whose nonce runs ahead of the chain is accepted. Also absent:
   expiry (`runtime/runtime/src/lib.rs:2031-2034`), the gas part of the balance check
   (N-gas-money), signatures and gas-key nonces. A key added again after a DeleteKey starts
   at nonce 0, where nearcore starts it at `(h − 1) × 1e6` (N-delegate-rekey), so a
   transaction signed for the old key can run again. Each hides a refusal: a model that
   relies on one must replay its counterexamples in the sim.
 - **N-allowance. The allowance's cost and refund.** The model charges an allowance (K2) its
-  transaction's `TxCost` and adds `TxRefund` back at once; nearcore adds each gas refund only
-  when its refund receipt runs, so while refunds are in flight the model's allowance is
-  higher and accepts transactions nearcore refuses. By default (no `WithTxCost`) the refund
-  is the whole cost, so the allowance refuses only a transaction that alone costs more and
-  is never used up; the default cost is the prepaid gas in gas mode, below nearcore's
-  (which adds the conversion gas and the receipt's exec fees, at a purchase price of at
-  least 10× the gas price at 88, `runtime/runtime/src/config.rs:515-536`), and 0 in fault
-  mode. A model whose property depends on the allowance running out states each
-  transaction's cost and refund with `WithTxCost`. A refund stated below nearcore's is an
+  transaction's stated cost (`WithTxCost`) and adds the stated refund back at once; nearcore
+  adds each gas refund only when its refund receipt runs, so while refunds are in flight the
+  model's allowance is higher and accepts transactions nearcore refuses. There is no default
+  cost: nearcore's is never 0 (the conversion gas at the gas price plus the prepaid gas and
+  the receipt's exec fees at `max(gas price, min_gas_purchase_price)`,
+  `runtime/runtime/src/config.rs:515-536`), so a transaction signed with a key that has an
+  allowance and no `WithTxCost` is an `Assert`, and so is a cost of 0. A refund stated above
+  nearcore's over-approximates further. A refund stated below nearcore's is an
   under-approximation: `examples/session-key`, `session_naive_no_refund_hides`, passes with
-  `Refund = 0` while the same allowance lets more plays through with the refund.
+  `Refund = 0` while the same allowance lets more plays through with the refund. The
+  credit at conversion keeps the modelled allowance at or above nearcore's only while the
+  key stays: nearcore credits a late refund to whatever key holds the public key when the
+  refund runs (`runtime/runtime/src/actions.rs:133-157`), so a key deleted and added again
+  under the same public key gets the old key's refunds, which the model credited to the
+  old key. Refunds are not receipts in the model, so it cannot tell when the last one has
+  landed: an AddKey of a key with an allowance under a key id that has signed any
+  transaction (`txsig`; every such AddKey when `TrackSigner = FALSE`) is an `Assert`
+  (`AllowanceAddOK`; `examples/session-key`, `session_rekey_same_id`). Give a new key a
+  fresh id (`session_rekey_fresh_id`).
 - **N-fckey-one-action. Function-call keys and bundled key actions.** nearcore refuses a
   transaction signed by a function-call key unless it has exactly one action
   (`runtime/runtime/src/verifier.rs:213-217`). `KeyCanSign` refuses Transfer, Stake, key
@@ -2101,7 +2149,8 @@ against the current module code; some may be fixed in the modules later.
   their nonces, start afresh.
 - **N-delegate-expiry. Delegate expiry without a clock.** With `MaxBlk = 0` a delegate that has
   an expiry (`mbh # NoExpiry`) may fail at any time (`DelegMayExpire`). This also stands in for
-  the outer-receipt failures the model leaves out (`DelegateActionNonceTooLarge`, a racing
+  the outer-receipt failures the model leaves out (`DelegateActionNonceTooLarge` with no
+  nonce ceiling set, K5; a racing
   direct transaction of the same key; see N-delegate-nonce). With the clock it fails exactly
   when `blk > mbh`; the outer receipt may then still run in its transaction's own block,
   which nearcore allows only for a local receipt (N-time).
@@ -2228,8 +2277,9 @@ against the current module code; some may be fixed in the modules later.
   neither checks nor advances it (N-tx-validity). So in a model whose direct transactions go
   through `SubmitSigned`, a delegate that a later-nonce direct transaction of the same key
   would invalidate still runs. Likewise `DelegateActionNonceTooLarge` (a nonce at
-  or above `block_height × 1e6`, `runtime/runtime/src/actions.rs:659-666`) is absent: the
-  model's nonces are abstract. Both hide a failure of the outer receipt (whose deposit goes
+  or above `block_height × 1e6`, `runtime/runtime/src/actions.rs:657-665`) is off unless the
+  model sets the nonce ceiling (`NonceHeight0`, K5): the model's nonces are abstract. Both
+  hide a failure of the outer receipt (whose deposit goes
   back to the relayer). Mitigation: give such delegates a finite expiry and run without a
   clock (N-delegate-expiry), or submit the direct transactions with `SubmitTx`.
 - **N-batch-oog. Per-action out-of-gas in batches.** nearcore checks each function-call action
@@ -2247,11 +2297,13 @@ against the current module code; some may be fixed in the modules later.
   a function-call AddKey its base fee and its per-byte part (`NearFeeTable!AddKeyFcBytesFee`,
   about 3.9 Ggas per KB on the creator's own account) for `Σ (len(name) + 1)` bytes over the
   permission's method names (`runtime/near-vm-runner/src/logic/utils.rs:4-6`, charged at
-  `host.rs:4078-4091`). The model's names are counted as written, one byte per character
-  (TLC cannot measure a string in UTF-8; nearcore counts `name.as_bytes().len()`): a model whose
-  names stand for longer real ones, or are not ASCII, under-charges the creator, so an out-of-gas at creation can be missed
-  and a weighted sibling's share can exceed nearcore's. State the real count with
-  `WithMethodBytes(p, n)`. Before this release the per-byte part was dropped altogether (a
+  `host.rs:4078-4091`). The model's names are counted as written, one byte per character,
+  which is nearcore's `name.as_bytes().len()` for ASCII only: TLC's `Len` counts characters,
+  so a name with any character outside printable ASCII is an `Assert` (`AsciiName`). A model
+  whose names stand for longer real ones still under-charges the creator, which the model
+  cannot detect, so an out-of-gas at creation can be missed and a weighted sibling's share
+  can exceed nearcore's. State the real count with `WithMethodBytes(p, n)`; the same count
+  feeds the 2000-byte limit (R6) and the key's storage bytes. Before this release the per-byte part was dropped altogether (a
   self-directed AddKey with 2,000 bytes of method names: 424 Ggas against nearcore's
   428.26; now 432).
 - **N-burn-fail. Burn of a failing receipt.** Only the verdict is modelled, not how much a
@@ -2324,10 +2376,12 @@ against the current module code; some may be fixed in the modules later.
   4 MiB (`core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:244-256`),
   logs a handler does not declare with `OLog`, and the per-receipt storage-proof limit (feature at 86, all actions at 87;
   `runtime/runtime/src/lib.rs:925-948`, `:987-999`). Exceeding one fails the receipt or
-  refuses the transaction in nearcore and not in the model. The promise count of R6 is a
-  lower bound: a contract that nests `promise_and` makes more promises than the model
-  counts, so a call nearcore fails at 1024 may pass. A model near a limit should keep its
-  counts well inside it, or fail the call itself (`OErr`).
+  refuses the transaction in nearcore and not in the model. The promise count of R6 relies on
+  the handler for `promise_and` calls: unstated (`OJoins`), they are counted one per joint
+  callback and bounded by nesting (an `Assert` where nesting could cross 1024), but a
+  `promise_and` that no callback uses, or that joins a single promise, is past that bound,
+  so a call nearcore fails at 1024 may pass. A model near a limit should keep its counts
+  well inside it, state them, or fail the call itself (`OErr`).
 - **N-one-yocto. `one_yocto_on_promise` (85+).** A contract with zero balance may attach
   exactly 1 yocto to a promise function call without having it
   (`runtime/near-vm-runner/src/logic/host.rs:3579-3593`;

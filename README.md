@@ -195,8 +195,9 @@ Everything planned for v0.2 is in; it is waiting for a release tag.
   Per-byte storage is checked by sim tests and the calibrator's storage table only; a probe
   flow comparing it with the model needs a re-sweep of every flow.
 - **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:**
-  the rest of transaction validity (the nonce's upper bound, expiry) and the limits the
-  model cannot count (sizes, undeclared logs, the storage proof; N-limits);
+  the rest of transaction validity (expiry; the nonce's upper bound is off unless a model
+  sets it) and the limits the model cannot count (sizes, undeclared logs, uncounted
+  `promise_and` calls, the storage proof; N-limits);
   deterministic-account state init and gas keys.
 - **More calibrated standard tables:** further near-contract-standards versions, and NEP-245.
 

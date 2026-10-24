@@ -802,6 +802,9 @@ StorDelta(O) == IF "sb" \in DOMAIN O THEN O.sb ELSE 0
 LogCount(O) == IF "lgn" \in DOMAIN O THEN O.lgn ELSE 0
 LogBytes(O) == IF "lgb" \in DOMAIN O THEN O.lgb ELSE 0
 OLog(O, b) == [lgn |-> LogCount(O) + 1, lgb |-> LogBytes(O) + b] @@ O
+\* Join outcome field (R6): OJoins(O, n) states that the call made n
+\* promise_and calls, nested ones included (PromisesOver).
+OJoins(O, n) == [nj |-> n] @@ O
 \* Measured bytes (docs/SEMANTICS.md, B2): StorBytes is a table the
 \* calibrator writes (conformance/, `calibrate --stor`), keyed like GasBurn
 \* ("acct.method/path"): [key -> [base |-> Int, per |-> Int]], the receiver's
@@ -1174,11 +1177,8 @@ NActs(r) ==
 \*  - a joint callback waiting on more than 128 inputs (promise_and,
 \*    runtime/near-vm-runner/src/logic/host.rs:2523-2532);
 \*  - more than 1024 promises in one function-call action (host.rs:610-622,
-\*    checked by every host function that makes a promise).  The model
-\*    counts each receipt the action creates and one promise_and per joint
-\*    callback (AndThen); a contract that nests promise_and makes more, so
-\*    the count is a lower bound.  Without per-action accounting (pa) the
-\*    receipt's children count as one action's;
+\*    checked by every host function that makes a promise: each receipt,
+\*    each promise_and, each yield), PromisesOver below;
 \*  - a returned value over 4 MiB (value_return, host.rs:4711-4717), in
 \*    bytes when the outcome states them (RValLen), else from the KB size:
 \*    4196 KB is surely over and 4195 KB may be either (an Assert);
@@ -1187,7 +1187,6 @@ NActs(r) ==
 \*    host.rs:486-512, :4792-4800), as the outcome declares them (OLog).  The
 \*    limits are per action: over them in a receipt of several function
 \*    calls is an Assert, since the model cannot tell which call logs what.
-PromiseCount(S) == Cardinality(S) + Cardinality({c \in S : IsJoint(c)})
 LogsOver(r, O) ==
     IF LogCount(O) <= MaxLogs /\ LogBytes(O) <= MaxLogBytes THEN FALSE
     ELSE IF NCalls(r) > 1
@@ -1381,14 +1380,70 @@ PoolCheck(r, O) ==
        \/ (O.err # "" /\ ~HasPanicKey(O)) THEN TRUE
     ELSE Assert(FALSE, <<"receipt with several function calls but no pa (per-action gas); PooledGasOK <- TRUE to pool", r.to, r.m>>)
 
+\* Promises per function-call action (R6).  A call's promises are the
+\* receipts it creates (Kids) and its promise_and calls: each pushes one
+\* promise (host.rs:2486-2535), a nested one too.  The model does not see
+\* promise_and calls.  OJoins(O, n) states them for the call, or a field nj
+\* in each pa record for a receipt of several calls; without them the
+\* model counts one per joint callback (NJoins), which is exact when each
+\* promise_and feeds one callback directly.  Nested over n inputs they can
+\* be up to n - 1 (MaxJoins, assuming each joins two promises or more), so
+\* where that could cross the limit and the count is not stated, the model
+\* asserts.  A promise_and that no callback uses, or that joins a single
+\* promise, is past that bound: state the count.  The limit is per call:
+\* in a receipt of several function calls the model counts each call's
+\* children as pa partitions them (Partitioned, in either mode), and
+\* asserts without pa when the receipt's total could cross it.
+NJoins(S) == Cardinality({c \in S : IsJoint(c)})
+RECURSIVE JoinsUpTo(_)
+JoinsUpTo(J) == IF J = {} THEN 0
+                ELSE LET c == CHOOSE x \in J : TRUE IN
+                     (IF Len(c.ins) > 2 THEN Len(c.ins) - 1 ELSE 1) + JoinsUpTo(J \ {c})
+MaxJoins(S) == JoinsUpTo({c \in S : IsJoint(c)})
+PromiseCount(S) == Cardinality(S) + NJoins(S)
+\* The joins a record states (OJoins, or nj in a pa record), or -1.
+StatedJoins(R) == IF "nj" \in DOMAIN R THEN R.nj ELSE -1
+\* Does the call that creates S, with nj joins stated (-1: none), go over?
+CallPromisesOver(S, nj) ==
+    IF Cardinality(S) + (IF nj >= 0 THEN nj ELSE NJoins(S)) > MaxPromisesPerCall THEN TRUE
+    ELSE IF nj < 0 /\ Cardinality(S) + MaxJoins(S) > MaxPromisesPerCall
+    THEN Assert(FALSE, <<"receipts and joint callbacks within reach of max_promises_per_function_call_action (1024)"
+                         \o " if promise_and is nested (each promise_and is a promise); state the call's"
+                         \o " promise_and count with OJoins(O, n), or nj in its pa record", PromiseCount(S), MaxJoins(S)>>)
+    ELSE FALSE
+\* pa as the children of each call, in fault mode as in gas mode (where it
+\* is also PerAction's): one record per call, disjoint, every child in one.
+PAPartOK(r, O) ==
+    IF Len(O.pa) # NCalls(r)
+    THEN Assert(FALSE, <<"pa has", Len(O.pa), "records but the receipt has", NCalls(r), "function calls", r.m>>)
+    ELSE IF \E i, j \in DOMAIN O.pa : i < j /\ O.pa[i].kids \cap O.pa[j].kids # {}
+    THEN Assert(FALSE, <<"pa kid sets overlap", r.m>>)
+    ELSE IF \E c \in Kids(O) : ~\E k \in DOMAIN O.pa : c.id \in O.pa[k].kids
+    THEN Assert(FALSE, <<"a child is in no pa record", r.m>>)
+    ELSE TRUE
+Partitioned(r, O) ==
+    IF GasMode = "gas" THEN PerAction(r, O) /\ PAPartOK(r, O)
+    ELSE "pa" \in DOMAIN O /\ Len(O.pa) > 1 /\ PAPartOK(r, O)
+\* Every join the outcome states, for the bound checked first.
+PAJoins(O) == IF "pa" \in DOMAIN O
+              THEN SumSeq([k \in DOMAIN O.pa |-> IF "nj" \in DOMAIN O.pa[k] THEN O.pa[k].nj ELSE 0])
+              ELSE 0
+PromisesOver(r, O) ==
+    LET S == Kids(O) IN
+    IF Cardinality(S) + MaxJoins(S) + (IF "nj" \in DOMAIN O THEN O.nj ELSE 0) + PAJoins(O) <= MaxPromisesPerCall
+    THEN FALSE        \* no call can go over: most outcomes stop here
+    ELSE IF NCalls(r) <= 1 THEN CallPromisesOver(S, StatedJoins(O))
+    ELSE IF Partitioned(r, O) THEN \E k \in DOMAIN O.pa : CallPromisesOver(ActKids(O, k), StatedJoins(O.pa[k]))
+    ELSE Assert(FALSE, <<"a receipt of several function calls whose receipts and joins could exceed"
+                         \o " max_promises_per_function_call_action (1024) in all; the limit is per call:"
+                         \o " give the outcome pa (one record per call, its children in kids)", r.m, Cardinality(S)>>)
+
 \* The first host-function limit the outcome O of r exceeds, or "" (see
 \* "Protocol limits": joint inputs, promises per action, returned bytes,
 \* logs).
 HostLimitErr(r, O) ==
     CASE \E c \in Kids(O) : IsJoint(c) /\ Len(c.ins) > MaxJointInputs -> "NumberInputDataDependenciesExceeded"
-      [] PromiseCount(Kids(O)) > MaxPromisesPerCall
-         /\ IF PerAction(r, O) THEN \E k \in DOMAIN O.pa : PromiseCount(ActKids(O, k)) > MaxPromisesPerCall
-            ELSE TRUE                                         -> "NumberPromisesExceeded"
+      [] PromisesOver(r, O)                                   -> "NumberPromisesExceeded"
       [] RetTooLong(O)                                        -> "ReturnedValueLengthExceeded"
       [] LogsOver(r, O) /\ LogCount(O) > MaxLogs              -> "NumberOfLogsExceeded"
       [] LogsOver(r, O)                                       -> "TotalLogLengthExceeded"
