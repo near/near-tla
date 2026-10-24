@@ -14,7 +14,10 @@
 //! implicit account add, `LackBalanceForState` on growth (the boundary
 //! inclusive, the deposit counted, the whole receipt reverted, a callback
 //! failing after a payout), the 770-byte zero-balance allowance, and the
-//! signer's check at conversion.
+//! signer's check at conversion; a local receipt that finds the chunk full
+//! queued behind the delayed receipts ("Local receipts first"); the yield
+//! deadline of 200 blocks; and the delegate's signature, sender, nonce
+//! bound and one-per-transaction checks.
 //! `cargo test --test semantics -- --nocapture` prints what was observed.
 use near_contract_sim::prelude::*;
 use near_contract_sim::{
@@ -767,4 +770,126 @@ fn storage_implicit_account_bytes() {
     println!("near-implicit {}, eth-implicit {}", usage(&sim, near_imp), usage(&sim, eth_imp));
     assert_eq!(usage(&sim, near_imp), 182);
     assert_eq!(usage(&sim, eth_imp), 132);
+}
+
+/// S1, a full chunk: a local receipt that finds the chunk's compute limit
+/// reached goes to the back of the delayed queue
+/// (runtime/runtime/src/lib.rs:2513-2521), so every receipt already
+/// delayed runs before it (:2800 local, :2808 delayed, :2816 incoming).
+/// Block A converts eight alice -> p calls burning 240 Tgas each; at A + 1
+/// the 1000 Tgas chunk runs some and delays the rest. Block A + 2 converts
+/// six of p's own (local) calls: the chunk runs locals until it is full and
+/// delays the others behind the earlier ones, which run first at A + 3.
+/// The opt-in `LocalPriorityOK` forbids that order (N-local-congested).
+#[test]
+fn local_receipt_delayed_when_chunk_full() {
+    let mut sim = world();
+    sim.set_balance(P, Balance::from_near(100));
+    let burn = |sim: &mut Sim, signer: &str| {
+        sim.call(signer, P, "burn").args_json(json!({ "ggas": 240_000 })).gas(Gas::from_teragas(250)).submit()
+    };
+    let incoming: Vec<CryptoHash> = (0..8).map(|_| burn(&mut sim, ALICE)).collect();
+    sim.step();
+    let a = sim.height();
+    sim.step();
+    let local: Vec<CryptoHash> = (0..6).map(|_| burn(&mut sim, P)).collect();
+    sim.step();
+    sim.settle();
+    let order: Vec<CryptoHash> = sim.receipts_in(..).iter().map(|r| r.id).collect();
+    let run = |tx: &CryptoHash| {
+        let r = sim.outcome(tx).expect_receipt("burn").clone();
+        assert!(r.failure().is_none(), "{:?}", r.status);
+        (r.block_height, order.iter().position(|x| *x == r.id).unwrap())
+    };
+    let inc: Vec<(u64, usize)> = incoming.iter().map(run).collect();
+    let loc: Vec<(u64, usize)> = local.iter().map(run).collect();
+    let conv = sim.outcome(local[0]).transaction.as_ref().unwrap().block_height;
+    println!("block A = #{a}; alice's calls ran at {:?}", inc.iter().map(|x| x.0).collect::<Vec<_>>());
+    println!("p's local calls, converted at #{conv}, ran at {:?}", loc.iter().map(|x| x.0).collect::<Vec<_>>());
+    let delayed: Vec<&(u64, usize)> = inc.iter().filter(|x| x.0 > a + 1).collect();
+    let pushed: Vec<&(u64, usize)> = loc.iter().filter(|x| x.0 > conv).collect();
+    assert_eq!(conv, a + 2);
+    assert!(!delayed.is_empty() && delayed.iter().all(|x| x.0 >= conv), "some of alice's calls were delayed past A + 2");
+    assert!(loc.iter().any(|x| x.0 == conv), "locals run first in their block while the chunk has room");
+    assert!(!pushed.is_empty(), "some locals found the chunk full");
+    let last_delayed = delayed.iter().map(|x| x.1).max().unwrap();
+    let first_pushed = pushed.iter().map(|x| x.1).min().unwrap();
+    println!("{} of alice's calls were delayed; {} of p's locals were pushed behind them", delayed.len(), pushed.len());
+    assert!(last_delayed < first_pushed, "every receipt delayed before runs before the pushed local ones");
+}
+
+/// C7, the deadline: a yield made at height h times out at h + 200
+/// (`yield_timeout_length_in_blocks`,
+/// core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:274;
+/// runtime/runtime/src/function_call.rs:151-170 enqueues the deadline;
+/// runtime/runtime/src/lib.rs:3113-3221 resolves `expires_at <=
+/// block_height`, :3146): not before, and the callback then reads Failed.
+/// Its predecessor is the yielding account (function_call.rs:171-189).
+#[test]
+fn yield_times_out_at_200_blocks() {
+    let mut sim = yield_world();
+    let tx = park(&mut sim);
+    let h = sim.outcome(tx).expect_receipt("yield_create").block_height;
+    let y = sim.yields().pop().unwrap();
+    println!("yield made at #{h}; expires_at {}", y.expires_at);
+    assert_eq!(y.expires_at, h + 200);
+    sim.advance_to(h + 199);
+    sim.step();
+    println!("at #{}: callback logs {:?}", sim.height(), on_yield_logs(&sim, tx));
+    assert_eq!(sim.height(), h + 200);
+    assert_eq!(on_yield_logs(&sim, tx), None, "not before h + 200");
+    sim.settle();
+    let cb = sim.outcome(tx).expect_receipt("on_yield").clone();
+    println!("callback at #{}, from {}: logs {:?}", cb.block_height, cb.predecessor_id, cb.logs);
+    assert!(cb.block_height >= h + 200);
+    assert_eq!(cb.logs, ["timeout"]);
+    assert_eq!(cb.predecessor_id.as_str(), Y);
+}
+
+/// K4, the remaining checks of the outer receipt
+/// (runtime/runtime/src/actions.rs:453-535 `apply_delegate_action`):
+/// the sender must exist (:862-887), the signature must verify (:474-477),
+/// the delegate's sender must be the transaction's receiver (:483-490), and
+/// the nonce must be below block_height x 1e6 (:659-666). A transaction
+/// holds at most one Delegate (runtime/runtime/src/action_validation.rs:136-151).
+#[test]
+fn delegate_signature_sender_and_nonce_bound() {
+    let base = deleg_world();
+    let alice = base.secret_key(ALICE);
+    let h = base.height();
+    let check = |sim: &mut Sim, what: &str, o: TxOutcome, want: &str| {
+        println!("{what}: {}", status(&o));
+        assert!(status(&o).contains(want), "{}", status(&o));
+        assert_eq!(marks(sim), "", "no inner call");
+    };
+
+    let mut sim = base.clone();
+    let signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+    let o = sim.tx(RELAYER, "nobody.near").action(signed).transact();
+    check(&mut sim, "to an absent sender", o, "AccountDoesNotExist");
+
+    let mut sim = base.clone();
+    let mut signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+    signed.delegate_action.max_block_height += 1;
+    let o = sim.tx(RELAYER, ALICE).action(signed).transact();
+    check(&mut sim, "altered after signing", o, "DelegateActionInvalidSignature");
+
+    let mut sim = base.clone();
+    let signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+    let o = sim.tx(RELAYER, BOB).action(signed).transact();
+    check(&mut sim, "alice's delegate sent to bob", o, "DelegateActionSenderDoesNotMatchTxReceiver");
+
+    let mut sim = base.clone();
+    let mut signed = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+    signed.delegate_action.nonce = (h + 10) * 1_000_000;
+    signed.signature = alice.sign(signed.delegate_action.get_nep461_hash().as_ref());
+    let o = sim.tx(RELAYER, ALICE).action(signed).transact();
+    check(&mut sim, "nonce (h + 10) x 1e6", o, "DelegateActionNonceTooLarge");
+
+    let mut sim = base.clone();
+    let one = mark(&mut sim, ALICE, "a").sign_delegate(h + 100);
+    let two = mark(&mut sim, ALICE, "b").sign_delegate(h + 100);
+    let o = sim.tx(RELAYER, ALICE).action(one).action(two).transact();
+    assert!(o.receipts.is_empty(), "an invalid transaction");
+    check(&mut sim, "two delegates in one transaction", o, "DelegateActionMustBeOnlyOne");
 }
