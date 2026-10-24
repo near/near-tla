@@ -373,9 +373,10 @@ Each rule has four fields:
   leftover; with 0 gas it fails the creator. A failing creator leaves no yield, a failing
   resumer sends nothing. A yield can be returned (the caller's result is the callback's) or be
   an input of a `.then` or `promise_and`. A resume in the same call that yielded works.
-  `promise_yield_create_with_id` fails (creates nothing) while the account has a pending yield
-  with the same custom id, including one created earlier in the same call; a yield callback
-  is no longer pending when it runs, so it may re-create its own custom id.
+  `promise_yield_create_with_id` returns `u64::MAX` and creates nothing while the account has a
+  pending yield with the same custom id, including one created earlier in the same call; the
+  call goes on. A yield callback is no longer pending when it runs, so it may re-create its
+  own custom id.
 - **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:4245-4327` (`promise_yield_create`:
   receipt with one same-account dependency, weight, data id to a register), `:4330-4440`
   (`promise_yield_create_with_id`: a caller-chosen id, `u64::MAX` on a duplicate at
