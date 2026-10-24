@@ -474,7 +474,10 @@ unchanged (95 849 points, 222 918 receipts), and the refitted tables differ only
 burns and fees round up at each of two creation levels, so the model gives the receiver
 slightly less than nearcore, never more. Rerun from a fresh sweep after per-byte storage
 (`356fd7b`, which also carries the zero-gas "either" verdict of `30d1daa`): all 74 flows pass
-with the same totals; no flow sets `StoragePerByte`.
+with the same totals; no flow sets `StoragePerByte`. The model side was re-checked against that
+sweep after each account-lifecycle and global-contract commit, last at `7eeefdd`: all 74 flows pass
+with the same totals (no probe or flow changed; the lifecycle rules are checked by
+`tests/lifecycle.rs` and `tests/global.rs`).
 
 | flow | points | missing | sim receipts | statuses equal | gas within 5 Ggas | gas worst (Ggas) | sim edges (Tgas) | model edges equal | result |
 |---|---:|---:|---:|---:|---:|---:|---|---|---|

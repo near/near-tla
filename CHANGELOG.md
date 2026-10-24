@@ -20,6 +20,13 @@ near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 
 Each entry ends with its migration.
 
+**New platform variables, in one place.** Since the pre-release module set `NearAsync` has
+gained `txsig`, `created`, `burnt`, `blk`, `stor`, `deleted`, `code`, `gcode`, `guse` and
+`gnonce` (each has its own entry below). A model that initialises the platform with
+`PlatformInit` / `PlatformInitStaked`, or conjoins `PlatformInitExtra` to its own `Init`, and
+writes `UNCHANGED platformVars` and `vars == <<platformVars, ...>>`, needs no change for any of
+them. A model that lists platform variables one by one must add each.
+
 - **`NearFees` rounds fees up by default** (`FeeRounding == "up"`; it rounded to the nearest
   Ggas). Every table entry is rounded up on its own, so no fee is understated and the parts
   still add up: a named Transfer costs its creator 450 Ggas (was 446; exact 446.37), an
