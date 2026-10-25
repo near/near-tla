@@ -152,6 +152,7 @@ id = "payout_edge"
 kind = "least_gas"
 run = "payout_fits"
 knob = "N"
+covers = ["mt_batch_transfer"]
 form = "%d"
 lo = 1
 hi = 1000

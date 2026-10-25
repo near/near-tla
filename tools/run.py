@@ -118,6 +118,8 @@ Sweeps (run with --sweep, after the plain runs; always validated)
   # exact = true              # optional: scan the bracket instead of bisecting
   # step = 10                 # optional, with exact: scan lo..hi in steps of this (default 1:
                               # every value; a larger step samples the bracket)
+  covers = ["on_resolve"]     # optional: the receipts whose budget or input the knob varies
+                              # (method or acct.method); the audit credits the sweep to these
   [sweep.constants]           # optional overrides of the base run's constants
   It checks hi (must hold) and lo (must fail). By default it bisects with one TLC run per
   value and reports the boundary: need - 1, need and need + 1 with their verdicts. Bisection
@@ -157,8 +159,8 @@ Audit (on by default; --no-audit turns it off)
   least_gas sweep on a run that executes them (least-gas); owed receipts that declare no
   logs (logs); owed or callback receipts that log with no size or least_gas sweep on a run
   that executes them (log-size); and [audit] methods no run executes (inventory). See
-  tools/audit.py. A sweep counts if its base run executes the receipt, whether or not
-  --sweep ran it this time. The report never changes the exit code. A run whose library
+  tools/audit.py. A sweep counts for a receipt its `covers` lists and its base run
+  executes, whether or not --sweep ran it this time. The report never changes the exit code. A run whose library
   has no AuditOn (an older library) is run as before and contributes no facts; a run that
   sets AuditOn itself keeps its value.
 
@@ -254,7 +256,7 @@ WITNESS_KEYS = {"id", "expr", "about", "runs", "expect", "reason"}
 MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "library", "equivalent",
                "killed_by"}
 WITNESS_EXPECTS = ("reached", "unreachable")
-SWEEP_KEYS = {"id", "kind", "run", "knob", "form", "constants", "lo", "hi", "success", "window_run",
+SWEEP_KEYS = {"id", "kind", "run", "knob", "covers", "form", "constants", "lo", "hi", "success", "window_run",
               "window_label", "expect_need", "exact", "step", "cap", "limit", "floor", "expect"}
 SWEEP_KINDS = ("least_gas", "size")
 LEAST_GAS_ONLY = {"lo", "hi", "success", "window_run", "window_label", "expect_need", "exact", "step"}
@@ -360,6 +362,7 @@ class Sweep:
     limit: int | str | None = None
     floor: int = 0
     expect: dict[str, str] = field(default_factory=dict)
+    covers: list[str] = field(default_factory=list)  # the audit: receipts whose edge it measures
 
 
 # Sweeps by runs.toml, filled by load_doc (which keeps its 3-tuple for callers).
@@ -621,6 +624,10 @@ def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
         if not isinstance(consts, dict):
             raise ConfigError(f"{where}: constants must be a table")
         sw = Sweep(sid, path, kind, base, knobs, form, {k: tla_value(k, v) for k, v in consts.items()})
+        if "covers" in raw:
+            sw.covers = _str_list(where, raw, "covers")
+            if not sw.covers or not all(METHOD_RE.match(c) for c in sw.covers):
+                raise ConfigError(f"{where}: covers must list methods (method or acct.method)")
         if kind == "least_gas":
             sw.lo = _typed(where, raw, "lo", int, 0)
             sw.hi = _typed(where, raw, "hi", int)
@@ -1805,7 +1812,7 @@ def audit_reports(runs: list[Run], outs: list[Outcome]) -> list[audit.Report]:
     reps = []
     for toml, by_run in facts.items():
         cfg = _AUDIT.get(toml, AuditCfg())
-        refs = [audit.SweepRef(sw.id, sw.kind, [sw.run]) for sw in _SWEEPS.get(toml, [])]
+        refs = [audit.SweepRef(sw.id, sw.kind, [sw.run], sw.covers) for sw in _SWEEPS.get(toml, [])]
         gaps, subjects = audit.gaps(by_run, refs, cfg.methods, cfg.accept)
         reps.append(audit.Report(rel(toml), len(by_run), cfg.runs, gaps, subjects,
                                  cfg.methods is not None))

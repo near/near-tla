@@ -99,6 +99,7 @@ id = "log_limit"
 kind = "size"
 run = "resolver_log_ok"
 knob = "MaxLogBytes"
+covers = ["ft_resolve_transfer"]
 form = "%d"
 limit = 150
 floor = 1

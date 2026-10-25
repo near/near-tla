@@ -2051,6 +2051,7 @@ window_run = "vault_gas_win"  # optional: bracket from a window run's top bad va
 expect_need = 8600            # optional
 # exact = true                # optional: scan the bracket instead of bisecting
 # step = 100                  # optional, with exact: scan in steps of 100 (default 1: every value)
+covers = ["on_deliver"]       # optional: the receipts whose budget or input the knob varies (the audit)
 ```
 
 The runner checks that `success` holds at `hi` and fails at `lo`, bisects in between (about
@@ -2136,9 +2137,17 @@ After the runs the runner prints the gaps for each `runs.toml`:
 | `log-size` | an owed receipt or a callback that logs, with no `size` or `least_gas` sweep whose base run executes it | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs` |
 | `inventory` | a method in `[audit] methods` that no run executes | a run that reaches it |
 
-A sweep counts only if its base run actually runs the receipt (a `window_run` that does is
-not enough: the sweep varies the base run). The credit comes from `runs.toml`: the sweep need
-not have run in this invocation, so run `--sweep` to check that it holds.
+A sweep counts for a receipt only if two things hold:
+
+- its `covers` lists the receipt (`covers = ["on_refund"]`, method or `acct.method`): the
+  receipts whose budget, or whose input the log grows with, the knob varies;
+- its base run actually runs the receipt (a `window_run` that does is not enough: the sweep
+  varies the base run).
+
+The credit comes from `runs.toml`: the sweep need not have run in this invocation, so run
+`--sweep` to check that it holds. Only the executions that make a receipt a subject count: an
+owed receipt's credit comes from its owed runs, a callback's from its runs as a callback, so a
+direct call of the same method closes nothing.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:

@@ -130,6 +130,7 @@ id = "cb_need"
 kind = "least_gas"
 run = "trie_worst"
 knob = "CbBudget"
+covers = ["on_take"]
 lo = 4000
 hi = 10000
 success = ["OwedOK"]

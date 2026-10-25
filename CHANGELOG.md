@@ -527,7 +527,9 @@ them. A model that lists platform variables one by one must add each.
     executes them;
   - methods of the new `[audit] methods` inventory that no run executes.
 
-  `[audit.accept]` accepts a gap with its reason. The library's own token methods run through
+  A `[[sweep]]` counts for the receipts its new `covers` key lists, and only an owed
+  receipt's owed runs (a callback's runs as a callback) count for it. `[audit.accept]`
+  accepts a gap with its reason. The library's own token methods run through
   the new `ExecLib` and are reported apart. The report never changes the exit code. With
   `AuditOn` off (the default outside the runner), `Exec` behaves as before; with it on, runs
   take a few percent longer.

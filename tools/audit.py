@@ -10,11 +10,16 @@ from those facts, the file's `[[sweep]]` tables and its `[audit]` table
   trie       an owed receipt, or a callback with a fixed budget (weight 0), that runs in gas
              mode but in no run with TrieGasWorst
   writes     the same, run with TrieGasWorst, that declares no writes there (OWriteKey)
-  least-gas  the same, with no least_gas sweep whose base run executes it in gas mode
-  logs       an owed receipt or callback that declares no logs in any run
-  log-size   an owed receipt or callback that logs, with no size or least_gas sweep whose base
-             run executes it
+  least-gas  the same, with no least_gas sweep that covers it and whose base run executes it
+             in gas mode
+  logs       an owed receipt that declares no logs in any run
+  log-size   an owed receipt or callback that logs, with no size or least_gas sweep that covers
+             it and whose base run executes it
   inventory  a method in `[audit] methods` that no run executes
+
+Only the facts that make a receipt a subject count: for an owed receipt its owed runs, for
+a callback its runs as a callback, so a direct call of the same method closes nothing. A
+sweep counts for the receipts in its `covers`.
 
 `[audit] accept` silences a gap with a reason: `"<key>" = "why"` for every rule, or
 `"<key> <rule>" = "why"` for one, where the key is `acct.method` or `method`. The library's
@@ -97,10 +102,16 @@ class Gap:
 
 @dataclass
 class SweepRef:
-    """What the audit needs of a [[sweep]]: its kind and the runs whose facts it covers."""
+    """What the audit needs of a [[sweep]]: its kind, its base run, and the receipts whose
+    budget or input its knob varies (`covers`: method or acct.method)."""
     id: str
     kind: str
     runs: list[str]
+    covers: list[str] = field(default_factory=list)
+
+    def credits(self, key: str, runs: set[str], kinds: tuple[str, ...]) -> bool:
+        return (self.kind in kinds and bool(runs & set(self.runs))
+                and any(c == key or c == method_of(key) for c in self.covers))
 
 
 @dataclass
@@ -149,10 +160,13 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
         lib = all(f.lib for _, f in rows)
         owed = any(f.owed for _, f in rows)
         cb = any(f.cb for _, f in rows)
-        gas = [(r, f) for r, f in rows if f.mode == "gas"]
-        fixed = any(f.fixed for _, f in gas)
         if not (owed or cb):
             continue
+        # credit only from the executions that make it a subject: a direct call of the
+        # same method closes nothing
+        rows = [(r, f) for r, f in rows if (f.owed if owed else f.cb)]
+        gas = [(r, f) for r, f in rows if f.mode == "gas"]
+        fixed = any(f.fixed for _, f in gas)
         what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
         if owed or fixed:
             subjects += not lib
@@ -171,9 +185,9 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
                         "(OWriteKey), so the switch charges it nothing: declare each storage "
                         "write and remove it makes", lib)
                 gas_runs = {r for r, _ in gas}
-                if not any(s.kind == "least_gas" and gas_runs & set(s.runs) for s in sweeps):
-                    gap(key, "least-gas", f"{what}; no least_gas sweep's base run executes it "
-                        "in gas mode, so its need is not measured", lib)
+                if not any(s.credits(key, gas_runs, ("least_gas",)) for s in sweeps):
+                    gap(key, "least-gas", f"{what}; no least_gas sweep covers it (covers, with a "
+                        "base run that executes it in gas mode), so its need is not measured", lib)
         logged = [(r, f) for r, f in rows if f.lgb > 0 or f.lgn > 0]
         if not logged:
             if owed:
@@ -182,12 +196,12 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
             continue
         log_runs = {r for r, _ in logged}
         sizes = sorted({f.lgb for _, f in logged})
-        if not any(s.kind in ("size", "least_gas") and log_runs & set(s.runs) for s in sweeps):
+        if not any(s.credits(key, log_runs, ("size", "least_gas")) for s in sweeps):
             seen = (f"{sizes[0]} bytes in every run" if len(sizes) == 1
                     else f"{sizes[0]} to {sizes[-1]} bytes")
-            gap(key, "log-size", f"{what}; logs {seen}, and no size or least_gas sweep's base "
-                "run executes it: sweep the input its length grows with (ids, amounts, a memo) "
-                "to MaxLogBytes and MaxLogs", lib)
+            gap(key, "log-size", f"{what}; logs {seen}, and no size or least_gas sweep covers "
+                "it: sweep the input its length grows with (ids, amounts, a memo) to "
+                "MaxLogBytes and MaxLogs", lib)
     for meth in methods or []:
         if not any(k == meth or method_of(k) == meth for k in by_key):
             out.append(Gap(meth, "inventory", "listed in [audit] methods; no run executes it: "

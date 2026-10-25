@@ -1158,14 +1158,25 @@ class AuditTest(unittest.TestCase):
         w0 = fact(**owed, mode="gas", worst=True, known=True, fixed=True, lgn=1, lgb=50)
         self.assertIn(("v.on_res", "writes", False, False), self.rules({"a": {g}, "b": {w0}}))
         w1 = fact(**owed, mode="gas", worst=True, known=True, fixed=True, lgn=1, lgb=50, trn=40)
-        sweeps = [audit.SweepRef("need", "least_gas", ["b"])]
+        sweeps = [audit.SweepRef("need", "least_gas", ["b"], ["on_res"])]
         self.assertEqual(self.rules({"a": {g}, "b": {w1}}, sweeps), [])  # the sweep covers log-size too
+        # a sweep that does not list it in covers credits nothing
+        self.assertIn(("v.on_res", "least-gas", False, False),
+                      self.rules({"a": {g}, "b": {w1}}, [audit.SweepRef("need", "least_gas", ["b"], ["on_other"])]))
         # a sweep of a run that does not execute it covers nothing
         self.assertIn(("v.on_res", "least-gas", False, False),
-                      self.rules({"a": {g}, "b": {w1}}, [audit.SweepRef("need", "least_gas", ["c"])]))
+                      self.rules({"a": {g}, "b": {w1}}, [audit.SweepRef("need", "least_gas", ["c"], ["on_res"])]))
         # a size sweep covers log-size, not least-gas
-        got = self.rules({"b": {w1}}, [audit.SweepRef("sz", "size", ["b"])])
+        got = self.rules({"b": {w1}}, [audit.SweepRef("sz", "size", ["b"], ["v.on_res"])])
         self.assertEqual(got, [("v.on_res", "least-gas", False, False)])
+
+    def test_direct_calls_close_nothing(self):
+        # owed in fault mode only; a direct (unowed) call of the same method runs in gas mode
+        owed = fact(owed=True, m="on_res")
+        direct = fact(m="on_res", cb=False, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        self.assertEqual(self.rules({"a": {owed}, "b": {direct}},
+                                    [audit.SweepRef("need", "least_gas", ["b"], ["on_res"])]),
+                         [("v.on_res", "gas", False, False), ("v.on_res", "logs", False, False)])
 
     def test_callbacks_and_plain_receipts(self):
         # a callback with a weight: no gas rule; one that logs: log-size
