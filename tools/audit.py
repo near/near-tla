@@ -18,13 +18,16 @@ from those facts, the file's `[[sweep]]` tables and its `[audit]` table
              base run executes it
   inventory  a method in `[audit] methods` that no run executes
 
-A method is judged as one handler, on its executions as an owed receipt or as a callback
-(owed if any of them is), so a direct call of the same method closes nothing. A sweep
-counts for the receipts in its `covers`: "<method>" closes least-gas for a least_gas sweep
-and log-size for a size sweep; "<method> <rule>" names the rule.
+Each role of a method is judged on its own executions: owed ones, and unowed ones as a
+callback; a direct call of the same method closes nothing. A sweep counts for the receipts in
+its `covers`: "<method>" closes least-gas for a least_gas sweep and log-size for a size
+sweep; "<method> <rule>" names the rule. A method with both roles has a gap per role,
+labelled (owed) or (callback); for it a covers entry must name the role, "<method> <rule>
+<role>", or it credits nothing.
 
-`[audit] accept` silences a gap with a reason: `"<key>" = "why"` for every rule, or
-`"<key> <rule>" = "why"` for one, where the key is `acct.method` or `method`. The library's
+`[audit] accept` silences a gap with a reason: `"<key>" = "why"` for every rule,
+`"<key> <rule>"` for one, `"<key> <rule> <role>"` for one role, where the key is
+`acct.method` or `method`. The library's
 own token methods (ExecLib) are reported apart, and none of their gaps fails anything.
 """
 
@@ -34,6 +37,7 @@ import re
 from dataclasses import dataclass, field
 
 RULES = ("gas", "trie", "writes", "least-gas", "logs", "log-size", "inventory")
+ROLES = ("owed", "callback")
 
 _START = re.compile(r'<<\s*"AUDIT"\s*,')
 _TOKEN = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|(TRUE|FALSE)|(-?\d+))\s*(,|>>)', re.S)
@@ -100,6 +104,11 @@ class Gap:
     text: str
     lib: bool = False
     accepted: str | None = None
+    role: str = ""  # "owed" or "callback" when the method has both roles, else ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.key} ({self.role})" if self.role else self.key
 
 
 @dataclass
@@ -111,16 +120,18 @@ class SweepRef:
     runs: list[str]
     covers: list[str] = field(default_factory=list)
 
-    def credits(self, key: str, runs: set[str], rule: str) -> bool:
-        """Whether the sweep closes `rule` (least-gas or log-size) for `key`: a covers entry
-        names the key, as "<key>" (the kind's rule: least-gas for least_gas, log-size for
-        size) or "<key> <rule>", and its base run executes it in `runs`."""
+    def credits(self, key: str, runs: set[str], rule: str, role: str = "") -> bool:
+        """Whether the sweep closes `rule` (least-gas or log-size) for `key` in `role`: a
+        covers entry names the key, as "<key>" (the kind's rule: least-gas for least_gas,
+        log-size for size), "<key> <rule>" or "<key> <rule> <role>", and its base run
+        executes it in that role (`runs`). For a method with both roles (`role` set), an
+        entry must name the role."""
         if not runs & set(self.runs):
             return False
         own = "least-gas" if self.kind == "least_gas" else "log-size"
         for c in self.covers:
-            k, _, r = c.partition(" ")
-            if (k == key or k == method_of(key)) and (r or own) == rule:
+            k, r, ro = (c.split(" ") + ["", ""])[:3]
+            if (k == key or k == method_of(key)) and (r or own) == rule and ro == role:
                 return True
         return False
 
@@ -139,9 +150,10 @@ class Report:
         return [g for g in self.gaps if not g.accepted and not g.lib]
 
 
-def _accepted(accept: dict[str, str], key: str, rule: str) -> str | None:
+def _accepted(accept: dict[str, str], key: str, rule: str, role: str = "") -> str | None:
     m = method_of(key)
-    for k in (f"{key} {rule}", f"{m} {rule}", key, m):
+    keys = [f"{key} {rule} {role}", f"{m} {rule} {role}"] if role else []
+    for k in keys + [f"{key} {rule}", f"{m} {rule}", key, m]:
         if k in accept:
             return accept[k]
     return None
@@ -163,24 +175,29 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
     out: list[Gap] = []
     subjects = 0
 
-    def gap(key, rule, text, lib):
-        out.append(Gap(key, rule, text, lib, _accepted(accept, key, rule)))
+    def gap(key, rule, text, lib, role=""):
+        out.append(Gap(key, rule, text, lib, _accepted(accept, key, rule, role), role))
 
     for key in sorted(by_key):
         rows = by_key[key]
         lib = all(f.lib for _, f in rows)
-        # the handler, judged on its runs as an owed receipt or a callback; a direct call
-        # of the same method closes nothing
-        sub = [(r, f) for r, f in rows if f.owed or f.cb]
-        if not sub:
-            continue
-        owed = any(f.owed for _, f in sub)
-        gas = [(r, f) for r, f in sub if f.mode == "gas"]
-        fixed = any(f.fixed for _, f in gas)
-        what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
-        subjects += (owed or fixed) and not lib
-        for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps):
-            gap(key, rule, text, lib)
+        # each role is judged on its own executions: owed ones, and unowed ones as a
+        # callback; a direct call of the same method closes nothing
+        roles = [(owed, [(r, f) for r, f in rows if (f.owed if owed else f.cb and not f.owed)])
+                 for owed in (True, False)]
+        roles = [(o, sub) for o, sub in roles if sub]
+        both = len(roles) == 2
+        counted = False
+        for owed, sub in roles:
+            role = ("owed" if owed else "callback") if both else ""
+            gas = [(r, f) for r, f in sub if f.mode == "gas"]
+            fixed = any(f.fixed for _, f in gas)
+            what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
+            if (owed or fixed) and not lib and not counted:
+                subjects += 1
+                counted = True
+            for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps, role):
+                gap(key, rule, text, lib, role)
     for meth in methods or []:
         if not any(k == meth or method_of(k) == meth for k in by_key):
             out.append(Gap(meth, "inventory", "listed in [audit] methods; no run executes it: "
@@ -189,9 +206,9 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
     return out, subjects
 
 
-def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps):
-    """(rule, text) for each gap of a handler: `sub` its executions as an owed receipt or
-    a callback, `gas` those in gas mode."""
+def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, role: str):
+    """(rule, text) for each gap of one role of a method: `sub` its executions in that role,
+    `gas` those in gas mode, `role` set when the method has both roles."""
     if owed or fixed:
         if not gas:
             if owed:
@@ -207,7 +224,7 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps):
                 yield "writes", (f"{what}; runs with TrieGasWorst but declares no writes "
                                  "(OWriteKey), so the switch charges it nothing: declare each "
                                  "storage write and remove it makes")
-            if not any(s.credits(key, {r for r, _ in gas}, "least-gas") for s in sweeps):
+            if not any(s.credits(key, {r for r, _ in gas}, "least-gas", role) for s in sweeps):
                 yield "least-gas", (f"{what}; no least_gas sweep covers it (covers, with a base "
                                     "run that executes it in gas mode), so its need is not measured")
     logged = [(r, f) for r, f in sub if f.lgb > 0 or f.lgn > 0]
@@ -217,7 +234,7 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps):
                            "declare them (OLog, EvLen) with lengths from its input")
         return
     sizes = sorted({f.lgb for _, f in logged})
-    if not any(s.credits(key, {r for r, _ in logged}, "log-size") for s in sweeps):
+    if not any(s.credits(key, {r for r, _ in logged}, "log-size", role) for s in sweeps):
         seen = (f"{sizes[0]} bytes in every run" if len(sizes) == 1
                 else f"{sizes[0]} to {sizes[-1]} bytes")
         yield "log-size", (f"{what}; logs {seen}, and no sweep covers its log size: sweep the "
@@ -237,16 +254,16 @@ def render(rep: Report) -> str:
              + ("" if rep.inventory else "; no [audit] methods, so a method no run executes "
                 "goes unreported"))
     lines = [head]
-    width = max([len(g.key) for g in own] + [8])
+    width = max([len(g.label) for g in own] + [8])
     for g in open_:
-        lines.append(f"  {g.key:{width}}  {g.rule:9}  {g.text}")
+        lines.append(f"  {g.label:{width}}  {g.rule:9}  {g.text}")
     for g in own:
         if g.accepted:
-            lines.append(f"  {g.key:{width}}  {g.rule:9}  accepted: {g.accepted}")
+            lines.append(f"  {g.label:{width}}  {g.rule:9}  accepted: {g.accepted}")
     if lib:
         by: dict[str, list[str]] = {}
         for g in lib:
-            by.setdefault(g.key, []).append(g.rule + (" (accepted)" if g.accepted else ""))
+            by.setdefault(g.label, []).append(g.rule + (" (accepted)" if g.accepted else ""))
         lines.append("  library token methods, standard implementations (for where your "
                      "contract depends on them): "
                      + "; ".join(f"{k} {', '.join(v)}" for k, v in by.items()))

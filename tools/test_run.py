@@ -947,8 +947,8 @@ class SweepTest(unittest.TestCase):
         _, (sw,) = self.load(LEAST + 'success = ["Small"]\nexpect_need = 7\n')
         self.assertEqual((sw.kind, sw.run, sw.knobs, sw.form, sw.lo, sw.hi, sw.success, sw.expect_need, sw.exact),
                          ("least_gas", "t_gas", ["Menu"], "{%d}", 0, 100, ["Small"], 7, False))
-        _, (sw,) = self.load(LEAST + 'covers = ["on_x", "v.near.on_y log-size"]\n')
-        self.assertEqual(sw.covers, ["on_x", "v.near.on_y log-size"])
+        _, (sw,) = self.load(LEAST + 'covers = ["on_x", "v.near.on_y log-size", "on_z least-gas owed"]\n')
+        self.assertEqual(sw.covers, ["on_x", "v.near.on_y log-size", "on_z least-gas owed"])
         _, (sw,) = self.load(LEAST + 'exact = true\nstep = 5\n')
         self.assertEqual((sw.exact, sw.step), (True, 5))
         _, (sz,) = self.load(SIZE + 'knob = ["N", "Menu"]\n'.replace("knob", "form = '%d'\nfloor = 1\n#"))
@@ -971,6 +971,7 @@ class SweepTest(unittest.TestCase):
             "exact on size": SIZE + "exact = true\n",
             "covers rule": LEAST + 'covers = ["on_x trie"]\n',
             "least-gas on size": SIZE + 'covers = ["on_x least-gas"]\n',
+            "covers role": LEAST + 'covers = ["on_x least-gas both"]\n',
             "covers newline": LEAST + 'covers = ["on_x\\n"]\n',
             "covers empty": LEAST + "covers = []\n",
         }
@@ -1187,15 +1188,30 @@ class AuditTest(unittest.TestCase):
                                     [audit.SweepRef("need", "least_gas", ["b"], ["on_res"])]),
                          [("v.on_res", "gas", False, False), ("v.on_res", "logs", False, False)])
 
-    def test_one_handler_over_owed_and_callback_runs(self):
-        # owed in one run, an unowed fixed-budget callback in another: one handler
-        owed = fact(owed=True, mode="gas", known=True, fixed=True, lgn=1, lgb=9)
+    def test_roles_judged_apart(self):
+        def rules(facts, sweeps=(), accept=None):
+            gaps, _ = audit.gaps(facts, list(sweeps), None, accept or {})
+            return sorted((g.label, g.rule, g.accepted is not None) for g in gaps)
+        # owed only in fault mode, declaring no logs; an unowed callback fully checked in gas mode
+        owed = fact(owed=True)
         cb = fact(mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
-        self.assertEqual(self.rules({"a": {owed}, "b": {cb}}),
-                         [("v.on_cb", "least-gas", False, False), ("v.on_cb", "log-size", False, False)])
-        gaps, n = audit.gaps({"a": {owed}, "b": {cb}}, [], None, {})
+        sw = [audit.SweepRef("need", "least_gas", ["b"], ["on_cb least-gas callback", "on_cb log-size callback"])]
+        self.assertEqual(rules({"a": {owed}, "b": {cb}}, sw),
+                         [("v.on_cb (owed)", "gas", False), ("v.on_cb (owed)", "logs", False)])
+        # both roles in one base run: an entry without a role credits neither
+        owed_gas = fact(owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        plain = [audit.SweepRef("need", "least_gas", ["a"], ["on_cb", "on_cb log-size"])]
+        self.assertEqual(rules({"a": {owed_gas, cb}}, plain),
+                         [("v.on_cb (callback)", "least-gas", False), ("v.on_cb (callback)", "log-size", False),
+                          ("v.on_cb (owed)", "least-gas", False), ("v.on_cb (owed)", "log-size", False)])
+        # with roles named, each closes its own; accept can name a role
+        named = [audit.SweepRef("need", "least_gas", ["a"], ["on_cb least-gas owed", "on_cb log-size owed"])]
+        self.assertEqual(rules({"a": {owed_gas, cb}}, named, {"on_cb least-gas callback": "x"}),
+                         [("v.on_cb (callback)", "least-gas", True), ("v.on_cb (callback)", "log-size", False)])
+        # a single role: no label, and a plain entry credits
+        self.assertEqual(rules({"a": {owed_gas}}, plain), [])
+        _, n = audit.gaps({"a": {owed_gas, cb}}, [], None, {})
         self.assertEqual(n, 1)
-        self.assertTrue(all(g.text.startswith("owed") for g in gaps))
 
     def test_callbacks_and_plain_receipts(self):
         # a callback with a weight: no gas rule; one that logs: log-size
@@ -1247,6 +1263,7 @@ class AuditTest(unittest.TestCase):
                 "bad method": '[audit]\nmethods = ["a b"]\n',
                 "trailing newline": '[audit]\nmethods = ["on_x\\n"]\n',
                 "unknown rule": '[audit.accept]\n"on_x tri" = "why"\n',
+                "unknown role": '[audit.accept]\n"on_x trie owe" = "why"\n',
                 "empty reason": '[audit.accept]\n"on_x" = " "\n',
                 "per-run audit": 'audit = 1\n',
             }

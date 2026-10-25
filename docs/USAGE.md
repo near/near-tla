@@ -2147,9 +2147,12 @@ A sweep counts for a receipt only if two things hold:
   varies the base run).
 
 The credit comes from `runs.toml`: the sweep need not have run in this invocation, so run
-`--sweep` to check that it holds. A method is judged as one handler, on its executions as an
-owed receipt or as a callback (owed if any of them is). A direct call of the same method
-closes nothing.
+`--sweep` to check that it holds.
+
+Each role of a method is judged on its own executions: owed ones, and unowed ones as a
+callback. A direct call of the same method closes nothing. A method with both roles gets
+its gaps per role, labelled `(owed)` or `(callback)`. For such a method a covers entry must
+name the role (`"on_refund least-gas owed"`), or it credits nothing.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:
@@ -2172,6 +2175,7 @@ methods = ["ft_on_transfer", "on_resolve", "v.on_refund"]   # method, or acct.me
 `accept` silences a gap and prints its reason instead:
 
 - `"<key> <rule>"` accepts one rule;
+- `"<key> <rule> owed"` (or `callback`) accepts one role's gap, for a method with both;
 - `"<key>"` accepts every rule for that key;
 - the key is `acct.method` or `method`.
 

@@ -578,10 +578,11 @@ def load_audit(path: Path, doc: dict, nruns: int) -> AuditCfg:
         raise ConfigError(f"{where}: accept must be a table")
     for k, v in accept.items():
         parts = k.split(" ")
-        if not (1 <= len(parts) <= 2 and METHOD_RE.fullmatch(parts[0])
-                and (len(parts) == 1 or parts[1] in audit.RULES)):
-            raise ConfigError(f"{where}: bad accept key {k!r} (\"<method>\" or \"<method> <rule>\", "
-                              f"rule one of {', '.join(audit.RULES)})")
+        if not (1 <= len(parts) <= 3 and METHOD_RE.fullmatch(parts[0])
+                and (len(parts) < 2 or parts[1] in audit.RULES)
+                and (len(parts) < 3 or parts[2] in audit.ROLES)):
+            raise ConfigError(f"{where}: bad accept key {k!r} (\"<method>\", \"<method> <rule>\" or "
+                              f"\"<method> <rule> owed|callback\", rule one of {', '.join(audit.RULES)})")
         if not isinstance(v, str) or not v.strip():
             raise ConfigError(f"{where}: accept {k!r} must say why (a non-empty string)")
     return AuditCfg(methods, dict(accept), nruns)
@@ -627,12 +628,15 @@ def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
         sw = Sweep(sid, path, kind, base, knobs, form, {k: tla_value(k, v) for k, v in consts.items()})
         if "covers" in raw:
             sw.covers = _str_list(where, raw, "covers")
+            rules = ["log-size"] + (["least-gas"] if kind == "least_gas" else [])
             for c in sw.covers:
-                k, _, r = c.partition(" ")
-                if not METHOD_RE.fullmatch(k) or r not in ("", "log-size", *(["least-gas"] if kind == "least_gas" else [])):
-                    raise ConfigError(f"{where}: bad covers entry {c!r} (\"<method>\" or "
-                                      f"\"<method> least-gas|log-size\"; least-gas only on a "
-                                      f"least_gas sweep)")
+                parts = c.split(" ")
+                if not (1 <= len(parts) <= 3 and METHOD_RE.fullmatch(parts[0])
+                        and (len(parts) < 2 or parts[1] in rules)
+                        and (len(parts) < 3 or parts[2] in audit.ROLES)):
+                    raise ConfigError(f"{where}: bad covers entry {c!r} (\"<method>\", \"<method> "
+                                      f"<rule>\" or \"<method> <rule> owed|callback\"; rule "
+                                      f"{' or '.join(rules)} here)")
             if not sw.covers:
                 raise ConfigError(f"{where}: covers must list methods (method or acct.method)")
         if kind == "least_gas":
