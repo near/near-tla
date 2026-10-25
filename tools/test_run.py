@@ -1233,6 +1233,15 @@ class AuditTest(unittest.TestCase):
         got = self.rules({"r": {own, lib}})
         self.assertIn(("v.on_cb", "gas", False, False), got)
         self.assertIn(("v.on_cb", "logs", False, False), got)
+        # own and library under one key, same role: covers credits the own execution only
+        own_g = fact(owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        sw = [audit.SweepRef("need", "least_gas", ["r"], ["v.on_cb", "v.on_cb log-size"])]
+        self.assertEqual(self.rules({"r": {own_g, lib}}, sw),
+                         [("v.on_cb", "least-gas", False, True), ("v.on_cb", "log-size", False, True)])
+        self.assertEqual(self.rules({"r": {lib}}, sw), [])  # no own execution: the library's counts
+        # the inventory counts own executions only
+        self.assertEqual(self.rules({"r": {lib}}, sw, methods=["v.on_cb"]),
+                         [("v.on_cb", "inventory", False, False)])
 
     def test_callbacks_and_plain_receipts(self):
         # a callback with a weight: no gas rule; one that logs: log-size

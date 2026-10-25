@@ -2135,7 +2135,7 @@ After the runs the runner prints the gaps for each `runs.toml`:
 | `least-gas` | the same, with no `least_gas` sweep that covers it | a sweep of its budget or of the prepaid gas, listing it in `covers` |
 | `logs` | an owed receipt that declares no logs in any run | its logs and events, declared with lengths from its input (`OLog`, `EvLen`) |
 | `log-size` | an owed receipt or a callback that logs, with no sweep that covers its log size | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs`, listing it in `covers` |
-| `inventory` | a method in `[audit] methods` that no run executes | a run that reaches it |
+| `inventory` | a method in `[audit] methods` that your contract's code runs in no run (the library's token implementations do not count) | a run that reaches it |
 
 A sweep counts for a receipt only if two things hold:
 
@@ -2155,7 +2155,8 @@ its gaps per role, labelled `(owed)` or `(callback)`. For such a method a covers
 name the role (`"on_refund least-gas owed"`), or it credits nothing; so must an entry naming
 only the method when, on any account, the method is seen in both roles. A named role matches
 that role even when the selected runs show only one. The library's token implementations
-are judged apart from your contract's own executions of the same key.
+are judged apart from your contract's own executions of the same key; where both run it, a
+covers entry credits only your own.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:

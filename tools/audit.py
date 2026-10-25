@@ -31,7 +31,8 @@ whether or not the selected runs show the other.
 `"<key> <rule>"` for one, `"<key> <rule> <role>"` for one role, where the key is
 `acct.method` or `method`. The library's
 own token methods (ExecLib) are judged and reported apart, and none of their gaps fails
-anything.
+anything; where the contract's own code runs the same name, covers entries and `methods`
+count only the contract's own executions.
 """
 
 from __future__ import annotations
@@ -124,20 +125,22 @@ class SweepRef:
     runs: list[str]
     covers: list[str] = field(default_factory=list)
 
-    def credits(self, key: str, runs: set[str], rule: str, role: str, ambiguous) -> bool:
+    def credits(self, key: str, runs: set[str], rule: str, role: str, ambiguous, shadowed) -> bool:
         """Whether the sweep closes `rule` (least-gas or log-size) for `key` in `role`: a
         covers entry names the key, as "<key>" (the kind's rule: least-gas for least_gas,
         log-size for size), "<key> <rule>" or "<key> <rule> <role>", and its base run
         executes it in that role (`runs`). An entry that names a role credits that role
         only; one that does not credits nothing if what it names (`acct.method`, or a
-        method on every account) is seen in both roles (`ambiguous(name)`)."""
+        method on every account) is seen in both roles (`ambiguous(name)`). No entry
+        credits a library execution of a name the contract's own code also runs
+        (`shadowed(name)`): the contract's own executions come first."""
         if not runs & set(self.runs):
             return False
         own = "least-gas" if self.kind == "least_gas" else "log-size"
         for c in self.covers:
             k, r, ro = (c.split(" ") + ["", ""])[:3]
             if (k == key or k == method_of(key)) and (r or own) == rule \
-                    and (ro == role if ro else not ambiguous(k)):
+                    and (ro == role if ro else not ambiguous(k)) and not shadowed(k):
                 return True
         return False
 
@@ -177,13 +180,18 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
     # the contract's own executions and the library's (ExecLib) are judged apart
     by_key: dict[tuple[str, bool], list[tuple[str, Fact]]] = {}
     roles_of: dict[str, set[str]] = {}  # acct.method and method -> the roles seen
+    own_names: set[str] = set()         # acct.method and method the contract's own code runs
     for run, fs in facts.items():
         for f in fs:
             by_key.setdefault((f.key, f.lib), []).append((run, f))
+            if not f.lib:
+                own_names |= {f.key, f.m}
             if f.owed or f.cb:
                 for name in (f.key, f.m):
                     roles_of.setdefault(name, set()).add("owed" if f.owed else "callback")
-    ambiguous = lambda name: len(roles_of.get(name, ())) > 1
+
+    def ambiguous(name: str) -> bool:
+        return len(roles_of.get(name, ())) > 1
     out: list[Gap] = []
     subjects = 0
 
@@ -207,10 +215,12 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
             if (owed or fixed) and not lib and not counted:
                 subjects += 1
                 counted = True
-            for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps, role, ambiguous):
+            shadowed = (lambda n: n in own_names) if lib else (lambda n: False)
+            for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps, role,
+                                         ambiguous, shadowed):
                 gap(key, rule, text, lib, role, both)
     for meth in methods or []:
-        if not any(k == meth or method_of(k) == meth for k, _ in by_key):
+        if not any(k == meth or method_of(k) == meth for k, lib in by_key if not lib):
             out.append(Gap(meth, "inventory", "listed in [audit] methods; no run executes it: "
                            "model it, or accept it with the reason it is out of scope",
                            False, _accepted(accept, meth, "inventory")))
@@ -218,9 +228,9 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
 
 
 def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, role: str,
-               ambiguous):
+               ambiguous, shadowed):
     """(rule, text) for each gap of one role of a method: `sub` its executions in that role,
-    `gas` those in gas mode; `ambiguous` as for SweepRef.credits."""
+    `gas` those in gas mode; `ambiguous` and `shadowed` as for SweepRef.credits."""
     if owed or fixed:
         if not gas:
             if owed:
@@ -236,7 +246,8 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, r
                 yield "writes", (f"{what}; runs with TrieGasWorst but declares no writes "
                                  "(OWriteKey), so the switch charges it nothing: declare each "
                                  "storage write and remove it makes")
-            if not any(s.credits(key, {r for r, _ in gas}, "least-gas", role, ambiguous) for s in sweeps):
+            if not any(s.credits(key, {r for r, _ in gas}, "least-gas", role, ambiguous, shadowed)
+                       for s in sweeps):
                 yield "least-gas", (f"{what}; no least_gas sweep covers it (covers, with a base "
                                     "run that executes it in gas mode), so its need is not measured")
     logged = [(r, f) for r, f in sub if f.lgb > 0 or f.lgn > 0]
@@ -246,7 +257,8 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, r
                            "declare them (OLog, EvLen) with lengths from its input")
         return
     sizes = sorted({f.lgb for _, f in logged})
-    if not any(s.credits(key, {r for r, _ in logged}, "log-size", role, ambiguous) for s in sweeps):
+    if not any(s.credits(key, {r for r, _ in logged}, "log-size", role, ambiguous, shadowed)
+                   for s in sweeps):
         seen = (f"{sizes[0]} bytes in every run" if len(sizes) == 1
                 else f"{sizes[0]} to {sizes[-1]} bytes")
         yield "log-size", (f"{what}; logs {seen}, and no sweep covers its log size: sweep the "
