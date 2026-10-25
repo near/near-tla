@@ -1139,6 +1139,10 @@ class AuditTest(unittest.TestCase):
         wrapped = text.replace(", ", ",\n   ", 4)  # TLC wraps a long tuple
         self.assertEqual(audit.parse("x\n" + wrapped + "\n<<\"WIN\", \"A\", 3>>\n"), {f})
         self.assertEqual(audit.parse('<<"AUDIT", "v", "m">>'), set())  # wrong arity: ignored
+        # strings may hold >>, commas and escaped quotes; account ids may hold dots
+        odd = fact(to="vault.near", m='ph>>a,n"tom')
+        self.assertEqual(audit.parse(tla_fact(odd).replace('n"tom', 'n\\"tom')), {odd})
+        self.assertEqual(audit.parse(tla_fact(fact()).replace("FALSE", "7", 1)), set())  # wrong types
 
     def test_owed_rules(self):
         owed = dict(owed=True, m="on_res")
@@ -1172,6 +1176,12 @@ class AuditTest(unittest.TestCase):
                          [("v.on_cb", "least-gas", False, False), ("v.on_cb", "trie", False, False)])
         # a first receipt is not audited, logs or not
         self.assertEqual(self.rules({"a": {fact(cb=False, lgn=1, lgb=10, mode="gas", fixed=True)}}), [])
+
+    def test_dotted_accounts(self):
+        f = {"a": {fact(to="vault.near", owed=True, m="on_res")}}
+        self.assertEqual(self.rules(f, methods=["on_res", "vault.near.on_res"],
+                                    accept={"on_res gas": "x", "vault.near.on_res logs": "y"}),
+                         [("vault.near.on_res", "gas", True, False), ("vault.near.on_res", "logs", True, False)])
 
     def test_accept_inventory_and_library(self):
         f = {"a": {fact(owed=True, m="on_res")}}
@@ -1225,10 +1235,16 @@ class AuditTest(unittest.TestCase):
                       '[audit]\nmethods = ["on_res"]\n')
             ra, rb = run.load_file(p)
             tla, cfg = run.wrapper(ra, "MC_a", audit_on=True)
-            self.assertIn("ASSUME TLCSet(AuditReg, {})", tla)
+            self.assertIn("const_AuditOn == TRUE", tla)
             self.assertIn("AuditOn <- const_AuditOn", cfg)
             self.assertNotIn("AuditOn", run.wrapper(ra, "MC_a")[1])
             self.assertTrue(run.auditable(ra))
+            self.assertTrue(run.audit_override(ra, True))
+            self.assertFalse(run.audit_override(ra, False))
+            ra.constants["AuditOn"] = "TRUE"  # the run's own setting: kept, facts still read
+            self.assertFalse(run.audit_override(ra, True))
+            self.assertTrue(run.auditable(ra))
+            del ra.constants["AuditOn"]
             f = fact(owed=True, m="on_res", mode="gas", known=True, fixed=True)
             seen = []
 

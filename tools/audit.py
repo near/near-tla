@@ -28,8 +28,9 @@ from dataclasses import dataclass, field
 
 RULES = ("gas", "trie", "writes", "least-gas", "logs", "log-size", "inventory")
 
-_FACT = re.compile(r'<<\s*"AUDIT"\s*,(.*?)>>', re.S)
-_TOKEN = re.compile(r'"((?:[^"\\]|\\.)*)"|(TRUE|FALSE)|(-?\d+)')
+_START = re.compile(r'<<\s*"AUDIT"\s*,')
+_TOKEN = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|(TRUE|FALSE)|(-?\d+))\s*(,|>>)', re.S)
+_ESC = re.compile(r'\\(.)', re.S)
 
 
 @dataclass(frozen=True)
@@ -54,16 +55,33 @@ class Fact:
 
 
 _FIELDS = len(Fact.__dataclass_fields__)
+_SHAPE = ("", "", False, False, False, "", False, False, False, 0, 0, 0, False)
+
+
+def method_of(key: str) -> str:
+    """The method of `acct.method` (account ids may hold dots; method names do not)."""
+    return key.rsplit(".", 1)[-1]
 
 
 def parse(text: str) -> set[Fact]:
-    """The AUDIT facts in TLC's output (a tuple can span lines)."""
+    """The AUDIT facts in TLC's output. A tuple can span lines, and a string in it can
+    hold `>>`, `,` or an escaped quote; anything that is not a whole tuple of the right
+    fields is skipped."""
     out = set()
-    for body in _FACT.findall(text):
-        vals = []
-        for s, b, n in _TOKEN.findall(body):
-            vals.append(int(n) if n else (b == "TRUE" if b else s))
-        if len(vals) == _FIELDS:
+    for start in _START.finditer(text):
+        pos, vals = start.end(), []
+        while True:
+            m = _TOKEN.match(text, pos)
+            if not m:
+                vals = None
+                break
+            s, b, n, sep = m.groups()
+            vals.append(int(n) if n else (b == "TRUE" if b else _ESC.sub(r"\1", s)))
+            pos = m.end()
+            if sep == ">>":
+                break
+        if vals is not None and len(vals) == _FIELDS and \
+                [type(v) for v in vals] == [type(v) for v in _SHAPE]:
             out.add(Fact(*vals))
     return out
 
@@ -100,7 +118,7 @@ class Report:
 
 
 def _accepted(accept: dict[str, str], key: str, rule: str) -> str | None:
-    m = key.split(".", 1)[1] if "." in key else key
+    m = method_of(key)
     for k in (f"{key} {rule}", f"{m} {rule}", key, m):
         if k in accept:
             return accept[k]
@@ -171,7 +189,7 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
                 "run executes it: sweep the input its length grows with (ids, amounts, a memo) "
                 "to MaxLogBytes and MaxLogs", lib)
     for meth in methods or []:
-        if not any(k == meth or k.split(".", 1)[1] == meth for k in by_key):
+        if not any(k == meth or method_of(k) == meth for k in by_key):
             out.append(Gap(meth, "inventory", "listed in [audit] methods; no run executes it: "
                            "model it, or accept it with the reason it is out of scope",
                            False, _accepted(accept, meth, "inventory")))

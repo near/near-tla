@@ -516,8 +516,8 @@ them. A model that lists platform variables one by one must add each.
 
 - **The runner's audit** (`tools/audit.py`; USAGE "Auditing what the runs reach", habit 7
   of "The method"). On by default for plain runs, `--no-audit` to turn it off. The runner sets
-  `NearAsync.AuditOn`, so `Exec` prints one fact per distinct receipt it runs (`AuditFact`,
-  kept in TLC register `AuditReg`). After the runs it reports, per `runs.toml`:
+  `NearAsync.AuditOn`, so `Exec` prints one fact per distinct receipt it runs, once per TLC
+  worker (`AuditFact`; an `ASSUME` initialises the register `AuditReg` that remembers them). After the runs it reports, per `runs.toml`:
   - owed receipts that no gas-mode run executes;
   - owed receipts and fixed-budget callbacks that run in gas mode but never under
     `TrieGasWorst`, declare no writes there, or have no `least_gas` sweep on a run that

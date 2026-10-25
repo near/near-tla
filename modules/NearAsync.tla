@@ -1773,16 +1773,19 @@ ExecKeep(r, O, keep) ==
     ELSE IF v = "either" THEN Commit(r, O) \/ FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
     ELSE FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
 \* The runner's audit (tools/run.py, docs/USAGE.md "Auditing what the runs
-\* reach"): with AuditOn, Exec prints one AUDIT tuple per distinct fact about
-\* a receipt it runs: its account and method, whether it is owed, detached or
+\* reach"): with AuditOn, Exec prints an AUDIT tuple for each distinct fact
+\* about a receipt it runs (once per TLC worker: the register is per worker): its account and method, whether it is owed, detached or
 \* a callback, the gas mode, TrieGasWorst, whether its static gas is known and
 \* its weight 0 (a fixed budget), its outcome's declared logs (count, bytes)
 \* and trie nodes, and whether the library's own token implementation ran it
-\* (ExecLib, from TokStep and MtStep).  The runner sets AuditOn and
-\* initialises register AuditReg, which keeps the facts already printed; off
-\* (the default), Exec is as before.
+\* (ExecLib, from TokStep and MtStep).  The runner sets AuditOn; the ASSUME
+\* then initialises register AuditReg, which keeps the facts already printed.
+\* Off (the default), Exec is as before.  A fact is printed when TLC
+\* evaluates Exec, so a conjunct after Exec that rules the step out still
+\* leaves its fact: guard before Exec.
 AuditOn  == FALSE
 AuditReg == 41
+ASSUME AuditOn => TLCSet(AuditReg, {})
 AuditFact(r, O, lib) ==
     LET gs == IF "gs" \in DOMAIN r THEN r.gs ELSE <<>>
         gw == IF "gw" \in DOMAIN r THEN r.gw ELSE <<>>

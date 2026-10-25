@@ -2136,7 +2136,9 @@ After the runs the runner prints the gaps for each `runs.toml`:
 | `log-size` | an owed receipt or a callback that logs, with no `size` or `least_gas` sweep whose base run executes it | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs` |
 | `inventory` | a method in `[audit] methods` that no run executes | a run that reaches it |
 
-A sweep counts only if its base run (or its `window_run`) actually runs the receipt.
+A sweep counts only if its base run actually runs the receipt (a `window_run` that does is
+not enough: the sweep varies the base run). The credit comes from `runs.toml`: the sweep need
+not have run in this invocation, so run `--sweep` to check that it holds.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:
@@ -2172,8 +2174,15 @@ The report never changes the exit code. It is a list to work through, not a verd
   header says how many, and gaps are judged on those.
 - A run whose library predates the hook runs as before and contributes nothing.
 - With the audit off, `Exec` is unchanged. With it on, TLC checks one set membership per
-  receipt run (a few percent of the time).
+  receipt run (a few percent of the time). Each worker prints a fact once; the runner merges
+  them.
+- A fact is printed when TLC evaluates `Exec`. A conjunct after `Exec` that rules the step
+  out still leaves the fact, so put a handler's guards before `Exec`.
 - Witness, mutant and sweep jobs are never audited.
+- Outside the runner, `AuditOn <- TRUE` in a cfg prints the same tuples; a run that sets
+  `AuditOn` itself keeps its value, and its facts are still read.
+- Account ids in keys may hold dots (`vault.near.on_refund`); the method is the part after
+  the last dot.
 
 ## Worked material
 
