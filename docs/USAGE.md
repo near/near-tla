@@ -2152,7 +2152,8 @@ The credit comes from `runs.toml`: the sweep need not have run in this invocatio
 Each role of a method is judged on its own executions: owed ones, and unowed ones as a
 callback. A direct call of the same method closes nothing. A method with both roles gets
 its gaps per role, labelled `(owed)` or `(callback)`. For such a method a covers entry must
-name the role (`"on_refund least-gas owed"`), or it credits nothing.
+name the role (`"on_refund least-gas owed"`), or it credits nothing. A named role matches that
+role even when the selected runs show only one.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:

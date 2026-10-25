@@ -1210,6 +1210,10 @@ class AuditTest(unittest.TestCase):
                          [("v.on_cb (callback)", "least-gas", True), ("v.on_cb (callback)", "log-size", False)])
         # a single role: no label, and a plain entry credits
         self.assertEqual(rules({"a": {owed_gas}}, plain), [])
+        # a role-named entry still matches when the selected runs show only that role
+        self.assertEqual(rules({"a": {owed_gas}}, named), [])
+        self.assertEqual(rules({"b": {cb}}, [], {"on_cb least-gas callback": "x"}),
+                         [("v.on_cb", "least-gas", True), ("v.on_cb", "log-size", False)])
         _, n = audit.gaps({"a": {owed_gas, cb}}, [], None, {})
         self.assertEqual(n, 1)
 
