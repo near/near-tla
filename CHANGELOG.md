@@ -514,6 +514,24 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
+- **The runner's audit** (`tools/audit.py`; USAGE "Auditing what the runs reach", habit 7
+  of "The method"). On by default for plain runs, `--no-audit` to turn it off. The runner sets
+  `NearAsync.AuditOn`, so `Exec` prints one fact per distinct receipt it runs (`AuditFact`,
+  kept in TLC register `AuditReg`). After the runs it reports, per `runs.toml`:
+  - owed receipts that no gas-mode run executes;
+  - owed receipts and fixed-budget callbacks that run in gas mode but never under
+    `TrieGasWorst`, declare no writes there, or have no `least_gas` sweep on a run that
+    executes them;
+  - owed receipts that declare no logs;
+  - owed receipts and callbacks that log, with no `size` or `least_gas` sweep on a run that
+    executes them;
+  - methods of the new `[audit] methods` inventory that no run executes.
+
+  `[audit.accept]` accepts a gap with its reason. The library's own token methods run through
+  the new `ExecLib` and are reported apart. The report never changes the exit code. With
+  `AuditOn` off (the default outside the runner), `Exec` behaves as before; with it on, runs
+  take a few percent longer.
+
 - **Event-log lengths and NEP-245 id classes** (SEMANTICS T8, T5, N-mtclass;
   `examples/event-logs`). `TokenCommon` computes the exact byte length of an `ft_transfer`,
   `ft_mint`, `ft_burn`, `mt_transfer`, `mt_mint` or `mt_burn` event from its content

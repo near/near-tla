@@ -404,7 +404,7 @@ MtHandle(r) ==
 IsMtRcpt(r) == r.to \in MtAccts /\ IsCall(r)
 
 MtStep(r, O) ==
-    /\ Exec(r, O)
+    /\ ExecLib(r, O)
     /\ mtk' = IF Ok(r, O) THEN O.mtk ELSE mtk
 
 RECURSIVE MSum(_, _)

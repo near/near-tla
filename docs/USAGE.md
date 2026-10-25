@@ -47,11 +47,12 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [Witnesses and mutants](#witnesses-and-mutants)
 - [Print-only window invariants](#print-only-window-invariants)
 - [Least gas and size sweeps](#least-gas-and-size-sweeps)
+- [Auditing what the runs reach](#auditing-what-the-runs-reach)
 - [Worked material](#worked-material)
 
 ## The method
 
-These six habits separate a model that finds real bugs from one that produces confident
+These seven habits separate a model that finds real bugs from one that produces confident
 noise. The rest of this guide is the mechanics.
 
 1. **Write the properties first.** Before any handler, write down what must hold: books
@@ -80,6 +81,18 @@ noise. The rest of this guide is the mechanics.
    It holds only while the receiving chunk has room. A violation that appears only without it
    is real whenever the chunk is full, unless you can show the receiving shard is never at its
    limit.
+7. **Push every owed callback to its edges, and audit what the runs reach.** A callback that
+   completes or undoes an earlier commit must survive every input and every state a user can
+   arrange, not only the ones your runs happen to use. For each one:
+   - run it in gas mode;
+   - declare its storage writes (`OWriteKey`) and run with `TrieGasWorst`;
+   - find its least gas with a sweep;
+   - declare its logs with lengths computed from its input, and sweep that input (the number
+     of ids, the amounts, a memo) up to the per-call limits.
+
+   List the source's callbacks and the methods other contracts call in `[audit] methods`.
+   Then work through the runner's audit report until each gap is closed or accepted with a
+   reason ([Auditing what the runs reach](#auditing-what-the-runs-reach)).
 
 **Steps 3 and 4 need the sim.** Calibrating and replaying run your wasm in near-contract-sim,
 a private repository; see [Access to the sim](CONFORMANCE.md#access-to-the-sim). Without access:
@@ -272,10 +285,20 @@ find = 'IN Outcome({w}, {cb}, RProm, 0, 2)'
 replace = 'IN Outcome({w}, {}, RProm, 0, 2)'
 class = "dropped .then"
 runs = ["tally_ok"]
+
+# C's methods, from the source: the call users make and the callback it schedules.
+[audit]
+methods = ["ping", "done"]
+
+[audit.accept]
+"done trie" = "done writes no storage in this toy (H_done declares no write)"
+"done least-gas" = "done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge"
 ```
 
 The file also lists witnesses for both arms of `done` and mutants for the other bug classes
-([Witnesses and mutants](#witnesses-and-mutants)).
+([Witnesses and mutants](#witnesses-and-mutants)). After the runs, the runner prints an
+audit of what they reached ([Auditing what the runs reach](#auditing-what-the-runs-reach)):
+here every gap is closed or accepted.
 
 Run it:
 
@@ -1781,7 +1804,8 @@ definitions are set the same way.
   `invariant`, `expect_output`, `expect_window`, `window_step` and `allow_no_invariants`.
 - `[[witness]]` and `[[mutant]]` tables sit beside the `[[run]]` tables and name the runs
   they apply to ([Witnesses and mutants](#witnesses-and-mutants)); so do `[[sweep]]` tables
-  ([Least gas and size sweeps](#least-gas-and-size-sweeps)).
+  ([Least gas and size sweeps](#least-gas-and-size-sweeps)). One `[audit]` table lists the
+  source's methods and accepted gaps ([Auditing what the runs reach](#auditing-what-the-runs-reach)).
 - `expect_output` (a regex on TLC's output) pins a detail, such as the gas value in the
   violating state.
 - `deadlock = true` makes a stuck receipt an error. Add a terminal stutter step once the model
@@ -2087,6 +2111,69 @@ size at which something stops fitting, make success the failure you are looking 
 ["NeverPaid"]` (the recipient never receives the batch), which fails while the batch's event
 fits and holds from the first size whose event is over 16384 bytes, so the reported
 `boundary` is that size (217 ids per class there; add `exact = true` to check it by scanning).
+
+## Auditing what the runs reach
+
+The runs check what you modelled. The audit reports what you modelled but never pushed to its
+edges, and, from an inventory you give it, what you never modelled at all. It is on for every
+plain run, and `--no-audit` turns it off. The runner sets the library's `AuditOn`, so `Exec`
+prints one fact for each distinct receipt it runs. The fact records:
+
+- the receipt's marks, and whether it is a callback;
+- the gas mode and `TrieGasWorst`;
+- whether its budget is fixed (static gas, weight 0);
+- the logs and writes its outcome declares.
+
+After the runs the runner prints the gaps for each `runs.toml`:
+
+| rule | reported for | closed by |
+|---|---|---|
+| `gas` | an owed receipt that no gas-mode run executes | a gas-mode run that reaches it |
+| `trie` | an owed receipt, or a callback with a fixed budget, that runs in gas mode but never with `TrieGasWorst` | a run with `TrieGasWorst = "TRUE"` |
+| `writes` | the same, which declares no writes in its `TrieGasWorst` runs | `OWriteKey` for each storage write and remove it makes |
+| `least-gas` | the same, with no `least_gas` sweep whose base run executes it in gas mode | a sweep of its budget or of the prepaid gas |
+| `logs` | an owed receipt that declares no logs in any run | its logs and events, declared with lengths from its input (`OLog`, `EvLen`) |
+| `log-size` | an owed receipt or a callback that logs, with no `size` or `least_gas` sweep whose base run executes it | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs` |
+| `inventory` | a method in `[audit] methods` that no run executes | a run that reaches it |
+
+A sweep counts only if its base run (or its `window_run`) actually runs the receipt.
+
+The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
+Fill `methods` from the source, not from the model:
+
+- every callback the contract schedules (`.then(...)`, `#[private]` methods);
+- every method other contracts call on it: token receivers (`*_on_transfer`), and resolvers
+  of its own transfers.
+
+A method no run executes is then reported.
+
+```toml
+[audit]
+methods = ["ft_on_transfer", "on_resolve", "v.on_refund"]   # method, or acct.method
+
+[audit.accept]
+"on_refund trie" = "writes no storage: it only sends a Transfer"
+"v.on_legacy" = "out of scope: disabled by the owner since the last upgrade"
+```
+
+`accept` silences a gap and prints its reason instead:
+
+- `"<key> <rule>"` accepts one rule;
+- `"<key>"` accepts every rule for that key;
+- the key is `acct.method` or `method`.
+
+Gaps of the library's own token methods (`ft_resolve_transfer`, `mt_resolve_transfer`) are
+listed apart: they are standard implementations, worth checking only where your contract
+depends on them.
+
+The report never changes the exit code. It is a list to work through, not a verdict.
+
+- Facts come only from the runs that ran in this invocation. With some runs selected, the
+  header says how many, and gaps are judged on those.
+- A run whose library predates the hook runs as before and contributes nothing.
+- With the audit off, `Exec` is unchanged. With it on, TLC checks one set membership per
+  receipt run (a few percent of the time).
+- Witness, mutant and sweep jobs are never audited.
 
 ## Worked material
 

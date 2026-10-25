@@ -157,3 +157,12 @@ lo = 1
 hi = 1000
 success = ["NeverPaid"]
 expect_need = 217
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+[audit]
+methods = ["payout", "on_payout"]
+
+[audit.accept]
+"on_payout gas" = "fault mode by design: the batches are id classes of hundreds of ids, past the NEP-245 gas table's 1-3 ids"
+"on_payout logs" = "on_payout emits no logs or events; the batch's event is the token's, and payout_edge sweeps it"

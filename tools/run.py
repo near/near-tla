@@ -144,6 +144,22 @@ Sweeps (run with --sweep, after the plain runs; always validated)
   Each value runs with the base run's invariants (or `success`). The sweep fails on a
   value whose verdict differs from `expect`, or on a timeout or error.
 
+Audit (on by default; --no-audit turns it off)
+  [audit]                     # optional
+  methods = ["on_resolve", "v.ft_on_transfer"]   # the source's callbacks and the methods
+                              # other contracts call (method or acct.method)
+  [audit.accept]              # a gap accepted, with the reason: "<key>" for every rule,
+  "v.on_resolve trie" = "writes no storage"     # "<key> <rule>" for one
+  Plain runs (not witnesses, mutants or sweep values) set the library's AuditOn, so Exec
+  prints a fact per distinct receipt it runs, and the runner reports per runs.toml: owed
+  receipts no gas-mode run executes (gas); owed or fixed-budget callbacks in gas mode with no
+  TrieGasWorst run (trie), none of whose writes are declared there (writes), or with no
+  least_gas sweep on a run that executes them (least-gas); owed receipts that declare no
+  logs (logs); owed or callback receipts that log with no size or least_gas sweep on a run
+  that executes them (log-size); and [audit] methods no run executes (inventory). See
+  tools/audit.py. The report never changes the exit code. A run whose library has no
+  AuditOn (an older library) is run as before and contributes no facts.
+
 Checks
 - "pass" needs TLC's exit code 0, its "No error has been found" line, and at least one
   distinct state; expect = "pass" needs at least one invariant (properties alone do not
@@ -210,6 +226,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
+import audit  # noqa: E402
 import tlcparse  # noqa: E402
 import tlctrace  # noqa: E402
 import windows  # noqa: E402
@@ -227,10 +244,10 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 FILE_KEYS = {"spec", "workers", "library", "budget_s", "init", "next", "specification",
              "invariants", "properties", "deadlock", "tags", "constants", "run", "witness", "mutant",
-             "sweep", "stack"}
+             "sweep", "stack", "audit"}
 RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step",
                  "allow_no_invariants"}
-RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant", "sweep"}) | RUN_ONLY_KEYS
+RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant", "sweep", "audit"}) | RUN_ONLY_KEYS
 WITNESS_KEYS = {"id", "expr", "about", "runs", "expect", "reason"}
 MUTANT_KEYS = {"id", "file", "find", "replace", "count", "class", "runs", "library", "equivalent",
                "killed_by"}
@@ -345,6 +362,16 @@ class Sweep:
 
 # Sweeps by runs.toml, filled by load_doc (which keeps its 3-tuple for callers).
 _SWEEPS: dict[Path, list[Sweep]] = {}
+# The [audit] table and the run count by runs.toml, likewise.
+_AUDIT: dict[Path, "AuditCfg"] = {}
+
+
+@dataclass
+class AuditCfg:
+    """A runs.toml's [audit] table: the source's methods, and accepted gaps."""
+    methods: list[str] | None = None
+    accept: dict[str, str] = field(default_factory=dict)
+    runs: int = 0
 
 
 # ---------------------------------------------------------------- loading
@@ -403,7 +430,7 @@ def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
     runs_raw = doc.get("run", [])
     if not isinstance(runs_raw, list) or not runs_raw:
         raise ConfigError(f"{rel(path)}: no [[run]] entries")
-    defaults = {k: v for k, v in doc.items() if k not in ("run", "constants")}
+    defaults = {k: v for k, v in doc.items() if k not in ("run", "constants", "audit")}
     file_consts = doc.get("constants", {})
     out = []
     for i, raw in enumerate(runs_raw):
@@ -517,7 +544,41 @@ def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
         out.append(r)
     wits, muts = load_checks(path, doc, out)
     _SWEEPS[path] = load_sweeps(path, doc, out)
+    _AUDIT[path] = load_audit(path, doc, len(out))
     return out, wits, muts
+
+
+AUDIT_KEYS = {"methods", "accept"}
+METHOD_RE = re.compile(r"^[^\s.]+(\.[^\s.]+)?$")
+
+
+def load_audit(path: Path, doc: dict, nruns: int) -> AuditCfg:
+    """Validate the [audit] table of one runs.toml."""
+    raw = doc.get("audit")
+    if raw is None:
+        return AuditCfg(runs=nruns)
+    where = f"{rel(path)} [audit]"
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: must be a table")
+    unknown = set(raw) - AUDIT_KEYS
+    if unknown:
+        raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
+    methods = _str_list(where, raw, "methods") if "methods" in raw else None
+    for m in methods or []:
+        if not METHOD_RE.match(m):
+            raise ConfigError(f"{where}: bad method {m!r} (method or acct.method)")
+    accept = raw.get("accept", {})
+    if not isinstance(accept, dict):
+        raise ConfigError(f"{where}: accept must be a table")
+    for k, v in accept.items():
+        parts = k.split(" ")
+        if not (1 <= len(parts) <= 2 and METHOD_RE.match(parts[0])
+                and (len(parts) == 1 or parts[1] in audit.RULES)):
+            raise ConfigError(f"{where}: bad accept key {k!r} (\"<method>\" or \"<method> <rule>\", "
+                              f"rule one of {', '.join(audit.RULES)})")
+        if not isinstance(v, str) or not v.strip():
+            raise ConfigError(f"{where}: accept {k!r} must say why (a non-empty string)")
+    return AuditCfg(methods, dict(accept), nruns)
 
 
 def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
@@ -936,9 +997,11 @@ def _definition(name: str, expr: str) -> str:
     return f"{name} ==\n" + textwrap.indent(textwrap.dedent(expr.strip("\n")), "    ")
 
 
-def wrapper(run: Run, mod: str, invariants=None, properties=None, defs=()) -> tuple[str, str]:
+def wrapper(run: Run, mod: str, invariants=None, properties=None, defs=(),
+            audit_on: bool = False) -> tuple[str, str]:
     """(wrapper module text, cfg text) for `run`, module name `mod`; `defs` are extra
-    (name, expression) definitions, such as a witness."""
+    (name, expression) definitions, such as a witness. `audit_on` sets the library's
+    AuditOn and initialises its register (audit.py)."""
     invs = run.invariants if invariants is None else invariants
     props = run.properties if properties is None else properties
     tla = [f"---- MODULE {mod} ----",
@@ -946,15 +1009,19 @@ def wrapper(run: Run, mod: str, invariants=None, properties=None, defs=()) -> tu
            f"EXTENDS {run.spec}"]
     tla += [_definition(const_def_name(k), v) for k, v in run.constants.items()]
     tla += [_definition(n, e) for n, e in defs]
+    if audit_on:
+        tla += ["const_AuditOn == TRUE", "ASSUME TLCSet(AuditReg, {})"]
     tla.append("====")
     cfg = [f"\\* Generated by tools/run.py for run {run.name}; do not edit."]
     if run.specification:
         cfg.append(f"SPECIFICATION {run.specification}")
     else:
         cfg += [f"INIT {run.init}", f"NEXT {run.next}"]
-    if run.constants:
+    if run.constants or audit_on:
         cfg.append("CONSTANTS")
         cfg += [f"  {cfg_substitution(k)}" for k in run.constants]
+        if audit_on:
+            cfg.append("  AuditOn <- const_AuditOn")
     if invs:
         cfg.append("INVARIANTS")
         cfg += [f"  {i}" for i in invs]
@@ -1024,6 +1091,7 @@ class Outcome:
     peeled: list[str] | None = None
     kind: str = "run"  # "run", "witness" or "mutant"
     check: str = ""    # the witness or mutant id
+    facts: list = field(default_factory=list)  # the audit's facts (plain runs)
 
 
 @dataclass
@@ -1073,11 +1141,11 @@ def stage(work: str, run: Run, m: Mutant) -> list[str]:
 
 
 def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int, defs=(), patch: Mutant | None = None,
-             hard: float | None = None) -> Attempt:
+             hard: float | None = None, audit_on: bool = False) -> Attempt:
     """Generate the wrapper + cfg in a fresh temp dir, run TLC there, write build/<log>.
     `defs` go into the wrapper; `patch` runs TLC on a patched copy of the spec or library
-    dir; `hard` (default 3 x budget_s) is when TLC is stopped."""
-    tla, cfg = wrapper(run, mod, invs, props, defs)
+    dir; `hard` (default 3 x budget_s) is when TLC is stopped; `audit_on` sets AuditOn."""
+    tla, cfg = wrapper(run, mod, invs, props, defs, audit_on)
     work = tempfile.mkdtemp(prefix=f"tlc-{mod}-", dir="/tmp" if os.path.isdir("/tmp") else None)
     if hard is None:
         hard = max(HARD_TIMEOUT_FACTOR * run.budget_s, run.budget_s + 30)
@@ -1199,23 +1267,47 @@ def effective_workers(run: Run, cli: int | None) -> int:
     return max(1, min(run.workers, cli or MAX_WORKERS, MAX_WORKERS))
 
 
-def do_run(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bool) -> Outcome:
-    a = tlc_once(run, f"MC_{run.name}", None, None, jar, effective_workers(run, workers))
+_AUDITABLE: dict[tuple, bool] = {}
+
+
+def auditable(run: Run) -> bool:
+    """Whether the run's library has the audit hook (NearAsync.AuditOn) and the run leaves
+    AuditOn to the runner."""
+    key = (run.spec, str(run.dir), *run.library)
+    if key not in _AUDITABLE:
+        names = declared_constants(run.spec, [str(run.dir), *run.library])
+        _AUDITABLE[key] = names is not None and {"AuditOn", "AuditReg"} <= names
+    return _AUDITABLE[key] and "AuditOn" not in run.constants
+
+
+def with_facts(o: Outcome, attempts: list[Attempt]) -> Outcome:
+    o.facts = sorted({f for a in attempts for f in audit.parse(a.tlc_text)},
+                     key=lambda f: tuple(str(x) for x in vars(f).values()))
+    return o
+
+
+def do_run(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bool,
+           audit_on: bool = False) -> Outcome:
+    a = tlc_once(run, f"MC_{run.name}", None, None, jar, effective_workers(run, workers),
+                 audit_on=audit_on and auditable(run))
     ok, notes = check(run, a.res, a.wall, a.tlc_text)
     if print_trace and a.res.verdict in ("violation", "assert", "deadlock"):
         notes.append("trace:\n" + tlctrace.summary(a.tlc_text))
-    return finish(run, [a], ok, a.res.label(), notes, keep)
+    return with_facts(finish(run, [a], ok, a.res.label(), notes, keep), [a])
 
 
-def do_peel(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bool) -> Outcome:
+def do_peel(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bool,
+            audit_on: bool = False) -> Outcome:
     w = effective_workers(run, workers)
+    audit_on = audit_on and auditable(run)
     invs, props = list(run.invariants), list(run.properties)
     peeled: list[str] = []
     attempts: list[Attempt] = []
     notes: list[str] = []
     while True:
         i = len(attempts)
-        a = tlc_once(run, f"MC_{run.name}" + (f"_p{i}" if i else ""), invs, props, jar, w)
+        a = tlc_once(run, f"MC_{run.name}" + (f"_p{i}" if i else ""), invs, props, jar, w,
+                     audit_on=audit_on)
         attempts.append(a)
         res = a.res
         print(f"  {run.name} step {i}: {res.label()} ({fmt_n(res.distinct)} distinct, {a.wall:.1f}s)",
@@ -1248,7 +1340,7 @@ def do_peel(run: Run, jar: str, workers: int | None, keep: bool, print_trace: bo
         ok = not peeled and final == run.expect
     ok = ok and not any("over budget" in n for n in notes)
     actual = "peeled {" + ", ".join(peeled) + "}" + (f" then {res.label()}" if final not in ("pass", "exhausted") else "")
-    return finish(run, attempts, ok, actual, notes, keep, peeled)
+    return with_facts(finish(run, attempts, ok, actual, notes, keep, peeled), attempts)
 
 
 # ---------------------------------------------------------------- anti-vacuity
@@ -1698,6 +1790,23 @@ def _table(head, rows, outs: list[Outcome]) -> str:
     return "\n".join(out)
 
 
+def audit_reports(runs: list[Run], outs: list[Outcome]) -> list[audit.Report]:
+    """One audit report per runs.toml with an audited run, from the plain runs' facts."""
+    facts: dict[Path, dict[str, set]] = {}
+    for r, o in zip(runs, outs):
+        if auditable(r):
+            facts.setdefault(r.toml, {})[r.name] = set(o.facts)
+    reps = []
+    for toml, by_run in facts.items():
+        cfg = _AUDIT.get(toml, AuditCfg())
+        refs = [audit.SweepRef(sw.id, sw.kind, [sw.run] + ([sw.window_run] if sw.window_run else []))
+                for sw in _SWEEPS.get(toml, [])]
+        gaps, subjects = audit.gaps(by_run, refs, cfg.methods, cfg.accept)
+        reps.append(audit.Report(rel(toml), len(by_run), cfg.runs, gaps, subjects,
+                                 cfg.methods is not None))
+    return reps
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="tools/run.py", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1721,6 +1830,8 @@ def main(argv=None) -> int:
     ap.add_argument("--exact", action="store_true",
                     help="least-gas sweeps scan the bracket instead of bisecting: every value at --gas-step 1 (the default), a sample at a larger step")
     ap.add_argument("--gas-step", type=int, metavar="N", help="with --exact: scan in steps of N (default 1, exhaustive; N > 1 samples the bracket)")
+    ap.add_argument("--no-audit", action="store_true",
+                    help="do not collect the audit's facts or print its report (tools/audit.py)")
     a = ap.parse_args(argv)
     try:
         if a.workers is not None and a.workers < 1:
@@ -1769,7 +1880,8 @@ def main(argv=None) -> int:
         outs = []
         for r in runs:
             print(f"running {r.name} ({rel(r.dir)}) ...", file=sys.stderr, flush=True)
-            outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace))
+            outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace,
+                                                        not a.no_audit))
         failed = {o.run for o in outs if not o.ok}
         checks = run_checks(wits, muts, by_name, failed, jar, a.workers, a.keep) if a.anti_vacuity else []
         swept = run_sweeps(sweeps, by_name, jar, a.workers, a.keep) if sweeps else []
@@ -1793,6 +1905,9 @@ def main(argv=None) -> int:
         bad_sweeps = [o.check for o in swept if not o.ok]
         print(f"\n{len(swept) - len(bad_sweeps)}/{len(swept)} sweep rows as expected"
               + (f"; FAILED: {'; '.join(bad_sweeps)}" if bad_sweeps else ""))
+    if not a.no_audit:
+        for rep in audit_reports(runs, outs):
+            print("\n" + audit.render(rep))
     if a.json:
         Path(a.json).write_text(json.dumps([asdict(o) for o in outs + checks + swept], indent=2, default=str) + "\n")
     return 1 if bad or bad_checks or bad_sweeps else 0

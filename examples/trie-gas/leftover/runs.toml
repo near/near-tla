@@ -102,3 +102,13 @@ replace = '("on_ping" :> [base |-> 13, per |-> 0])'
 class = "off-by-one guard"
 runs = ["leftover_worst_ok"]
 killed_by = ["OwedOK"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+[audit]
+methods = ["go", "work", "on_ping"]
+
+[audit.accept]
+"on_ping writes" = "on_ping writes no storage; the declared write is go's, and these runs are about its effect on the leftover"
+"on_ping least-gas" = "on_ping's gas is a share of work's leftover, not a budget to sweep; the runs pin the trie charges at which it fails"
+"on_ping logs" = "on_ping emits no logs or events"

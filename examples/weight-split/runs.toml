@@ -141,3 +141,12 @@ find = 'LastE(E) == CHOOSE e \in E : \A f \in E : f[1] < e[1] \/ (f[1] = e[1] /\
 replace = 'LastE(E) == CHOOSE e \in E : \A f \in E : f[1] > e[1] \/ (f[1] = e[1] /\ f[2] >= e[2])'
 class = "wrong remainder receiver"
 runs = ["weight_split_ok_nearest"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+[audit]
+methods = ["split", "on_done"]
+
+[audit.accept]
+"on_done trie" = "on_done writes no storage in this example"
+"on_done least-gas" = "the windows map on_done's edge on the prepaid menu; this example is about the split, not a budget"

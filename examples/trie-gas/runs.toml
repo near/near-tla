@@ -134,3 +134,11 @@ lo = 4000
 hi = 10000
 success = ["OwedOK"]
 expect_need = 4976
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+[audit]
+methods = ["send", "on_take"]
+
+[audit.accept]
+"on_take logs" = "on_take emits no logs or events"

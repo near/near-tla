@@ -102,7 +102,7 @@ TokChoices(r) ==
     THEN {EMPTY, NONEMPTY} ELSE {EMPTY}
 
 TokStep(r, O) ==
-    /\ Exec(r, O)
+    /\ ExecLib(r, O)
     /\ tk' = IF Ok(r, O) THEN O.tk ELSE tk
 
 TSum(f, S) == FunSum(f, S)

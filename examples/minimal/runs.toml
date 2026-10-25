@@ -162,3 +162,13 @@ replace = '''("work" :> GC(<<5000>>, <<0>>, 300))     \* 5 Tgas static + all the
          @@ ("done" :> GC(<<2000>>, <<1>>, 300))'''
 class = "wrong weight"
 runs = ["tally_gas_ok"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# C's methods, from the source: the call users make and the callback it schedules.
+[audit]
+methods = ["ping", "done"]
+
+[audit.accept]
+"done trie" = "done writes no storage in this toy (H_done declares no write)"
+"done least-gas" = "done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge"

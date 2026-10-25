@@ -1772,12 +1772,38 @@ ExecKeep(r, O, keep) ==
     ELSE IF v = "oog" THEN FailWhyLK(r, "oog", FailWhy(r, O), OogNeed(r, O), keep)
     ELSE IF v = "either" THEN Commit(r, O) \/ FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
     ELSE FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
-Exec(r, O) ==
-    IF TrieSplit(O)
-    THEN IF "pa" \in DOMAIN O /\ Len(O.pa) > 1
-         THEN Assert(FALSE, <<"OWriteKey with per-action accounting (pa) is not supported", r.m>>)
-         ELSE \E n \in TrieNodeRange(O) : ExecKeep(r, [trg |-> TrieGasAt(n)] @@ O, TRUE)
-    ELSE ExecKeep(r, O, FALSE)
+\* The runner's audit (tools/run.py, docs/USAGE.md "Auditing what the runs
+\* reach"): with AuditOn, Exec prints one AUDIT tuple per distinct fact about
+\* a receipt it runs: its account and method, whether it is owed, detached or
+\* a callback, the gas mode, TrieGasWorst, whether its static gas is known and
+\* its weight 0 (a fixed budget), its outcome's declared logs (count, bytes)
+\* and trie nodes, and whether the library's own token implementation ran it
+\* (ExecLib, from TokStep and MtStep).  The runner sets AuditOn and
+\* initialises register AuditReg, which keeps the facts already printed; off
+\* (the default), Exec is as before.
+AuditOn  == FALSE
+AuditReg == 41
+AuditFact(r, O, lib) ==
+    LET gs == IF "gs" \in DOMAIN r THEN r.gs ELSE <<>>
+        gw == IF "gw" \in DOMAIN r THEN r.gw ELSE <<>>
+        k  == MarksOf(r)
+    IN <<"AUDIT", r.to, r.m, "owed" \in k, "detached" \in k, \E p \in post : p.id = r.id,
+         GasMode, TrieGasWorst, Len(gs) > 0, Len(gs) > 0 /\ SumSeq(gw) = 0,
+         LogCount(O), LogBytes(O), TrieNodes(O), lib>>
+AuditNote(r, O, lib) ==
+    IF ~AuditOn THEN TRUE
+    ELSE LET f == AuditFact(r, O, lib) IN
+         IF f \in TLCGet(AuditReg) THEN TRUE
+         ELSE PrintT(f) /\ TLCSet(AuditReg, TLCGet(AuditReg) \cup {f})
+ExecAs(r, O, lib) ==
+    /\ AuditNote(r, O, lib)
+    /\ IF TrieSplit(O)
+       THEN IF "pa" \in DOMAIN O /\ Len(O.pa) > 1
+            THEN Assert(FALSE, <<"OWriteKey with per-action accounting (pa) is not supported", r.m>>)
+            ELSE \E n \in TrieNodeRange(O) : ExecKeep(r, [trg |-> TrieGasAt(n)] @@ O, TRUE)
+       ELSE ExecKeep(r, O, FALSE)
+Exec(r, O)    == ExecAs(r, O, FALSE)
+ExecLib(r, O) == ExecAs(r, O, TRUE)
 
 \* The forced-fault switch as one step (the contract conjoins UNCHANGED of its vars).
 ForcedFail(r) == /\ fails < MaxFails /\ r.m \in MayFail /\ FailWhyL(r, "forced", "forced fault (MayFail)", 0)

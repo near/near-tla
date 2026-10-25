@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import audit  # noqa: E402
 import run  # noqa: E402
 import tlcparse  # noqa: E402
 import tlctrace  # noqa: E402
@@ -1112,6 +1113,146 @@ class SelectionAndLibraryTest(unittest.TestCase):
               'spec = "Toy"\nlibrary = "nowhere"\n[[run]]\nname = "b1"\nexpect = "pass"\ninvariants = ["I"]\n')
         (r,) = run.load_file(self.d / "m2" / "runs.toml")
         self.assertEqual(r.library, [str(self.d / "m2" / "nowhere")])
+
+
+def fact(to="v", m="on_cb", owed=False, detached=False, cb=True, mode="fault", worst=False,
+         known=False, fixed=False, lgn=0, lgb=0, trn=0, lib=False) -> audit.Fact:
+    return audit.Fact(to, m, owed, detached, cb, mode, worst, known, fixed, lgn, lgb, trn, lib)
+
+
+def tla_fact(f: audit.Fact) -> str:
+    """The tuple as TLC's PrintT shows it."""
+    v = lambda x: ("TRUE" if x else "FALSE") if isinstance(x, bool) else (str(x) if isinstance(x, int) else f'"{x}"')
+    return "<<" + ", ".join(['"AUDIT"'] + [v(x) for x in vars(f).values()]) + ">>"
+
+
+class AuditTest(unittest.TestCase):
+    """The audit's fact parser, its rules, the [audit] table and the runner's hook."""
+
+    def rules(self, facts, sweeps=(), methods=None, accept=None):
+        gaps, _ = audit.gaps(facts, list(sweeps), methods, accept or {})
+        return sorted((g.key, g.rule, g.accepted is not None, g.lib) for g in gaps)
+
+    def test_parse(self):
+        f = fact(owed=True, mode="gas", worst=True, known=True, fixed=True, lgn=1, lgb=120, trn=88)
+        text = tla_fact(f)
+        wrapped = text.replace(", ", ",\n   ", 4)  # TLC wraps a long tuple
+        self.assertEqual(audit.parse("x\n" + wrapped + "\n<<\"WIN\", \"A\", 3>>\n"), {f})
+        self.assertEqual(audit.parse('<<"AUDIT", "v", "m">>'), set())  # wrong arity: ignored
+
+    def test_owed_rules(self):
+        owed = dict(owed=True, m="on_res")
+        # fault mode only
+        self.assertEqual(self.rules({"a": {fact(**owed)}}),
+                         [("v.on_res", "gas", False, False), ("v.on_res", "logs", False, False)])
+        # gas mode, no TrieGasWorst, no sweep
+        g = fact(**owed, mode="gas", known=True, fixed=True, lgn=1, lgb=50)
+        self.assertEqual(self.rules({"a": {g}}),
+                         [("v.on_res", "least-gas", False, False), ("v.on_res", "log-size", False, False),
+                          ("v.on_res", "trie", False, False)])
+        # TrieGasWorst without declared writes, then with
+        w0 = fact(**owed, mode="gas", worst=True, known=True, fixed=True, lgn=1, lgb=50)
+        self.assertIn(("v.on_res", "writes", False, False), self.rules({"a": {g}, "b": {w0}}))
+        w1 = fact(**owed, mode="gas", worst=True, known=True, fixed=True, lgn=1, lgb=50, trn=40)
+        sweeps = [audit.SweepRef("need", "least_gas", ["b"])]
+        self.assertEqual(self.rules({"a": {g}, "b": {w1}}, sweeps), [])  # the sweep covers log-size too
+        # a sweep of a run that does not execute it covers nothing
+        self.assertIn(("v.on_res", "least-gas", False, False),
+                      self.rules({"a": {g}, "b": {w1}}, [audit.SweepRef("need", "least_gas", ["c"])]))
+        # a size sweep covers log-size, not least-gas
+        got = self.rules({"b": {w1}}, [audit.SweepRef("sz", "size", ["b"])])
+        self.assertEqual(got, [("v.on_res", "least-gas", False, False)])
+
+    def test_callbacks_and_plain_receipts(self):
+        # a callback with a weight: no gas rule; one that logs: log-size
+        self.assertEqual(self.rules({"a": {fact(mode="gas", known=True)}}), [])
+        self.assertEqual(self.rules({"a": {fact(lgn=1, lgb=10)}}), [("v.on_cb", "log-size", False, False)])
+        # a fixed budget makes a callback a subject; "logs" is for owed receipts only
+        self.assertEqual(self.rules({"a": {fact(mode="gas", known=True, fixed=True)}}),
+                         [("v.on_cb", "least-gas", False, False), ("v.on_cb", "trie", False, False)])
+        # a first receipt is not audited, logs or not
+        self.assertEqual(self.rules({"a": {fact(cb=False, lgn=1, lgb=10, mode="gas", fixed=True)}}), [])
+
+    def test_accept_inventory_and_library(self):
+        f = {"a": {fact(owed=True, m="on_res")}}
+        self.assertEqual(self.rules(f, accept={"on_res gas": "x"}),
+                         [("v.on_res", "gas", True, False), ("v.on_res", "logs", False, False)])
+        self.assertEqual(self.rules(f, accept={"v.on_res": "x"}),
+                         [("v.on_res", "gas", True, False), ("v.on_res", "logs", True, False)])
+        self.assertEqual(self.rules(f, methods=["on_res", "v.on_res", "w.on_res", "on_other"],
+                                    accept={"v.on_res": "x", "on_other": "y"}),
+                         [("on_other", "inventory", True, False), ("v.on_res", "gas", True, False),
+                          ("v.on_res", "logs", True, False), ("w.on_res", "inventory", False, False)])
+        lib = {"a": {fact(to="ft", m="ft_resolve_transfer", owed=True, lib=True)}}
+        rep = audit.Report("x/runs.toml", 1, 2, audit.gaps(lib, [], None, {})[0], 1)
+        self.assertEqual(rep.open, [])
+        text = audit.render(rep)
+        self.assertIn("1 of 2 runs", text)
+        self.assertIn("no [audit] methods", text)
+        self.assertIn("library token methods", text)
+
+    def test_load_audit(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t)
+            write(d, "Toy.tla", "---- MODULE Toy ----\n====\n")
+            base = 'spec = "Toy"\n[[run]]\nname = "a"\nexpect = "pass"\ninvariants = ["I"]\n'
+            p = write(d, "runs.toml", base + '[audit]\nmethods = ["on_x", "v.on_y"]\n'
+                      '[audit.accept]\n"on_x trie" = "no writes"\n"v.on_y" = "out of scope"\n')
+            run.load_file(p)
+            cfg = run._AUDIT[p.resolve()]
+            self.assertEqual((cfg.methods, cfg.accept, cfg.runs),
+                             (["on_x", "v.on_y"], {"on_x trie": "no writes", "v.on_y": "out of scope"}, 1))
+            bad = {
+                "unknown key": '[audit]\nmethod = ["x"]\n',
+                "bad method": '[audit]\nmethods = ["a b"]\n',
+                "unknown rule": '[audit.accept]\n"on_x tri" = "why"\n',
+                "empty reason": '[audit.accept]\n"on_x" = " "\n',
+                "per-run audit": 'audit = 1\n',
+            }
+            for what, extra in bad.items():
+                with self.subTest(what=what), self.assertRaises(run.ConfigError):
+                    text = base + extra if what != "per-run audit" else base.replace('name = "a"', 'name = "a"\n' + extra)
+                    run.load_file(write(d, "runs.toml", text))
+
+    def test_wrapper_and_main(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            write(d, "Toy.tla", "---- MODULE Toy ----\nEXTENDS NearAsync\n====\n")
+            (d / "lib").mkdir()
+            write(d / "lib", "NearAsync.tla", "---- MODULE NearAsync ----\nAuditOn == FALSE\nAuditReg == 41\n====\n")
+            p = write(d, "runs.toml", 'spec = "Toy"\nlibrary = "lib"\ninvariants = ["I"]\n'
+                      '[[run]]\nname = "a"\nexpect = "pass"\n[[run]]\nname = "b"\nexpect = "pass"\n'
+                      '[audit]\nmethods = ["on_res"]\n')
+            ra, rb = run.load_file(p)
+            tla, cfg = run.wrapper(ra, "MC_a", audit_on=True)
+            self.assertIn("ASSUME TLCSet(AuditReg, {})", tla)
+            self.assertIn("AuditOn <- const_AuditOn", cfg)
+            self.assertNotIn("AuditOn", run.wrapper(ra, "MC_a")[1])
+            self.assertTrue(run.auditable(ra))
+            f = fact(owed=True, m="on_res", mode="gas", known=True, fixed=True)
+            seen = []
+
+            def fake(cmd, cwd=None, **kw):
+                seen.append(Path(cwd, cmd[-1].replace(".tla", ".cfg")).read_text())
+                return subprocess.CompletedProcess(cmd, 0, stdout=(tla_fact(f) + "\n" + PASS).encode())
+            orig, run.subprocess.run = run.subprocess.run, fake
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(run.main([str(p), "--jar", str(p)]), 0)
+                    self.assertEqual(run.main([str(p), "a", "--no-audit", "--jar", str(p)]), 0)
+            finally:
+                run.subprocess.run = orig
+            self.assertTrue(all("AuditOn <- const_AuditOn" in c for c in seen[:2]))
+            self.assertNotIn("AuditOn", seen[2])
+            text = out.getvalue()
+            self.assertEqual(text.count("audit runs.toml") + text.count(f"audit {run.rel(p)}"), 1)
+            for rule in ("trie", "least-gas", "logs"):
+                self.assertRegex(text, rf"v\.on_res\s+{rule}\s")
+            # a library without the hook: run as before, no report
+            write(d / "lib", "NearAsync.tla", "---- MODULE NearAsync ----\n====\n")
+            run._AUDITABLE.clear()
+            self.assertFalse(run.auditable(ra))
 
 
 class ParsePrintTTest(unittest.TestCase):

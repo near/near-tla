@@ -276,3 +276,11 @@ floor = 1
 expect = { "1" = "pass", "2" = "pass", "16377" = "pass", "16378" = "violation OwedOK", "16379" = "pass", "16383" = "pass", "16384" = "pass", "16385" = "pass" }
 [sweep.constants]
 MemoCap = "16378"
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+[audit]
+methods = ["withdraw", "on_deliver"]
+
+[audit.accept]
+"on_deliver trie" = "the gas variant is about the refund path's calibrated burn; examples/trie-gas checks the same shape under TrieGasWorst"
