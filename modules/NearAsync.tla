@@ -2076,11 +2076,14 @@ PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 \* others themselves.  The parts compose: a model with its own txsig
 \* initialiser (e.g. a pre-sized function) conjoins PlatformInitAccounts,
 \* PlatformInitClock, PlatformInitStorage and PlatformInitOwed alone.
+\* PlatformInitAccounts also initialises ofail, so a model written before
+\* ofail existed needs no change; PlatformInitOwed repeats it harmlessly.
 \* PlatformInitStorage does not check the initial cover: list
 \* StorageCovered as an invariant.
 PlatformInitSigner   == txsig = <<>>
 PlatformInitAccounts == created = {} /\ burnt = 0 /\ deleted = {} /\ code = [x \in {} |-> NoCode]
                         /\ gcode = InitGCode /\ guse = InitUses /\ gnonce = [g \in {} |-> 0]
+                        /\ ofail = {}
 PlatformInitClock    == blk = 0
 PlatformInitStorage  == stor = StorageInit
 PlatformInitOwed     == ofail = {}

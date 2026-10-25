@@ -22,8 +22,9 @@ Each entry ends with its migration.
 
 **New platform variables, in one place.** Since the pre-release module set `NearAsync` has
 gained `txsig`, `created`, `burnt`, `blk`, `stor`, `deleted`, `code`, `gcode`, `guse`,
-`gnonce` and `ofail` (each has its own entry below; `PlatformInitOwed` initialises `ofail`). A model that initialises the platform with
-`PlatformInit` / `PlatformInitStaked`, or conjoins `PlatformInitExtra` to its own `Init`, and
+`gnonce` and `ofail` (each has its own entry below; `PlatformInitOwed` initialises `ofail`, and so
+does `PlatformInitAccounts`). A model that initialises the platform with
+`PlatformInit` / `PlatformInitStaked`, or conjoins `PlatformInitExtra` or `PlatformInitAccounts` to its own `Init`, and
 writes `UNCHANGED platformVars` and `vars == <<platformVars, ...>>`, needs no change for any of
 them. A model that lists platform variables one by one must add each.
 
