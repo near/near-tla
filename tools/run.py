@@ -629,9 +629,10 @@ def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
             sw.covers = _str_list(where, raw, "covers")
             for c in sw.covers:
                 k, _, r = c.partition(" ")
-                if not METHOD_RE.fullmatch(k) or r not in ("", "least-gas", "log-size"):
+                if not METHOD_RE.fullmatch(k) or r not in ("", "log-size", *(["least-gas"] if kind == "least_gas" else [])):
                     raise ConfigError(f"{where}: bad covers entry {c!r} (\"<method>\" or "
-                                      f"\"<method> least-gas|log-size\")")
+                                      f"\"<method> least-gas|log-size\"; least-gas only on a "
+                                      f"least_gas sweep)")
             if not sw.covers:
                 raise ConfigError(f"{where}: covers must list methods (method or acct.method)")
         if kind == "least_gas":

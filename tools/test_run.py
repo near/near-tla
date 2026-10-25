@@ -970,6 +970,7 @@ class SweepTest(unittest.TestCase):
             "exact not a bool": LEAST + "exact = 1\n",
             "exact on size": SIZE + "exact = true\n",
             "covers rule": LEAST + 'covers = ["on_x trie"]\n',
+            "least-gas on size": SIZE + 'covers = ["on_x least-gas"]\n',
             "covers newline": LEAST + 'covers = ["on_x\\n"]\n',
             "covers empty": LEAST + "covers = []\n",
         }
@@ -1186,15 +1187,15 @@ class AuditTest(unittest.TestCase):
                                     [audit.SweepRef("need", "least_gas", ["b"], ["on_res"])]),
                          [("v.on_res", "gas", False, False), ("v.on_res", "logs", False, False)])
 
-    def test_roles_judged_apart(self):
-        # owed and fully checked in one run; an unowed fixed-budget callback in another
-        owed = fact(owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
-        cb = fact(mode="gas", known=True, fixed=True, lgn=1, lgb=9)
-        sweeps = [audit.SweepRef("need", "least_gas", ["a"], ["on_cb", "on_cb log-size"])]
-        self.assertEqual(self.rules({"a": {owed}}, sweeps), [])
-        self.assertEqual(self.rules({"a": {owed}, "b": {cb}}, sweeps),
-                         [("v.on_cb", "least-gas", False, False), ("v.on_cb", "log-size", False, False),
-                          ("v.on_cb", "trie", False, False)])
+    def test_one_handler_over_owed_and_callback_runs(self):
+        # owed in one run, an unowed fixed-budget callback in another: one handler
+        owed = fact(owed=True, mode="gas", known=True, fixed=True, lgn=1, lgb=9)
+        cb = fact(mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        self.assertEqual(self.rules({"a": {owed}, "b": {cb}}),
+                         [("v.on_cb", "least-gas", False, False), ("v.on_cb", "log-size", False, False)])
+        gaps, n = audit.gaps({"a": {owed}, "b": {cb}}, [], None, {})
+        self.assertEqual(n, 1)
+        self.assertTrue(all(g.text.startswith("owed") for g in gaps))
 
     def test_callbacks_and_plain_receipts(self):
         # a callback with a weight: no gas rule; one that logs: log-size

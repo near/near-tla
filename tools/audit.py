@@ -18,8 +18,8 @@ from those facts, the file's `[[sweep]]` tables and its `[audit]` table
              base run executes it
   inventory  a method in `[audit] methods` that no run executes
 
-Each role is judged on its own executions: an owed receipt on its owed runs, a callback on
-its unowed runs as a callback, so a direct call of the same method closes nothing. A sweep
+A method is judged as one handler, on its executions as an owed receipt or as a callback
+(owed if any of them is), so a direct call of the same method closes nothing. A sweep
 counts for the receipts in its `covers`: "<method>" closes least-gas for a least_gas sweep
 and log-size for a size sweep; "<method> <rule>" names the rule.
 
@@ -169,23 +169,18 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
     for key in sorted(by_key):
         rows = by_key[key]
         lib = all(f.lib for _, f in rows)
-        # each role is judged on its own executions: an owed receipt on its owed runs, a
-        # callback on its unowed runs as a callback; a direct call closes nothing
-        roles = [(True, [(r, f) for r, f in rows if f.owed]),
-                 (False, [(r, f) for r, f in rows if f.cb and not f.owed])]
-        counted = False
-        for owed, sub in roles:
-            if not sub:
-                continue
-            gas = [(r, f) for r, f in sub if f.mode == "gas"]
-            fixed = any(f.fixed for _, f in gas)
-            what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
-            if (owed or fixed) and not counted:
-                subjects += not lib
-                counted = True
-            for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps):
-                if not any(g.key == key and g.rule == rule for g in out):
-                    gap(key, rule, text, lib)
+        # the handler, judged on its runs as an owed receipt or a callback; a direct call
+        # of the same method closes nothing
+        sub = [(r, f) for r, f in rows if f.owed or f.cb]
+        if not sub:
+            continue
+        owed = any(f.owed for _, f in sub)
+        gas = [(r, f) for r, f in sub if f.mode == "gas"]
+        fixed = any(f.fixed for _, f in gas)
+        what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
+        subjects += (owed or fixed) and not lib
+        for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps):
+            gap(key, rule, text, lib)
     for meth in methods or []:
         if not any(k == meth or method_of(k) == meth for k in by_key):
             out.append(Gap(meth, "inventory", "listed in [audit] methods; no run executes it: "
@@ -195,8 +190,8 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
 
 
 def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps):
-    """(rule, text) for one role of a receipt: `sub` its executions in that role, `gas`
-    those in gas mode."""
+    """(rule, text) for each gap of a handler: `sub` its executions as an owed receipt or
+    a callback, `gas` those in gas mode."""
     if owed or fixed:
         if not gas:
             if owed:

@@ -2132,24 +2132,24 @@ After the runs the runner prints the gaps for each `runs.toml`:
 | `gas` | an owed receipt that no gas-mode run executes | a gas-mode run that reaches it |
 | `trie` | an owed receipt, or a callback with a fixed budget, that runs in gas mode but never with `TrieGasWorst` | a run with `TrieGasWorst = "TRUE"` |
 | `writes` | the same, which declares no writes in its `TrieGasWorst` runs | `OWriteKey` for each storage write and remove it makes |
-| `least-gas` | the same, with no `least_gas` sweep whose base run executes it in gas mode | a sweep of its budget or of the prepaid gas |
+| `least-gas` | the same, with no `least_gas` sweep that covers it | a sweep of its budget or of the prepaid gas, listing it in `covers` |
 | `logs` | an owed receipt that declares no logs in any run | its logs and events, declared with lengths from its input (`OLog`, `EvLen`) |
-| `log-size` | an owed receipt or a callback that logs, with no `size` or `least_gas` sweep whose base run executes it | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs` |
+| `log-size` | an owed receipt or a callback that logs, with no sweep that covers its log size | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs`, listing it in `covers` |
 | `inventory` | a method in `[audit] methods` that no run executes | a run that reaches it |
 
 A sweep counts for a receipt only if two things hold:
 
 - its `covers` lists the receipt, method or `acct.method`. `"on_refund"` closes the rule of
   the sweep's kind: `least-gas` for a `least_gas` sweep, `log-size` for a `size` sweep.
-  `"on_refund log-size"` or `"on_refund least-gas"` names the rule, for a `least_gas` search
-  over a size (as `payout_edge` does);
+  `"on_refund log-size"` names the rule, for a `least_gas` search over a size (as
+  `payout_edge` does); `least-gas` can only come from a `least_gas` sweep;
 - its base run actually runs the receipt (a `window_run` that does is not enough: the sweep
   varies the base run).
 
 The credit comes from `runs.toml`: the sweep need not have run in this invocation, so run
-`--sweep` to check that it holds. Each role of a method is judged on its own executions: an
-owed receipt on its owed runs, an unowed callback on its runs as a callback. A direct call of
-the same method closes nothing.
+`--sweep` to check that it holds. A method is judged as one handler, on its executions as an
+owed receipt or as a callback (owed if any of them is). A direct call of the same method
+closes nothing.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:
