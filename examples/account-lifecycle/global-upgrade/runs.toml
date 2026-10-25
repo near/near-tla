@@ -153,3 +153,9 @@ replace = 'ELSE IF a \in DOMAIN guse THEN (IF guse[a] \in DOMAIN InitGCode THEN 
 class = "wrong effect (library)"
 killed_by = ["LatestWins"]
 runs = ["upgrade_two_deploys"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["go", "on_ping", "ping"]

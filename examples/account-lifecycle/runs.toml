@@ -134,3 +134,9 @@ replace = 'Rcpt(nid, r.tx, r.fr, E, XFER, Arg(claim), claim, r.fr,'
 class = "wrong refund account"
 killed_by = ["NoBurn", "FundsClaimable"]
 runs = ["escrow_pays_cb"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["deposit", "on_paid", "withdraw"]

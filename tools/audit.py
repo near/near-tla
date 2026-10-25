@@ -153,10 +153,29 @@ class Report:
     gaps: list[Gap] = field(default_factory=list)
     subjects: int = 0
     inventory: bool = False
+    hookless: int = 0  # runs that ran without the audit hook (an older library): no facts
+
+    @property
+    def whole(self) -> bool:
+        """Every run of the file ran (with or without the hook)."""
+        return self.ran + self.hookless >= self.total
 
     @property
     def open(self) -> list[Gap]:
         return [g for g in self.gaps if not g.accepted and not g.lib]
+
+
+def failures(rep: Report) -> list[str]:
+    """What --anti-vacuity counts as failed in a report: each open gap of the contract's own
+    receipts, and a missing [audit] methods list. Nothing for a report on some of its file's
+    runs only (its gaps may be closed by a run that did not run). Runs without the hook ran
+    but say nothing: their file is still checked, on the other runs' facts."""
+    if not rep.whole:
+        return []
+    out = [f"audit:{g.label} {g.rule}@{rep.toml}" for g in rep.open]
+    if not rep.inventory:
+        out.append(f"audit:methods@{rep.toml}")
+    return out
 
 
 def _accepted(accept: dict[str, str], key: str, rule: str, role: str = "") -> str | None:
@@ -235,7 +254,8 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, r
         if not gas:
             if owed:
                 yield "gas", (f"{what}; no gas-mode run executes it, so nothing checks that its "
-                              "gas covers its work")
+                              "gas covers its work (without a calibration: HostFloorGas, "
+                              "docs/USAGE.md section 12)")
         else:
             worst = [f for _, f in gas if f.worst]
             if not worst:
@@ -268,8 +288,11 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, r
 
 def render(rep: Report) -> str:
     head = f"audit {rep.toml}"
-    if rep.ran < rep.total:
-        head += f" ({rep.ran} of {rep.total} runs; sweeps and gaps judged on those)"
+    if not rep.whole:
+        head += f" ({rep.ran + rep.hookless} of {rep.total} runs; sweeps and gaps judged on those)"
+    if rep.hookless:
+        head += (f" ({rep.hookless} run(s) without the audit hook, an older library, "
+                 "contribute nothing)")
     own = [g for g in rep.gaps if not g.lib]
     lib = [g for g in rep.gaps if g.lib]
     open_ = [g for g in own if not g.accepted]

@@ -161,9 +161,11 @@ Audit (on by default; --no-audit turns it off)
   logs (logs); owed or callback receipts that log with no size or least_gas sweep on a run
   that executes them (log-size); and [audit] methods no run executes (inventory). See
   tools/audit.py. A sweep counts for a receipt its `covers` lists and its base run
-  executes, whether or not --sweep ran it this time. The report never changes the exit code. A run whose library
-  has no AuditOn (an older library) is run as before and contributes no facts; a run that
-  sets AuditOn itself keeps its value.
+  executes, whether or not --sweep ran it this time. A plain invocation only prints the
+  report. With --anti-vacuity, each open gap of a runs.toml all of whose runs ran, and a
+  missing [audit] methods list, fails like a vacuous witness (exit 1); accept a gap with
+  its reason to close it. A run whose library has no AuditOn (an older library) is run as
+  before and contributes no facts; a run that sets AuditOn itself keeps its value.
 
 Checks
 - "pass" needs TLC's exit code 0, its "No error has been found" line, and at least one
@@ -1817,16 +1819,19 @@ def _table(head, rows, outs: list[Outcome]) -> str:
 def audit_reports(runs: list[Run], outs: list[Outcome]) -> list[audit.Report]:
     """One audit report per runs.toml with an audited run, from the plain runs' facts."""
     facts: dict[Path, dict[str, set]] = {}
+    hookless: dict[Path, int] = {}
     for r, o in zip(runs, outs):
         if auditable(r):
             facts.setdefault(r.toml, {})[r.name] = set(o.facts)
+        else:
+            hookless[r.toml] = hookless.get(r.toml, 0) + 1
     reps = []
     for toml, by_run in facts.items():
         cfg = _AUDIT.get(toml, AuditCfg())
         refs = [audit.SweepRef(sw.id, sw.kind, [sw.run], sw.covers) for sw in _SWEEPS.get(toml, [])]
         gaps, subjects = audit.gaps(by_run, refs, cfg.methods, cfg.accept)
         reps.append(audit.Report(rel(toml), len(by_run), cfg.runs, gaps, subjects,
-                                 cfg.methods is not None))
+                                 cfg.methods is not None, hookless.get(toml, 0)))
     return reps
 
 
@@ -1928,12 +1933,23 @@ def main(argv=None) -> int:
         bad_sweeps = [o.check for o in swept if not o.ok]
         print(f"\n{len(swept) - len(bad_sweeps)}/{len(swept)} sweep rows as expected"
               + (f"; FAILED: {'; '.join(bad_sweeps)}" if bad_sweeps else ""))
+    bad_audit = []
     if not a.no_audit:
-        for rep in audit_reports(runs, outs):
+        reps = audit_reports(runs, outs)
+        for rep in reps:
             print("\n" + audit.render(rep))
+        if a.anti_vacuity:
+            bad_audit = [f for rep in reps for f in audit.failures(rep)]
+            whole = [rep for rep in reps if rep.whole]
+            print(f"\naudit: {len(whole)} runs.toml file(s) checked, {len(bad_audit)} open"
+                  + (f"; FAILED: {' '.join(bad_audit)}" if bad_audit else "")
+                  + (f"; {len(reps) - len(whole)} judged on some runs only, not checked"
+                     if len(whole) < len(reps) else ""))
+    elif a.anti_vacuity:
+        print("\naudit off (--no-audit): its gaps are not checked")
     if a.json:
         Path(a.json).write_text(json.dumps([asdict(o) for o in outs + checks + swept], indent=2, default=str) + "\n")
-    return 1 if bad or bad_checks or bad_sweeps else 0
+    return 1 if bad or bad_checks or bad_sweeps or bad_audit else 0
 
 
 if __name__ == "__main__":

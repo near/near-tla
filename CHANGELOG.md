@@ -532,9 +532,21 @@ them. A model that lists platform variables one by one must add each.
   (`"on_x log-size"`). Each role of a method (owed, unowed callback) is judged on its own
   executions; a direct call of it counts for nothing. `[audit.accept]`
   accepts a gap with its reason. The library's own token methods run through
-  the new `ExecLib` and are reported apart. The report never changes the exit code. With
-  `AuditOn` off (the default outside the runner), `Exec` behaves as before; with it on, runs
-  take a few percent longer.
+  the new `ExecLib` and are reported apart. A plain run only prints the report. Under
+  `--anti-vacuity`, each open gap of a `runs.toml` whose runs all ran fails like a vacuous
+  witness, as does a `runs.toml` with no `[audit] methods` (every example now lists its
+  methods). With `AuditOn` off (the default outside the runner), `Exec` behaves as before;
+  with it on, runs take a few percent longer.
+
+- **A host-cost floor for gas mode without a calibration** (SEMANTICS G7; USAGE "Gas without
+  a calibration"; `examples/host-floor`). With `HostFloorGas <- TRUE`, `Burn` adds what the
+  outcome's declared writes (`OWriteKey`, and the new `OWriteKeys` for k of them) and logs
+  (`OLog`, `OLogs`) surely pay at 88: the remove's base and per-key-byte fees for a write or
+  remove, and `log_base`, `log_byte` and the smaller decoding fees for a log. A missing
+  `GasBurn` key then counts as 0. With table entries that bound from below the work the floor
+  does not count (0 does), the burn is a lower bound of nearcore's, so a callback with a fixed budget that runs out on the floor runs out
+  on real wasm too; a pass proves nothing. `OWriteKey` now also records the write count and
+  key bytes (fields `wrn`, `wrb`); it still changes nothing with both switches off.
 
 - **Event-log lengths and NEP-245 id classes** (SEMANTICS T8, T5, N-mtclass;
   `examples/event-logs`). `TokenCommon` computes the exact byte length of an `ft_transfer`,

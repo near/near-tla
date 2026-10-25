@@ -35,6 +35,7 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [11. Local-receipt priority](#11-local-receipt-priority)
 - [12. Fault mode and gas mode](#12-fault-mode-and-gas-mode)
   - [Worst-case storage gas (trie depth)](#worst-case-storage-gas-trie-depth)
+  - [Gas without a calibration: the host-cost floor](#gas-without-a-calibration-the-host-cost-floor)
 - [13. The forced-fault switch and labels](#13-the-forced-fault-switch-and-labels)
   - [Owed callbacks and detached work](#owed-callbacks-and-detached-work)
 - [14. Joint callbacks, yield/resume and the block clock](#14-joint-callbacks-yieldresume-and-the-block-clock)
@@ -92,15 +93,19 @@ noise. The rest of this guide is the mechanics.
 
    List the source's callbacks and the methods other contracts call in `[audit] methods`.
    Then work through the runner's audit report until each gap is closed or accepted with a
-   reason ([Auditing what the runs reach](#auditing-what-the-runs-reach)).
+   reason ([Auditing what the runs reach](#auditing-what-the-runs-reach)). `--anti-vacuity`
+   fails on every open gap. None of this needs the sim
+   ([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor)).
 
 **Steps 3 and 4 need the sim.** Calibrating and replaying run your wasm in near-contract-sim,
 a private repository; see [Access to the sim](CONFORMANCE.md#access-to-the-sim). Without access:
 
-- keep to fault mode for your conclusions;
-- if you use gas mode, fill the tables by hand from your contract's declared static gas and
-  weights and a rough burn estimate, and say so in the model;
-- treat every gas window as illustrative, not as a finding;
+- keep to fault mode for conclusions that depend on a burn you estimated;
+- use gas mode with the host-cost floor (`HostFloorGas <- TRUE`, an empty `GasBurn`, and the
+  static gas and weights your contract declares) for each callback with a fixed budget. A
+  callback that runs out on the floor runs out on real wasm too: that is a finding, not an
+  estimate ([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor));
+- treat every other gas window, and every pass on the floor, as illustrative;
 - replay counterexamples by reading the contract's code path by path, and say that you did.
 
 ## 0. Where your model lives
@@ -407,6 +412,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at every extra trie-node count up to its worst case ([section 12](#worst-case-storage-gas-trie-depth)) |
 | `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
 | `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
+| `HostFloorGas` | `FALSE` | gas mode without a calibrated table: `TRUE` adds the host-cost floor of each outcome's declared writes and logs to its burn, and a missing `GasBurn` key counts as 0 ([section 12](#gas-without-a-calibration-the-host-cost-floor)) |
 | `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
 | `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
@@ -1201,6 +1207,54 @@ both ways.
 `examples/trie-gas` has an owed callback whose 4.5 Tgas budget fits its calibrated refund path
 (4 Tgas) but not the worst case of its two writes (+976 Ggas); its `cb_need` sweep finds the
 least budget, 4976 Ggas.
+
+### Gas without a calibration: the host-cost floor
+
+Some host calls pay fixed fees whatever the wasm does. A storage write or remove pays at least
+53.47 Ggas plus 38.22 Mgas per key byte. A log pays at least 6.66 Ggas plus 122.25 Mgas per
+byte, decoding included ([G7](SEMANTICS.md#g7-a-floor-from-host-costs)). With
+`HostFloorGas <- TRUE`, `Burn` adds that floor for the writes and logs an outcome declares
+(`OWriteKey`, `OWriteKeys`, `OLog`, `OLogs`), and a missing `GasBurn` key counts as 0. So
+without the sim you can run gas mode on the source's numbers alone:
+
+```toml
+[constants]
+GasMode = '"gas"'
+GasCall = "MyGasCall"     # static gas and weight of every call, from the source
+GasBurn = "NoTable"       # [x \in {} |-> 0]: no burns measured
+HostFloorGas = "TRUE"
+```
+
+```tla
+\* the resolver removes n entries of 100-byte keys and logs a refund event
+O == OLog(OWriteKeys(OKey(Out0, "on_take/refund"), 100, n), EvBytes(n))
+```
+
+Need is then a lower bound of nearcore's, and the verdicts split:
+
+- **a finding:** a callback with a fixed budget (static gas, weight 0) gets exactly its static
+  gas. If it runs out on the floor, it runs out on real wasm too, whatever the wasm burns on
+  top.
+- **a finding if the depth is real:** with `TrieGasWorst` on as well, a failure labelled
+  `"out of gas (worst-case trie depth)"` also needs the trie charge the trace chose. That
+  charge is an upper bound ([G6](SEMANTICS.md#g6-storage-gas-and-trie-depth)). It holds for
+  distinct keys, each declared once, at a depth other users can build by storing keys that
+  share a prefix with yours. Check the trace's charge against that before you call it real.
+- **illustrative:** a pass, and any window of a weighted child. The wasm's own burn comes on
+  top of the floor, and an under-counted burn in the creator leaves a weighted child more gas
+  than nearcore would.
+
+The floor counts what you declare, so declare every write and log the path makes, with
+lengths from its input: the number of entries, the ids' lengths, the amounts. A larger
+`GasBurn` entry is fine only if it bounds from below the work the floor does not count:
+wasm execution, reads, value bytes. A measured burn already includes the host fees, so
+adding the floor to it counts them twice. Never combine the switch with a calibrated table. Nothing is added on a panic path or per action (`pa`).
+
+`examples/host-floor` has an owed callback with a fixed 5 Tgas budget that removes a batch
+of distinct 100-byte keys and logs a refund event. On the floor alone, 80 entries fit and 81
+run out (`floor_over`); with `TrieGasWorst`, 7 run out at the deepest trie
+(`floor_trie_over`). Its `cb_need` sweep finds
+the least budget for 81, 5049 Ggas.
 
 ## 13. The forced-fault switch and labels
 
@@ -2187,7 +2241,16 @@ Gaps of the library's own token methods (`ft_resolve_transfer`, `mt_resolve_tran
 listed apart: they are standard implementations, worth checking only where your contract
 depends on them.
 
-The report never changes the exit code. It is a list to work through, not a verdict.
+A plain run only prints the report. With `--anti-vacuity`, each open gap fails like a
+vacuous witness, and so does a runs.toml with no `[audit] methods`:
+
+```
+audit: 3 runs.toml file(s) checked, 2 open; FAILED: audit:v.on_res gas@my/runs.toml audit:methods@my/runs.toml
+```
+
+A gap closes when a run or sweep reaches what it names, or when you accept it with a reason.
+Gaps of the library's token methods never fail. Neither does a runs.toml of which only some
+runs were selected: a run left out may close its gaps. Its header says so.
 
 - Facts come only from the runs that ran in this invocation. With some runs selected, the
   header says how many, and gaps are judged on those.
@@ -2243,6 +2306,7 @@ All examples are toy contracts written for this repo.
   | `session-key` | a function-call key's allowance: sized as plays × cost, forgetting the gas refunds, it lets more plays through; a model that states no refund hides that |
   | `tx-nonce` | transaction nonces: a replay is refused; a wallet that signs payments in parallel loses one when a later one lands first; without nonces a replay pays twice |
   | `result-read-gas` | an owed token resolver that reads its receiver's result unbounded runs out of gas on a 4 MiB answer; the 42-byte bound does not |
+  | `host-floor` | gas mode without a calibration: an owed callback's fixed budget against the floor of its declared writes and event (`HostFloorGas`), which runs out on any wasm once the batch is large enough; with `TrieGasWorst`, sooner |
   | `trie-gas` | worst-case storage gas: an owed callback whose fixed budget fits its calibrated burn but not the trie-node gas of its writes in a deep trie (`TrieGasWorst`); `leftover/`: a child's owed callback that fails only at an intermediate trie charge |
   | `limits` | protocol limits at the last value nearcore accepts and the first it refuses: actions per receipt, promises per call, joint inputs, returned bytes, AddKey method names, logs |
   | `event-logs` | the token handlers' NEP-297 event lengths against the sim's, and an id class at the 16384-byte edge; `batch-payout/`: a batch payout whose event grows with the batch (sweep `payout_edge` finds the first size over the limit), an owed callback that marks it paid regardless; `resolver-log/`: an owed token resolver over a lowered log limit, reported by `OwedOK` |

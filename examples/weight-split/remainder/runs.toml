@@ -97,3 +97,9 @@ find = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div W'
 replace = 'IF NearFeeTable!FeeRounding = "up" THEN (U * e[3]) \div (W + 1)'
 class = "off-by-one guard"
 runs = ["remainder_up_ok"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["fan", "k1", "k2", "k3", "k4", "k5", "k6"]

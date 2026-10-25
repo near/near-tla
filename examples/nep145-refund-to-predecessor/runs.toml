@@ -127,3 +127,9 @@ find = 'ELSE IF x < min'
 replace = 'ELSE IF FALSE'
 class = "removed precondition"
 equivalent = "R always attaches Min + Extra >= Min (witness deposit_below_min never reached)"
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["on_registered", "register"]

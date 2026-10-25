@@ -192,3 +192,9 @@ find = '/\ SubmitSigned(PlayTx(nid, ntx + nk + 1), U, "s")'
 replace = '/\ SubmitSigned(PlayTx(nid, ntx + nk + 1), U, "k0")'
 class = "wrong argument"
 runs = ["session_sized"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["play"]

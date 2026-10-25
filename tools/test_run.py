@@ -1277,6 +1277,26 @@ class AuditTest(unittest.TestCase):
         self.assertIn("no [audit] methods", text)
         self.assertIn("library token methods", text)
 
+    def test_failures(self):
+        f = {"a": {fact(owed=True, m="on_res")}}
+        gaps, n = audit.gaps(f, [], None, {"on_res logs": "x"})
+        self.assertEqual(audit.failures(audit.Report("r.toml", 1, 1, gaps, n)),
+                         ["audit:v.on_res gas@r.toml", "audit:methods@r.toml"])
+        gaps, n = audit.gaps(f, [], ["on_res"], {"on_res": "x"})
+        self.assertEqual(audit.failures(audit.Report("r.toml", 1, 1, gaps, n, True)), [])
+        # judged on some runs only: nothing
+        gaps, n = audit.gaps(f, [], None, {})
+        self.assertEqual(audit.failures(audit.Report("r.toml", 1, 2, gaps, n)), [])
+        # every run ran, one without the hook: still checked, on the other's facts
+        mixed = audit.Report("r.toml", 1, 2, gaps, n, False, 1)
+        self.assertIn("audit:v.on_res gas@r.toml", audit.failures(mixed))
+        self.assertIn("1 run(s) without the audit hook", audit.render(mixed))
+        self.assertNotIn("1 of 2 runs", audit.render(mixed))
+        # library gaps never fail
+        lib = {"a": {fact(to="ft", m="ft_resolve_transfer", owed=True, lib=True)}}
+        gaps, n = audit.gaps(lib, [], [], {})
+        self.assertEqual(audit.failures(audit.Report("r.toml", 1, 1, gaps, n, True)), [])
+
     def test_load_audit(self):
         with tempfile.TemporaryDirectory() as t:
             d = Path(t)
@@ -1343,6 +1363,23 @@ class AuditTest(unittest.TestCase):
             self.assertEqual(text.count("audit runs.toml") + text.count(f"audit {run.rel(p)}"), 1)
             for rule in ("trie", "least-gas", "logs"):
                 self.assertRegex(text, rf"v\.on_res\s+{rule}\s")
+            # --anti-vacuity: an open gap fails, unless only some of the file's runs ran;
+            # accepted gaps pass
+            out = io.StringIO()
+            run.subprocess.run = fake
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(run.main([str(p), "--anti-vacuity", "--jar", str(p)]), 1)
+                    self.assertEqual(run.main([str(p), "a", "--anti-vacuity", "--jar", str(p)]), 0)
+                    self.assertEqual(run.main([str(p), "--anti-vacuity", "--no-audit", "--jar", str(p)]), 0)
+                    p.write_text(p.read_text() + '[audit.accept]\n"on_res" = "a toy"\n')
+                    self.assertEqual(run.main([str(p), "--anti-vacuity", "--jar", str(p)]), 0)
+            finally:
+                run.subprocess.run = orig
+            text = out.getvalue()
+            self.assertIn("FAILED: audit:v.on_res trie@", text)
+            self.assertIn("judged on some runs only, not checked", text)
+            self.assertIn("audit off (--no-audit)", text)
             # a library without the hook: run as before, no report
             write(d / "lib", "NearAsync.tla", "---- MODULE NearAsync ----\n====\n")
             run._AUDITABLE.clear()

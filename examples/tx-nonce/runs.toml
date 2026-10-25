@@ -134,3 +134,9 @@ find = 'Pay(n) == SignedTx(U, "k0", n, '
 replace = 'Pay(n) == SignedTx(U, "k0", n - 1, '
 class = "off-by-one"
 runs = ["nonce_sequential"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["pay"]

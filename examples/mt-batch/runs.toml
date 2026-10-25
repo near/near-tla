@@ -428,3 +428,9 @@ find = 'ELSE IF amt = 0 /\ "zeroAmountSkipped" \in dev THEN acc'
 replace = 'ELSE IF amt = 0 /\ "zeroAmountSkipped" \in dev /\ s # rc THEN acc'
 class = "removed precondition"
 runs = ["mt_zero_self"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["mt_on_transfer"]

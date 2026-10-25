@@ -678,3 +678,14 @@ replace = 'ELSE CodeBytesBefore(r)'
 class = "wrong effect (library)"
 killed_by = ["Check"]
 runs = ["selftest_global"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["ans", "bal", "boom", "boomk", "bye", "byeb", "callreq", "cb", "cbf", "closecall",
+           "closeprom", "dcb", "dostake", "foo", "ft_on_transfer", "init", "j", "jcb",
+           "kbundle", "keyact", "last", "lastp", "mk", "mkacct", "mkinit", "mkinitg", "multi",
+           "multi2", "ping", "pong", "probe", "put", "putpay", "relay", "req", "req2", "reqid",
+           "reqid2", "reqr", "seebal", "send", "spawn", "spawn0", "spawn3", "spawnx", "spend",
+           "unreg", "who", "whoc", "work", "ycb", "ycbid"]

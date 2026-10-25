@@ -104,3 +104,9 @@ form = "%d"
 limit = 150
 floor = 1
 expect = { "1" = "pass", "2" = "pass", "149" = "violation OwedOK", "150" = "pass", "151" = "pass" }
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["ft_on_transfer"]

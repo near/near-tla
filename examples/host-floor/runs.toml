@@ -1,0 +1,156 @@
+# Gas mode without a calibrated table (docs/SEMANTICS.md, G7): HostFloorGas <- TRUE makes each
+# receipt burn the floor of the host calls its outcome declares (OWriteKey, OWriteKeys, OLog),
+# with an empty GasBurn.  The need is then a lower bound of nearcore's, so an owed callback with
+# a fixed budget that runs out here runs out on real wasm too.  A pass proves nothing.  See
+# FloorVault.tla.
+#
+#   python3 tools/run.py examples/host-floor
+#
+# OwedOK  no owed callback failed (NearAsync; the trace's last state shows ofail).
+# Books   once idle, nothing is held and U's balance plus T's takings is the start.
+# Sane    NEAR conserved, no orphans.
+
+spec = "FloorVault"
+workers = 2
+library = "../../modules"
+budget_s = 120
+invariants = ["OwedOK", "Books", "Sane"]
+tags = ["semantics:host-floor"]
+
+[constants]
+Accounts = "Accts"
+StakingAcct = '"v"'
+MinStake = "1"
+StorageFloor = "Floor0"
+MayFail = "{}"
+MaxFails = "0"
+MaxEpoch = "0"
+MaxReward = "0"
+Exists = "Accts"
+GasMode = '"gas"'
+GasCall = "LGasCall"
+GasBurn = "NoTable"
+HostFloorGas = "TRUE"
+LogOn = "FALSE"
+TrackSigner = "FALSE"
+U = '"u"'
+V = '"v"'
+T = '"t"'
+MaxTx = "1"
+Amts = "{1, 2}"
+InitBal = "2"
+TResps = '{"ok", "panic"}'
+GasMenu = "{300000}"
+CbBudget = "5000"
+KeyLen = "100"
+Batch = "80"
+
+# 80 entries: the refund path's floor is 4987 Ggas, within the 5 Tgas budget.  This pass says
+# only that the floor fits; the wasm's own burn comes on top.
+[[run]]
+name = "floor_fits"
+expect = "pass"
+
+# 81 entries: the floor is 5049 Ggas.  on_take runs out on its refund path on any wasm, and U's
+# n is lost.
+[[run]]
+name = "floor_over"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "out of gas"'
+[run.constants]
+Batch = "81"
+
+# With worst-case trie depth too (G6), each removed key may also pay 334 trie nodes
+# (2 (2 + 64 + 100) + 2): 6 entries need at most 385 + 4570 Ggas, which fits.
+[[run]]
+name = "floor_trie_fits"
+expect = "pass"
+[run.constants]
+Batch = "6"
+TrieGasWorst = "TRUE"
+
+# 7 entries: 448 + 5331 Ggas at the deepest trie, past the budget.
+[[run]]
+name = "floor_trie_over"
+expect = "violation"
+invariant = "OwedOK"
+expect_output = 'why \|-> "out of gas \(worst-case trie depth\)"'
+[run.constants]
+Batch = "7"
+TrieGasWorst = "TRUE"
+
+# ---- anti-vacuity: python3 tools/run.py examples/host-floor --anti-vacuity ----
+
+# Books' antecedent, and both of on_take's arms committing (at 81 entries the refund never does).
+[[witness]]
+id = "send_settles"
+expr = '~(Idle /\ ntx > 0)'
+runs = ["floor_fits", "floor_trie_fits"]
+
+[[witness]]
+id = "refund_commits"
+expr = '~(Idle /\ ntx > 0 /\ got = 0 /\ bal = InitBal)'
+runs = ["floor_fits", "floor_trie_fits"]
+
+[[witness]]
+id = "sent_commits"
+expr = '~(Idle /\ got > 0)'
+runs = ["floor_fits", "floor_over", "floor_trie_fits"]
+
+# The refund on_take was charged its floor, and nothing more.
+[[witness]]
+id = "floor_charged"
+expr = '~(\E x \in ofail : x.m = "on_take" /\ x.need = 5049)'
+runs = ["floor_over"]
+
+# 13 Ggas short of the budget still fits 80 entries; 14 short does not: OwedOK catches it.
+[[mutant]]
+id = "budget_short"
+file = "FloorVault.tla"
+find = '("on_take" :> GC(<<CbBudget>>, <<0>>, 300))'
+replace = '("on_take" :> GC(<<CbBudget - 14>>, <<0>>, 300))'
+class = "off-by-one guard"
+runs = ["floor_fits"]
+killed_by = ["OwedOK"]
+
+# The refund arm skipped: Books catches it.
+[[mutant]]
+id = "refund_skipped"
+file = "FloorVault.tla"
+find = 'b |-> IF took THEN bal ELSE bal + n'
+replace = 'b |-> bal'
+class = "failure branch skips rollback"
+runs = ["floor_fits"]
+killed_by = ["Books"]
+
+# ---- sweeps: python3 tools/run.py examples/host-floor --sweep ----
+
+# Least gas: the smallest budget at which on_take's floor fits 81 entries, 5049 Ggas.
+[[sweep]]
+id = "cb_need"
+kind = "least_gas"
+run = "floor_over"
+knob = "CbBudget"
+covers = ["on_take"]
+lo = 4000
+hi = 10000
+success = ["OwedOK"]
+expect_need = 5049
+
+# The refund event grows 40 bytes per entry and would reach MaxLogBytes at 408 entries, but
+# the floor runs out of the budget long before.
+[[sweep]]
+id = "event_size"
+kind = "size"
+run = "floor_fits"
+knob = "Batch"
+covers = ["on_take"]
+limit = 408
+floor = 1
+expect = { "1" = "pass", "2" = "pass", "407" = "violation OwedOK", "408" = "violation OwedOK", "409" = "violation OwedOK" }
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+[audit]
+methods = ["send", "on_take"]

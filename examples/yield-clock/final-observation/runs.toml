@@ -65,3 +65,9 @@ MaxBlk = "2"
 id = "armed_at_bound"
 expr = '~armed'
 runs = ["final_obs_short_passes"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["arm"]

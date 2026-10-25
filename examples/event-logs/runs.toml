@@ -180,3 +180,10 @@ replace = 'IsMtBatchRes(r) == r.a.tid = ""'
 class = "wrong branch"
 runs = ["event_lens_empty_id"]
 killed_by = ["EmptyIdOK"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The runs exercise only the library's token handlers (ExecLib): the model has no
+# methods of its own.
+[audit]
+methods = []

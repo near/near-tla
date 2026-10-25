@@ -155,3 +155,9 @@ find = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1, !.reqs = Forget(y)]   \* 
 replace = 'THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1]   \* timed out'
 class = "state leak"
 runs = ["yield_ok"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["answer", "on_answer", "request"]

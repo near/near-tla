@@ -239,3 +239,9 @@ replace = 'ELSE IF "ac" \in DOMAIN r /\ Ug(r) # NoGid THEN NoCode'
 class = "platform rule dropped (library)"
 killed_by = ["Served"]
 runs = ["factory_global"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["create", "init", "on_create"]

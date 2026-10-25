@@ -124,3 +124,9 @@ find = "created' = IF AcctExists(r.to) THEN created ELSE created \\cup {r.to}"
 replace = "created' = created"
 class = "dropped effect"
 runs = ["eth_fee_creates"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["forward", "pay"]

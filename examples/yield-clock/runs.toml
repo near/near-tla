@@ -279,3 +279,9 @@ find = '/\ (blk >= p.ydl \/ blk >= MaxBlk)'
 replace = '/\ (blk + 1 >= p.ydl \/ blk >= MaxBlk)'
 class = "off-by-one guard"
 runs = ["yield_ok_timed"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["answer", "cancel", "on_answer", "request"]

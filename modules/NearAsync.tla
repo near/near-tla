@@ -915,8 +915,53 @@ TrieGasEnds  == FALSE
 TrieAcctLen  == 64
 TrieNodeMgas == 2280            \* wasm_touching_trie_node, Mgas (88)
 TrieNodes(O) == IF "trn" \in DOMAIN O THEN O.trn ELSE 0
-OWriteKey(O, n) == [trn |-> TrieNodes(O) + 2 * (2 + TrieAcctLen + n) + 2] @@ O
+WriteCount(O) == IF "wrn" \in DOMAIN O THEN O.wrn ELSE 0
+WriteKeyBytes(O) == IF "wrb" \in DOMAIN O THEN O.wrb ELSE 0
+OWriteKey(O, n) == [trn |-> TrieNodes(O) + 2 * (2 + TrieAcctLen + n) + 2,
+                    wrn |-> WriteCount(O) + 1, wrb |-> WriteKeyBytes(O) + n] @@ O
+\* OWriteKeys(O, n, k): k writes or removes of n-byte keys, without recursing once per write.
+\* Above 20001 writes it records 20001, whose floor alone (HostFloor) is past any gas, so
+\* TLC's integers do not overflow on larger declarations.
+OWriteKeys(O, n, k) ==
+    LET j == IF k > 20001 THEN 20001 ELSE k IN
+    [trn |-> TrieNodes(O) + j * (2 * (2 + TrieAcctLen + n) + 2),
+     wrn |-> WriteCount(O) + j, wrb |-> WriteKeyBytes(O) + j * n] @@ O
 TrieGasAt(n) == (n * TrieNodeMgas + 999) \div 1000
+\* Host-cost floor (docs/SEMANTICS.md, G7), opt-in: HostFloorGas <- TRUE,
+\* for gas mode without a calibrated table.  Burn then adds to GasBurn the
+\* gas that the declared host calls surely pay at 88 (parameters snapshot
+\* 88), and a missing GasBurn key counts as 0, so with table entries that
+\* are lower bounds (0 is one) a receipt's burn is a lower bound of
+\* nearcore's.  A storage_write or storage_remove of an n-byte key
+\* (OWriteKey) pays at least storage_remove_base + n x
+\* storage_remove_key_byte (host.rs:5006, :5035, :5181, :5196; the write's
+\* are larger); a log of b bytes (OLog) pays log_base + b x log_byte and
+\* its decoding, at least utf8_decoding_base + b x 2/3 x
+\* utf16_decoding_byte (log_utf8 and log_utf16, host.rs:4792-4824; a UTF-16
+\* input is at least 2/3 of the UTF-8 message it decodes to).  Values not
+\* declared (value bytes, reads, wasm) count 0.  The sum is in Mgas, each
+\* fee rounded down, then rounded down to whole Ggas, without overflowing
+\* TLC's integers; declarations whose floor alone exceeds 1000 Tgas give
+\* HostFloorCap, more than any receipt holds.  Calibrated burns already
+\* hold these costs: never with a calibrated table.  Nothing is added on a
+\* panic path or per action.
+HostFloorGas == FALSE
+HostFloorCap == 1000001
+MulDivFloor(x, n, d) == (x \div d) * n + ((x % d) * n) \div d
+HostFloorParts(O) ==
+    << WriteCount(O) * 53473,
+       WriteKeyBytes(O) * 38 + MulDivFloor(WriteKeyBytes(O), 220, 1000),
+       LogCount(O) * 6655,
+       LogBytes(O) * 122 + MulDivFloor(LogBytes(O), 250, 1000) >>
+HostFloorOver(O) ==
+    WriteCount(O) > 20000 \/ WriteKeyBytes(O) > 30000000
+    \/ LogCount(O) > 200000 \/ LogBytes(O) > 10000000
+HostFloor(O) ==
+    IF ~HostFloorGas THEN 0
+    ELSE IF HostFloorOver(O) THEN HostFloorCap
+    ELSE LET t == HostFloorParts(O) IN
+         (t[1] \div 1000) + (t[2] \div 1000) + (t[3] \div 1000) + (t[4] \div 1000)
+         + ((t[1] % 1000) + (t[2] % 1000) + (t[3] % 1000) + (t[4] % 1000)) \div 1000
 TrieExtra(O) == TrieGasAt(TrieNodes(O))
 \* The node counts Exec explores under TrieSplit.
 TrieNodeRange(O) == IF TrieGasEnds THEN {0, TrieNodes(O)} ELSE 0..TrieNodes(O)
@@ -1324,10 +1369,11 @@ RetTooLong(O) ==
 Kids(O) == O.ready \cup O.post
 
 BurnKey(r, O) == IF O.gk = "" THEN r.m ELSE O.gk
-Burn(r, O) ==
-    LET k == BurnKey(r, O) IN
-    IF k \in DOMAIN GasBurn THEN GasBurn[k].base + GasBurn[k].per * O.sz
+TableBurn(k, sz) ==
+    IF k \in DOMAIN GasBurn THEN GasBurn[k].base + GasBurn[k].per * sz
+    ELSE IF HostFloorGas THEN 0
     ELSE Assert(FALSE, <<"no GasBurn entry for", k>>)
+Burn(r, O) == TableBurn(BurnKey(r, O), O.sz) + HostFloor(O)
 
 KidsCost(S) == RcptSum(LAMBDA c : c.gf + SumSeq(c.gs), S)
 
@@ -1349,10 +1395,7 @@ PerAction(r, O) ==
     /\ PAOK(r, O)
     /\ Len(O.pa) > 1
 ActGas(r, k) == IF k \in DOMAIN r.g THEN r.g[k] ELSE 0
-ActBurn(O, k) ==
-    LET key == O.pa[k].gk IN
-    IF key \in DOMAIN GasBurn THEN GasBurn[key].base + GasBurn[key].per * O.pa[k].sz
-    ELSE Assert(FALSE, <<"no GasBurn entry for", key>>)
+ActBurn(O, k) == TableBurn(O.pa[k].gk, O.pa[k].sz)
 ActKids(O, k) == {c \in Kids(O) : c.id \in O.pa[k].kids}
 ActNeed(O, k) == ActBurn(O, k) + KidsCost(ActKids(O, k))
 ActOf(O, c) ==
@@ -1374,7 +1417,7 @@ GasOK(r, O) ==
 \* the actions before the panicking one, and that one up to its panic.
 HasPanicKey(O) == "pk" \in DOMAIN O /\ O.pk # ""
 PanicBurn(O) ==
-    IF O.pk \in DOMAIN GasBurn THEN GasBurn[O.pk].base + GasBurn[O.pk].per * O.sz
+    IF O.pk \in DOMAIN GasBurn \/ HostFloorGas THEN TableBurn(O.pk, O.sz)
     ELSE Assert(FALSE, <<"no GasBurn entry for panic key", O.pk>>)
 PanicAct(O) == IF "pi" \in DOMAIN O THEN O.pi ELSE Len(O.pa)
 PanicOOG(r, O) ==

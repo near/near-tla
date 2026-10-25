@@ -261,3 +261,9 @@ find = '!.bal[rc] = @ - refund, !.bal[s] = @ + refund]'
 replace = '!.bal[rc] = @, !.bal[s] = @]'
 class = "wrong refund account"
 runs = ["pay_std"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["ft_on_transfer", "on_paid", "pay"]

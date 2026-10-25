@@ -93,3 +93,9 @@ find = 'IF x.op = "del" THEN x.k \notin pre ELSE x.k \in pre'
 replace = 'IF x.op = "del" THEN FALSE ELSE x.k \in pre'
 class = "removed precondition"
 runs = ["delkey_bundled"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["on_revoked", "revoke"]

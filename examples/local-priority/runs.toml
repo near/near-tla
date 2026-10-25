@@ -93,3 +93,9 @@ find = '/\ (a \in KeyAccts) => (KeyCanSign(a, k, r) /\ AllowanceOK(a, k, r))'
 replace = '/\ TRUE'
 class = "removed precondition"
 runs = ["local_on"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["act", "revoke"]

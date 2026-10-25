@@ -886,6 +886,47 @@ Each rule has four fields:
   paid once per receipt, not once per write; what the second write pays in absolute terms is
   not tested). The `2L + 2` bound itself: nearcore reading.
 
+### G7. A floor from host costs
+
+- **Rule:** some host functions pay fixed per-call and per-byte fees whatever the wasm does.
+  `storage_write` pays `storage_write_base` plus `storage_write_key_byte` per key byte, and
+  `storage_remove` pays `storage_remove_base` plus `storage_remove_key_byte` per key byte. The
+  remove's fees are the smaller ones, so they bound either call from below. `log_utf8` pays
+  `utf8_decoding_base` plus `utf8_decoding_byte` per input byte, then `log_base` plus
+  `log_byte` per byte of the message. `log_utf16` pays `utf16_decoding_base` plus
+  `utf16_decoding_byte` per input byte, which is at least 2/3 of the message's UTF-8 length.
+  So a log of `b` message bytes pays at least
+  `log_base + utf8_decoding_base + b × (log_byte + 2/3 × utf16_decoding_byte)`. At 88 that is
+  6.655 Ggas plus 122.25 Mgas per byte; a write or remove of an `n`-byte key pays at least
+  53.473 Ggas plus 38.22 Mgas per byte.
+- **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:4792-4824` (`log_utf8`,
+  `log_utf16`), `:486-521` and `:548-578` (`get_utf8_string`, `get_utf16_string`: the decoding
+  fees), `:5006`, `:5035` (`storage_write`: the base, the key bytes), `:5181`, `:5196`
+  (`storage_remove`: the same);
+  `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:122-160`
+  (the fees).
+- **Model:** opt-in, for gas mode without a calibrated table. With `HostFloorGas <- TRUE`,
+  `Burn` adds `HostFloor(O)` to the table's burn. This is the floor of the writes the outcome
+  declares with `OWriteKey` (the same declarations G6 uses) and of the logs it declares with
+  `OLog`, rounded down to whole Ggas. A missing `GasBurn` key counts as 0. A table whose
+  entries are lower bounds of the rest of the work (wasm, reads, value bytes; 0 is one) then
+  makes the burn a lower bound of nearcore's. The consequence is one-sided:
+  - **sound:** a receipt with a fixed budget (static gas, weight 0) gets exactly its static
+    gas whatever its creator burned. If its floor need exceeds that, it runs out on real wasm
+    too. If the failure also needs trie gas (`TrieGasWorst`, labelled
+    `"out of gas (worst-case trie depth)"`), it is real only if that charge can happen. G6's
+    charge is an upper bound: it holds only for distinct keys, each declared once (a key the
+    receipt already wrote costs no nodes), at a depth users can build. Check the trace's
+    charge against what other users can store;
+  - **not sound:** a pass proves nothing. Neither does a window of a weighted child: an
+    under-counted burn in the creator leaves the child more gas than nearcore would.
+
+  A calibrated burn already includes these fees, so the switch must not be combined with one.
+  Nothing is added on a panic path (`OPanicKey`), or per action (`pa`). The sum is exact in
+  Mgas (each fee rounded down) without overflowing TLC's integers. Declarations whose floor
+  alone exceeds 1000 Tgas give `HostFloorCap`, which is more than any receipt holds.
+- **Validated:** nearcore reading. The fees are the 88 snapshot's.
+
 ---
 
 ## Accounts

@@ -250,3 +250,9 @@ replace = 'StorBytes[k].base'
 class = "affine line read as a constant"
 runs = ["vault_measured_atomic_ok"]
 killed_by = ["BytesBooked"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["on_paid", "withdraw"]

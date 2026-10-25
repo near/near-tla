@@ -127,3 +127,9 @@ file = "Payout.tla"
 find = 'IF Paid THEN [O |-> OErr(Out0, "already paid"), d |-> done]'
 replace = 'IF FALSE THEN [O |-> OErr(Out0, "already paid"), d |-> done]'
 class = "removed precondition"
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["on_paid", "pay"]

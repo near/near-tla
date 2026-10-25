@@ -100,3 +100,9 @@ replace = 'THEN RValLen(0, HugeLen) ELSE RVal(0)'
 class = "wrong result"
 runs = ["read_bounded"]
 killed_by = ["Refunded"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["ft_on_transfer"]

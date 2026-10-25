@@ -458,3 +458,9 @@ knob = "N"
 limit = "MaxJointInputs"
 floor = 1
 expect = { "1" = "pass", "2" = "pass", "127" = "pass", "128" = "pass", "129" = "violation Done" }
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["blob", "gather", "go", "got", "pay", "quote"]

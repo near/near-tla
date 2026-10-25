@@ -118,3 +118,9 @@ find = "/\\ dHi' = IF r.a.s > dHi THEN r.a.s ELSE dHi"
 replace = "/\\ dHi' = dHi"
 class = "lost update"
 runs = ["pair_seqno_ok"]
+
+# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+
+# The model's methods: the calls users and other contracts make, and the callbacks.
+[audit]
+methods = ["close", "d_close", "d_open", "open"]
