@@ -1217,6 +1217,23 @@ class AuditTest(unittest.TestCase):
         _, n = audit.gaps({"a": {owed_gas, cb}}, [], None, {})
         self.assertEqual(n, 1)
 
+    def test_method_only_covers_and_library_apart(self):
+        # a.on_cb owed, b.on_cb an unowed callback, in one base run: "on_cb" alone is ambiguous
+        a = fact(to="a", owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        b = fact(to="b", mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        sw = [audit.SweepRef("need", "least_gas", ["r"], ["on_cb", "on_cb log-size"])]
+        self.assertEqual(len(self.rules({"r": {a, b}}, sw)), 4)
+        self.assertEqual(self.rules({"r": {a}}, sw), [])
+        exact = [audit.SweepRef("need", "least_gas", ["r"], ["a.on_cb", "a.on_cb log-size",
+                                                              "b.on_cb", "b.on_cb log-size"])]
+        self.assertEqual(self.rules({"r": {a, b}}, exact), [])  # each acct.method has one role
+        # a library execution under the same key does not close the contract's own gaps
+        own = fact(owed=True)
+        lib = fact(owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9, lib=True)
+        got = self.rules({"r": {own, lib}})
+        self.assertIn(("v.on_cb", "gas", False, False), got)
+        self.assertIn(("v.on_cb", "logs", False, False), got)
+
     def test_callbacks_and_plain_receipts(self):
         # a callback with a weight: no gas rule; one that logs: log-size
         self.assertEqual(self.rules({"a": {fact(mode="gas", known=True)}}), [])
