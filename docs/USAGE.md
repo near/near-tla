@@ -378,7 +378,8 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `ResultReadGas` | `TRUE` | never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
 | `TokEvents` | `TRUE` | never, unless keeping older behaviour or the model declares the token's events itself: `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
 | `EvAcctLen`, `EvAmtExp`, `MtIdLen` | each model value's own length | the events' byte lengths matter: the real length of account ids and token ids, a token's decimal exponent ([section 8](#event-logs)) |
-| `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
+| `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) (at least 1) |
+| `MtGasIds` | 3 | gas mode, with a burn table of your own measured on larger NEP-245 batches: the most ids a batch may carry before it is an `Assert` (`CalibStdMt` is measured at 1-3; the resolver's burn grows faster than linearly) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
 | `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at every extra trie-node count up to its worst case ([section 12](#worst-case-storage-gas-trie-depth)) |
 | `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
 | `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
@@ -763,8 +764,13 @@ resolver caps and refunds per id as before; the event and the burn size count 40
 `MtIdLen` for the ids' byte length. This covers only behaviours in which the ids of a class
 stay alike: a transfer of part of a class, or a receiver answering differently for ids of
 one class, cannot be written (T5 has the exact boundary; N-mtclass). `mt_transfer` on a class
-of more than one id is an `Assert`. `examples/event-logs/batch-payout` pays two classes and
-sweeps their size for the edge at 16384 bytes.
+of more than one id is an `Assert`. So is, in gas mode, a batch of more ids than `MtGasIds`
+(3): the burn tables are measured on 1-3 ids, and past that the resolver's burn grows
+faster than linearly in the number of ids and with their length (T5), so a line would
+understate it. Check large batches in fault mode, or measure your contract's burns at that
+size, give them as your own `GasBurn` and raise `MtGasIds`.
+`examples/event-logs/batch-payout` pays two classes in fault mode and sweeps their size for
+the edge at 16384 bytes.
 
 ## 9. Receiving tokens
 

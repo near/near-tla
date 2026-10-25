@@ -184,13 +184,17 @@ MtPathKey(r, m, p) == IF CallKey(r.to, m \o "/" \o p) \in DOMAIN GasBurn THEN m 
 (* split the class to cover it.  A model reading mtk reads per-id balances *)
 (* (a class's total is balance * count, MtTotal is per id).  A single-id   *)
 (* method (mt_transfer[_call], its resolver) on a class of more than one   *)
-(* id is an Assert.                                                        *)
-(*   MtIdCount  partial function id -> count (default 1)                   *)
+(* id is an Assert.  (5) Gas: the burn keys are per id, measured on        *)
+(* batches of at most MtGasIds ids (below); in gas mode a larger batch is  *)
+(* an Assert, so a class of more ids runs in fault mode only.              *)
+(*   MtIdCount  partial function id -> count (default 1, every count >= 1) *)
 (*   MtIdLen    partial function id -> byte length of each of its ids,     *)
 (*              escaped (default Len(id), the model's own string)          *)
 MtIdCount == [i \in {} |-> 1]
 MtIdLen   == [i \in {} |-> 0]
-MtCnt(i)   == IF i \in DOMAIN MtIdCount THEN MtIdCount[i] ELSE 1
+MtCnt(i)   == IF i \notin DOMAIN MtIdCount THEN 1
+              ELSE IF MtIdCount[i] \in Nat /\ MtIdCount[i] >= 1 THEN MtIdCount[i]
+              ELSE Assert(FALSE, <<"MtIdCount: a class of fewer than 1 id", i, MtIdCount[i]>>)
 MtIdB(i)   == IF i \in DOMAIN MtIdLen THEN MtIdLen[i] ELSE Len(i)
 \* The real ids of an entry sequence, their bytes, and their amounts' digits.
 MtCount(ids)  == SeqSum(LAMBDA i : MtCnt(i), ids)
@@ -212,6 +216,20 @@ MtXferLog(acc, r, m) ==
     IF MLive(acc) /\ acc.ev.tids # <<>>
     THEN ALog(acc, MtTransferLog(r.to, acc.ev.s, acc.ev.rc, acc.ev.tids, acc.ev.moves, m))
     ELSE acc
+\* Gas mode: the largest batch, in ids (MtCount), that the burn keys were
+\* measured on.  CalibStdMt's per-id keys are fitted at 1-3 ids, and past
+\* them a line is not a bound: the resolver looks each entry's id up in
+\* token_ids with position() inside its per-entry loops (contract-tools
+\* nep245/mod.rs:569-576), so its burn grows faster than linearly, the
+\* more so the longer the ids (conformance/tests/mt.rs mt_burn_per_id;
+\* docs/SEMANTICS.md T5).  A batch method or batch resolver of more ids
+\* in gas mode is an Assert.  Raise it only with a table measured on
+\* batches of that size.
+MtGasIds == 3
+MtGasRange(r, n) ==
+    Assert(n <= MtGasIds,
+           <<"gas mode: a NEP-245 batch of more ids than MtGasIds, the most its burn keys were measured on (the resolver's burn grows faster than linearly)",
+             r.m, n, MtGasIds>>)
 \* A single-id method on a class of several ids is a modelling error.
 MtOneId(r, tid) ==
     Assert(MtCnt(tid) = 1, <<"a single-id NEP-245 method on an id class of several ids (MtIdCount)", r.m, tid>>)
@@ -353,11 +371,14 @@ MtHandle(r) ==
                [] r.m = "mt_resolve_transfer" /\ IsMtBatchRes(r)  -> MtBatchResolveAct(acc, r)
                [] OTHER                       -> MAE(acc, "method not found")
         one == r.m \in {"mt_transfer", "mt_transfer_call"} \/ (r.m = "mt_resolve_transfer" /\ ~IsMtBatchRes(r))
+        many == r.m \in {"mt_batch_transfer", "mt_batch_transfer_call"} \/ (r.m = "mt_resolve_transfer" /\ IsMtBatchRes(r))
         O == [ready |-> f.rd, post |-> f.ps, ret |-> f.ret, out |-> f.out,
               ids |-> f.n - nid, err |-> f.err, gk |-> CallKey(r.to, f.key), sz |-> f.sz,
               lgn |-> f.lgn, lgb |-> f.lgb,
               mtk |-> [mtk EXCEPT ![r.to] = f.L], ev |-> [f.ev EXCEPT !.m = r.m]]
-    IN IF one => MtOneId(r, a.tid) THEN O ELSE O
+    IN IF /\ one => MtOneId(r, a.tid)
+          /\ GasMode = "gas" /\ many => MtGasRange(r, MtCount(a.tids))
+       THEN O ELSE O
 
 IsMtRcpt(r) == r.to \in MtAccts /\ IsCall(r)
 

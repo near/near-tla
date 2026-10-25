@@ -101,6 +101,32 @@ MtGasShape = "PMtShape"
 GasMenu = "{29900, 30000}"
 RxVecs = '{<<0, 0>>, <<1, 2>>, <<3, 0>>, <<0>>}'
 
+# The same gas-mode run with t1 an id class of 3 ids (Nep245's MtIdCount), so the batch
+# carries 4 ids: more than the table was measured on (MtGasIds, 3), and the resolver's burn
+# grows faster than linearly past it (docs/SEMANTICS.md T5). An Assert, not a burn.
+[[run]]
+name = "mt_batch_gas_class"
+expect = "assert"
+expect_output = "MtGasIds"
+tags = ["tokens:nep245", "gas:calibrated"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PStdGasCall"
+GasBurn = "PStdGasBurn"
+MtGasShape = "PMtShape"
+GasMenu = "{30000}"
+RxVecs = '{<<0, 0>>}'
+MtIdCount = '[i \in {"t1"} |-> 3]'
+
+# An id class of 0 ids is a modelling error: an Assert.
+[[run]]
+name = "mt_batch_class_zero"
+expect = "assert"
+expect_output = "MtIdCount"
+tags = ["tokens:nep245"]
+[run.constants]
+MtIdCount = '[i \in {"t1"} |-> 0]'
+
 # Amounts of 64 and more: the receiver's and the resolver's vectors encode entries up to
 # 1023 for two ids (MtVecCode); RX holds 100 of t1 to start, so the cap binds on t2 only.
 [[run]]

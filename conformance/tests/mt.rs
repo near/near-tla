@@ -369,3 +369,118 @@ fn mt_resolve_transfer_rules() {
     println!("alice calls it: {}", err(&o));
     assert!(panics(&o, "Method mt_resolve_transfer is private"), "{o}");
 }
+
+
+/// `n` distinct token ids of `len` bytes each: a common prefix of `p`s and
+/// two distinct trailing characters, so every comparison of two ids reads
+/// all `len` bytes (the worst case for the resolver's `position`).
+fn ids_of(n: usize, len: usize) -> Vec<String> {
+    const A: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    assert!(len >= 2 && n <= A.len() * A.len());
+    (0..n).map(|i| format!("{}{}{}", "p".repeat(len - 2), A[i / A.len()] as char, A[i % A.len()] as char)).collect()
+}
+
+/// `world` with alice holding `SUPPLY` of each of `ids`. `new` mints with
+/// one event per id, so it can create at most 100 ids (and 16384 bytes of
+/// events) per call: the ids past the first call's are created in other
+/// sims and their storage entries copied in.
+fn world_ids(ids: &[String]) -> Sim {
+    let (mt, _) = probe_wasm("mt");
+    let (rx, _) = probe_wasm("mtrecv");
+    let per = (16000 / (ids[0].len() + 180)).min(100);
+    let init = |sim: Fixture, chunk: &[String]| sim.contract(MT, mt.clone()).init("new", json!({ "owner_id": ALICE, "token_ids": chunk, "supply": SUPPLY.to_string() }));
+    let mut chunks = ids.chunks(per);
+    let mut sim = init(Fixture::new().account(ALICE, near(100)).account(BOB, near(100)), chunks.next().unwrap())
+        .contract(RX, rx)
+        .build();
+    for chunk in chunks {
+        let other = init(Fixture::new().account(ALICE, near(100)), chunk).build();
+        for (k, v) in other.view_state(MT, b"") {
+            if sim.state(MT, &k).is_none() {
+                sim.set_state(MT, &k, Some(&v));
+            }
+        }
+    }
+    sim
+}
+
+/// A receipt's own burn, as the calibrator counts it: what it burnt less
+/// its prepaid exec fees.
+fn own_burn(r: &near_contract_sim::ReceiptOutcome) -> Option<u64> {
+    r.failure().is_none().then(|| (r.gas_burnt.as_gas() - r.prepaid_exec_fees.as_gas()) / 1_000_000_000)
+}
+
+/// The per-id slope of `b` between consecutive sizes of `ns`, Ggas.
+fn slopes(ns: &[usize], b: &[Option<u64>]) -> Vec<f64> {
+    (1..ns.len()).filter_map(|k| Some((b[k]? as f64 - b[k - 1]? as f64) / (ns[k] - ns[k - 1]) as f64)).collect()
+}
+
+/// T5 gas, the burn per id at batch sizes past the calibration's 1-3 ids,
+/// for ids of 2, 16 and 64 bytes (the longer ones sharing all but two
+/// bytes). The batch methods burn linearly in the number of ids, at a slope
+/// that grows with the ids' length (each id is parsed, hashed into its
+/// storage keys and logged). The resolver does not: it looks each entry's
+/// id up in `token_ids` with `position` inside its per-entry loops (core
+/// :569-576), so it compares n² / 2 pairs of ids twice, and its burn grows
+/// faster than linearly, the more so the longer the ids' common prefix
+/// (both paths: refunding every id, Failed; refunding none, all used).
+/// CalibStdMt fits one line to 1-3 ids; Nep245's MtGasIds (3) refuses
+/// larger batches in gas mode. No model comparison: the observations are
+/// printed (Ggas; "-" out of gas at 300 Tgas), with the shape asserted.
+#[test]
+fn mt_burn_per_id() {
+    for len in [2usize, 16, 64] {
+        // 256 ids of 64 bytes log an event over 16384 bytes.
+        let ns: &[usize] = if len < 64 { &[1, 2, 4, 8, 16, 32, 64, 128, 256] } else { &[1, 2, 4, 8, 16, 32, 64, 128] };
+        let (mut bt, mut bc, mut rr, mut rn) = (vec![], vec![], vec![], vec![]);
+        for &n in ns {
+            let ids = ids_of(n, len);
+            let idr: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+            let amts = vec![5u128; n];
+            let base = world_ids(&ids);
+            // mt_batch_transfer alice -> bob, every id.
+            let mut sim = base.clone();
+            let o = batch(&mut sim, ALICE, BOB, &idr, &amts, 1).transact();
+            o.assert_success();
+            bt.push(own_burn(&o.receipts[0]));
+            // mt_batch_transfer_call to the receiver, which keeps them.
+            let mut call = base.clone();
+            let o = batch_call(&mut call, ALICE, &idr, &amts, "keep", 1).transact();
+            bc.push(own_burn(&o.receipts[0]));
+            // The resolver, bob holding every id: Failed refunds them all;
+            // an answer of zeros (all used) refunds none.
+            let mut refund = sim.clone();
+            rr.push(own_burn(&resolve(&mut refund, BOB, &idr, &amts, PromiseResult::Failed).receipts[0]));
+            rn.push(own_burn(&resolve(&mut sim, BOB, &idr, &amts, PromiseResult::json(&strs(&vec![0; n]))).receipts[0]));
+        }
+        let show = |b: &[Option<u64>]| b.iter().map(|x| x.map_or("-".to_string(), |g| g.to_string())).collect::<Vec<_>>().join(" ");
+        println!("ids of {len} bytes, n = {ns:?}:");
+        println!("  mt_batch_transfer       {}", show(&bt));
+        println!("  mt_batch_transfer_call  {}", show(&bc));
+        println!("  mt_resolve_transfer, refunding all  {}", show(&rr));
+        println!("  mt_resolve_transfer, refunding none {}", show(&rn));
+        // The batch methods: linear, every slope from 2 ids on within 5%
+        // of every other.
+        for (what, b) in [("mt_batch_transfer", &bt), ("mt_batch_transfer_call", &bc)] {
+            let s = slopes(&ns[1..], &b[1..]);
+            let (lo, hi) = s.iter().fold((f64::MAX, 0f64), |(l, h), &x| (l.min(x), h.max(x)));
+            println!("  {what}: Ggas per id {lo:.1}-{hi:.1}");
+            assert!(s.len() == ns.len() - 2 && hi <= lo * 1.05, "{what} at {len}-byte ids is not linear: {s:?}");
+        }
+        // The resolver: the slope grows, by at least 10% from 8-16 ids to
+        // the largest size measured, on the path that refunds nothing.
+        for (what, b) in [("refunding all", &rr), ("refunding none", &rn)] {
+            let s = slopes(ns, b);
+            println!("  mt_resolve_transfer, {what}: Ggas per id {:?}", s.iter().map(|x| x.round() as i64).collect::<Vec<_>>());
+            let (first, last) = (s[3], *s.last().unwrap());
+            assert!(last >= first, "resolver ({what}) at {len}-byte ids: slope {first:.1} at 8-16 ids, {last:.1} at the top");
+            if what == "refunding none" {
+                assert!(last >= first * 1.1, "resolver ({what}) at {len}-byte ids grows faster than linearly: {s:?}");
+            }
+        }
+        // Past 1-3 ids, refunding costs more per id than the line through
+        // both paths: at 4 ids (2-byte) the refund path already burns more
+        // than CalibStdMt's resolver key, 1028 + 354 * n.
+        println!("  CalibStdMt's resolver key at n: {}", ns.iter().map(|n| (1028 + 354 * n).to_string()).collect::<Vec<_>>().join(" "));
+    }
+}

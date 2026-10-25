@@ -2147,8 +2147,22 @@ is available locally.
     `MtResolveWeight` (1); a `GasCall` entry for the resolver wins.
   - Burn keys are `"<t>.<method>"`. The batch methods and the resolver burn with size =
     the number of ids (real ids: an id class counts its `MtIdCount`), and the resolver uses
-    `/refund` or `/norefund` when `GasBurn` has them. The per-id slopes of `CalibStdMt` were
-    measured at 1-3 ids; at hundreds of ids the burn is their linear extrapolation.
+    `/refund` or `/norefund` when `GasBurn` has them. `CalibStdMt`'s keys are fitted at 1-3
+    ids (of 2 bytes), and a line through them is not a bound past that. The batch methods
+    burn linearly in the number of ids, but at a slope that grows with the ids' length
+    (`mt_batch_transfer` about 406-420 Ggas per id at 2-byte ids, 445-459 at 64-byte). The
+    resolver does not: it looks each entry's id up in `token_ids` with `position` inside its
+    per-entry loops (near-sdk-contract-tools 4.0.0 `src/standard/nep245/mod.rs:569-576`), so
+    it compares about n² pairs of ids, and its burn grows faster than linearly, the more so
+    the longer the ids' common prefix: refunding nothing, about 81 Ggas per id at 2-4 ids
+    but 102 at 128-256 (2-byte ids) and 331 at 64-128 (64-byte ids sharing 62). Refunding
+    every id it burns about 505-535 Ggas per id (2-byte) where the key's line, fitted
+    through both paths, has 354, so the key understates a refunding resolver from 4 ids on
+    (2541 Ggas measured at 4 ids, 2444 on the line). So in gas mode a batch method or a
+    batch resolver of more than `MtGasIds` ids (default 3, the calibrated range) is an
+    `Assert`; raise it only with a table measured at that size. The ids' length is not in
+    the size: at 64-byte ids even one id burns a little more than the key (a few tens of
+    Ggas), as for any calibrated key on values longer than measured.
   - **Id classes** (batches of protocol size): `MtIdCount[c] = k > 1` makes the model id `c`
     a class of `k` distinct real ids that every operation moves, caps and refunds alike.
     `mtk`'s balance of `c` at a holder is the balance of each of its ids; an entry `(c, x)`
@@ -2158,7 +2172,9 @@ is available locally.
     soundness boundary: the model represents exactly the real behaviours in which (1) every
     id of a class has the same balance at every holder, (2) every operation names whole
     classes with one amount per id, (3) a receiver answers one value for all the ids of a
-    class, and (4) the ids of a class have one byte length (`MtIdLen`). There the batch's
+    class, (4) the ids of a class have one byte length (`MtIdLen`), and (5) in gas mode, the
+    batch is no larger than the burn keys were measured on (`MtGasIds`, above; a larger one
+    is an `Assert`, so classes of hundreds of ids run in fault mode). There the batch's
     balance checks and atomicity, the resolver's per-id cap and refund, and a repeated
     entry (a repeated id) are exact, since all of them are per id. Behaviours that set the
     ids of a class apart (a transfer of some of them, a receiver keeping some and returning
@@ -2190,6 +2206,11 @@ is available locally.
     - `mt_batch_transfer_call_answers`: end to end on two ids, for each receiver answer
       (keep, return, over, an exact vector, short, long, malformed, empty, panic), the
       returned vector and both sides' balances.
+    - `mt_burn_per_id`: the burns of `mt_batch_transfer`, `mt_batch_transfer_call` and the
+      resolver (refunding every id, refunding none) at 1 to 256 ids of 2 and 16 bytes and 1
+      to 128 of 64 bytes (sharing all but two): the batch methods linear (every slope within
+      5%), the resolver's slope growing (by at least 10% refunding none); printed beside
+      `CalibStdMt`'s line (the basis of `MtGasIds`).
     - `mt_resolve_transfer_rules`: the resolver on a chosen result (`Tx::promise_results`,
       as in T2). The per-id arithmetic with an over-amount entry; all unused for Failed, a
       vector one short or one long, an empty vector, a bare number, bytes that are not JSON,
@@ -2296,7 +2317,10 @@ is available locally.
   `MtIdLen[i]` bytes, else `Len(i)`; a call's memo is the field `memo` of its arguments
   (`WithMemo(args, m)`, its escaped bytes), absent for `None`. `ft_mint`, `mt_mint` and
   `mt_burn` have no library method: a model's own mint or burn handler adds them with
-  `ALog` or `OLog`. WNear's `near_deposit` / `near_withdraw` log nothing (no source; T6).
+  `ALog` or `OLog`. For WNear's `near_deposit` / `near_withdraw` the model declares no
+  logs; their source was not read (T6). The logs are near-contract-standards 5.29.1's
+  whatever `TokFtGasShape` (T3) selects: a token built on an older version may log
+  differently, which is not modelled.
 - **Validated:** sim (`conformance/tests/events.rs`): every log of these, on the `ft` and
   `mt` probes, is the formula's length: `ft_transfer` with no memo, an empty one, 6, 12 bytes
   escaped (a quote and a backslash) and 500 bytes, account ids of 7 to 55 bytes and amounts
@@ -2307,8 +2331,8 @@ is available locally.
   `mt_batch_transfer_call` and its resolver's refund events (two refunds, one, none);
   and the batch at the limit (R6). `ft_mint` and `mt_burn`, which no probe emits: against
   the crates' own test strings (`events.rs:137`, `:156`; `nep245/event.rs:168`; the
-  `mt_burn` one with generic ids of the same lengths), source only. `examples/event-logs` checks the model's operators and handlers on the same cases
-  (`EventLens`).
+  `mt_burn` one with generic ids of the same lengths), source only. `examples/event-logs`
+  checks the model's operators and handlers on the same cases (`EventLens`).
 
 ---
 
@@ -2757,6 +2781,8 @@ against the current module code; some may be fixed in the modules later.
   behaviour that sets them apart is not explored, though nearcore allows it: a transfer of
   some of a class, a receiver keeping some ids and returning others, a model's own handler
   touching one. Split a class into smaller ones (or into single ids) where that matters.
+  In gas mode a batch of more ids than `MtGasIds` is an `Assert` rather than an
+  understated burn (T5).
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
   touched. A model whose accounts can be deleted and created again must reset them, with

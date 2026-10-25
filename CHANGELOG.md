@@ -488,6 +488,19 @@ them. A model that lists platform variables one by one must add each.
   twice; drop its `OLog`, or set `TokEvents <- FALSE` to turn the library's off. A model that
   builds the handlers' accumulators by hand adds `lgn |-> 0, lgb |-> 0`.
 
+- **Gas mode: a NEP-245 batch of more than `MtGasIds` ids is an `Assert`** (default 3;
+  SEMANTICS T5). `CalibStdMt`'s per-id keys are fitted at 1-3 ids, and a line through them is
+  not a bound past that: the resolver's burn grows faster than linearly (it looks every id
+  up in `token_ids` inside its per-entry loops, near-sdk-contract-tools 4.0.0
+  `nep245/mod.rs:569-576`), and its key, fitted through the refunding and non-refunding
+  paths, already understates a resolver that refunds 4 ids (2541 Ggas measured, 2444 on the
+  line; `conformance/tests/mt.rs` `mt_burn_per_id`). `mt_batch_transfer`,
+  `mt_batch_transfer_call` and a batch's `mt_resolve_transfer` now check their id count
+  (`MtCount`, an id class counting its ids) in gas mode. Fault mode is unchanged, and no
+  repo run changed verdict or state count. Migration: a gas-mode model with larger batches
+  was running on an understated burn; measure the methods at that size in a table of your
+  own and raise `MtGasIds`, or check the batch in fault mode.
+
 ### Added
 
 - **Event-log lengths and NEP-245 id classes** (SEMANTICS T8, T5, N-mtclass;
@@ -502,9 +515,12 @@ them. A model that lists platform variables one by one must add each.
   m)` gives a call a memo of `m` bytes. `MtIdCount[c] = k` makes the model id `c` stand for
   `k` distinct ids that the model moves alike, so a batch of hundreds of ids needs short
   vectors only: the event, the burn size and the balances count every id (`MtCount`,
-  `MtIdsBytes`); a single-id method on a class of several ids is an `Assert`. The examples:
+  `MtIdsBytes`); a single-id method on a class of several ids is an `Assert`, as is a count
+  below 1. In gas mode a batch of more ids than `MtGasIds` is one too (see Breaking), so
+  classes of hundreds of ids run in fault mode. The examples:
   `event-logs` (every sim length, eight mutants of the formulas), `event-logs/batch-payout`
-  (a two-class batch payout whose event grows by 75 bytes per id, and a `least_gas` sweep over
+  (a batch payout of two classes of N ids each, whose event grows by 75 bytes per N: 37 and
+  38 bytes per id of the two classes, and a `least_gas` sweep over
   the class size, `payout_edge`, that finds 217 as the first size over the limit) and
   `event-logs/resolver-log` (an owed resolver over a lowered log limit, and a size sweep of
   the limit).
