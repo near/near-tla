@@ -118,8 +118,9 @@ Sweeps (run with --sweep, after the plain runs; always validated)
   # exact = true              # optional: scan the bracket instead of bisecting
   # step = 10                 # optional, with exact: scan lo..hi in steps of this (default 1:
                               # every value; a larger step samples the bracket)
-  covers = ["on_resolve"]     # optional: the receipts whose budget or input the knob varies
-                              # (method or acct.method); the audit credits the sweep to these
+  covers = ["on_resolve"]     # optional: the receipts whose edge the knob moves, for the
+                              # audit: "<method>" (least-gas for least_gas, log-size for size)
+                              # or "<method> least-gas|log-size"
   [sweep.constants]           # optional overrides of the base run's constants
   It checks hi (must hold) and lo (must fail). By default it bisects with one TLC run per
   value and reports the boundary: need - 1, need and need + 1 with their verdicts. Bisection
@@ -570,14 +571,14 @@ def load_audit(path: Path, doc: dict, nruns: int) -> AuditCfg:
         raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
     methods = _str_list(where, raw, "methods") if "methods" in raw else None
     for m in methods or []:
-        if not METHOD_RE.match(m):
+        if not METHOD_RE.fullmatch(m):
             raise ConfigError(f"{where}: bad method {m!r} (method or acct.method)")
     accept = raw.get("accept", {})
     if not isinstance(accept, dict):
         raise ConfigError(f"{where}: accept must be a table")
     for k, v in accept.items():
         parts = k.split(" ")
-        if not (1 <= len(parts) <= 2 and METHOD_RE.match(parts[0])
+        if not (1 <= len(parts) <= 2 and METHOD_RE.fullmatch(parts[0])
                 and (len(parts) == 1 or parts[1] in audit.RULES)):
             raise ConfigError(f"{where}: bad accept key {k!r} (\"<method>\" or \"<method> <rule>\", "
                               f"rule one of {', '.join(audit.RULES)})")
@@ -626,7 +627,12 @@ def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
         sw = Sweep(sid, path, kind, base, knobs, form, {k: tla_value(k, v) for k, v in consts.items()})
         if "covers" in raw:
             sw.covers = _str_list(where, raw, "covers")
-            if not sw.covers or not all(METHOD_RE.match(c) for c in sw.covers):
+            for c in sw.covers:
+                k, _, r = c.partition(" ")
+                if not METHOD_RE.fullmatch(k) or r not in ("", "least-gas", "log-size"):
+                    raise ConfigError(f"{where}: bad covers entry {c!r} (\"<method>\" or "
+                                      f"\"<method> least-gas|log-size\")")
+            if not sw.covers:
                 raise ConfigError(f"{where}: covers must list methods (method or acct.method)")
         if kind == "least_gas":
             sw.lo = _typed(where, raw, "lo", int, 0)

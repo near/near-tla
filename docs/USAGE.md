@@ -2051,7 +2051,7 @@ window_run = "vault_gas_win"  # optional: bracket from a window run's top bad va
 expect_need = 8600            # optional
 # exact = true                # optional: scan the bracket instead of bisecting
 # step = 100                  # optional, with exact: scan in steps of 100 (default 1: every value)
-covers = ["on_deliver"]       # optional: the receipts whose budget or input the knob varies (the audit)
+covers = ["on_deliver"]       # optional, for the audit: the receipts whose edge the knob moves
 ```
 
 The runner checks that `success` holds at `hi` and fails at `lo`, bisects in between (about
@@ -2139,15 +2139,17 @@ After the runs the runner prints the gaps for each `runs.toml`:
 
 A sweep counts for a receipt only if two things hold:
 
-- its `covers` lists the receipt (`covers = ["on_refund"]`, method or `acct.method`): the
-  receipts whose budget, or whose input the log grows with, the knob varies;
+- its `covers` lists the receipt, method or `acct.method`. `"on_refund"` closes the rule of
+  the sweep's kind: `least-gas` for a `least_gas` sweep, `log-size` for a `size` sweep.
+  `"on_refund log-size"` or `"on_refund least-gas"` names the rule, for a `least_gas` search
+  over a size (as `payout_edge` does);
 - its base run actually runs the receipt (a `window_run` that does is not enough: the sweep
   varies the base run).
 
 The credit comes from `runs.toml`: the sweep need not have run in this invocation, so run
-`--sweep` to check that it holds. Only the executions that make a receipt a subject count: an
-owed receipt's credit comes from its owed runs, a callback's from its runs as a callback, so a
-direct call of the same method closes nothing.
+`--sweep` to check that it holds. Each role of a method is judged on its own executions: an
+owed receipt on its owed runs, an unowed callback on its runs as a callback. A direct call of
+the same method closes nothing.
 
 The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
 Fill `methods` from the source, not from the model:

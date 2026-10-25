@@ -13,13 +13,15 @@ from those facts, the file's `[[sweep]]` tables and its `[audit]` table
   least-gas  the same, with no least_gas sweep that covers it and whose base run executes it
              in gas mode
   logs       an owed receipt that declares no logs in any run
-  log-size   an owed receipt or callback that logs, with no size or least_gas sweep that covers
-             it and whose base run executes it
+  log-size   an owed receipt or callback that logs, with no sweep that covers its log size
+             (a size sweep, or "<method> log-size" in a least_gas sweep's covers) and whose
+             base run executes it
   inventory  a method in `[audit] methods` that no run executes
 
-Only the facts that make a receipt a subject count: for an owed receipt its owed runs, for
-a callback its runs as a callback, so a direct call of the same method closes nothing. A
-sweep counts for the receipts in its `covers`.
+Each role is judged on its own executions: an owed receipt on its owed runs, a callback on
+its unowed runs as a callback, so a direct call of the same method closes nothing. A sweep
+counts for the receipts in its `covers`: "<method>" closes least-gas for a least_gas sweep
+and log-size for a size sweep; "<method> <rule>" names the rule.
 
 `[audit] accept` silences a gap with a reason: `"<key>" = "why"` for every rule, or
 `"<key> <rule>" = "why"` for one, where the key is `acct.method` or `method`. The library's
@@ -103,15 +105,24 @@ class Gap:
 @dataclass
 class SweepRef:
     """What the audit needs of a [[sweep]]: its kind, its base run, and the receipts whose
-    budget or input its knob varies (`covers`: method or acct.method)."""
+    budget or input its knob varies (`covers`: "<method>" or "<method> <rule>")."""
     id: str
     kind: str
     runs: list[str]
     covers: list[str] = field(default_factory=list)
 
-    def credits(self, key: str, runs: set[str], kinds: tuple[str, ...]) -> bool:
-        return (self.kind in kinds and bool(runs & set(self.runs))
-                and any(c == key or c == method_of(key) for c in self.covers))
+    def credits(self, key: str, runs: set[str], rule: str) -> bool:
+        """Whether the sweep closes `rule` (least-gas or log-size) for `key`: a covers entry
+        names the key, as "<key>" (the kind's rule: least-gas for least_gas, log-size for
+        size) or "<key> <rule>", and its base run executes it in `runs`."""
+        if not runs & set(self.runs):
+            return False
+        own = "least-gas" if self.kind == "least_gas" else "log-size"
+        for c in self.covers:
+            k, _, r = c.partition(" ")
+            if (k == key or k == method_of(key)) and (r or own) == rule:
+                return True
+        return False
 
 
 @dataclass
@@ -158,56 +169,65 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
     for key in sorted(by_key):
         rows = by_key[key]
         lib = all(f.lib for _, f in rows)
-        owed = any(f.owed for _, f in rows)
-        cb = any(f.cb for _, f in rows)
-        if not (owed or cb):
-            continue
-        # credit only from the executions that make it a subject: a direct call of the
-        # same method closes nothing
-        rows = [(r, f) for r, f in rows if (f.owed if owed else f.cb)]
-        gas = [(r, f) for r, f in rows if f.mode == "gas"]
-        fixed = any(f.fixed for _, f in gas)
-        what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
-        if owed or fixed:
-            subjects += not lib
-            if not gas:
-                if owed:
-                    gap(key, "gas", f"{what}; no gas-mode run executes it, so nothing checks "
-                        "that its gas covers its work", lib)
-            else:
-                worst = [f for _, f in gas if f.worst]
-                if not worst:
-                    gap(key, "trie", f"{what}; runs in gas mode ({_names({r for r, _ in gas})}) "
-                        "but in no run with TrieGasWorst, so its writes are charged only the "
-                        "calibrated trie depth", lib)
-                elif all(f.trn == 0 for f in worst):
-                    gap(key, "writes", f"{what}; runs with TrieGasWorst but declares no writes "
-                        "(OWriteKey), so the switch charges it nothing: declare each storage "
-                        "write and remove it makes", lib)
-                gas_runs = {r for r, _ in gas}
-                if not any(s.credits(key, gas_runs, ("least_gas",)) for s in sweeps):
-                    gap(key, "least-gas", f"{what}; no least_gas sweep covers it (covers, with a "
-                        "base run that executes it in gas mode), so its need is not measured", lib)
-        logged = [(r, f) for r, f in rows if f.lgb > 0 or f.lgn > 0]
-        if not logged:
-            if owed:
-                gap(key, "logs", f"{what}; declares no logs in any run: if it emits events or "
-                    "logs, declare them (OLog, EvLen) with lengths from its input", lib)
-            continue
-        log_runs = {r for r, _ in logged}
-        sizes = sorted({f.lgb for _, f in logged})
-        if not any(s.credits(key, log_runs, ("size", "least_gas")) for s in sweeps):
-            seen = (f"{sizes[0]} bytes in every run" if len(sizes) == 1
-                    else f"{sizes[0]} to {sizes[-1]} bytes")
-            gap(key, "log-size", f"{what}; logs {seen}, and no size or least_gas sweep covers "
-                "it: sweep the input its length grows with (ids, amounts, a memo) to "
-                "MaxLogBytes and MaxLogs", lib)
+        # each role is judged on its own executions: an owed receipt on its owed runs, a
+        # callback on its unowed runs as a callback; a direct call closes nothing
+        roles = [(True, [(r, f) for r, f in rows if f.owed]),
+                 (False, [(r, f) for r, f in rows if f.cb and not f.owed])]
+        counted = False
+        for owed, sub in roles:
+            if not sub:
+                continue
+            gas = [(r, f) for r, f in sub if f.mode == "gas"]
+            fixed = any(f.fixed for _, f in gas)
+            what = "owed" if owed else ("callback with a fixed budget" if fixed else "callback")
+            if (owed or fixed) and not counted:
+                subjects += not lib
+                counted = True
+            for rule, text in _role_gaps(key, owed, fixed, what, sub, gas, sweeps):
+                if not any(g.key == key and g.rule == rule for g in out):
+                    gap(key, rule, text, lib)
     for meth in methods or []:
         if not any(k == meth or method_of(k) == meth for k in by_key):
             out.append(Gap(meth, "inventory", "listed in [audit] methods; no run executes it: "
                            "model it, or accept it with the reason it is out of scope",
                            False, _accepted(accept, meth, "inventory")))
     return out, subjects
+
+
+def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps):
+    """(rule, text) for one role of a receipt: `sub` its executions in that role, `gas`
+    those in gas mode."""
+    if owed or fixed:
+        if not gas:
+            if owed:
+                yield "gas", (f"{what}; no gas-mode run executes it, so nothing checks that its "
+                              "gas covers its work")
+        else:
+            worst = [f for _, f in gas if f.worst]
+            if not worst:
+                yield "trie", (f"{what}; runs in gas mode ({_names({r for r, _ in gas})}) but in "
+                               "no run with TrieGasWorst, so its writes are charged only the "
+                               "calibrated trie depth")
+            elif all(f.trn == 0 for f in worst):
+                yield "writes", (f"{what}; runs with TrieGasWorst but declares no writes "
+                                 "(OWriteKey), so the switch charges it nothing: declare each "
+                                 "storage write and remove it makes")
+            if not any(s.credits(key, {r for r, _ in gas}, "least-gas") for s in sweeps):
+                yield "least-gas", (f"{what}; no least_gas sweep covers it (covers, with a base "
+                                    "run that executes it in gas mode), so its need is not measured")
+    logged = [(r, f) for r, f in sub if f.lgb > 0 or f.lgn > 0]
+    if not logged:
+        if owed:
+            yield "logs", (f"{what}; declares no logs in any run: if it emits events or logs, "
+                           "declare them (OLog, EvLen) with lengths from its input")
+        return
+    sizes = sorted({f.lgb for _, f in logged})
+    if not any(s.credits(key, {r for r, _ in logged}, "log-size") for s in sweeps):
+        seen = (f"{sizes[0]} bytes in every run" if len(sizes) == 1
+                else f"{sizes[0]} to {sizes[-1]} bytes")
+        yield "log-size", (f"{what}; logs {seen}, and no sweep covers its log size: sweep the "
+                           "input its length grows with (ids, amounts, a memo) to MaxLogBytes "
+                           "and MaxLogs")
 
 
 def render(rep: Report) -> str:

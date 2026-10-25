@@ -947,6 +947,8 @@ class SweepTest(unittest.TestCase):
         _, (sw,) = self.load(LEAST + 'success = ["Small"]\nexpect_need = 7\n')
         self.assertEqual((sw.kind, sw.run, sw.knobs, sw.form, sw.lo, sw.hi, sw.success, sw.expect_need, sw.exact),
                          ("least_gas", "t_gas", ["Menu"], "{%d}", 0, 100, ["Small"], 7, False))
+        _, (sw,) = self.load(LEAST + 'covers = ["on_x", "v.near.on_y log-size"]\n')
+        self.assertEqual(sw.covers, ["on_x", "v.near.on_y log-size"])
         _, (sw,) = self.load(LEAST + 'exact = true\nstep = 5\n')
         self.assertEqual((sw.exact, sw.step), (True, 5))
         _, (sz,) = self.load(SIZE + 'knob = ["N", "Menu"]\n'.replace("knob", "form = '%d'\nfloor = 1\n#"))
@@ -967,6 +969,9 @@ class SweepTest(unittest.TestCase):
             "step 0": LEAST + "exact = true\nstep = 0\n",
             "exact not a bool": LEAST + "exact = 1\n",
             "exact on size": SIZE + "exact = true\n",
+            "covers rule": LEAST + 'covers = ["on_x trie"]\n',
+            "covers newline": LEAST + 'covers = ["on_x\\n"]\n',
+            "covers empty": LEAST + "covers = []\n",
         }
         for what, text in bad.items():
             with self.subTest(what=what), self.assertRaises(run.ConfigError):
@@ -1159,7 +1164,10 @@ class AuditTest(unittest.TestCase):
         self.assertIn(("v.on_res", "writes", False, False), self.rules({"a": {g}, "b": {w0}}))
         w1 = fact(**owed, mode="gas", worst=True, known=True, fixed=True, lgn=1, lgb=50, trn=40)
         sweeps = [audit.SweepRef("need", "least_gas", ["b"], ["on_res"])]
-        self.assertEqual(self.rules({"a": {g}, "b": {w1}}, sweeps), [])  # the sweep covers log-size too
+        # a budget sweep closes least-gas, not log-size
+        self.assertEqual(self.rules({"a": {g}, "b": {w1}}, sweeps), [("v.on_res", "log-size", False, False)])
+        sweeps = [audit.SweepRef("need", "least_gas", ["b"], ["on_res", "on_res log-size"])]
+        self.assertEqual(self.rules({"a": {g}, "b": {w1}}, sweeps), [])
         # a sweep that does not list it in covers credits nothing
         self.assertIn(("v.on_res", "least-gas", False, False),
                       self.rules({"a": {g}, "b": {w1}}, [audit.SweepRef("need", "least_gas", ["b"], ["on_other"])]))
@@ -1177,6 +1185,16 @@ class AuditTest(unittest.TestCase):
         self.assertEqual(self.rules({"a": {owed}, "b": {direct}},
                                     [audit.SweepRef("need", "least_gas", ["b"], ["on_res"])]),
                          [("v.on_res", "gas", False, False), ("v.on_res", "logs", False, False)])
+
+    def test_roles_judged_apart(self):
+        # owed and fully checked in one run; an unowed fixed-budget callback in another
+        owed = fact(owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
+        cb = fact(mode="gas", known=True, fixed=True, lgn=1, lgb=9)
+        sweeps = [audit.SweepRef("need", "least_gas", ["a"], ["on_cb", "on_cb log-size"])]
+        self.assertEqual(self.rules({"a": {owed}}, sweeps), [])
+        self.assertEqual(self.rules({"a": {owed}, "b": {cb}}, sweeps),
+                         [("v.on_cb", "least-gas", False, False), ("v.on_cb", "log-size", False, False),
+                          ("v.on_cb", "trie", False, False)])
 
     def test_callbacks_and_plain_receipts(self):
         # a callback with a weight: no gas rule; one that logs: log-size
@@ -1226,6 +1244,7 @@ class AuditTest(unittest.TestCase):
             bad = {
                 "unknown key": '[audit]\nmethod = ["x"]\n',
                 "bad method": '[audit]\nmethods = ["a b"]\n',
+                "trailing newline": '[audit]\nmethods = ["on_x\\n"]\n',
                 "unknown rule": '[audit.accept]\n"on_x tri" = "why"\n',
                 "empty reason": '[audit.accept]\n"on_x" = " "\n',
                 "per-run audit": 'audit = 1\n',
