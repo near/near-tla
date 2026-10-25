@@ -19,7 +19,7 @@ Dec(x) == MtVecOf(R(x)).v
 \* balances after it.
 Res(tids, amts, res) ==
     LET r == [Rcpt(nid, 1, MT, MT, "mt_resolve_transfer",
-                   [TA0 EXCEPT !.s = U, !.rc = RX, !.tids = tids, !.amts = amts], 0, MT, 0)
+                   MtBatchResArgs(U, RX, tids, amts), 0, MT, 0)
               EXCEPT !.res = res]
         O == MtHandle(r)
     IN [ret |-> Dec(O.ret.v), u1 |-> O.mtk[MT].bal[U]["t1"], u2 |-> O.mtk[MT].bal[U]["t2"]]
@@ -48,7 +48,7 @@ VecCodes ==
 \* credit U afterwards: <<2, 0>> refunded, U ends with 4 (core :573-599).
 ResSelf(tids, amts, res) ==
     LET r == [Rcpt(nid, 1, MT, MT, "mt_resolve_transfer",
-                   [TA0 EXCEPT !.s = U, !.rc = U, !.tids = tids, !.amts = amts], 0, MT, 0)
+                   MtBatchResArgs(U, U, tids, amts), 0, MT, 0)
               EXCEPT !.res = res]
         O == MtHandle(r)
     IN [ret |-> Dec(O.ret.v), u1 |-> O.mtk[MT].bal[U]["t1"]]

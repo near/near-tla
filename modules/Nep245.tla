@@ -185,8 +185,9 @@ MtPathKey(r, m, p) == IF CallKey(r.to, m \o "/" \o p) \in DOMAIN GasBurn THEN m 
 (* (a class's total is balance * count, MtTotal is per id).  A single-id   *)
 (* method (mt_transfer[_call], its resolver) on a class of more than one   *)
 (* id is an Assert.  (5) Gas: the burn keys are per id, measured on        *)
-(* batches of at most MtGasIds ids (below); in gas mode a larger batch is  *)
-(* an Assert, so a class of more ids runs in fault mode only.              *)
+(* batches of 1 to MtGasIds ids of at most MtGasIdLen bytes (below); in    *)
+(* gas mode any other call is an Assert, so a class of more ids runs in    *)
+(* fault mode only.                                                        *)
 (*   MtIdCount  partial function id -> count (default 1, every count >= 1) *)
 (*   MtIdLen    partial function id -> byte length of each of its ids,     *)
 (*              escaped (default Len(id), the model's own string)          *)
@@ -216,20 +217,37 @@ MtXferLog(acc, r, m) ==
     IF MLive(acc) /\ acc.ev.tids # <<>>
     THEN ALog(acc, MtTransferLog(r.to, acc.ev.s, acc.ev.rc, acc.ev.tids, acc.ev.moves, m))
     ELSE acc
-\* Gas mode: the largest batch, in ids (MtCount), that the burn keys were
-\* measured on.  CalibStdMt's per-id keys are fitted at 1-3 ids, and past
-\* them a line is not a bound: the resolver looks each entry's id up in
-\* token_ids with position() inside its per-entry loops (contract-tools
-\* nep245/mod.rs:569-576), so its burn grows faster than linearly, the
-\* more so the longer the ids (conformance/tests/mt.rs mt_burn_per_id;
-\* docs/SEMANTICS.md T5).  A batch method or batch resolver of more ids
-\* in gas mode is an Assert.  Raise it only with a table measured on
-\* batches of that size.
-MtGasIds == 3
-MtGasRange(r, n) ==
-    Assert(n <= MtGasIds,
-           <<"gas mode: a NEP-245 batch of more ids than MtGasIds, the most its burn keys were measured on (the resolver's burn grows faster than linearly)",
-             r.m, n, MtGasIds>>)
+\* Gas mode: the batches and ids the burn keys were measured on.  The keys
+\* are sized by the number of ids only, but the burn also grows with the
+\* ids' byte length (each id is parsed, hashed into storage keys and
+\* logged; the resolver compares them), and CalibStdMt's keys are fitted
+\* at 1-3 ids of 2 bytes (t1, t2, t3).  Past 3 ids a line is not a bound:
+\* the resolver looks each entry's id up in token_ids with position()
+\* inside its per-entry loops (contract-tools nep245/mod.rs:569-576), so
+\* its burn grows faster than linearly, the more so the longer the ids;
+\* and at 64-byte ids even one id burns more than the key
+\* (conformance/tests/mt.rs mt_burn_per_id; docs/SEMANTICS.md T5).  So in
+\* gas mode every NEP-245 method (a single id, a batch, either resolver)
+\* is an Assert unless it carries 1 to MtGasIds ids, each of at most
+\* MtGasIdLen bytes (MtIdB: MtIdLen, else the model id's own length).
+\* Raise them only with a table measured on such batches and ids.
+MtGasIds   == 3
+MtGasIdLen == 2
+MtGasRange(r, ids) ==
+    LET n == MtCount(ids)
+        long == {ids[k] : k \in {j \in 1..Len(ids) : MtIdB(ids[j]) > MtGasIdLen}}
+    IN /\ Assert(n >= 1 /\ n <= MtGasIds,
+                 <<"gas mode: a NEP-245 call of a number of ids outside 1..MtGasIds, the batches its burn keys were measured on (the resolver's burn grows faster than linearly)",
+                   r.m, n, MtGasIds>>)
+       /\ Assert(long = {},
+                 <<"gas mode: NEP-245 token ids longer than MtGasIdLen bytes, the ids its burn keys were measured on (the burn grows with the ids' length)",
+                   r.m, long, MtGasIdLen>>)
+\* A single id's resolver has the arguments of MtResArgs, tids = <<tid>>;
+\* other arguments without the flag bat are a batch's built by hand.
+MtSingleRes(r) ==
+    Assert(r.a.tids = <<r.a.tid>>,
+           <<"mt_resolve_transfer: arguments with bat FALSE but tids # <<tid>>; build a batch's with MtBatchResArgs (or set bat |-> TRUE)",
+             r.a.tid, r.a.tids>>)
 \* A single-id method on a class of several ids is a modelling error.
 MtOneId(r, tid) ==
     Assert(MtCnt(tid) = 1, <<"a single-id NEP-245 method on an id class of several ids (MtIdCount)", r.m, tid>>)
@@ -353,9 +371,10 @@ MtBatchResolveAct(acc, r) ==
                         !.key = MtPathKey(r, "mt_resolve_transfer",
                                           IF \E i \in 1..n : F[n].rf[i] > 0 THEN "refund" ELSE "norefund")]
 
-\* A resolver of a single-id call has a.tids = <<a.tid>> and a.tid # "";
-\* a batch's has a.tid = "".
-IsMtBatchRes(r) == r.a.tid = ""
+\* A batch's resolver has arguments from MtBatchResArgs (a.bat), a single
+\* id's from MtResArgs: the flag, not the token id, tells them apart (a
+\* single id may be "").
+IsMtBatchRes(r) == r.a.bat
 
 MtHandle(r) ==
     LET acc == MAcc0(r)  a == r.a
@@ -377,7 +396,9 @@ MtHandle(r) ==
               lgn |-> f.lgn, lgb |-> f.lgb,
               mtk |-> [mtk EXCEPT ![r.to] = f.L], ev |-> [f.ev EXCEPT !.m = r.m]]
     IN IF /\ one => MtOneId(r, a.tid)
-          /\ GasMode = "gas" /\ many => MtGasRange(r, MtCount(a.tids))
+          /\ r.m = "mt_resolve_transfer" /\ ~IsMtBatchRes(r) => MtSingleRes(r)
+          /\ GasMode = "gas" /\ one => MtGasRange(r, <<a.tid>>)
+          /\ GasMode = "gas" /\ many => MtGasRange(r, a.tids)
        THEN O ELSE O
 
 IsMtRcpt(r) == r.to \in MtAccts /\ IsCall(r)

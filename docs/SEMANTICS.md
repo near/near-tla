@@ -2158,11 +2158,15 @@ is available locally.
     but 102 at 128-256 (2-byte ids) and 331 at 64-128 (64-byte ids sharing 62). Refunding
     every id it burns about 505-535 Ggas per id (2-byte) where the key's line, fitted
     through both paths, has 354, so the key understates a refunding resolver from 4 ids on
-    (2541 Ggas measured at 4 ids, 2444 on the line). So in gas mode a batch method or a
-    batch resolver of more than `MtGasIds` ids (default 3, the calibrated range) is an
-    `Assert`; raise it only with a table measured at that size. The ids' length is not in
-    the size: at 64-byte ids even one id burns a little more than the key (a few tens of
-    Ggas), as for any calibrated key on values longer than measured.
+    (2541 Ggas measured at 4 ids, 2444 on the line). And the keys are sized by the number
+    of ids only, while the burn grows with their length: at 64-byte ids one id already
+    burns more than the batch methods' keys (`mt_batch_transfer` 932 Ggas against 903,
+    `mt_batch_transfer_call` 1738 against 1699; at 16-byte ids from 2 ids on). So in gas
+    mode every NEP-245 method (single-id, batch, either resolver) is an `Assert` unless it
+    carries 1 to `MtGasIds` ids (default 3) each of at most `MtGasIdLen` bytes (default 2;
+    `MtIdLen`, else the model id's own length): the ids the keys were measured on. Raise
+    them only with a table measured on such batches and ids. A batch resolver is the one
+    whose arguments come from `MtBatchResArgs` (the field `bat`), whatever its ids.
   - **Id classes** (batches of protocol size): `MtIdCount[c] = k > 1` makes the model id `c`
     a class of `k` distinct real ids that every operation moves, caps and refunds alike.
     `mtk`'s balance of `c` at a holder is the balance of each of its ids; an entry `(c, x)`
@@ -2172,9 +2176,10 @@ is available locally.
     soundness boundary: the model represents exactly the real behaviours in which (1) every
     id of a class has the same balance at every holder, (2) every operation names whole
     classes with one amount per id, (3) a receiver answers one value for all the ids of a
-    class, (4) the ids of a class have one byte length (`MtIdLen`), and (5) in gas mode, the
-    batch is no larger than the burn keys were measured on (`MtGasIds`, above; a larger one
-    is an `Assert`, so classes of hundreds of ids run in fault mode). There the batch's
+    class, (4) the ids of a class have one byte length (`MtIdLen`), and (5) in gas mode,
+    the batch and its ids are no larger than the burn keys were measured on (`MtGasIds`,
+    `MtGasIdLen`, above; anything else is an `Assert`, so classes of hundreds of ids run in
+    fault mode). There the batch's
     balance checks and atomicity, the resolver's per-id cap and refund, and a repeated
     entry (a repeated id) are exact, since all of them are per id. Behaviours that set the
     ids of a class apart (a transfer of some of them, a receiver keeping some and returning
@@ -2209,8 +2214,10 @@ is available locally.
     - `mt_burn_per_id`: the burns of `mt_batch_transfer`, `mt_batch_transfer_call` and the
       resolver (refunding every id, refunding none) at 1 to 256 ids of 2 and 16 bytes and 1
       to 128 of 64 bytes (sharing all but two): the batch methods linear (every slope within
-      5%), the resolver's slope growing (by at least 10% refunding none); printed beside
-      `CalibStdMt`'s line (the basis of `MtGasIds`).
+      5%), the resolver's slope growing (by at least 10% refunding none); against
+      `CalibStdMt`'s keys (read from the table), a refund of 4 2-byte ids over the
+      resolver's (the basis of `MtGasIds`) and one 64-byte id over both batch methods' (of
+      `MtGasIdLen`).
     - `mt_resolve_transfer_rules`: the resolver on a chosen result (`Tx::promise_results`,
       as in T2). The per-id arithmetic with an over-amount entry; all unused for Failed, a
       vector one short or one long, an empty vector, a bare number, bytes that are not JSON,
@@ -2781,8 +2788,8 @@ against the current module code; some may be fixed in the modules later.
   behaviour that sets them apart is not explored, though nearcore allows it: a transfer of
   some of a class, a receiver keeping some ids and returning others, a model's own handler
   touching one. Split a class into smaller ones (or into single ids) where that matters.
-  In gas mode a batch of more ids than `MtGasIds` is an `Assert` rather than an
-  understated burn (T5).
+  In gas mode a batch of more ids than `MtGasIds`, or of ids longer than `MtGasIdLen`, is
+  an `Assert` rather than an understated burn (T5).
 - **N-wipe. A deleted account's model state.** The library removes the account's balance,
   bytes and keys (A7); the model's own variables for it (a contract's ledger, flags) are not
   touched. A model whose accounts can be deleted and created again must reset them, with

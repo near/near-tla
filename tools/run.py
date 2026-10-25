@@ -115,8 +115,9 @@ Sweeps (run with --sweep, after the plain runs; always validated)
                               # windows' top value becomes lo and the next value hi
   # window_label = "OwedOK"   # optional: only that label's window
   # expect_need = 8600        # optional: the need (or boundary) must be this
-  # exact = true              # optional: scan every value instead of bisecting
-  # step = 10                 # optional, with exact: scan lo..hi in steps of this (default 1)
+  # exact = true              # optional: scan the bracket instead of bisecting
+  # step = 10                 # optional, with exact: scan lo..hi in steps of this (default 1:
+                              # every value; a larger step samples the bracket)
   [sweep.constants]           # optional overrides of the base run's constants
   It checks hi (must hold) and lo (must fail). By default it bisects with one TLC run per
   value and reports the boundary: need - 1, need and need + 1 with their verdicts. Bisection
@@ -171,7 +172,8 @@ A temporal formula goes in `specification` (not `spec`, which names the module).
 --sweep: after the plain runs, run every [[sweep]] whose base run is selected, and print
 a table. --least-gas 'KNOB=FORM' --gas-range LO:HI [--success INV,..] runs an ad-hoc
 least-gas sweep on each selected run. --exact [--gas-step N] makes every least-gas sweep
-(ad hoc or [[sweep]]) scan instead of bisect.
+(ad hoc or [[sweep]]) scan instead of bisect: step 1 (the default) scans every value of the
+bracket, a larger step only samples it.
 
 --anti-vacuity: after the plain runs, check every [[witness]] and [[mutant]] of the
 selected runs (a check of a run that did not match its expectation is skipped) and print
@@ -1717,8 +1719,8 @@ def main(argv=None) -> int:
     ap.add_argument("--gas-range", metavar="LO:HI", help="bracket for --least-gas (LO fails, HI holds)")
     ap.add_argument("--success", metavar="INV,..", help="success invariants for --least-gas (default: the run's)")
     ap.add_argument("--exact", action="store_true",
-                    help="least-gas sweeps scan every value of the bracket instead of bisecting")
-    ap.add_argument("--gas-step", type=int, metavar="N", help="with --exact: scan in steps of N (default 1)")
+                    help="least-gas sweeps scan the bracket instead of bisecting: every value at --gas-step 1 (the default), a sample at a larger step")
+    ap.add_argument("--gas-step", type=int, metavar="N", help="with --exact: scan in steps of N (default 1, exhaustive; N > 1 samples the bracket)")
     a = ap.parse_args(argv)
     try:
         if a.workers is not None and a.workers < 1:

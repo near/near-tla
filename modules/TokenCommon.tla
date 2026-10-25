@@ -31,12 +31,14 @@ TMax(a, b) == IF a > b THEN a ELSE b
 (*   tid    token_id (NEP-245)                                             *)
 (*   tids, amts  token_ids and amounts (NEP-245): a batch call's vectors;  *)
 (*          a single-id call has <<tid>> and <<amt>>, a batch tid = ""     *)
+(*   bat    TRUE for a batch's arguments (MtBatch*Args), FALSE otherwise:  *)
+(*          what tells a batch's resolver from a single id's               *)
 (*   nd, sd, sdAcct, xf   batch only: near_deposit amount, storage_deposit *)
 (*          amount and account, last action "ft_transfer"|"ft_transfer_call"|"" *)
 (*   force  storage_unregister(force)                                      *)
 (*   cx     a payload slot for the model's own receipts: <<>> or <<v>>, so *)
 (*          a contract's receipts share the TA0 shape with token receipts  *)
-TA0 == [rc |-> "", s |-> "", amt |-> 0, msg |-> "", tid |-> "", tids |-> <<>>, amts |-> <<>>,
+TA0 == [rc |-> "", s |-> "", amt |-> 0, msg |-> "", tid |-> "", tids |-> <<>>, amts |-> <<>>, bat |-> FALSE,
         nd |-> 0, sd |-> 0, sdAcct |-> "", xf |-> "", force |-> FALSE, cx |-> <<>>]
 CxArgs(v) == [TA0 EXCEPT !.cx = <<v>>]
 FtArgs(rc, amt, msg)       == [TA0 EXCEPT !.rc = rc, !.amt = amt, !.msg = msg]
@@ -49,8 +51,9 @@ MtArgs(rc, tid, amt, msg)  == [TA0 EXCEPT !.rc = rc, !.tid = tid, !.amt = amt, !
                                            !.tids = <<tid>>, !.amts = <<amt>>]
 MtOnArgs(s, rc, tid, amt, msg) == [MtArgs(rc, tid, amt, msg) EXCEPT !.s = s]
 MtResArgs(s, rc, tid, amt) == [MtArgs(rc, tid, amt, "") EXCEPT !.s = s]
-\* NEP-245 batches: token_ids and amounts as sequences (tid "", amt 0).
-MtBatchArgs(rc, tids, amts, msg)      == [TA0 EXCEPT !.rc = rc, !.tids = tids, !.amts = amts, !.msg = msg]
+\* NEP-245 batches: token_ids and amounts as sequences (tid "", amt 0, bat TRUE).
+MtBatchArgs(rc, tids, amts, msg)      == [TA0 EXCEPT !.rc = rc, !.tids = tids, !.amts = amts, !.msg = msg,
+                                                       !.bat = TRUE]
 MtBatchOnArgs(s, rc, tids, amts, msg) == [MtBatchArgs(rc, tids, amts, msg) EXCEPT !.s = s]
 MtBatchResArgs(s, rc, tids, amts)     == [MtBatchArgs(rc, tids, amts, "") EXCEPT !.s = s]
 \* Batch [near_deposit(nd)?, storage_deposit(sdAcct, sd)?, ft_transfer[_call](rc, amt, msg)?]

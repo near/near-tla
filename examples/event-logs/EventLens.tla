@@ -118,5 +118,14 @@ LensOK == BadF = {} /\ BadH = {}
 EdgeOK == (HostLimitErr(MtR("mt_batch_transfer", MtBatchArgs("bo", <<"big">>, <<1>>, "")),
                         MtHandle(MtR("mt_batch_transfer", MtBatchArgs("bo", <<"big">>, <<1>>, "")))) = "TotalLogLengthExceeded")
           = (K > 162)
+\* A single id's resolver whose id is "" (a model id like any other, in
+\* the runs event_lens_empty_id*): its arguments (MtResArgs, a.bat FALSE),
+\* not the id, pick the single-id path, which refunds 1 from alice and
+\* records it in ev.refund (the batch path does not set ev.refund).  With
+\* "" an id class of 2 ids it is the single-id Assert (MtOneId).
+EmptyIdRes == [Rcpt(1, 1, "mt", "mt", "mt_resolve_transfer", MtResArgs("rx", "alice", "", 1), 0, "mt", 0)
+                 EXCEPT !.res = FailedRes]
+EmptyIdOK == MtHandle(EmptyIdRes).ev.refund = 1
+PIdCountEmpty == [i \in {"big", ""} |-> IF i = "" THEN 2 ELSE K]
 Sane == NearConserved(0) /\ NoOrphans
 =============================================================================

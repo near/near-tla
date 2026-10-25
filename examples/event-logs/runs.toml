@@ -150,3 +150,33 @@ replace = 'rix == SelectSeq([i \in 1..n |-> i], LAMBDA i : F[n].rf[i] >= 0)'
 class = "off-by-one guard"
 runs = ["event_lens_162"]
 killed_by = ["LensOK"]
+
+# A single id's resolver of the model id "": the single-id path (EmptyIdOK), whatever the
+# id; with "" a class of 2 ids, the single-id Assert rather than the batch path.
+[[run]]
+name = "event_lens_empty_id"
+expect = "pass"
+invariants = ["LensOK", "EdgeOK", "Sane", "EmptyIdOK"]
+[run.constants]
+MtIds = '{"big", ""}'
+
+[[run]]
+name = "event_lens_empty_id_class"
+expect = "assert"
+expect_output = "single-id NEP-245 method on an id class"
+invariants = ["EmptyIdOK"]
+[run.constants]
+MtIds = '{"big", ""}'
+MtIdCount = "PIdCountEmpty"
+
+# The token id as the batch sentinel (the library before a.bat): the resolver of "" takes
+# the batch path.
+[[mutant]]
+id = "empty_id_sentinel"
+file = "Nep245.tla"
+library = true
+find = 'IsMtBatchRes(r) == r.a.bat'
+replace = 'IsMtBatchRes(r) == r.a.tid = ""'
+class = "wrong branch"
+runs = ["event_lens_empty_id"]
+killed_by = ["EmptyIdOK"]

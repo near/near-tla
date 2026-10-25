@@ -380,6 +380,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `EvAcctLen`, `EvAmtExp`, `MtIdLen` | each model value's own length | the events' byte lengths matter: the real length of account ids and token ids, a token's decimal exponent ([section 8](#event-logs)) |
 | `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) (at least 1) |
 | `MtGasIds` | 3 | gas mode, with a burn table of your own measured on larger NEP-245 batches: the most ids a batch may carry before it is an `Assert` (`CalibStdMt` is measured at 1-3; the resolver's burn grows faster than linearly) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
+| `MtGasIdLen` | 2 | gas mode, with a burn table of your own measured on longer NEP-245 token ids: the most bytes an id (`MtIdLen`, else the model id's length) may have before a call carrying it is an `Assert` (`CalibStdMt` is measured on 2-byte ids; the burn grows with the length) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
 | `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at every extra trie-node count up to its worst case ([section 12](#worst-case-storage-gas-trie-depth)) |
 | `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
 | `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
@@ -764,11 +765,14 @@ resolver caps and refunds per id as before; the event and the burn size count 40
 `MtIdLen` for the ids' byte length. This covers only behaviours in which the ids of a class
 stay alike: a transfer of part of a class, or a receiver answering differently for ids of
 one class, cannot be written (T5 has the exact boundary; N-mtclass). `mt_transfer` on a class
-of more than one id is an `Assert`. So is, in gas mode, a batch of more ids than `MtGasIds`
-(3): the burn tables are measured on 1-3 ids, and past that the resolver's burn grows
-faster than linearly in the number of ids and with their length (T5), so a line would
-understate it. Check large batches in fault mode, or measure your contract's burns at that
-size, give them as your own `GasBurn` and raise `MtGasIds`.
+of more than one id is an `Assert`. So is, in gas mode, any NEP-245 call outside the ids
+the burn table was measured on: a batch of 0 or of more than `MtGasIds` (3) ids, or an id
+longer than `MtGasIdLen` (2) bytes. Past 3 ids the resolver's burn grows faster than
+linearly, and every method's burn grows with the ids' length, which the keys do not see
+(T5), so a line would understate them. Check large batches in fault mode, or measure your
+contract's burns on such batches and ids, give them as your own `GasBurn` and raise
+`MtGasIds` / `MtGasIdLen`. In gas mode, give a model id that stands for a 2-byte id but is
+spelled longer its length with `MtIdLen`.
 `examples/event-logs/batch-payout` pays two classes in fault mode and sweeps their size for
 the edge at 16384 bytes.
 
@@ -2021,8 +2025,8 @@ hi = 300000                   # a value where it holds
 success = ["OwedOK"]          # what "safe" means (default: the run's invariants)
 window_run = "vault_gas_win"  # optional: bracket from a window run's top bad value
 expect_need = 8600            # optional
-# exact = true                # optional: scan every value instead of bisecting
-# step = 100                  # optional, with exact: scan in steps of 100 (default 1)
+# exact = true                # optional: scan the bracket instead of bisecting
+# step = 100                  # optional, with exact: scan in steps of 100 (default 1: every value)
 ```
 
 The runner checks that `success` holds at `hi` and fails at `lo`, bisects in between (about
@@ -2037,8 +2041,10 @@ with success at 20 and again from 50 up, it can report 50. So the result reads `
 Gas is not always monotone: more gas for a parent can let a child commit that would
 otherwise have failed cleanly, and then run its owed callback short
 (`examples/trie-gas/leftover` has the same shape for trie gas). `exact = true` (or
-`--exact` on the command line, for every least-gas sweep it runs) scans every value of
-`lo..hi` (in steps of `step`, or `--gas-step N`; `hi` always included), one TLC run each,
+`--exact` on the command line, for every least-gas sweep it runs) scans `lo..hi` in steps
+of `step` (or `--gas-step N`; `hi` always included), one TLC run each: every value at step
+1, the default, and only a sample at a larger step, which can miss a flip between two
+scanned values,
 and reports `need N`, the least scanned value at which `success` holds, with the values
 where the verdict flips. It fails if success fails at a scanned value above `N` and says
 where (`non-monotone: ... fails at 21..49 above it; ... holds at every scanned value from

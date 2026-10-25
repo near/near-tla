@@ -118,6 +118,38 @@ GasMenu = "{30000}"
 RxVecs = '{<<0, 0>>}'
 MtIdCount = '[i \in {"t1"} |-> 3]'
 
+# The same gas-mode run with t1 standing for a 16-byte id (MtIdLen): longer than the ids
+# the table was measured on (MtGasIdLen, 2), and the burn grows with the ids' length.
+[[run]]
+name = "mt_batch_gas_long_id"
+expect = "assert"
+expect_output = "MtGasIdLen"
+tags = ["tokens:nep245", "gas:calibrated"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PStdGasCall"
+GasBurn = "PStdGasBurn"
+MtGasShape = "PMtShape"
+GasMenu = "{30000}"
+RxVecs = '{<<0, 0>>}'
+MtIdLen = '[i \in {"t1"} |-> 16]'
+
+# And an empty batch: no ids is outside the measured 1-3 as well.
+[[run]]
+name = "mt_batch_gas_empty"
+expect = "assert"
+expect_output = "outside 1..MtGasIds"
+tags = ["tokens:nep245", "gas:calibrated"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = "PStdGasCall"
+GasBurn = "PStdGasBurn"
+MtGasShape = "PMtShape"
+GasMenu = "{30000}"
+Tids = "<<>>"
+Amts = "<<>>"
+RxVecs = '{<<>>}'
+
 # An id class of 0 ids is a modelling error: an Assert.
 [[run]]
 name = "mt_batch_class_zero"

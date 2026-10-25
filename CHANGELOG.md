@@ -449,9 +449,14 @@ them. A model that lists platform variables one by one must add each.
   No run in the repo was affected. Migration: add an invariant, or set
   `allow_no_invariants = "<why>"` on the run.
 
-- **NEP-245 argument records and resolver burn keys.** `TokenCommon.TA0` has two more
-  fields, `tids` and `amts`, and `MtArgs`, `MtOnArgs` and `MtResArgs` set them to vectors of
-  one, so every token argument record has them. A model that builds argument records by
+- **NEP-245 argument records and resolver burn keys.** `TokenCommon.TA0` has three more
+  fields, `tids` and `amts`, which `MtArgs`, `MtOnArgs` and `MtResArgs` set to vectors of
+  one, and `bat`, `TRUE` in the `MtBatch*Args` and `FALSE` otherwise, so every token argument
+  record has them. `mt_resolve_transfer` takes the batch path on `bat`; it used to on a token
+  id of `""`, so a single id's resolver of the model id `""` took the batch path (and skipped
+  the single-id check on an id class). A batch resolver's arguments built by hand from `TA0` without
+  `bat` now stop at an `Assert` that names `MtBatchResArgs` (`examples/mt-batch`'s
+  `MtResolverCases` was one; it now uses `MtBatchResArgs`, with the same state counts). A model that builds argument records by
   hand in the old shape (`[s |-> ..., rc |-> ..., tid |-> ..., amt |-> ..., msg |-> ...]`)
   and compares them with the library's, or keeps both shapes in one set, now gets
   inequality or a TLC comparison error. Separately, `mt_resolve_transfer` now looks up
@@ -459,8 +464,8 @@ them. A model that lists platform variables one by one must add each.
   burns with size = the number of ids (1 for a single-id call): a custom table that already
   has keys of those names, or a per-size slope on `"<t>.mt_resolve_transfer"`, now selects
   them and changes that receipt's burn. Migration: build records from `TA0` (`[TA0 EXCEPT
-  ...]`) or the `*Args` constructors, or add `tids |-> <<>>, amts |-> <<>>` (`<<tid>>`,
-  `<<amt>>` for an NEP-245 record); rename such burn keys, or give them the burn you mean.
+  ...]`) or the `*Args` constructors, or add `tids |-> <<>>, amts |-> <<>>, bat |-> FALSE`
+  (`<<tid>>`, `<<amt>>` for an NEP-245 record, `bat |-> TRUE` for a batch's); rename such burn keys, or give them the burn you mean.
   Every repo model and table keeps its state counts and verdicts.
 - **Gas mode charges a declared promise-result read** (`ResultReadGas == TRUE`; SEMANTICS
   C4). The NEP-141 resolver now declares its read of the receiver's result, so in gas mode a
@@ -488,18 +493,23 @@ them. A model that lists platform variables one by one must add each.
   twice; drop its `OLog`, or set `TokEvents <- FALSE` to turn the library's off. A model that
   builds the handlers' accumulators by hand adds `lgn |-> 0, lgb |-> 0`.
 
-- **Gas mode: a NEP-245 batch of more than `MtGasIds` ids is an `Assert`** (default 3;
-  SEMANTICS T5). `CalibStdMt`'s per-id keys are fitted at 1-3 ids, and a line through them is
-  not a bound past that: the resolver's burn grows faster than linearly (it looks every id
+- **Gas mode: a NEP-245 call outside the ids its burn keys were measured on is an
+  `Assert`**: a batch of 0 or of more than `MtGasIds` ids (default 3), or any id longer than
+  `MtGasIdLen` bytes (default 2; `MtIdLen`, else the model id's length) (SEMANTICS T5).
+  `CalibStdMt`'s per-id keys are fitted at 1-3 ids of 2 bytes, sized by the number of ids
+  only, and a line through them is not a bound past that: the resolver's burn grows faster than linearly (it looks every id
   up in `token_ids` inside its per-entry loops, near-sdk-contract-tools 4.0.0
   `nep245/mod.rs:569-576`), and its key, fitted through the refunding and non-refunding
   paths, already understates a resolver that refunds 4 ids (2541 Ggas measured, 2444 on the
-  line; `conformance/tests/mt.rs` `mt_burn_per_id`). `mt_batch_transfer`,
-  `mt_batch_transfer_call` and a batch's `mt_resolve_transfer` now check their id count
-  (`MtCount`, an id class counting its ids) in gas mode. Fault mode is unchanged, and no
-  repo run changed verdict or state count. Migration: a gas-mode model with larger batches
-  was running on an understated burn; measure the methods at that size in a table of your
-  own and raise `MtGasIds`, or check the batch in fault mode.
+  line; `conformance/tests/mt.rs` `mt_burn_per_id`); and the burn grows with the ids'
+  length, so that at 64-byte ids one id already burns more than the batch methods' keys
+  (932 Ggas against 903 for `mt_batch_transfer`). Every NEP-245 method, single-id ones and
+  both resolvers included, now checks its ids (`MtCount`, an id class counting its ids) in
+  gas mode. Fault mode is unchanged, and no repo run changed verdict or state count.
+  Migration: a gas-mode model with larger batches or longer ids was running on an
+  understated burn; measure the methods on such batches and ids in a table of your own and
+  raise `MtGasIds` / `MtGasIdLen`, or check them in fault mode. A model id longer than 2
+  characters that stands for a 2-byte id gets `MtIdLen`.
 
 ### Added
 

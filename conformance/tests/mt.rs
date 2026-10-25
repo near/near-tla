@@ -410,6 +410,19 @@ fn own_burn(r: &near_contract_sim::ReceiptOutcome) -> Option<u64> {
     r.failure().is_none().then(|| (r.gas_burnt.as_gas() - r.prepaid_exec_fees.as_gas()) / 1_000_000_000)
 }
 
+/// `(base, per)` of CalibStdMt's burn key for `method`, in Ggas, read from
+/// modules/CalibStdMt.tla.
+fn calib_std_mt(method: &str) -> (u64, u64) {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../modules/CalibStdMt.tla");
+    let text = std::fs::read_to_string(path).expect("modules/CalibStdMt.tla");
+    let tag = format!("\".{method}\" :> [base |-> ");
+    let rest = &text[text.find(&tag).unwrap_or_else(|| panic!("no key {method} in CalibStdMt")) + tag.len()..];
+    let num = |s: &str| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap();
+    let base = num(rest);
+    let per = num(&rest[rest.find("per |-> ").unwrap() + "per |-> ".len()..]);
+    (base, per)
+}
+
 /// The per-id slope of `b` between consecutive sizes of `ns`, Ggas.
 fn slopes(ns: &[usize], b: &[Option<u64>]) -> Vec<f64> {
     (1..ns.len()).filter_map(|k| Some((b[k]? as f64 - b[k - 1]? as f64) / (ns[k] - ns[k - 1]) as f64)).collect()
@@ -424,9 +437,11 @@ fn slopes(ns: &[usize], b: &[Option<u64>]) -> Vec<f64> {
 /// :569-576), so it compares n² / 2 pairs of ids twice, and its burn grows
 /// faster than linearly, the more so the longer the ids' common prefix
 /// (both paths: refunding every id, Failed; refunding none, all used).
-/// CalibStdMt fits one line to 1-3 ids; Nep245's MtGasIds (3) refuses
-/// larger batches in gas mode. No model comparison: the observations are
-/// printed (Ggas; "-" out of gas at 300 Tgas), with the shape asserted.
+/// CalibStdMt fits one line per method to 1-3 ids of 2 bytes; Nep245's
+/// MtGasIds (3) and MtGasIdLen (2) refuse other calls in gas mode, and the
+/// two overruns that justify them are asserted against the table. No
+/// model comparison: the observations are printed (Ggas; "-" out of gas
+/// at 300 Tgas), with the shape asserted.
 #[test]
 fn mt_burn_per_id() {
     for len in [2usize, 16, 64] {
@@ -478,9 +493,25 @@ fn mt_burn_per_id() {
                 assert!(last >= first * 1.1, "resolver ({what}) at {len}-byte ids grows faster than linearly: {s:?}");
             }
         }
-        // Past 1-3 ids, refunding costs more per id than the line through
-        // both paths: at 4 ids (2-byte) the refund path already burns more
-        // than CalibStdMt's resolver key, 1028 + 354 * n.
-        println!("  CalibStdMt's resolver key at n: {}", ns.iter().map(|n| (1028 + 354 * n).to_string()).collect::<Vec<_>>().join(" "));
+        // Against CalibStdMt's keys (base + per * n, read from the table),
+        // the two facts Nep245's gas-mode guards rest on: at 2-byte ids a
+        // resolver refunding 4 ids burns more than the resolver key
+        // (MtGasIds = 3), and at 64-byte ids one id burns more than the
+        // batch methods' keys (MtGasIdLen = 2).
+        let line = |m: &str, n: usize| {
+            let (b, p) = calib_std_mt(m);
+            b + p * n as u64
+        };
+        println!("  CalibStdMt: {}", ns.iter().map(|&n| format!("{}/{}/{}", line("mt_batch_transfer", n), line("mt_batch_transfer_call", n), line("mt_resolve_transfer", n))).collect::<Vec<_>>().join(" "));
+        if len == 2 {
+            let four = rr[2].unwrap();
+            assert!(four > line("mt_resolve_transfer", 4), "a refund of 4 ids burns {four}, within the resolver key's {}", line("mt_resolve_transfer", 4));
+        }
+        if len == 64 {
+            for (m, b) in [("mt_batch_transfer", &bt), ("mt_batch_transfer_call", &bc)] {
+                let one = b[0].unwrap();
+                assert!(one > line(m, 1), "{m} of one 64-byte id burns {one}, within the key's {}", line(m, 1));
+            }
+        }
     }
 }
