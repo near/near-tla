@@ -90,7 +90,8 @@ it:
 
 Keep each handler faithful to the code path by path: every `require!` becomes an `OErr`, every
 branch that creates receipts creates the same ones, and `ids` counts exactly the fresh ids
-used (a wrong count stops TLC with an `Assert` naming the method). Note in a comment the
+used (too small a count stops TLC with an `Assert` naming the method; too large a count
+passes unflagged, so count carefully). Note in a comment the
 source lines each handler models.
 
 **Done when** `python3 NT/tools/sany.py <model-dir>` parses, and every inventory method has a
