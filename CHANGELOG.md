@@ -558,7 +558,8 @@ them. A model that lists platform variables one by one must add each.
 - **`examples/pay` marks `on_paid` owed.** It credits back what the receiver did not use, so
   it must not fail. `pay_forced` and `pay_gas` now expect `OwedOK`, which reports the failure
   as soon as `on_paid` fails; `Books`, which breaks once the pay settles, is mapped by
-  `pay_gas_win`.
+  `pay_gas_win`. Both runs list `OwedOK` first: a state past the settle breaks both, and
+  with two workers TLC may reach one first.
 - **An `Assert` message prints on one line** (`tools/tlcparse.py`): TLC prints a tuple one
   element per line, and the runner used to show only the first.
 

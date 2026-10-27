@@ -88,10 +88,12 @@ Dev = '{"resolveNoCap"}'
 
 # One forced failure of on_paid: the tokens come back to C but ib is never credited.
 # OwedOK reports it as soon as on_paid fails; Books would break once the pay settles.
+# OwedOK goes first: a state past the settle breaks both, and TLC names the first listed.
 [[run]]
 name = "pay_forced"
 expect = "violation"
 invariant = "OwedOK"
+invariants = ["OwedOK", "Books", "Honored", "NoOverdraft", "Sane"]
 tags = ["semantics:callback-failure"]
 [run.constants]
 MayFail = '{"on_paid"}'
@@ -112,6 +114,7 @@ MaxFails = "1"
 name = "pay_gas"
 expect = "violation"
 invariant = "OwedOK"
+invariants = ["OwedOK", "Books", "Honored", "NoOverdraft", "Sane"]
 # One worker keeps the breadth-first search order (and so the reported trace) deterministic.
 workers = 1
 expect_output = 'gas \|-> 39800\]>>'
