@@ -13,7 +13,7 @@ Tokens, Nep245, plus a separate NearKeys).
 ## [0.1.0] - 2026-10-27
 
 ```
-nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: 29e909033bb59eab792dee136e9d02870488bc3e
 near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ```
@@ -1237,13 +1237,13 @@ them. A model that lists platform variables one by one must add each.
   resolver's burn path reachable. `SuArgs(force)`; `ev.unreg` / `ev.unregBurnt`.
 - Universal and deterministic account kinds (`AcctKind` values `"universal"`,
   `"deterministic"`): a Transfer may create them (`actions.rs:929-946`;
-  universal from protocol 87, also inside a batch). An account created by a
+  universal from protocol 88, also inside a batch). An account created by a
   Transfer has no code unless it is eth-implicit (`actions.rs:221-290`; universal
   ones are also uninitialised, `:880-887`), so calls to it fail. Whether
   universal accounts exist is `UniversalOn`, an overridable definition, default
   TRUE (88's rule). It does not follow `NearFees.FeeProtocol`, which selects fees
   only: `FeeProtocol == 86` keeps the creation and charges 86's fee;
-  `UniversalOn <- FALSE` gives the rule before 87 (`actions.rs:918-924`).
+  `UniversalOn <- FALSE` gives the rule before 88 (`actions.rs:918-924`).
 - `NoOrphans` (no callback waits on nothing, no data without a waiting
   callback) and `ExecNoCode(r)`.
 - `examples/platform-selftest`: 49 deterministic scenarios (plus the 10 async scenarios above; receipts, results,
@@ -1310,6 +1310,15 @@ them. A model that lists platform variables one by one must add each.
 
 ### Changed
 
+- **Pinned to nearcore 2.14.0** (`bc4e9e8`, the mainnet release), from 2.14.0-rc.5. Protocol
+  88's rules, fees and limits are the same in both: its parameter snapshot is unchanged, and
+  the runtime changes between the tags touch only tests. Two rules at 87 moved, and the library
+  follows them. Universal (`0u`) accounts now start at 88: `NearFees.UniversalAccountsOn`
+  is `pv >= 88`, and `UniversalOn`'s documentation says 88. The promise-input size limit is
+  off at 87 and 88, since 2.14.0 schedules `ReceiptPromiseInputSizeLimit` for 157, so
+  SEMANTICS drops N-input-87. Every citation is now at `bc4e9e8`; the ones whose lines moved
+  (`version.rs`, `signature.rs`, `chain.rs`, `88.yaml`) were re-read there. Migration: a model
+  at `FeeProtocol = 87` that sends to a universal id now pays a named receiver's Transfer fee.
 - `NearAsync`: `Sum` (the deposits in flight, read by `NearConserved`) and `KidsCost` (gas
   mode) no longer recurse once per receipt. With a few hundred receipts in flight that
   recursion ran past the JVM's thread stack: `limits`' `limit_join_128` (129 receipts) threw
@@ -1366,7 +1375,7 @@ them. A model that lists platform variables one by one must add each.
 - `LocalPriorityOK` and the `local-priority` example: ON assumes no congestion;
   OFF is the conservative setting (the `local_off` order is reachable under
   congestion, `lib.rs:2513-2520`).
-- Comments now state semantics with nearcore citations (`path:line @ b7b4737`).
+- Comments now state semantics with nearcore citations (`path:line @ bc4e9e8`).
 - `ResMinBytes`: a result with `len = 0` and `sz = 1` is at least 1 byte (it was
   0), so `ResTooLong(res, 0)` is TRUE for it. Only a bound below 1 byte sees the
   difference; with any positive bound (the resolver's 42) `sz <= 1` stays short.

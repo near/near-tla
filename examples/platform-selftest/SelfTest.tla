@@ -14,7 +14,7 @@
 (* standard FT + wNEAR; ghost, ghost2 (named) and 0xe, 0xf (eth-implicit)  *)
 (* do not exist; neither does the universal account 0u1.  The rule each    *)
 (* scenario checks is in docs/SEMANTICS.md with its nearcore citation      *)
-(* (b7b4737); the comments in Expect name the source file.                 *)
+(* (bc4e9e8); the comments in Expect name the source file.                 *)
 (* Delegate actions (the deleg_ scenarios): a script entry Dl is a        *)
 (* relayer's transaction carrying a user's signed delegate; u relays with  *)
 (* its key "ku" (u's keys are not modelled), c and d are the users.        *)
@@ -642,7 +642,7 @@ Script(s) ==
                                     Tx(C, U, "send", G("", "", UA, 2, 0, "", ""), 0),
                                     Tx(UA, U, "foo", G0, 1) >>                            \* uninitialised
     [] s = "accall_del_stor"  -> << Tx(C, U, "closecall", G("", "", C, 4, 5000, "", ""), 0) >>
-    \* Without UniversalOn (protocol < 87) 0u1 is a named top-level id.
+    \* Without UniversalOn (protocol < 88) 0u1 is a named top-level id.
     [] s = "universal_off"    -> << Ac(UA, W, TRUE, 2, "", <<AddK("k0")>>),             \* w creates it
                                     Ac(UA, UA, FALSE, 0, "", <<AddK("k1")>>),            \* a key action
                                     Dl(U, "ku", UA, "k1", 1, NoExpiry, C, "ping", 0),    \* a delegate (k1)
@@ -1215,7 +1215,7 @@ Expect(s) ==
          \* worth), but the storage check is skipped for an account the receipt deletes.
          \* lib.rs:1008-1031, the skip at :1010
          deleted = {C} /\ stor[C] = 0 /\ near[U] = 15 /\ S1("last", 1) \in seen
-    [] s = "universal_off" ->     \* before 87 a 0u id is named: created by CreateAccount, it is an
+    [] s = "universal_off" ->     \* before 88 a 0u id is named: created by CreateAccount, it is an
          \* ordinary account (no AccountNotInitialized): its key action, its delegate (signed with
          \* the key it added) and its delete succeed.  actions.rs:880-887, :918-924
          created = {UA} /\ deleted = {UA} /\ DOMAIN keys[UA] = {} /\ near[UA] = 0 /\ near[W] = 10

@@ -3,7 +3,7 @@
 (* A joint callback (promise_and(p, q).then(cb)) runs once, after both     *)
 (* inputs, and sees one result per input in promise_and order.  Each       *)
 (* input succeeds or fails on its own: Failed and Successful mix           *)
-(* (runtime/runtime/src/lib.rs:861-899, :1146-1189 at nearcore b7b4737).   *)
+(* (runtime/runtime/src/lib.rs:861-899, :1146-1189 at nearcore bc4e9e8).   *)
 (*                                                                         *)
 (* Contract S: U calls S.split(), which moves 2 of U's credits into escrow *)
 (* and calls A.take() and B.take() jointly, then S.on_both.  Each take()   *)

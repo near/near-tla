@@ -5,7 +5,7 @@
 (* height: the timeout fires late, never early (the queue is drained at    *)
 (* the end of a chunk while expires_at <= block_height and stops at the    *)
 (* compute limit, runtime/runtime/src/lib.rs:3113-3221, :3130-3132, :3146  *)
-(* at nearcore b7b4737), and its callback runs in a later block.           *)
+(* at nearcore bc4e9e8), and its callback runs in a later block.           *)
 (*                                                                         *)
 (* Contract Q: as examples/yield-resume (request / answer / on_answer),    *)
 (* plus cancel(y), which U may call once blk >= at + CancelAt (at = the    *)

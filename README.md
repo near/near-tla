@@ -68,8 +68,8 @@ It holds:
 - within the run's bounds: the number of transactions, forced failures and prepaid gas amounts
   you chose;
 - for your model of the contract, which is a hand-written abstraction of the code;
-- under the runtime rules of protocol version 88 (nearcore 2.14.0-rc.5); mainnet ran 86 as of
-  2026-10-23, and [SEMANTICS.md](docs/SEMANTICS.md#reference-revision) says what differs;
+- under the runtime rules of protocol version 88 (nearcore 2.14.0); mainnet ran 86 as of
+  2026-10-23 and votes on 87 and 88 in early November, and [SEMANTICS.md](docs/SEMANTICS.md#reference-revision) says what differs;
 - for the properties you wrote, and no others.
 
 **A failure** is a counterexample: a hypothesis about your contract. Confirm it on the compiled
@@ -82,7 +82,7 @@ local sandbox.
 
 [SEMANTICS.md](docs/SEMANTICS.md) is the trust document.
 
-- **Every rule cites nearcore** at a pinned revision (2.14.0-rc.5, commit `b7b4737`): the
+- **Every rule cites nearcore** at a pinned revision (2.14.0, commit `bc4e9e8`): the
   `path:line` it comes from, the operator that encodes it, and how far it has been checked.
 - **Gas and fees are checked against nearcore.** A private simulator, near-contract-sim, runs
   nearcore's own `Runtime::apply` on small test contracts written to exercise the rules, across
@@ -187,7 +187,7 @@ shared `NearAsync` base.
 
 The current release is 0.1.0 (tag `v0.1.0`); later changes accumulate under `[Unreleased]` in
 [`CHANGELOG.md`](CHANGELOG.md). The behaviour encoded is protocol version **88** at nearcore
-2.14.0-rc.5. `NearFees` also carries the fee tables of 84-87, selected by `FeeProtocol`; the
+2.14.0. `NearFees` also carries the fee tables of 84-87, selected by `FeeProtocol`; the
 other rules are 88's. [VERSIONING.md](docs/VERSIONING.md) says what counts as a breaking
 change, what each release states about its protocol assumptions, and how the library moves to a
 new protocol version.

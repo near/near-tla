@@ -4,7 +4,7 @@
 (* of the first resume to arrive, or with Failed when the yield times out. *)
 (* promise_yield_resume returns TRUE for every call made before the        *)
 (* callback has run, not only for the first                                *)
-(* (runtime/runtime/src/ext.rs:406-430 at nearcore b7b4737; extra resumes  *)
+(* (runtime/runtime/src/ext.rs:406-430 at nearcore bc4e9e8; extra resumes  *)
 (* are dropped on arrival, runtime/runtime/src/lib.rs:1616-1622).          *)
 (*                                                                         *)
 (* Contract Q: U calls Q.request(), which escrows 1 of U's credits, yields *)

@@ -63,7 +63,7 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
 ## Rules
 
 - **Cite nearcore.** Every semantic rule in a module comment or in `docs/SEMANTICS.md` carries
-  `path:line @ <rev>` at the reference revision (b7b4737, 2.14.0-rc.5). Read the line before you
+  `path:line @ <rev>` at the reference revision (bc4e9e8, 2.14.0). Read the line before you
   cite it; line numbers in other checkouts differ. If you could not read the source, say
   "recalled".
 - **No confidential contract material.** Examples and probes are fresh toy contracts written for

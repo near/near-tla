@@ -353,7 +353,7 @@ StorageByteCost = "LCost"
 CodeSize = "LCode"
 Scns = '{"del_large", "acct_bytes", "acct_bytes_del"}'
 
-# Without universal accounts (UniversalOn = FALSE, protocol < 87) a 0u id is named: w creates
+# Without universal accounts (UniversalOn = FALSE, protocol < 88) a 0u id is named: w creates
 # it with [CreateAccount, Transfer, AddKey], then its key action, delegate and delete succeed.
 [[run]]
 name = "selftest_universal_off"

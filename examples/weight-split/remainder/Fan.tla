@@ -3,7 +3,7 @@
 (* The whole-Ggas remainder of the unused-gas split.  nearcore gives each  *)
 (* weighted call floor(U * w / W) in gas units and the last one also the   *)
 (* remainder, fewer than n gas units for n calls                           *)
-(* (runtime/runtime/src/receipt_manager.rs:679-719 @ b7b4737).  The model  *)
+(* (runtime/runtime/src/receipt_manager.rs:679-719 @ bc4e9e8).  The model  *)
 (* splits a U in whole Ggas, which is at most nearcore's U (fees rounded   *)
 (* up, burns an upper envelope).  Handing the model's remainder (up to     *)
 (* n - 1 Ggas) to the last call can then give it more than nearcore does; *)

@@ -30,7 +30,7 @@ in `CHANGELOG.md` with a one-line migration.
 Every release section in `CHANGELOG.md` carries these lines:
 
 ```
-nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: <rev>          near-contract-standards (token gas defaults): <version>
 ```
 
@@ -51,15 +51,15 @@ near-contract-sim: <rev>          near-contract-standards (token gas defaults): 
 `FeeProtocol` selects **fees only**. The rules in `NearAsync` and `NearKeys` are protocol 88's,
 whatever `FeeProtocol` says. Setting `FeeProtocol == 86` gives 86's fees on top of 88's rules.
 The one rule of 84-88 the model can switch is universal accounts, through its own overridable
-definition `UniversalOn` (default TRUE, 87+), not through `FeeProtocol`. So with
+definition `UniversalOn` (default TRUE, 88), not through `FeeProtocol`. So with
 `FeeProtocol == 86` and the default `UniversalOn`, a Transfer to an absent universal (`0u`)
 account still creates it (88's rule), and its creator pays 86's fee for that receiver, which is
 the named-account Transfer fee (`NearFees.tla` `TransferSendAt` / `TransferExecAt`: the
-create_account part is charged for universal ids from 87 only). To model the rule before 87 as
+create_account part is charged for universal ids from 88 only). To model the rule before 88 as
 well, add `UniversalOn <- FALSE`: the Transfer then fails and refunds, as to a missing named
 account.
 These behaviours are gated by version between 83 and 88 (`core/primitives-core/src/version.rs`
-`ProtocolFeature::protocol_version` at `:511-655` @ b7b4737, and the parameter yamls):
+`ProtocolFeature::protocol_version` at `:514-659` @ bc4e9e8, and the parameter yamls):
 
 | version | behaviour | in the model |
 |---|---|---|
@@ -70,14 +70,13 @@ These behaviours are gated by version between 83 and 88 (`core/primitives-core/s
 | 85 | gas keys, `DelegateV2`, `StrictNonce`, `YieldWithId`, ML-DSA verification cost | not modelled |
 | 86 | per-receipt storage-proof limit (`EnforcePerReceiptStorageProofLimit`) | not modelled |
 | 87 | gas rewards to contracts 30% → 0 (`RemoveGasRewards`, `87.yaml:1-7`) | the model pays no reward, which is right for 87+ and wrong for 84-86 |
-| 87 | promise-input size limit `ReceiptPromiseInputSizeLimit` (4,194,944 bytes) | not modelled |
-| 87 | universal (`0u`) accounts, `RejectEmptyMethodName`, `EnforceStorageProofLimitForAllActions`, `FixContractLoadingError` | universal: fee kind by `FeeProtocol`; creation by Transfer by `UniversalOn` (default on, independent of `FeeProtocol`); the rest not modelled |
-| 88 | promise-input size limit lifted to `u32::MAX` (`88.yaml`) | n/a |
-| 88 | canonical universal state init; universal state-init fees (`88.yaml:14-45`) | not modelled |
+| 87 | `RejectEmptyMethodName`, `EnforceStorageProofLimitForAllActions`, `FixContractLoadingError`, `RejectUniversalAccountTransfers` | not modelled |
+| 88 | universal (`0u`) accounts (`UniversalAccounts`, `88.yaml:1-3`) | fee kind by `FeeProtocol`; creation by Transfer by `UniversalOn` (default on, independent of `FeeProtocol`) |
+| 88 | canonical universal state init; universal state-init fees (`88.yaml:18-49`) | not modelled |
 
 So a model of mainnet at 86 differs from the library's rules at least in gas rewards (N-reward
 in `docs/SEMANTICS.md`), in universal-account creation unless it sets `UniversalOn <- FALSE`,
-and in the other 87 rules listed above. Check that list against your contract before trusting a
+and in the other 87 and 88 rules listed above. Check that list against your contract before trusting a
 verdict at another version.
 
 ## Procedure for a protocol bump

@@ -11,7 +11,7 @@
 (* side (core/parameters/src/snapshots/                                    *)
 (* near_parameters__config_store__tests__88.json.snap:9-13, :52-56;        *)
 (* charged by promise_batch_action_transfer,                               *)
-(* runtime/near-vm-runner/src/logic/host.rs:3621-3661 @ b7b4737).  So in   *)
+(* runtime/near-vm-runner/src/logic/host.rs:3621-3661 @ bc4e9e8).  So in   *)
 (* nearcore Attach = 446 runs out of gas and Attach >= 447 is enough.      *)
 (*                                                                         *)
 (* NearFees rounds each fee entry to a whole Ggas:                         *)

@@ -13,21 +13,22 @@
 \* FeeProtocol. Every operator also has an ...At(pv, ...) form that takes the
 \* version explicitly, so one spec can compare versions.
 \*
-\* Versions covered (nearcore 2.14.0-rc.5, rev b7b4737, the sim's pin):
-\*   84  MIN_SUPPORTED_PROTOCOL_VERSION    core/primitives-core/src/version.rs:666
+\* Versions covered (nearcore 2.14.0, rev bc4e9e8, the mainnet release):
+\*   84  MIN_SUPPORTED_PROTOCOL_VERSION    core/primitives-core/src/version.rs:670
 \*   85  first version with the create_account repricing
 \*   86  mainnet. There is no 86.yaml, so 86 runs 85's parameters:
 \*       ConfigStore::get_config picks the highest yaml <= the requested version
 \*       (core/parameters/src/config_store.rs:238-246; the list of yamls is at
 \*       :29-63 and has 84, 85, 87, 88 but no 86).
-\*   87  adds universal (0u) accounts (core/primitives-core/src/version.rs:639)
-\*   88  STABLE_PROTOCOL_VERSION (core/primitives-core/src/version.rs:694). A
-\*       non-nightly 2.14.0-rc.5 binary runs 88: PROTOCOL_VERSION = STABLE
-\*       unless built with "nightly" (:706-712). The sim runs 88.
+\*   87  no fee in this table changes
+\*   88  adds universal (0u) accounts (core/primitives-core/src/version.rs:643).
+\*       STABLE_PROTOCOL_VERSION (core/primitives-core/src/version.rs:698). A
+\*       non-nightly 2.14.0 binary runs 88: PROTOCOL_VERSION = STABLE
+\*       unless built with "nightly" (:710-716). The sim runs 88.
 \* The nightly versions (129, 155, 157) change no action fee.
 \*
 \* ---------------------------------------------------------------------------
-\* Sources (all paths relative to a nearcore checkout at b7b4737)
+\* Sources (all paths relative to a nearcore checkout at bc4e9e8)
 \* ---------------------------------------------------------------------------
 \* The values are the resolved per-version configs that nearcore snapshots in
 \*   core/parameters/src/snapshots/near_parameters__config_store__tests__<v>.json.snap
@@ -36,7 +37,7 @@
 \* SNAP85, SNAP87 and SNAP88. Between 84 and 88 the only fee IN THIS TABLE that
 \* changes is create_account (85.yaml:16-27). Fees outside the table also change:
 \* action_deterministic_state_init at 85 (85.yaml:28-39) and the universal
-\* state-init per-entry and per-byte fees at 88 (88.yaml:14-45). State-init
+\* state-init per-entry and per-byte fees at 88 (88.yaml:18-49). State-init
 \* actions are not modelled.
 \* The global-contract fees (deploy_global_*, use_global_*) are not in the
 \* SNAP files; they cite core/parameters/res/runtime_configs/77.yaml, which
@@ -106,7 +107,7 @@
 \*   "near_implicit"  64 lowercase hex
 \*   "deterministic"  "0s" + 40 lowercase hex
 \*   "universal"      "0u" + 52 Crockford base32 whose last char is "0" or
-\*                    "g" (validation.rs:117-124; 87+)
+\*                    "g" (validation.rs:117-124; 88)
 \*   "named"          anything else
 \* Transfer fee by kind (cost.rs:775-848):
 \*   named          transfer
@@ -117,8 +118,8 @@
 \*                  fee functions charge it unconditionally, cost.rs:805-807,
 \*                  :844-846; the runtime's account-type check reuses
 \*                  eth_implicit_accounts, actions.rs:899-927)
-\*   universal      transfer + create_account at 87+ (universal_accounts:
-\*                  SNAP87:232, SNAP88:232). At 84-86 the flag is off and it
+\*   universal      transfer + create_account at 88 (universal_accounts:
+\*                  SNAP88:232). At 84-87 the flag is off (SNAP87:232) and it
 \*                  is charged as a plain transfer.
 \* The same kind-dependent amount is charged on both the send and the exec side.
 \*
@@ -142,8 +143,8 @@ FeeProtocol == 88
 FeeVersions == {84, 85, 86, 87, 88}
 ASSUME FeeProtocol \in FeeVersions   \* also in FeeSelfChecks (runs through INSTANCE)
 
-\* universal_accounts is on from 87 (SNAP87:232; version.rs:639).
-UniversalAccountsOn(pv) == pv >= 87
+\* universal_accounts is on from 88 (SNAP88:232; version.rs:643).
+UniversalAccountsOn(pv) == pv >= 88
 
 RcvKinds == {"named", "near_implicit", "eth_implicit", "deterministic", "universal"}
 

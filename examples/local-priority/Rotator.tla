@@ -3,7 +3,7 @@
 (* Local-receipt priority.  A transaction whose signer is its receiver     *)
 (* produces a local receipt, which runs in the chunk that includes the     *)
 (* transaction, before delayed and incoming receipts                       *)
-(* (runtime/runtime/src/lib.rs:2316-2324, :2800-2821 @ b7b4737).  The      *)
+(* (runtime/runtime/src/lib.rs:2316-2324, :2800-2821 @ bc4e9e8).  The      *)
 (* transaction's access key is checked when it is included, so no other    *)
 (* receipt can remove the key between that check and the local receipt.   *)
 (*                                                                         *)

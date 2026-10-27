@@ -17,7 +17,7 @@ receipts, S scheduling, B staking and balance, T tokens, F the model's own failu
 entry has four fields:
 
 - **Rule:** what nearcore does, in a sentence or two.
-- **nearcore:** the source lines it comes from, at commit b7b4737.
+- **nearcore:** the source lines it comes from, at commit bc4e9e8.
 - **Model:** the operator or constant that encodes it, in `modules/NearAsync.tla` unless
   another module is named.
 - **Validated:** how far the rule has been checked, as a level. From weakest to strongest:
@@ -132,7 +132,7 @@ One row per rule, grouped by family; the id links to the entry.
 | [C1](#c1-callbacks-always-run) | Callbacks run, and see `Failed` for a failed input | `DataOf`, `IsFailed` | sim | sim |
 | [C2](#c2-a-callback-can-itself-fail) | A callback can itself fail | `Exec`, `ForcedFail` | nearcore reading (what the callback reverts) | sim |
 | [C3](#c3-promise-result-shapes) | Promise result shapes | `RVal`, `IsFailed`, `NoRes` | nearcore reading (`NotReady`) | sim |
-| [C4](#c4-result-size) | Result size, bounded reads, read gas | `RValSz`, `RValLen`, `ResTooLong`, `OReadRes` | nearcore reading (protocol 87's input limit); source read (the bounded read) | sim |
+| [C4](#c4-result-size) | Result size, bounded reads, read gas | `RValSz`, `RValLen`, `ResTooLong`, `OReadRes` | source read (the bounded read) | sim |
 | [C5](#c5-returning-a-promise-forwards-its-result) | Returning a promise forwards its result | `RProm` | sim | sim |
 | [C6](#c6-joint-promises-promise_and) | Joint promises (`promise_and`) | `AndThen`, `JointRes`, `ResAt` | nearcore reading (the callback runs after the last input) | sim |
 | [C7](#c7-yield-and-resume-nep-519) | Yield and resume (NEP-519) | `YieldRcpt`, `OResume`, `CanResume`, `PendingYieldRcpts` | nearcore reading (the callback runs after the resume or timeout) | sim |
@@ -215,12 +215,14 @@ sits at the end of that section
 
 ## Reference revision
 
-- **nearcore:** 2.14.0-rc.5, commit `b7b4737cab46f17a6daa2ed694d7aebbd204363a`. This is the
-  revision near-contract-sim pins. Every `path:line` below is at this revision.
+- **nearcore:** 2.14.0, the mainnet release, commit `bc4e9e8cfb03d9e82f027883055624e18576993e`.
+  Every `path:line` below is at this revision.
 - **Protocol version:** 88, unless a rule says otherwise. 88 is `STABLE_PROTOCOL_VERSION`
-  (`core/primitives-core/src/version.rs:694` @ b7b4737), the version a non-nightly rc.5 binary
-  and the sim run. Mainnet ran 86 as of 2026-10-23. At 86 the fee table is the same as 85's,
-  because there is no `86.yaml` (`core/parameters/src/config_store.rs:238-246` @ b7b4737).
+  (`core/primitives-core/src/version.rs:698` @ bc4e9e8), the version a non-nightly 2.14.0
+  binary and the sim run. Mainnet ran 86 as of 2026-10-23; 2.14.0 schedules the votes for 87
+  on 2026-11-04 and for 88 on 2026-11-06 (`core/primitives/src/version.rs:59-70`). At 86 the
+  fee table is the same as 85's, because there is no `86.yaml`
+  (`core/parameters/src/config_store.rs:238-246` @ bc4e9e8).
   The rule changes between 84 and 88 are noted where they matter. `NearFees.FeeProtocol`
   selects fees only; the behaviour encoded in `NearAsync`/`NearKeys` is protocol 88's (see
   `docs/VERSIONING.md`). The one behaviour switch for those versions, `UniversalOn` (A2), is
@@ -235,7 +237,7 @@ sits at the end of that section
 Each rule has four fields:
 
 - **Rule:** the behaviour, in one or two sentences.
-- **nearcore:** where it lives. The rev is always b7b4737, and paths are relative to the
+- **nearcore:** where it lives. The rev is always bc4e9e8, and paths are relative to the
   nearcore root.
 - **Model:** the operator or constant that encodes it, in `modules/NearAsync.tla` unless another
   module is named. The names are the current code's.
@@ -261,7 +263,7 @@ Each rule has four fields:
     as written here, not the model's encoding of it; `examples/platform-selftest` checks the
     encoding. These tests run on the committed probe wasms and print what they observed
     (`--nocapture`).
-  - **nearcore reading** means the rule was read in the nearcore source at b7b4737 and not
+  - **nearcore reading** means the rule was read in the nearcore source at bc4e9e8 and not
     exercised here.
   - **source read** is the same level for code outside nearcore: the rule was read in a NEP
     text, near-sdk, near-contract-standards or near-sdk-contract-tools, at the version the
@@ -594,17 +596,15 @@ Each rule has four fields:
 ### C4. Result size
 
 - **Rule:** A returned value can be up to `max_length_returned_data` = 4 MiB (88). The
-  returning receipt pays a per-byte data fee for every receiver waiting on it. At protocol 87
-  only, a receipt whose combined inputs exceed `max_receipt_total_input_size` (4,194,944 bytes)
-  fails immediately with `TotalPromiseInputSizeExceeded`, without running; its inputs are
-  discarded. 88 restores the limit to `u32::MAX`, which no receipt can reach.
+  returning receipt pays a per-byte data fee for every receiver waiting on it. The combined
+  size of a receipt's inputs is not limited at 84-88: the check behind
+  `max_receipt_total_input_size` belongs to `ReceiptPromiseInputSizeLimit`, which 2.14.0
+  schedules for protocol 157, a nightly version.
 - **nearcore:** `runtime/near-vm-runner/src/logic/host.rs:4695-4746` (`value_return`: length
   check and per-receiver `data_receipt_creation_per_byte` charge);
   `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:249`
-  (limit); `runtime/runtime/src/lib.rs:845-871` (input-size check, protocol feature
-  `ReceiptPromiseInputSizeLimit` at 87, `core/primitives-core/src/version.rs:636`), `:916-924`
-  (the receipt fails without running its actions); `core/parameters/res/runtime_configs/87.yaml`
-  and `88.yaml` (limit set, then lifted).
+  (limit); `runtime/runtime/src/lib.rs:845-871` (the input-size check, gated on
+  `ReceiptPromiseInputSizeLimit`, at 157 in `core/primitives-core/src/version.rs:653`).
 - **Model:** a size field on data receipts and `r.res.sz`, **in KB** (see [Units](#units)):
   `RVal(v)` has size 0 and `RValSz(v, n)` carries `n` KB (also `DataOfSz`, `RetSz`, `OSz`).
   Handlers may use `r.res.sz` as the burn size. Fee: `NearFeeTable!DataBytesFee(sir, bytes)`, which
@@ -643,16 +643,15 @@ Each rule has four fields:
   `runtime/near-vm-runner/src/logic/vmstate.rs:87-121` (no per-byte charge for shared data),
   `host.rs:407-417`, `:201-210` (`read_register`, `write_memory`);
   `core/parameters/res/runtime_configs/parameters.snap:133-135` (the per-byte prices).
-- **Validated:** sim (`conformance/tests/receipts.rs`, `result_size_limit_and_per_receiver_fee`:
-  a 4 MiB value is returned and one byte more fails the call; the returning receipt burns
-  `new_data_receipt_byte` send + exec per byte for a waiting receiver, at the other-account
-  or the same-account send rate, to the gas; `conformance/tests/gas.rs`,
-  `result_read_gas_per_byte`: a callback that reads a result of 1,000, 100,000 and 1,000,000
-  bytes burns exactly 2,822,334 gas per byte more than one that takes only its length, and
-  that one, like one that only calls `promise_result`, burns the same at every size). The
-  protocol-87 input-size limit: nearcore
-  reading; not sim-testable, since the sim runs 88. The bounded read: SDK source read; a
-  near-contract-standards resolver's 42-byte bound is checked in the sim under T2.
+- **Validated:** sim (`conformance/tests/receipts.rs`,
+  `result_size_limit_and_per_receiver_fee`: a 4 MiB value is returned and one byte more fails
+  the call; the returning receipt burns `new_data_receipt_byte` send + exec per byte for a
+  waiting receiver, at the other-account or the same-account send rate, to the gas;
+  `conformance/tests/gas.rs`, `result_read_gas_per_byte`: a callback that reads a result of
+  1,000, 100,000 and 1,000,000 bytes burns exactly 2,822,334 gas per byte more than one that
+  takes only its length, and that one, like one that only calls `promise_result`, burns the
+  same at every size). The bounded read: SDK source read; a near-contract-standards resolver's
+  42-byte bound is checked in the sim under T2.
 
 ### C5. Returning a promise forwards its result
 
@@ -1160,7 +1159,7 @@ Each rule has four fields:
   absent. A Transfer to an absent account fails unless implicit creation applies (A3). The
   NEP-616 state inits (`DeterministicStateInit`, `UniversalStateInit`) pass whether the account
   exists or not: they create a missing one. All other actions (FunctionCall, AddKey, DeleteKey,
-  Stake, Deploy, DeleteAccount, ...) need it present. At 87+ the account must also be
+  Stake, Deploy, DeleteAccount, ...) need it present. At 88 the account must also be
   initialized for them: an uninitialised `0u` account counts as absent, except to a Transfer
   and its own state init (N-universal).
 - **nearcore:** `runtime/runtime/src/actions.rs:814-895` (`check_account_existence`; the state
@@ -1179,14 +1178,14 @@ Each rule has four fields:
 
 - **Rule:** The account type comes from the id string alone: `0x` + 40 hex is eth-implicit;
   64 hex is NEAR-implicit; `0s` + 40 hex is deterministic (NEP-616); `0u` + 52 Crockford
-  base32 characters whose last character is `0` or `g` is universal (87+); anything else is
+  base32 characters whose last character is `0` or `g` is universal (88); anything else is
   named. Fees use the pattern **even if the account already exists**, so a Transfer to an
   existing eth-implicit account still pays the create_account fee.
 - **nearcore:** near-account-id 3.0.0 (the version in nearcore's `Cargo.lock:3890-3892`),
   `src/account_id_ref.rs:246-260` and `src/validation.rs:96-132` (universal's last character:
   `:123`). Runtime flags: `runtime/runtime/src/actions.rs:899-927` (`get_account_type`:
   eth-implicit and deterministic need `eth_implicit_accounts`, TRUE at 84-88; universal needs
-  `universal_accounts`, 87+). On the **fee** side only universal is flag-gated: deterministic is
+  `universal_accounts`, 88). On the **fee** side only universal is flag-gated: deterministic is
   charged transfer + create_account unconditionally (`core/parameters/src/cost.rs:805-807`,
   `:844-846`). Fees by pattern: `core/parameters/src/cost.rs:775-810`, `:812-848`, with callers
   passing `receiver_id.get_account_type()` and no existence check
@@ -1196,8 +1195,8 @@ Each rule has four fields:
   "deterministic", "universal"}`. `AcctKinds`, `AcctKind`/`KindOf` and `IsImplicit` assign kinds
   to model accounts; `IsImplicit` covers NEAR-implicit, eth-implicit, deterministic and (when
   `UniversalOn`) universal. `UniversalOn` is an overridable definition, default TRUE (protocol
-  87+, so the pinned 88). It does not follow `NearFees.FeeProtocol`: set `UniversalOn <- FALSE`
-  for the rules before 87, where a universal id is named (`get_account_type`,
+  88, the pinned version). It does not follow `NearFees.FeeProtocol`: set `UniversalOn <- FALSE`
+  for the rules before 88, where a universal id is named (`get_account_type`,
   `runtime/runtime/src/actions.rs:918-924`), so a Transfer to an absent one fails. The fee
   table gates universal fees on the fee version on its own (`NearFees.UniversalAccountsOn`), so
   `FeeProtocol == 86` with the default `UniversalOn` creates the account but charges 86's fee
@@ -1209,14 +1208,14 @@ Each rule has four fields:
   universal included, absent and existing: sim (`conformance/tests/accounts.rs`,
   `transfer_fee_by_pattern`: the conversion and the receipt burn create_account's send and
   exec fees over a named receiver's, NEAR-implicit also add_full_access_key's, the same once
-  the account exists). `UniversalOn <- FALSE` (before 87): nearcore reading; the sim runs 88.
+  the account exists). `UniversalOn <- FALSE` (before 88): nearcore reading; the sim runs 88.
   <!-- conformance -->
 
 ### A3. Implicit-account creation on Transfer
 
 - **Rule:** A Transfer to an absent NEAR-implicit, eth-implicit or deterministic id creates the
   account, but **only if the Transfer is the receipt's only action** and the receipt is not a
-  refund. Universal (87+) ids may be created even when batched. What is created:
+  refund. Universal (88) ids may be created even when batched. What is created:
   - NEAR-implicit: an account holding the deposit, with one full-access key derived from the id.
   - eth-implicit: an account holding the deposit whose code is nearcore's global eth-wallet
     contract (`AccountContract::Global`). A function call to it therefore runs that contract;
@@ -1305,7 +1304,7 @@ Each rule has four fields:
   action existence, then the actor, then the action (A1):
   - the account must not exist (`AccountAlreadyExists`);
   - the id must not be implicit (`OnlyImplicitAccountCreationAllowed`; NEAR-implicit,
-    eth-implicit, deterministic and, at 87+, universal ids are created only by a Transfer, A3);
+    eth-implicit, deterministic and, at 88, universal ids are created only by a Transfer, A3);
   - a top-level id shorter than `min_allowed_top_level_account_length` only by the creation
     config's `registrar_account_id` (`CreateAccountOnlyByRegistrar`). That length is 65 from
     64 on and ids have at most 64 characters, so at 88 **every** named top-level id needs that
@@ -1726,7 +1725,7 @@ Each rule has four fields:
   child); `runtime/runtime/src/verifier.rs:213-222` (a function-call key signs one
   FunctionCall); `runtime/runtime/src/action_validation.rs:136-151` (one Delegate per
   receipt); `core/primitives/src/action/delegate.rs:371-433` (`NonDelegateAction`);
-  `core/primitives-core/src/version.rs:612` (`FixDelegateActionDepositWithFunctionCallError`,
+  `core/primitives-core/src/version.rs:615` (`FixDelegateActionDepositWithFunctionCallError`,
   85: the deposit check returns at once); `runtime/runtime/src/access_keys.rs:46-49`, `:240`
   (a new key's nonce is `(height − 1) × 1e6`).
 - **Model:** `NearKeys`: `SignedDelegate(s, k, n, mbh, c)` (the user's signature; `c` the inner
@@ -2016,7 +2015,7 @@ Each rule has four fields:
   `runtime/runtime/src/bandwidth_scheduler/scheduler.rs:427-435` (grants cover every shard
   pair, a shard to itself included);
   `chain/chain/src/stateless_validation/chunk_validation.rs:478-480` and
-  `chain/chain/src/chain.rs:3648-3659` (`[new_receipts, old_receipts]`); resumes:
+  `chain/chain/src/chain.rs:3660-3671` (`[new_receipts, old_receipts]`); resumes:
   `runtime/runtime/src/lib.rs:1554-1622` (the first `PromiseResume` runs the yield, `:1616-1620`
   ignores the rest).
 - **Model:** no constraint: any enabled receipt may run next (S2), whatever its sender,
@@ -2151,7 +2150,7 @@ Each rule has four fields:
   `runtime/near-vm-runner/src/logic/host.rs:5041-5070` (`storage_write`), `:5198-5208`
   (`storage_remove`); `runtime/runtime/src/function_call.rs:221-222` (the call's usage written
   to the account); `runtime/runtime/src/access_keys.rs:17-29` (`access_key_storage_usage`),
-  `:136-147` (DeleteKey), `:240-252` (AddKey); `core/crypto/src/signature.rs:332-338`
+  `:136-147` (DeleteKey), `:240-252` (AddKey); `core/crypto/src/signature.rs:331-337`
   (`trie_id_len`); `core/primitives-core/src/account.rs:801-809`, `:959-978` (`AccessKey`,
   `FunctionCallPermission`); `runtime/runtime/src/actions.rs:203-208` (CreateAccount),
   `:221-287` (implicit creation), `:303-304` (DeployContract);
@@ -2738,7 +2737,6 @@ example** is what the item itself names, if anything.
 | [N-validator](#under-approximations-unsound-they-can-hide-bugs) | under | Seat price, kickouts, slashing, reward shares | yes, for a staking model | |
 | [N-limits](#under-approximations-unsound-they-can-hide-bugs) | under | Protocol limits the model does not count | yes | keep counts well inside, state them (`OJoins`), or fail the call (`OErr`) |
 | [N-one-yocto](#under-approximations-unsound-they-can-hide-bugs) | under | A zero-balance contract attaching 1 yocto (85+) | depends on the model: only one that requires a balance for it | |
-| [N-input-87](#under-approximations-unsound-they-can-hide-bugs) | under | Promise-input size limit at 87 | no (88 cannot reach it) | |
 | [N-yield-payload](#under-approximations-unsound-they-can-hide-bugs) | under | Resume payload limit of 1024 bytes | yes, for a model with yields | fail an oversized resume in the handler (`OErr`) |
 | [N-acct-ids](#under-approximations-unsound-they-can-hide-bugs) | under | Account-id structure is a modelling input | yes: by default every CreateAccount fails | state `AcctParent` (`Parents`) and `TopCreator` |
 | [N-delete-large](#under-approximations-unsound-they-can-hide-bugs) | under | `DeleteAccountWithLargeState` needs per-byte storage | yes (`StoragePerByte = FALSE`) | `ACCT` in `MayFail`; with `StoragePerByte`, state `CodeSize` |
@@ -3083,9 +3081,6 @@ all.
   (`runtime/near-vm-runner/src/logic/host.rs:3579-3593`;
   `core/parameters/res/runtime_configs/85.yaml:1`). A model that requires a balance for that
   attachment refuses an execution nearcore allows.
-- **N-input-87. Promise-input size limit at 87.** At 87 a callback whose inputs exceed 4,194,944
-  bytes fails without running (C4). Unless the model's sized results trigger this, it is
-  missed. At 88 it cannot happen.
 - **N-yield-payload. Resume payload limit.** `promise_yield_resume` fails the resumer when the
   payload exceeds `max_yield_payload_size`
   (`runtime/near-vm-runner/src/logic/host.rs:4504-4511`, `HostError::YieldPayloadLength`); the
@@ -3172,7 +3167,7 @@ all.
   The fee kinds exist in `NearFees`; the state-init actions, their fees and the no-key bootstrap
   transaction (K2) do not.
 - **N-gas-keys. Gas keys** (85+: `TransferToGasKey`, `WithdrawFromGasKey`, gas-key nonces;
-  `core/primitives-core/src/version.rs:615`). Absent, and with them DeleteAccount's
+  `core/primitives-core/src/version.rs:618`). Absent, and with them DeleteAccount's
   `GasKeyBalanceTooHigh` refusal and its burn of the gas keys' balance
   (`runtime/runtime/src/actions.rs:370-379`, `:388-391`).
 - **N-compute. Compute costs versus gas.** Some actions charge more compute than gas (for

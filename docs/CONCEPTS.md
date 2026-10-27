@@ -204,7 +204,7 @@ strong statement, with four limits.
    skips a branch the real code has, the model cannot find bugs in that branch
    ([N-wasm](SEMANTICS.md#scope-limits)).
 3. **Under the rules the library encodes.** Those are nearcore's at protocol version 88
-   (nearcore 2.14.0-rc.5). Some runtime behaviour is left out, and each omission is listed in
+   (nearcore 2.14.0). Some runtime behaviour is left out, and each omission is listed in
    [Not modelled](SEMANTICS.md#not-modelled). Over-approximations only add behaviours, so
    they can give a counterexample no network reaches, but never hide a bug.
    Under-approximations can hide bugs. Some apply to every model: storage is not tracked per

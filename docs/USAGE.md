@@ -163,7 +163,7 @@ These are definitions with a default, not constants. Leave them alone, or overri
 |---|---|---|
 | `Contracts` | `Accounts` | some accounts have no code: a function call to an account outside `Contracts` fails |
 | `AcctKind` | every account `"named"` | an account is NEAR-implicit, eth-implicit, deterministic or universal; toy ids cannot match the real patterns, so you state the kind. `AcctKinds(eth, nearImp)` builds the common case |
-| `UniversalOn` | `TRUE` (protocol 87+) | you model the rules before protocol 87, where a universal id is named and a Transfer to an absent one fails: `FALSE`. It is independent of `NearFees.FeeProtocol`, which selects fees only ([VERSIONING](VERSIONING.md#what-feeprotocol-does-and-does-not-change)) |
+| `UniversalOn` | `TRUE` (protocol 88) | you model the rules before protocol 88, where a universal id is named and a Transfer to an absent one fails: `FALSE`. It is independent of `NearFees.FeeProtocol`, which selects fees only ([VERSIONING](VERSIONING.md#what-feeprotocol-does-and-does-not-change)) |
 | `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
 | `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
 | `InitCode` | `"code"` for every account | a model reads `CodeOf` and its contracts start with different code: each account's tag at the start (only the accounts in `Contracts` have code) |

@@ -85,8 +85,8 @@ flow-spec format used to add a probe flow.
 **A semantic change** is any change to what a module allows, forbids or computes. It needs all
 of these:
 
-1. **A nearcore citation:** `path:line @ <rev>` at the reference revision (currently b7b4737,
-   2.14.0-rc.5), in the module comment and in `docs/SEMANTICS.md`. If the behaviour depends on
+1. **A nearcore citation:** `path:line @ <rev>` at the reference revision (currently bc4e9e8,
+   2.14.0), in the module comment and in `docs/SEMANTICS.md`. If the behaviour depends on
    the protocol version, say which. Do not cite a newer nearcore's line numbers without checking
    them at the reference revision.
 2. **A must-fail example:** in `examples/<name>/`, a correct toy contract with

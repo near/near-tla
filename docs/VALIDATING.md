@@ -205,7 +205,7 @@ sim can.
 node, the sandbox, deploys your compiled wasm to it, and sends real transactions. It is public,
 and the sandbox runs on macOS (Intel and Apple silicon) and on x86-64 Linux.
 
-The model encodes nearcore 2.14 (protocol 88, nearcore 2.14.0-rc.5;
+The model encodes nearcore 2.14 (protocol 88, nearcore 2.14.0;
 [Reference revision](SEMANTICS.md#reference-revision)). near-workspaces 0.24 runs a
 nearcore 2.14 sandbox; 0.23 has the same API but runs nearcore 2.13. Record what the sandbox
 ran: `worker.status().await?` returns the node's version and protocol version.
@@ -621,7 +621,7 @@ come from), whether the model conjoins LocalPriorityOK, MaxBlk, InstantFirst, Fe
 TrieGasWorst, HostFloorGas.
 
 **Versions.** The near-tla commit (`git rev-parse HEAD` in your checkout) and release; the
-nearcore rules it encodes (protocol 88, nearcore 2.14.0-rc.5, from SEMANTICS); for a sandbox
+nearcore rules it encodes (protocol 88, nearcore 2.14.0, from SEMANTICS); for a sandbox
 replay, the near-workspaces version and the sandbox's nearcore and protocol versions
 (`worker.status()`); the contract's commit and the wasm's sha256.
 

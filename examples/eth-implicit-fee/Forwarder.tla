@@ -5,7 +5,7 @@
 (* pattern even when the account already exists                            *)
 (* (core/parameters/src/cost.rs:774-848; charged at creation by            *)
 (* promise_batch_action_transfer,                                          *)
-(* runtime/near-vm-runner/src/logic/host.rs:3621-3661 @ b7b4737).          *)
+(* runtime/near-vm-runner/src/logic/host.rs:3621-3661 @ bc4e9e8).          *)
 (*                                                                         *)
 (* User U calls P.pay(); P calls R.forward() with deposit Amt and an exact *)
 (* gas budget (static gas, weight 0); R.forward creates a Transfer of Amt  *)

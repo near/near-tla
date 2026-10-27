@@ -1,7 +1,7 @@
 ------------------------------ MODULE Splitter ------------------------------
 (***************************************************************************)
 (* Unused-gas split (runtime/runtime/src/receipt_manager.rs:679-721 @      *)
-(* b7b4737).  The gas a receipt attached but did not need, U, goes to the  *)
+(* bc4e9e8).  The gas a receipt attached but did not need, U, goes to the  *)
 (* function calls it created with weight w > 0, in creation order: each   *)
 (* gets floor(U * w / W), and in nearcore the last weighted call also gets *)
 (* the remainder (in gas units).  W = 0 distributes nothing.  The model's  *)

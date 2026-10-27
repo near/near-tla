@@ -28,8 +28,8 @@
 (* written after it in the same action, says which one this step took.     *)
 (* Commit, FailP and FailOOG are Exec's parts.                             *)
 (*                                                                         *)
-(* nearcore citations are `path:line` at the reference revision b7b4737    *)
-(* (2.14.0-rc.5); see docs/SEMANTICS.md.                                   *)
+(* nearcore citations are `path:line` at the reference revision bc4e9e8    *)
+(* (2.14.0); see docs/SEMANTICS.md.                                        *)
 (*                                                                         *)
 (* Semantics                                                               *)
 (*  - One atomic step per receipt execution.                               *)
@@ -254,14 +254,14 @@ AcctKinds(eth, nearImp) ==
 KindOf(a) == IF a \in DOMAIN AcctKind THEN AcctKind[a] ELSE "named"
 \* Kinds a Transfer may create (actions.rs:929-946): NEAR-implicit,
 \* eth-implicit and deterministic accounts when the Transfer is the receipt's
-\* only action; universal accounts (from protocol 87) also inside a batch.
+\* only action; universal accounts (from protocol 88) also inside a batch.
 \* A refund never creates an account.  The model's Transfer receipts are
 \* single-action, so all of them qualify.
-\* UniversalOn: universal accounts exist (the protocol-87 `universal_accounts`
-\* feature, core/primitives-core/src/version.rs:639).  A behaviour switch,
+\* UniversalOn: universal accounts exist (the protocol-88 `universal_accounts`
+\* feature, core/primitives-core/src/version.rs:643).  A behaviour switch,
 \* independent of NearFees.FeeProtocol (which selects fees only): TRUE is the
 \* pinned protocol 88's rule.  Overridable (`UniversalOn <- FALSE` for the
-\* rules before 87, where a universal id is an ordinary named id:
+\* rules before 88, where a universal id is an ordinary named id:
 \* get_account_type, runtime/runtime/src/actions.rs:918-924).
 UniversalOn == TRUE
 IsImplicit(a) ==
@@ -335,7 +335,7 @@ RecordExtraBytes == 40    \* storage_num_extra_bytes_record: per trie record
 RecordBytes(k, v) == k + v + RecordExtraBytes
 \* A full-access ed25519 key: its 33-byte trie id, the borsh AccessKey
 \* (nonce 8 + permission tag 1) and 40 (runtime/runtime/src/access_keys.rs:17-29;
-\* core/crypto/src/signature.rs:332-338).
+\* core/crypto/src/signature.rs:331-337).
 FullKeyBytes == 33 + 9 + RecordExtraBytes
 \* An account created by a Transfer (actions.rs:221-288): NEAR-implicit 100
 \* + its full-access key (182); eth-implicit 100 + the 32-byte global
@@ -1056,7 +1056,7 @@ TopCreator == "top-creator"
 \* DeleteAccountWithLargeState: an account whose storage minus its contract
 \* code exceeds 10,000 bytes cannot be deleted (actions.rs:342-369;
 \* core/primitives-core/src/account.rs:248; from protocol 85 the global
-\* contract identifier is subtracted too, version.rs:612-628).  The check
+\* contract identifier is subtracted too, version.rs:615-631).  The check
 \* reads stor, so it applies only with StoragePerByte (N-delete-large).
 \* CodeSize[a]: the code bytes counted in a's StorageInit (overridable,
 \* default 0); an account on a global contract counts its identifier

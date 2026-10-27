@@ -133,7 +133,7 @@ MethodBytesOK(p) ==
 \* Storage bytes of a key with permission p (with StoragePerByte):
 \* trie id + borsh(AccessKey) + 40 (access_key_storage_usage,
 \* runtime/runtime/src/access_keys.rs:17-29).  An ed25519 trie id is 33
-\* bytes (core/crypto/src/signature.rs:332-338); AccessKey is nonce (8) and
+\* bytes (core/crypto/src/signature.rs:331-337); AccessKey is nonce (8) and
 \* the permission: tag (1), and for a function-call key the borsh of
 \* FunctionCallPermission (core/primitives-core/src/account.rs:959-978):
 \* allowance Option<u128> (1 for None, 17 for Some), receiver_id (4 + its
