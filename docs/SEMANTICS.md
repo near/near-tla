@@ -2158,7 +2158,7 @@ Each rule has four fields:
   `core/parameters/res/runtime_configs/parameters.yaml:35-37`;
   `core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:7`, `:96-97`.
 - **Model:** two encodings of the one check, chosen by the overridable `StoragePerByte`:
-  - `FALSE` (the default, the 0.1.0 rule): the `StorageFloor` constant, what liquid + locked
+  - `FALSE` (the default, a fixed floor): the `StorageFloor` constant, what liquid + locked
     must cover after a function call (`Affordable`; locked counts for `StakingAcct`,
     `LockedOf`). Give a zero-balance (exempt) account floor 0. Bytes are not tracked
     (N-storage).

@@ -185,12 +185,12 @@ shared `NearAsync` base.
 
 ## Status and versioning
 
-No release has been tagged yet; changes accumulate under `[Unreleased]` in
-[`CHANGELOG.md`](CHANGELOG.md), and the first release will be 0.1.0. The behaviour encoded is protocol version **88** at nearcore
+The current release is 0.1.0 (tag `v0.1.0`); later changes accumulate under `[Unreleased]` in
+[`CHANGELOG.md`](CHANGELOG.md). The behaviour encoded is protocol version **88** at nearcore
 2.14.0-rc.5. `NearFees` also carries the fee tables of 84-87, selected by `FeeProtocol`; the
-other rules are 88's. [VERSIONING.md](docs/VERSIONING.md) says what counts as a breaking change,
-what each release states about its protocol assumptions, and how the library moves to a new
-protocol version.
+other rules are 88's. [VERSIONING.md](docs/VERSIONING.md) says what counts as a breaking
+change, what each release states about its protocol assumptions, and how the library moves to a
+new protocol version.
 
 Planned next:
 

@@ -10,6 +10,8 @@ Tokens, Nep245, plus a separate NearKeys).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-27
+
 ```
 nearcore: 2.14.0-rc.5 (b7b4737)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: 29e909033bb59eab792dee136e9d02870488bc3e
@@ -413,7 +415,7 @@ them. A model that lists platform variables one by one must add each.
   `PerAction`, `ActGas`, `ActBurn`, `ActKids`, `ActNeed`, `ActOf`, `PanicOOG`,
   `GasListsOK`, `EntriesOf`, `Alloc`, `ZeroGasKid`, `NoOrphans`, `OPanicKey`,
   `OPanicAt`, `HasPanicKey`, `PanicBurn`, `PanicAct`, `PAOK`, `PoolCheck`,
-  `PooledGasOK`; for v0.2: `blk` (a variable), `MaxBlk`, `YieldTicks`, `TickAnytime`,
+  `PooledGasOK`; for joint callbacks, yield/resume, the block clock and delegate receipts: `blk` (a variable), `MaxBlk`, `YieldTicks`, `TickAnytime`,
   `TsOf`, `IsJoint`, `IsYield`, `InIds`, `DRes`, `Arrived`, `JointRes`, `JOINTRES`,
   `JointMark`, `FailedRes`, `TimedOut`, `NRes`, `ResAt`, `AndThen`, `YieldRcpt`,
   `CanResume`, `PendingYields`, `PendingYieldRcpts`, `PendingYieldsAt`, `OResume`, `Rsm`,
@@ -422,7 +424,7 @@ them. A model that lists platform variables one by one must add each.
   `StoragePerByte`, `StorageInit`, `StorageByteCost`, `ZeroBalanceBytes`, `AccountBytes`,
   `RecordExtraBytes`, `RecordBytes`, `FullKeyBytes`, `CreatedBytes`, `OStor`, `StorDelta`,
   `StorageCovers`, `StorAfter`, `CanSubmit`, `StorageInitOK`, `PlatformInitStorage`,
-  `StorageCovered`; in `NearKeys`, for v0.2: `NoExpiry`, `KeyNonce`,
+  `StorageCovered`; in `NearKeys`, for nonces, delegate actions and key bytes: `NoExpiry`, `KeyNonce`,
   `KeysWithNonce`, `SignedDelegate`, `DelegRcpt`, `SubmitDelegate`, `DelegMayExpire`,
   `DelegMustExpire`, `DelegInner`, `DelegErr`, `ExecDelegate`, `IdBytes`, `KeyBytes`,
   `KeyMapBytes`, `KeyActBytes`, `KeyActsBytes`; and in the token modules: `TokRegBytes`,
@@ -1244,7 +1246,7 @@ them. A model that lists platform variables one by one must add each.
   `UniversalOn <- FALSE` gives the rule before 87 (`actions.rs:918-924`).
 - `NoOrphans` (no callback waits on nothing, no data without a waiting
   callback) and `ExecNoCode(r)`.
-- `examples/platform-selftest`: 49 deterministic scenarios (plus the 10 v0.2 scenarios above; receipts, results,
+- `examples/platform-selftest`: 49 deterministic scenarios (plus the 10 async scenarios above; receipts, results,
   accounts, refunds, staking, storage, keys, tokens, gas) with their expected
   nearcore end state. `NearConserved` is now checked in every example except
   `mt-smoke`, and `GasBounded` in the gas-mode examples (`pay`, `weight-split`,
