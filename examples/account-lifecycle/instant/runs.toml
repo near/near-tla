@@ -136,7 +136,7 @@ class = "instant rule narrowed (library)"
 killed_by = ["NoUseAfterClose"]
 runs = ["instant_empty_join_passes"]
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 # The model's methods: the calls users and other contracts make, and the callbacks.
 [audit]

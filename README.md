@@ -1,86 +1,146 @@
 # near-tla
 
-TLA+ models of NEAR's runtime execution semantics, for model-checking smart contracts.
+Model-check the cross-contract logic of NEAR smart contracts with TLA+.
 
-NEAR contracts talk to each other through asynchronous receipts. A cross-contract call can fail
-after the caller has already committed, a callback runs whether or not its call succeeded, a
-failed receipt reverts only itself, refunds travel as separate receipts, and gas is split
-between children by static amounts and weights. Most cross-contract bugs live in these rules.
-near-tla encodes them as reusable TLA+ modules. You write a model of your contract's handlers
-on top of them, state the properties it must keep, and let TLC explore every order and failure
-the runtime allows.
+On NEAR, a call to another contract is not part of one atomic transaction. It runs later, as
+a separate receipt. It can fail after the caller has already committed. The caller's callback
+runs either way, and has to cope with the failure. Deposits come back as separate refund
+receipts, and gas is split between calls by fixed rules. Most cross-contract bugs live in these
+rules, and tests rarely reach them, because a test runs the one order and the one outcome the
+sandbox happens to produce.
 
-## Why you can trust it (and where you can't)
+near-tla encodes NEAR's runtime rules as reusable TLA+ modules. You write a small model of
+your contract's methods on top of them and state what must always hold, for example "a user's
+deposit is either credited or refunded". The TLC model checker then tries every order of
+receipts and every failure the runtime allows, within bounds you choose, and shows you a step
+by step counterexample when the property breaks.
 
-[`docs/SEMANTICS.md`](docs/SEMANTICS.md) is the trust document. In short:
+It catches bugs such as:
 
-- **Every rule cites nearcore at a pinned revision:** 2.14.0-rc.5, commit `b7b4737`, protocol
-  version 88. Each entry gives the `path:line` the rule comes from, the operator that encodes
-  it, and how far it has been checked.
-- **Gas semantics and fees are checked per receipt against nearcore**, through
-  near-contract-sim, which runs nearcore's own `Runtime::apply`. Probe contracts are swept over
-  a grid of prepaid gas, and every receipt's status, attached gas and failure edge is compared
-  with the model: **74 flows × 1313 prepaid points, all matching, and 28 more for a second
-  probe's rule parts; 108,986 child gas splits, 0 mismatches**. See [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md).
-- **What is not modelled** is listed, item by item, with what each omission could hide:
-  [Not modelled](docs/SEMANTICS.md#not-modelled).
-- **Over- versus under-approximations.** Most omissions are over-approximations: the model
-  allows more orders than a network produces, so it misses no bug but can report
-  counterexamples no network reaches. Replay every counterexample in the sim. (Receipts from
-  one account to another overtaking each other does happen in nearcore,
-  [S4](docs/SEMANTICS.md#s4-no-per-pair-order), so such a reorder alone does not make a
-  counterexample spurious; its schedule still has to be reachable.) A few are
-  under-approximations, which can hide bugs (for example, local-receipt priority under a full
-  chunk); they are listed separately in
-  [Under-approximations](docs/SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs).
-  Fees are rounded up by default and the unused-gas split then hands out no rounding
-  remainder, so a gas budget the model finds enough is enough as far as the fee table and the
-  split go.
+- a callback that acts as if its call succeeded when it failed;
+- state committed before a call that later fails, and never rolled back;
+- a refund or a callback that arrives after another transaction has used the money;
+- a callback that runs out of gas at some prepaid amounts, so its cleanup never happens;
+- two receipts between the same pair of accounts that run in the opposite order to the one
+  the contract assumed.
 
 ## Quickstart
 
 You need git, Java 21 and Python 3.11 or later (standard library only).
 
-Clone the repo and work from its root:
-
 ```sh
 git clone https://github.com/near/near-tla.git
 cd near-tla
-```
 
-Fetch the pinned TLC jar (tla2tools v1.7.4) and check its hash, as CI does:
-
-```sh
+# Fetch the pinned TLC jar (tla2tools v1.7.4) and check its hash, as CI does.
 curl -sSfL -o tools/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
 echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  tools/tla2tools.jar" \
   | shasum -a 256 -c -        # Linux: sha256sum -c -
 ```
 
-Run every example and check its expected verdicts:
+Run the minimal example. It models a contract whose callback must check its promise result,
+in a correct version and a buggy one:
 
 ```sh
-python3 tools/run.py examples/
+python3 tools/run.py examples/minimal
 ```
 
-Each example has must-pass runs and must-fail runs. The runner exits nonzero if any verdict
-differs from its expectation. `python3 tools/run.py --help` documents the `runs.toml` format.
-With `--anti-vacuity` it also checks that each example's witnesses are reached and its mutants
-are caught, so a pass cannot be vacuous ([Witnesses and mutants](docs/USAGE.md#witnesses-and-mutants)).
+Every run prints `ok`: the correct version passes and the buggy one fails, as each run's
+`expect` says. To see the bug the buggy version has, print its counterexample:
 
-To model your first contract, follow [`docs/USAGE.md`](docs/USAGE.md). It starts from
-[`examples/minimal`](examples/minimal/), a complete model you can copy; your model can live
-outside this repo, and the runner still finds the library.
+```sh
+python3 tools/run.py examples/minimal tally_trusting --print-trace
+```
+
+The trace reads like a story: the user's `ping`, the call to `work` failing, the callback
+`done` seeing Failed and counting anyway. The [tutorial](docs/TUTORIAL.md) builds this model
+from scratch and explains every line.
+
+To run every example in the repo: `python3 tools/run.py examples/`.
+
+## What a result means
+
+**A pass** means every property held in every behaviour TLC explored. It holds:
+
+- within the run's bounds: the number of transactions, forced failures and prepaid gas amounts
+  you chose;
+- for your model of the contract, which is a hand-written abstraction of the code;
+- under the runtime rules of protocol version 88 (nearcore 2.14.0-rc.5); mainnet ran 86 as of
+  2026-10-23, and [SEMANTICS.md](docs/SEMANTICS.md#reference-revision) says what differs;
+- for the properties you wrote, and no others.
+
+**A failure** is a counterexample: a hypothesis about your contract. Confirm it on the compiled
+contract before you report it. [VALIDATING.md](docs/VALIDATING.md) shows how to replay it in a
+local sandbox.
+
+[CONCEPTS.md](docs/CONCEPTS.md#what-a-pass-means) explains both in more detail.
+
+## Why you can trust it, and where you can't
+
+[SEMANTICS.md](docs/SEMANTICS.md) is the trust document.
+
+- **Every rule cites nearcore** at a pinned revision (2.14.0-rc.5, commit `b7b4737`): the
+  `path:line` it comes from, the operator that encodes it, and how far it has been checked.
+- **Gas and fees are checked against nearcore**, receipt by receipt, through near-contract-sim,
+  which runs nearcore's own `Runtime::apply`. Probe contracts are swept over a grid of prepaid
+  gas, and each receipt's status, attached gas and failure edge are compared with the model:
+  74 flows at 1313 prepaid amounts each and 28 more flows for a second probe, all matching, and
+  108,986 child gas splits, all within the comparison's tolerance of 5 Ggas
+  ([CONFORMANCE.md](docs/CONFORMANCE.md)). These are probe contracts written to exercise the
+  rules, not production contracts.
+- **What is not modelled is listed**, entry by entry, with what each omission could hide
+  ([Not modelled](docs/SEMANTICS.md#not-modelled)). Of its 51 entries, 15 are
+  over-approximations (the model allows more than a network does, so it can report a
+  counterexample no network reaches), 25 are under-approximations (they can hide bugs; several
+  apply at the default settings) and 11 are outside the library's scope.
+- **The library is checked like a model:** every example has must-fail runs, witnesses that
+  its situations are reached and mutants that its properties catch, all run in CI.
+
+near-contract-sim is a private repository today. The conformance results are in this repo,
+and maintainers with access reproduce them; CI runs them nightly. Users validate their
+counterexamples with the public near-workspaces sandbox instead
+([VALIDATING.md](docs/VALIDATING.md)).
+
+## Documentation
+
+| read | when |
+|---|---|
+| [CONCEPTS.md](docs/CONCEPTS.md) | first: NEAR's execution model and TLA+ in a page each, the vocabulary, what a result means |
+| [TUTORIAL.md](docs/TUTORIAL.md) | to write your first model, step by step |
+| [USAGE.md](docs/USAGE.md) | while modelling your contract: tokens, keys, gas, storage, accounts, calibration |
+| [RUNNER.md](docs/RUNNER.md) | to run checks, read traces, and make sure a pass means something |
+| [VALIDATING.md](docs/VALIDATING.md) | when TLC finds a counterexample: replay it, write it up |
+| [SEMANTICS.md](docs/SEMANTICS.md) | to know exactly which runtime rule each operator encodes, and what is left out |
+| [CONFORMANCE.md](docs/CONFORMANCE.md) | maintainers: how the model is checked against nearcore |
+| [VERSIONING.md](docs/VERSIONING.md) | what a release promises, and how protocol upgrades are handled |
+
+## Using it with an AI coding agent
+
+[`skills/near-tla/SKILL.md`](skills/near-tla/SKILL.md) is an agent skill that walks a coding
+agent through the whole method on your contract: inventory the methods and callbacks, write
+the properties, model the handlers, write must-pass and must-fail runs, run TLC, close the
+audit gaps, triage counterexamples, replay them in the sandbox and write up the findings.
+
+For Claude Code, copy or link the directory into your skills:
+
+```sh
+ln -s "$PWD/skills/near-tla" ~/.claude/skills/near-tla              # for every project
+ln -s "$PWD/skills/near-tla" path/to/your-project/.claude/skills/   # for one project
+```
+
+Other agents can be pointed at the `SKILL.md` file directly.
 
 ## Repo map
 
 | path | contents |
 |---|---|
 | [`modules/`](modules/) | the library: one flat directory, passed to TLC as `-DTLA-Library` |
-| [`examples/`](examples/) | toy contracts, each with a `runs.toml` of must-pass and must-fail runs; `minimal` is the starting point, `platform-selftest` checks the library itself against known nearcore outcomes |
-| [`tools/`](tools/) | `run.py` (the runner), `sany.py` (parse check), `windows.py` (print-only gas windows), `tlctrace.py` (counterexample summaries), `tlcparse.py` (TLC output parsing), `check_links.py` (offline link check), `test_run.py` (the runner's self-tests) |
-| [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim and produces calibrated gas tables. Runs locally, and nightly in CI (`conformance.yml`) |
-| [`docs/`](docs/) | [`SEMANTICS.md`](docs/SEMANTICS.md) (rules, citations, trust), [`USAGE.md`](docs/USAGE.md) (modelling a contract), [`CONFORMANCE.md`](docs/CONFORMANCE.md), [`VERSIONING.md`](docs/VERSIONING.md) |
+| [`examples/`](examples/) | small contracts, each with a `runs.toml` of must-pass and must-fail runs; `minimal` is the starting point, `platform-selftest` checks the library itself against known nearcore outcomes |
+| [`tools/`](tools/) | `run.py` (the runner), `tlctrace.py` (counterexample stories), `sany.py` (parse check), `windows.py` (print-only gas windows), `tlcparse.py` (TLC output parsing), `audit.py` (what the runs reach), `check_links.py` (offline link check), `test_run.py` (the tools' tests) |
+| [`skills/`](skills/) | the agent skill |
+| [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim, and produces calibrated gas tables (maintainers) |
+| [`docs/`](docs/) | the documentation above |
 
 ### Modules
 
@@ -112,102 +172,37 @@ CalibStd, CalibStdMt and StorStd stand alone; instantiate them (Std == INSTANCE 
 A model that needs both tokens and keys writes `EXTENDS Tokens, NearKeys`. TLA+ merges the
 shared `NearAsync` base.
 
+## Requirements and limits
+
+- **TLC only.** The library uses TLC's `Assert`, `PrintT`, `TLCGet` and `TLCSet`, and the runner
+  overrides definitions through the TLC config; Apalache and TLAPS will not check it as is.
+- **Safety properties.** Models check invariants; there is no liveness or fairness. "Callbacks
+  always run" is checked as the invariant `NoOrphans`
+  ([CONCEPTS.md](docs/CONCEPTS.md#design-choices)).
+- **Bounded.** TLC explores every behaviour within the constants you set, and nothing beyond
+  them ([choosing bounds](docs/CONCEPTS.md#bounds-and-the-size-of-the-state-space)).
+
 ## Status and versioning
 
 No release has been tagged yet; changes accumulate under `[Unreleased]` in
-[`CHANGELOG.md`](CHANGELOG.md). The behaviour encoded is protocol version
-**88** at nearcore 2.14.0-rc.5. `NearFees` also carries the fee tables of 84-87, selected by
-`FeeProtocol`; the other rules are 88's. [`docs/VERSIONING.md`](docs/VERSIONING.md) says what
-counts as a breaking change, what each release states about its protocol assumptions, and how
-to move to a new protocol version.
+[`CHANGELOG.md`](CHANGELOG.md). The behaviour encoded is protocol version **88** at nearcore
+2.14.0-rc.5. `NearFees` also carries the fee tables of 84-87, selected by `FeeProtocol`; the
+other rules are 88's. [VERSIONING.md](docs/VERSIONING.md) says what counts as a breaking change,
+what each release states about its protocol assumptions, and how the library moves to a new
+protocol version.
 
-## Roadmap
+Planned next:
 
-### Done (unreleased)
-
-Everything planned for v0.2 is in; it is waiting for a release tag.
-
-- `promise_and`: callbacks that join several promise results (SEMANTICS C6).
-- Yield/resume (NEP-519), with an abstract block clock for the timeout (C7, S3).
-- Fees rounded up instead of to the nearest Ggas, and the unused-gas split without a
-  whole-Ggas remainder, so gas edges err on the safe side
-  (`FeeRounding`, N-precision); calibrated burns fitted as an upper envelope.
-- Per-sender-receiver ordering: dropped. nearcore keeps no per-pair order at protocol 88
-  (SEMANTICS S4), so a pair-order switch would hide real bugs. Not every order the model
-  allows is reachable, though: a counterexample's schedule still needs replaying.
-- Delegate actions (NEP-366 meta transactions), where the signer is the relayer and the
-  predecessor the user (SEMANTICS K4, `examples/meta-tx`).
-- Per-byte storage staking, opt-in next to the fixed floor (`StoragePerByte`, SEMANTICS B2,
-  `examples/storage-stake`): the bytes of writes, keys, created accounts and token
-  registrations, checked after every receipt with the 770-byte zero-balance exemption.
-- The account lifecycle (SEMANTICS A6-A10, `examples/account-lifecycle`): CreateAccount, the
-  creation rules, DeleteAccount with its payout, receipts to a deleted account, and an
-  account created again; a lone DeleteAccount created by a receipt runs right after it
-  (instant receipts, S5); account actions in a call receipt, such as a factory's
-  `[CreateAccount, Transfer, DeployContract, FunctionCall(init)]` (A8,
-  `examples/account-lifecycle/factory`); DeployContract with its storage and fees (A9); global
-  contracts (NEP-591, A10, `examples/account-lifecycle/global-upgrade`): the burn, the
-  distribution receipt that publishes the code a little later, by-hash and by-account users,
-  and an owner's redeploy reaching a callback in flight. What stays out is listed in
-  [Not modelled](docs/SEMANTICS.md#not-modelled): deterministic and universal state init, gas
-  keys, global contract distribution across shards.
-- 33 rules promoted to "sim" validation by tests in `conformance/tests/` that assert nearcore's
-  behaviour in the sim (receipts, promises and gas; accounts, keys and stake; NEP-141 on the
-  `ft` probe). None was refuted.
-- The rule parts the first probes could not reach, promoted to "sim" by tests on a second
-  probe, `probe2`: `refund_to` (R5), a joint promise returned, appended to or given a
-  `refund_to` and one joint result read by index (C5, C6), the timestamp a contract reads
-  (S3), the `_with_id` yield, a yield's deposit, a returned yield and its signer (C7),
-  interleaved appends (G3), a callback after a Stake (B1). None was refuted.
-- Model-vs-sim flows for `probe2`, in a flow set of their own (`conformance/flows/probes2.toml`,
-  `scripts/flowsets.py`), so the 74 sweeps stay valid: 28 flows, all matching, for `refund_to`
-  (R5, with deposit refunds compared by receiver and deposit amounts compared), one joint result
-  by index 0, 1 and 2 over flat and nested joins and a failed middle input (C6), the `_with_id`
-  yield's duplicate check, resume by id and reuse, a yield's deposit and a returned yield (C7),
-  and a callback after a Stake (B1). No library change was needed.
-- Storage bytes from the calibrator (SEMANTICS B2, `examples/storage-stake`): `calibrate --stor`
-  measures what each (method, path) adds to its receiver's `storage_usage` at every point of
-  each flow's gas grid (the bytes checked the same at all of them), and writes a `StorBytes`
-  table (`base + per * size`, exact over at least 3 sizes, with its provenance). A handler declares its bytes with `OStorKey(O, key, size)` instead of a hand
-  count; `StorStd` holds the standard tokens' bytes, and a sim test pins
-  `StdRegBytes(len) = 61 + len`.
-- The conformance suite in CI, nightly and on demand (`.github/workflows/conformance.yml`):
-  sim tests, a full sweep, the generated tables diffed against the committed ones, TLC and
-  `conform.py`.
-- Access keys and transactions, opt-in: a function-call key's allowance, charged at
-  conversion, refused when short, refunded (SEMANTICS K2, `examples/session-key`); transaction
-  nonces, so a replayed or out-of-order transaction is refused (`SignedTx`, `SubmitTx`,
-  `TxErr`; K5, `examples/tx-nonce`). Both asserted at their boundaries by sim tests.
-- Protocol limits at 88 (SEMANTICS R6, `examples/limits`): 100 actions per receipt (a
-  transaction, or a receipt a call creates), 1024 promises per function-call action, 128
-  joint-promise inputs, 4 MiB returned, and 100 logs or 16 KiB of them (declared with `OLog`)
-  fail as in nearcore; 10 deploys, 4 MiB of code and 2000 bytes of AddKey method names are
-  `Assert`s. Sim tests assert each boundary.
-
-### Later
-
-- **Promote the rest of the rules to "sim" validation.** Multi-shard order and missed chunks
-  (S2, S4) need a multi-shard sim.
-- **The rest of `probe2`'s rule parts as flows.** Interleaved appends (G3) need the library
-  to order weighted actions by append order (`LastE` orders by receipt id and action index)
-  and the calibrator's split check to know it, and the difference is under the 5 Ggas
-  tolerance; the joint-promise restrictions, the block timestamp and a yield callback's signer
-  are not visible to the comparison. The sim tests cover them.
-  Per-byte storage is checked by sim tests and the calibrator's storage table only; a probe
-  flow comparing it with the model needs a re-sweep of every flow.
-- **Other gaps from the [Not modelled](docs/SEMANTICS.md#not-modelled) list:**
-  the rest of transaction validity (expiry; the nonce's upper bound is off unless a model
-  sets it) and the limits the model cannot count (sizes, undeclared logs, uncounted
-  `promise_and` calls, the storage proof; N-limits);
-  deterministic-account state init and gas keys.
-- **More calibrated standard tables:** further near-contract-standards versions, and other
-  NEP-245 implementations than near-sdk-contract-tools 4.0.0.
-- **More event logs:** the events of other token implementations (wNEAR's, NEP-171's), a
-  mint or burn method of the library's own, and id classes whose ids differ (a part of a
-  class transferred, or answered differently by a receiver; N-mtclass).
-- **NEP-245's resolver read:** declare `mt_resolve_transfer`'s read of the receiver's
-  result (`OReadRes`, SEMANTICS C4) with the implementation's bound, as `Tokens` does for
-  `ft_resolve_transfer`.
+- Promote the remaining rules to "sim" validation; multi-shard order and missed chunks (S2, S4)
+  need a multi-shard sim.
+- Close more of the [Not modelled](docs/SEMANTICS.md#not-modelled) list: the rest of
+  transaction validity, the limits the model cannot count, deterministic-account state init,
+  gas keys.
+- The rest of the second probe's rule parts as model-vs-sim flows, starting with interleaved
+  appends (G3).
+- More calibrated standard tables (other near-contract-standards versions, other NEP-245
+  implementations), more event logs (wNEAR's, NEP-171's, id classes whose ids differ), and
+  NEP-245's resolver read declared with its byte bound, as `Tokens` does for NEP-141.
 
 ## License
 

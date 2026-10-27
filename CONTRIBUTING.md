@@ -39,7 +39,7 @@ A `[[sweep]]` bisects a gas knob for the boundary at which a run's success invar
 to hold and reports need − 1, need and need + 1 (`exact = true` or `--exact` scans every
 value instead, for the least one when success is not monotone), or runs a size knob at 1, at the contract's cap and
 at the protocol limit, ±1 each ([Least gas and size
-sweeps](docs/USAGE.md#least-gas-and-size-sweeps)). A change that moves a gas or size edge
+sweeps](docs/RUNNER.md#least-gas-and-size-sweeps)). A change that moves a gas or size edge
 keeps an example's sweeps as expected.
 
 For each run the runner generates a wrapper `MC_<run>.tla` and a config `MC_<run>.cfg` in a
@@ -102,7 +102,7 @@ of these:
    "Breaking" with a one-line migration.
 
 **A new example** ships witnesses and mutants in its `runs.toml`, beside its must-pass and
-must-fail runs (see [Witnesses and mutants](docs/USAGE.md#witnesses-and-mutants)):
+must-fail runs (see [Witnesses and mutants](docs/RUNNER.md#witnesses-and-mutants)):
 
 - `NoOrphans` in its `Sane`;
 - a `[[witness]]` for the antecedent of every `P => Q` invariant, for each arm of every

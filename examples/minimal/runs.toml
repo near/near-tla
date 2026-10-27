@@ -1,4 +1,4 @@
-# The complete minimal model of docs/USAGE.md: a call, a callback that must check
+# The minimal model of docs/TUTORIAL.md: a call, a callback that must check
 # its promise result, fault mode and gas mode.  See Tally.tla.
 #
 #   python3 tools/run.py examples/minimal
@@ -156,7 +156,7 @@ replace = '''("work" :> GC(<<5000>>, <<0>>, 300))     \* 5 Tgas static + all the
 class = "wrong weight"
 runs = ["tally_gas_ok"]
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 # C's methods, from the source: the call users make and the callback it schedules.
 [audit]

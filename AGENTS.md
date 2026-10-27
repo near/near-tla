@@ -24,12 +24,13 @@ modules/              the library, one flat directory (passed to TLC as -DTLA-Li
   CalibStdMt.tla      measured gas tables for a near-sdk-contract-tools NEP-245 token (generated; do not edit)
   StorStd.tla         measured storage bytes for the standard FT and wNEAR (generated; do not edit)
 examples/<name>/      toy contracts + runs.toml (must-pass and must-fail runs)
-examples/minimal/     the complete minimal model of docs/USAGE.md
+examples/minimal/     the minimal model that docs/TUTORIAL.md builds
 examples/platform-selftest/   deterministic scenarios with known nearcore outcomes
 tools/run.py          runner: wrappers, TLC, verdict check (see --help)
 tools/sany.py         parse check
 tools/windows.py      fold print-only window reports into gas intervals
-tools/tlctrace.py     summarise a TLC counterexample
+tools/tlctrace.py     print a TLC counterexample as a story (--raw: changed variables only)
+tools/audit.py        the runner's audit of what the runs reach
 tools/check_links.py  offline Markdown link check (CI runs it)
 tools/test_run.py     the runner's self-tests (python3 -m unittest tools/test_run.py)
 tools/tlcparse.py     TLC output parsing shared by the tools
@@ -38,8 +39,12 @@ conformance/probes/   probe contracts (Rust -> wasm), committed with their hashe
 conformance/flows/    flow specs (probes.toml, actions.toml, storage.toml, example.toml)
 conformance/tla/      the model side of conformance runs
 conformance/scripts/  gen_probes.py, mkconf.py, tlc.sh, conform.py
-docs/                 SEMANTICS.md (rules, citations, trust), USAGE.md (modelling a contract),
-                      CONFORMANCE.md, VERSIONING.md
+docs/                 CONCEPTS.md (NEAR and TLA+ basics, vocabulary, what results mean),
+                      TUTORIAL.md (first model), USAGE.md (modelling guide), RUNNER.md (runs.toml,
+                      traces, witnesses, mutants, sweeps, audit), VALIDATING.md (replaying a
+                      counterexample), SEMANTICS.md (rules, citations, trust), CONFORMANCE.md,
+                      VERSIONING.md
+skills/near-tla/      the agent skill for modelling a user's contract (SKILL.md)
 ```
 
 ## How to run things
@@ -52,7 +57,8 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
 ```
 
 `tools/tla2tools.jar` must be tla2tools v1.7.4 (see `CONTRIBUTING.md`). Modelling a contract:
-`docs/USAGE.md`. The conformance suite: `docs/CONFORMANCE.md`.
+`docs/TUTORIAL.md`, then `docs/USAGE.md`; the runner: `docs/RUNNER.md`. The conformance suite:
+`docs/CONFORMANCE.md`.
 
 ## Rules
 
@@ -88,9 +94,10 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
    burns in the sim for every path that creates a different set of promises, record the table's
    provenance (wasm sha256, crate version, sim rev, nearcore rev, protocol), and check that the
    leftover split reproduces with zero mismatches before believing any gas-mode verdict.
-4. **Replay every counterexample on real wasm in the sim.** The model over-approximates ordering
-   and abstracts the contract. A trace is a hypothesis until the same receipt tree, with the same
-   gas and faults, reproduces in near-contract-sim against the compiled contract.
+4. **Replay every counterexample on real wasm.** The model over-approximates ordering and
+   abstracts the contract. A trace is a hypothesis until the same receipt tree, with the same gas
+   and faults, reproduces against the compiled contract: in near-contract-sim, or in a
+   near-workspaces sandbox (`docs/VALIDATING.md`).
 5. **Show every invariant can fail.** For each invariant, add a deliberately wrong variant (the
    must-fail example) and check that TLC reports a violation of that invariant, for the reason you
    intended. Confirm this from the trace. An invariant that has never failed may be vacuous.

@@ -136,7 +136,7 @@ hi = 10000
 success = ["OwedOK"]
 expect_need = 4976
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 [audit]
 methods = ["send", "on_take"]

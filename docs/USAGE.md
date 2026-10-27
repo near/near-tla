@@ -1,24 +1,25 @@
-# Modelling a contract with near-tla
+# Modelling guide
 
-This guide walks through modelling a NEAR contract on the library. It covers:
+This guide covers everything a model of a real contract needs beyond the
+[tutorial](TUTORIAL.md): the modules to choose, the constants, receipts and handlers in full,
+promise results, tokens, keys, ordering, gas, joint callbacks and yields, storage staking,
+accounts, and calibrating gas. Read the tutorial first; this guide assumes you have written
+its model.
 
-- where your model lives, and a complete minimal model;
-- choosing modules, setting constants, and writing handlers;
-- calling and receiving tokens, and keys;
-- gas, and calibration;
-- replaying a counterexample in the sim;
-- the runner.
+- New to NEAR's receipts or to TLA+? Start with [CONCEPTS.md](CONCEPTS.md).
+- Running checks, reading traces, witnesses, mutants, sweeps and the audit:
+  [RUNNER.md](RUNNER.md).
+- Replaying a counterexample on the compiled contract: [VALIDATING.md](VALIDATING.md).
+- Which runtime rule each operator encodes, and what is not modelled:
+  [SEMANTICS.md](SEMANTICS.md).
 
-It starts with the method that makes the results worth trusting.
-
-Read [`SEMANTICS.md`](SEMANTICS.md) alongside it: that page says which runtime rule each
-operator encodes, where it comes from in nearcore, and what is not modelled.
+The sections build on each other. 1-7 are the basics every model uses. 8-11 and 14-16 are
+features: read the ones your contract uses. 12 and 13 and [Calibrating](#calibrating) are about
+gas.
 
 ## Contents
 
 - [The method](#the-method)
-- [0. Where your model lives](#0-where-your-model-lives)
-- [A complete minimal model](#a-complete-minimal-model)
 - [1. Choose the modules](#1-choose-the-modules)
 - [2. Constants and overridable definitions](#2-constants-and-overridable-definitions)
 - [3. Variables and Init](#3-variables-and-init)
@@ -42,13 +43,6 @@ operator encodes, where it comes from in nearcore, and what is not modelled.
 - [15. Storage staking per byte](#15-storage-staking-per-byte)
 - [16. Creating and deleting accounts](#16-creating-and-deleting-accounts)
 - [Calibrating](#calibrating)
-- [Replaying a counterexample in the sim](#replaying-a-counterexample-in-the-sim)
-- [The runner: `runs.toml`](#the-runner-runstoml)
-- [Every invariant must be able to fail](#every-invariant-must-be-able-to-fail)
-- [Witnesses and mutants](#witnesses-and-mutants)
-- [Print-only window invariants](#print-only-window-invariants)
-- [Least gas and size sweeps](#least-gas-and-size-sweeps)
-- [Auditing what the runs reach](#auditing-what-the-runs-reach)
 - [Worked material](#worked-material)
 
 ## The method
@@ -65,18 +59,21 @@ noise. The rest of this guide is the mechanics.
    is the coarse tool: use it to explore, then use gas mode to find out at which prepaid
    amounts a failure is reachable.
 3. **Calibrate before trusting windows.** A gas window is only as good as the burn table. Use
-   measured burns, record their provenance, and check that the leftover split reproduces with
-   zero mismatches before believing any gas-mode verdict.
+   measured burns (from the sandbox's `gas_burnt`, or the calibrator if you have the sim), record
+   their provenance, and check that the leftover split reproduces before believing any
+   gas-mode verdict ([Calibrating](#calibrating)).
 4. **Replay every counterexample on real wasm.** The model over-approximates some ordering
    (it has no chunks or shards) and abstracts your contract. Do not dismiss a counterexample
    only because two receipts from one account to another run in the opposite order to their
-   creation: nearcore can do that ([S4](SEMANTICS.md#s4-no-per-pair-order)). A trace is a hypothesis until the same receipt tree, with the same
-   gas and faults, reproduces in near-contract-sim against the compiled contract.
+   creation: nearcore can do that ([S4](SEMANTICS.md#s4-no-per-pair-order)). A trace is a
+   hypothesis until the same receipt tree, with the same gas and faults, reproduces against
+   the compiled contract, in a near-workspaces sandbox or in near-contract-sim
+   ([VALIDATING.md](VALIDATING.md)).
 5. **Make every invariant able to fail.** For each invariant, add a deliberately wrong
    variant that TLC must report, and confirm from the trace that it fails for the reason you
    intended. An invariant that has never failed may be vacuous. Then show that each
    invariant's situation is reached and that small bugs are caught
-   ([Witnesses and mutants](#witnesses-and-mutants)).
+   ([Witnesses and mutants](RUNNER.md#witnesses-and-mutants)).
 6. **If you conjoin `LocalPriorityOK`, also run without it.** Local-receipt priority is
    opt-in, and off unless your model conjoins it ([section 11](#11-local-receipt-priority)).
    It holds only while the receiving chunk has room. A violation that appears only without it
@@ -93,218 +90,15 @@ noise. The rest of this guide is the mechanics.
 
    List the source's callbacks and the methods other contracts call in `[audit] methods`.
    Then work through the runner's audit report until each gap is closed or accepted with a
-   reason ([Auditing what the runs reach](#auditing-what-the-runs-reach)). `--anti-vacuity`
+   reason ([Auditing what the runs reach](RUNNER.md#auditing-what-the-runs-reach)). `--anti-vacuity`
    fails on every open gap. None of this needs the sim
    ([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor)).
 
-**Steps 3 and 4 need the sim.** Calibrating and replaying run your wasm in near-contract-sim,
-a private repository; see [Access to the sim](CONFORMANCE.md#access-to-the-sim). Without access:
-
-- keep to fault mode for conclusions that depend on a burn you estimated;
-- use gas mode with the host-cost floor (`HostFloorGas <- TRUE`, an empty `GasBurn`, and the
-  static gas and weights your contract declares) for each callback with a fixed budget. A
-  callback that runs out on the floor runs out on real wasm too: that is a finding, not an
-  estimate ([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor));
-- treat every other gas window, and every pass on the floor, as illustrative;
-- replay counterexamples by reading the contract's code path by path, and say that you did.
-
-## 0. Where your model lives
-
-A model is a directory with your spec (`MyContract.tla`) and a `runs.toml` that lists its TLC
-runs. It does not have to be inside this repo.
-
-- **Inside `examples/<name>/`** of this repo, the runner finds the library at
-  `../../modules`, the default.
-- **Anywhere else** (your own repo, a scratch directory), the runner falls back to the
-  `modules/` directory of the near-tla checkout the runner itself lives in. Run it from your
-  checkout: `python3 ~/src/near-tla/tools/run.py path/to/model/`.
-- **To point at a specific library**, set `library = "path/to/modules"` in `runs.toml`
-  (relative to the `runs.toml`). `--library DIR` and the environment variable
-  `NEAR_TLA_LIBRARY` override it for every run.
-
-The runner passes the library to TLC as `-DTLA-Library=<spec dir>:<library>`, so modules
-beside your spec (a calibrated table, say) are found first. `python3 tools/run.py --help` is
-the reference.
-
-## A complete minimal model
-
-[`examples/minimal/`](../examples/minimal/) is a complete model you can copy as a starting
-point. CI runs it, so it keeps working.
-
-User `U` calls `C.ping()`. `ping` calls `D.work()` and then its own callback `C.done()`. `D`
-counts the works that committed; `C` counts, in `done`, the works it believes happened. The
-property: once nothing is in flight, the two counts agree. The work can fail, but `done` runs
-anyway and sees Failed, so `done` must look at its promise result. `Trusting = TRUE` is the
-wrong contract, which counts without looking.
-
-```tla
--------------------------------- MODULE Tally --------------------------------
-EXTENDS NearAsync
-
-CONSTANTS U, C, D,     \* account names
-    MaxTx,             \* number of ping transactions
-    InitU,             \* U's initial balance (pays the deposits)
-    GasMenu,           \* prepaid gas U may attach (gas mode), Ggas
-    Trusting           \* TRUE: done counts a work without checking its result
-
-VARIABLES n, works, ntx, gas
-mine == <<n, works, ntx, gas>>
-vars == <<platformVars, mine>>
-
-Accts   == {U, C, D}
-TxIds   == 1..MaxTx
-Near0   == [a \in Accts |-> IF a = U THEN InitU ELSE 0]
-Menu    == {t * 100 : t \in 80..95} \cup {1000000}   \* 8.0-9.5 Tgas by 0.1, and the 1000 Tgas maximum
-
-\* Gas tables (Ggas).  ILLUSTRATIVE numbers, not measured.
-GC(st, wt, fee) == [st |-> st, wt |-> wt, fee |-> fee]
-TGasCall == ("work" :> GC(<<5000>>, <<1>>, 300))     \* 5 Tgas static + all the leftover
-         @@ ("done" :> GC(<<2000>>, <<0>>, 300))     \* 2 Tgas static, no share
-TGasBurn == ("ping" :> [base |-> 1000, per |-> 0])
-         @@ ("work" :> [base |-> 5500, per |-> 0])
-         @@ ("done" :> [base |-> 600,  per |-> 0])
-
-\* ping(): D.work().then(C.done()); returns done's result.
-H_ping(r) ==
-    LET w  == Rcpt(nid, r.tx, D, C, "work", r.a, 0, C, nid + 1)
-        cb == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
-    IN Outcome({w}, {cb}, RProm, 0, 2)
-
-\* done(): count the work only if it succeeded (Trusting: count it anyway).
-H_done(r) == Outcome({}, {}, RVal(EMPTY), 0, 0)
-NewN(r) == IF Trusting \/ ~IsFailed(r.res) THEN n + 1 ELSE n
-
-RunC(r) ==
-    LET O == IF r.m = "ping" THEN H_ping(r) ELSE H_done(r) IN
-    /\ Exec(r, O)
-    /\ n' = IF Ok(r, O) /\ r.m = "done" THEN NewN(r) ELSE n
-    /\ UNCHANGED <<works, ntx, gas>>
-
-RunD(r) ==
-    LET O == Outcome({}, {}, RVal(EMPTY), 0, 0) IN
-    /\ Exec(r, O)
-    /\ works' = IF Ok(r, O) THEN works + 1 ELSE works
-    /\ UNCHANGED <<n, ntx, gas>>
-
-Step(r) ==
-    CASE IsBuiltin(r) -> ExecBuiltin(r) /\ UNCHANGED mine     \* Transfer, refund, Stake
-      [] r.to = D     -> RunD(r)
-      [] OTHER        -> RunC(r)
-
-Ping ==
-    /\ ntx < MaxTx
-    /\ \E g \in (IF GasMode = "gas" THEN GasMenu ELSE {0}) :
-         /\ Submit(WithGas(Rcpt(nid, ntx + 1, C, U, "ping", [x |-> 0], 1, U, 0), g))
-         /\ gas' = [gas EXCEPT ![ntx + 1] = g]
-    /\ ntx' = ntx + 1
-    /\ UNCHANGED <<n, works>>
-
-Init == /\ PlatformInit(Near0, TxIds)
-        /\ n = 0 /\ works = 0 /\ ntx = 0
-        /\ gas = [t \in TxIds |-> 0]
-
-\* Named steps, so a trace says which kind of step each state took.
-RunReceipt == \E r \in Runnable : Step(r)
-Fault      == \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
-
-Next == Ping \/ RunReceipt \/ Fault
-Spec == Init /\ [][Next]_vars
-
-Counted == Idle => n = works
-WorkFits == (Idle /\ \A t \in 1..ntx : gas[t] = 1000000) => works = ntx
-Sane == NearConserved(InitU) /\ GasBounded(LAMBDA t : gas[t]) /\ NoOrphans
-WinCounted == (Idle /\ n # works) => PrintT(<<"WIN", "Counted", gas[ntx], oog>>)
-=============================================================================
-```
-
-Its `runs.toml` sets every constant once and has five runs:
-
-- `tally_ok`: fault mode, `work` may fail once; must pass.
-- `tally_trusting`: the same with `Trusting = TRUE`; must fail `Counted`.
-- `tally_gas_ok`: gas mode over the menu; must pass, with `WorkFits` too: at the 1000 Tgas
-  maximum every `work` commits.
-- `tally_gas_trusting`: gas mode with the trusting `done`; must fail `Counted`, because
-  `work` runs out of gas below 9.1 Tgas.
-- `tally_gas_win`: the same as a print-only window, which must be exactly 8.6-9.0 Tgas.
-
-```toml
-spec = "Tally"
-workers = 2
-library = "../../modules"
-budget_s = 60
-invariants = ["Counted", "Sane"]
-platform_defaults = true        # fill the platform constants this model does not use
-
-# TLA+ expression text. Single quotes keep backslashes and double quotes literal.
-[constants]
-Accounts = 'Accts'
-MayFail = '{}'                  # no forced faults unless a run allows them
-MaxFails = '0'
-TrackSigner = 'FALSE'           # the model never reads the signer
-U = '"u"'
-C = '"c"'
-D = '"d"'
-MaxTx = '2'
-InitU = '2'
-GasMenu = '{0}'
-Trusting = 'FALSE'
-
-[[run]]
-name = "tally_ok"
-expect = "pass"
-[run.constants]
-MayFail = '{"work"}'
-MaxFails = '1'
-
-[[run]]
-name = "tally_trusting"
-expect = "violation"
-invariant = "Counted"
-[run.constants]
-MayFail = '{"work"}'
-MaxFails = '1'
-Trusting = 'TRUE'
-
-# ... tally_gas_ok, tally_gas_trusting, tally_gas_win: see examples/minimal/runs.toml
-
-# Counted's antecedent is reached: the system settles again after a ping.
-[[witness]]
-id = "ping_settles"
-expr = '~(Idle /\ ntx > 0)'
-runs = ["tally_ok", "tally_gas_ok"]
-
-# A dropped .then must be caught (here by NoOrphans, in Sane).
-[[mutant]]
-id = "dropped_then"
-file = "Tally.tla"
-find = 'IN Outcome({w}, {cb}, RProm, 0, 2)'
-replace = 'IN Outcome({w}, {}, RProm, 0, 2)'
-class = "dropped .then"
-runs = ["tally_ok"]
-
-# C's methods, from the source: the call users make and the callback it schedules.
-[audit]
-methods = ["ping", "done"]
-
-[audit.accept]
-"done trie" = "done writes no storage in this toy (H_done declares no write)"
-"done least-gas" = "done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge"
-```
-
-The file also lists witnesses for both arms of `done` and mutants for the other bug classes
-([Witnesses and mutants](#witnesses-and-mutants)). After the runs, the runner prints an
-audit of what they reached ([Auditing what the runs reach](#auditing-what-the-runs-reach)):
-here every gap is closed or accepted.
-
-Run it:
-
-```sh
-python3 tools/run.py examples/minimal                                  # every run
-python3 tools/run.py examples/minimal tally_gas_trusting --print-trace # one run, with its trace
-python3 tools/run.py examples/minimal --anti-vacuity                   # and its witnesses and mutants
-```
-
-The sections below explain each piece.
+**Without measured burns**, keep to fault mode for conclusions that depend on a burn you
+estimated, and use gas mode with the host-cost floor for each callback with a fixed budget: a
+callback that runs out on the floor runs out on real wasm too
+([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor)). Treat other gas
+windows, and every pass on the floor, as illustrative.
 
 ## 1. Choose the modules
 
@@ -336,7 +130,10 @@ If SANY reports a "multiply-defined symbol", rename your own definition.
 ### Constants you must set
 
 `NearAsync` declares these. The runner takes their values from `runs.toml` as TLA+ expression
-text (see [The runner](#the-runner-runstoml)).
+text (see [The runner](RUNNER.md#runstoml)). With `platform_defaults = true` in `runs.toml` you
+set only `Accounts`, `MayFail` and `MaxFails`: the runner fills the others you leave unset with
+neutral values (every account exists, no staking, no storage floor, fault mode with empty gas
+tables, no outcome log; [Platform defaults](RUNNER.md#platform-defaults)).
 
 | constant | meaning |
 |---|---|
@@ -653,7 +450,8 @@ Sane    == NearConserved(InitU) /\ GasBounded(LAMBDA t : gas[t]) /\ NoOrphans
 
 ## 7. Reading promise results
 
-A callback sees `r.res = [ok, v, sz]`:
+A callback sees `r.res = [ok, v, sz, len]`: whether the call succeeded, the value it returned,
+and the value's size in KB and in bytes (0 when the model does not state it):
 
 | value | meaning | test |
 |---|---|---|
@@ -1682,10 +1480,19 @@ A gas-mode verdict is only as good as its `GasBurn` and `GasCall` tables. Illust
 are fine for learning the model, and the examples say so in comments. For a real question,
 measure.
 
-**This needs the sim.** The `calibrate` tool runs your wasm in near-contract-sim, a private
-repository; see [Access to the sim](CONFORMANCE.md#access-to-the-sim). Without access, keep
-gas windows illustrative and base conclusions on fault mode and hand-checked tables (see
-[The method](#the-method)).
+There are two ways to measure:
+
+- **In a local sandbox (public).** Run each path of your contract with near-workspaces and
+  read each receipt's `gas_burnt`; [Measure your own burns](VALIDATING.md#measure-your-own-burns)
+  shows how. You fit the `GasBurn` entries by hand, and should measure with realistic state,
+  since burns grow with storage reads and writes.
+- **With the `calibrate` tool (needs the sim).** It runs your wasm in near-contract-sim, a
+  private repository ([Access to the sim](CONFORMANCE.md#access-to-the-sim)), over a grid of
+  prepaid gas, checks the leftover split, and writes the TLA+ table with its provenance. The
+  rest of this section describes it.
+
+Without either, keep gas windows illustrative and base conclusions on fault mode and the
+host-cost floor ([The method](#the-method)).
 
 ### Your own contract
 
@@ -1776,492 +1583,17 @@ near-contract-standards version, and any protocol bump ([`VERSIONING.md`](VERSIO
 Even then, treat edges as accurate only to the rounding bound in
 [N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs).
 
-## Replaying a counterexample in the sim
-
-A TLC counterexample is a hypothesis about your contract. Confirm it on real wasm in
-near-contract-sim before you report it. **This needs sim access**
-([Access to the sim](CONFORMANCE.md#access-to-the-sim)). Without it, walk the trace against
-the contract's source by hand, receipt by receipt, and say in your write-up that it was not
-replayed.
-
-The sim's own docs describe its API; the steps below use its names.
-
-1. **Read the trace.** `python3 tools/run.py <path> <run> --print-trace` prints a summary of
-   the violating behaviour. `python3 tools/tlctrace.py <log>` does the same for a log kept with
-   `--keep` (in `build/` beside the `runs.toml`). Each step names its action and the
-   variables it changed.
-2. **List the transactions.** Every `Submit` / `SubmitAs` / `SubmitSigned` step is one sim
-   transaction: `sim.call(signer, receiver, method)` with the same arguments and deposit. If the
-   model pinned prepaid gas (`WithGas(r, p)`, `p` in Ggas), pin the same amount with `.gas(..)`:
-   `p` Ggas is `p × 10^9` gas, or `Gas::from_teragas(p / 1000)` when `p` is whole Tgas.
-3. **Map receipts to sim receipts.** Each model receipt is a sim receipt with the same
-   receiver and method. Callbacks are the receipts that wait on a result
-   (`Receipts::callback(m)`). Repeated calls are told apart with
-   `Receipts::occurrence(receiver, m, k)` or `.nth(k)`.
-4. **Reproduce the failures.**
-   - A `"forced"` failure of method `m` on `receiver`: `tx.inject(Receipts::call(receiver, m),
-     Fault::OutOfGas)`. If the model failed the call a callback waits on, `Fault::PromiseFailed`
-     on the callback (`Receipts::callback(cb)`) gives the callback a Failed result.
-   - A `"caller-gas"` failure: reproduce it with the transaction's gas (`Tx::gas`), not with a
-     fault. To pin one child's gas, use `Fault::Gas(g)`. `Tx::least_gas` finds the least gas
-     at which the transaction still succeeds, a quick check of a predicted edge.
-   - A receiver's answer the model chose (`MAL`, `NONEMPTY`, a number): deploy a stub
-     receiver (`sim.deploy_stub`), or put `Fault::ReturnValue(bytes)` on the callback.
-5. **Reproduce the order.** The model interleaves receipts freely. Where the trace runs one
-   transaction's receipt before another's, delay the other with `Fault::Hold(n)` (a receipt
-   leaves `n` blocks late) or `Fault::HoldResult(n)` (its result reaches the callback late).
-   `submit()` the first transaction, `run_until` the hold is in place, then submit the second.
-6. **Check the same property.** Assert on the outcome (statuses, `value()`, balances and token
-   moves via `effects()`), and read `sim.findings()`. If the model's invariant breaks in the
-   sim too, it is real.
-
-If it does not reproduce, find out why before discarding it:
-
-- the order needs timing a network does not produce (see the over-approximations in
-  [Not modelled](SEMANTICS.md#over-approximations)). A sim without fault injection rarely
-  shows a same-pair reorder, but nearcore produces one under load
-  ([S4](SEMANTICS.md#s4-no-per-pair-order)); reproduce it with `Fault::Hold`, not by waiting
-  for it;
-- the gas tables are wrong for this path ([Calibrating](#calibrating));
-- your handler does not match the contract (re-read the source);
-- or the library is wrong: open an issue with the trace and the sim test.
-
-## The runner: `runs.toml`
-
-Each model directory has a `runs.toml` listing TLC runs and the verdict each must give.
-`python3 tools/run.py --help` is the reference; [A complete minimal model](#a-complete-minimal-model)
-shows a full file.
-
-**Values.** Each entry under `[constants]` or `[run.constants]` is TLA+ expression text. Write
-it in TOML single quotes (`'[a \in Accts |-> 0]'`, `'"c"'`). Single-quoted TOML strings are
-literal, so backslashes and double quotes need no escaping. In double quotes, every `\` must be
-written `\\`. TOML integers and booleans are also accepted. Constants and overridable
-definitions are set the same way.
-
-**Keys.**
-
-- `expect` is `"pass"`, `"violation"` (with `invariant` naming the one that must break),
-  `"assert"` or `"deadlock"`.
-- Most keys can also be given at the top level of the file, as a default for every run:
-  `spec`, `workers`, `library`, `budget_s`, `init`, `next`, `specification`, `invariants`,
-  `properties`, `deadlock`, `tags`, `stack`, `[constants]`.
-- These keys belong to one run only and cannot be given at the top level: `name`, `expect`,
-  `invariant`, `expect_output`, `expect_window`, `window_step` and `allow_no_invariants`.
-- `[[witness]]` and `[[mutant]]` tables sit beside the `[[run]]` tables and name the runs
-  they apply to ([Witnesses and mutants](#witnesses-and-mutants)); so do `[[sweep]]` tables
-  ([Least gas and size sweeps](#least-gas-and-size-sweeps)). One `[audit]` table lists the
-  source's methods and accepted gaps ([Auditing what the runs reach](#auditing-what-the-runs-reach)).
-- `expect_output` (a regex on TLC's output) pins a detail, such as the gas value in the
-  violating state.
-- `deadlock = true` makes a stuck receipt an error. Add a terminal stutter step once the model
-  is idle, or quiescence is reported too.
-- `stack` sets the JVM thread stack (`-Xss`) of the run, e.g. `"512k"`; every run gets
-  `"16m"` otherwise, enough for the library's sums over a thousand receipts and more. A
-  recursive operator of your own that takes one element per level can still overflow on a
-  large set: split the set instead, as `NearAsync.KeySum` does.
-
-**Selecting runs.** Arguments are `runs.toml` files, directories (searched recursively), and
-run names (globs work). Names filter the runs of the given paths. With names only, they are
-looked up under this repo's `examples/`.
-
-```sh
-python3 tools/run.py examples/minimal                    # every run of one model
-python3 tools/run.py path/to/model/ my_run --print-trace # one run of your own model
-python3 tools/run.py 'pay_*'                             # runs by name, under examples/
-python3 tools/run.py --list path/to/model/               # list without running
-```
-
-**Output.** The runner generates each run's wrapper and cfg in a fresh temporary directory
-and runs TLC there. It keeps the wrapper, cfg and log in `build/` beside the `runs.toml` only
-for runs whose verdict did not match, or for every run with `--keep`. `--peel` reruns a
-violating run without the violated invariant until it is clean, and reports every invariant
-that broke.
-
-## Every invariant must be able to fail
-
-An invariant that holds in every run might be true, or it might be vacuous: guarded by a
-condition that is never reached, or checking a ghost that never changes. For every invariant:
-
-1. Add a must-fail run that breaks it on purpose, for a reason you can state. Options: a
-   constant that switches on a wrong variant of the handler (`Trusting = 'TRUE'` in the
-   minimal model), a token deviation (`TokDev`), a forced fault, or a gas menu that reaches
-   the edge.
-2. Check the verdict names that invariant (`expect = "violation"`, `invariant = "..."`).
-3. Read the trace (`--print-trace`) and confirm it fails **for the reason in the run's
-   comment**, not for an unrelated one.
-4. Keep the pair in `runs.toml`, with a comment on the must-fail run saying why it fails.
-   Then a later change that makes the invariant vacuous turns a must-fail run into a pass,
-   and the runner reports it.
-
-A `pass` run must check at least one invariant: properties alone do not count, since a run
-with an empty INVARIANTS section can pass without looking at a single state.
-`allow_no_invariants = "why"` is the explicit exception.
-
-## Witnesses and mutants
-
-A pass says that no reachable state breaks an invariant. It does not say the invariant looked
-at anything. Two shapes pass vacuously in asynchronous models:
-
-- **The antecedent is never reached.** `Idle => P` holds trivially when the system never
-  becomes idle again. A dropped `.then` does exactly that: the call's result is a data receipt
-  that nothing consumes, so `Idle` never holds and every `Idle => ...` invariant passes, with
-  thousands of states explored.
-- **The bug is invisible to the invariants.** A removed precondition whose damage the
-  platform repairs (an overdraft that the token refuses, followed by a refund) leaves a
-  conservation sum intact.
-
-The runner checks both with two tables in `runs.toml`, run by `--anti-vacuity` after the plain
-runs (CI runs it in its own job; without the flag the tables are only validated):
-
-```sh
-python3 tools/run.py examples/pay --anti-vacuity
-```
-
-**A witness** names a situation that must be reachable. The runner defines
-`Wit_<id> == <expr>` in the run's wrapper and checks it alone; TLC must report it violated.
-Write the witness as the negation of the situation:
-
-```toml
-[[witness]]
-id = "on_paid_sees_failed"
-expr = '~(\E r \in Runnable : r.m = "on_paid" /\ ~r.res.ok)'
-runs = ["pay_unreg"]          # globs; default: every pass run without expect_window
-```
-
-A pass is reported as `vacuous: witness <id> never reached` and fails. A situation that is
-out of reach by design is documented with `expect = "unreachable"` and a `reason`; then the
-runner requires the pass, and fails if the situation is ever reached.
-
-**A mutant** is a deliberate bug that some run must catch. The runner copies the `.tla` files
-of the spec's directory (or, with `library = true`, of the library directory holding `file`)
-into the job's temporary directory, replaces `find` with `replace` in the copy and runs TLC
-with the copy in the original's place. Your files are never touched. The number of
-occurrences of `find` must equal `count` (default 1); the runner checks every mutant before
-it starts any TLC process. A library module that also sits beside `runs.toml` is refused:
-TLC would load that copy, not the patched one.
-
-By default only an invariant violation kills a mutant: an `Assert` (a missing gas key, say)
-or a deadlock shows that the mutation broke the model, not that an invariant covers the bug.
-`killed_by = ["Books", "assert"]` names the kills that count; list `"assert"` or
-`"deadlock"` only when that is the intended detection.
-
-```toml
-[[mutant]]
-id = "failed_not_credited"
-file = "Pay.tla"
-find = 'ELSE IF ~r.res.ok THEN 0 ELSE amt'
-replace = 'ELSE amt'
-count = 1
-class = "failure branch skips rollback"
-runs = ["pay_unreg"]          # expect = "pass" runs only
-# equivalent = "why"          # an accepted survivor must say why
-```
-
-Each listed run is checked with its own invariants. The results:
-
-| result | meaning | verdict |
-|---|---|---|
-| `killed <inv>` | some run violated an invariant (one in `killed_by`, if given) | ok |
-| `killed (assert)`, `killed (deadlock)` | a run stopped on an `Assert`, or (with `deadlock = true`) a deadlock, and no invariant caught the mutant | fails, unless `killed_by` lists `"assert"` / `"deadlock"` |
-| `survived` | every run passed | fails, unless `equivalent` is given |
-| `equivalent` | survived, as `equivalent` says | ok |
-| `timeout` | a job ran past its run's `budget_s` | fails; never counted as survived |
-| `error` | a parse or evaluation error | fails |
-
-A mutant marked `equivalent` that is killed fails too, so the claim stays true. Each witness
-and mutant job has its run's `budget_s` and is stopped there. A check of a run that did not
-match its own expectation is skipped and reported.
-
-### Conventions
-
-- **Every `Sane` includes `NoOrphans`.** It is the platform's check that every data receipt
-  has a waiting callback and every callback has its data on the way; it turns a dropped or
-  mis-wired `.then` into a violation instead of a vacuous pass.
-- **For every `P => Q` invariant**, a witness that `P` is reached (`~(P)`; with `Idle`, write
-  `~(Idle /\ ntx > 0)`, since the initial state is idle), and a witness that `Q` can be
-  false when that is informative.
-- **For every callback that reads a promise result**, one witness per arm: the success value,
-  `Failed`, and for token answers the unparsable bytes. Forcing a fault on the callee is not the
-  same as delivering `Failed` to the callback; forcing a fault on the callback skips its body.
-- **For every guard with a numeric threshold**, a boundary witness: the guarded value sits
-  exactly at the threshold, and one where the guard refuses.
-- **At least one mutant per bug class the example claims to cover**, beside its must-fail
-  twins: dropped `.then`, failure branch skips rollback, inverted result check, removed
-  precondition, off-by-one guard, wrong refund account. Name the class in `class`.
-- **An equivalent mutant carries evidence**: a never-reached witness for the patched branch or
-  value, or a stated argument. Equal state counts corroborate; they do not prove.
-- **Do not rely on `-coverage` for branch coverage.** TLC 2.19 leaves out untaken `IF`/`CASE`
-  arms inside operator bodies instead of reporting them as 0. Use branch witnesses.
-
-### Invariant shapes that turn out weak
-
-- **Conservation sums hide overdrafts and drift.** Pair `a + b + c = total` with `>= 0` per
-  term, and, for every internal mirror of another contract's ledger, a "books match" check at
-  quiescence.
-- **Invariants over a handler-written ghost cannot see a wrong effect.** If the handler records
-  "refund = x", a refund of x sent to the wrong account still satisfies the ghost. State money
-  properties over what the platform records (balances, ledgers), or over a reference computed
-  from the counterparty's recorded answer.
-- **"Nothing bad" needs "something good".** Prohibitions alone survive a revoke that does not
-  revoke or a delivery that never happens. Add one effect invariant per operation: once settled
-  after X, X's effect holds.
-- **A mutex checked one way catches half the bugs.** "Idle implies the flag is clear" sees a
-  lost unlock, but not a lock taken late or a second operation admitted while one is in
-  flight. Add the converse (a pending callback implies the flag is set).
-- **Bounds and symmetric data hide bugs.** Equal weights hide a weight swap; one transaction
-  per actor hides every mutex bug; a balance that always covers the cap hides the cap. A
-  witness per guard shows this in a second; a run with asymmetric constants fixes it.
-- **A must-fail run should differ from its passing twin in the contract**, not in the
-  environment; a control built by removing the attacker is clean by construction.
-- **Keep the full invariant set in every run.** A run that checks one invariant, or only
-  library sanity, is weak evidence for the contract. When a known violation forces an
-  exception, encode it narrowly rather than dropping the invariant.
-
-## Print-only window invariants
-
-A normal invariant stops TLC at the first bad state. To map *every* prepaid amount at which
-something breaks, use a print-only invariant: it is always true, and prints each bad state.
-
-```tla
-WinCounted == (Idle /\ n # works) => PrintT(<<"WIN", "Counted", gas[ntx], oog>>)
-```
-
-The tuple is:
-
-- the literal `"WIN"`;
-- a label, usually the real invariant's name;
-- the transaction's prepaid gas in Ggas;
-- then anything you want for debugging.
-
-Run it as a `pass` run with `expect_window`, the expected Ggas intervals:
-
-```toml
-[[run]]
-name = "tally_gas_win"
-expect = "pass"
-invariants = ["WinCounted", "Sane"]
-expect_window = "8600-9000"
-[run.constants]
-GasMode = '"gas"'
-GasCall = 'TGasCall'
-GasBurn = 'TGasBurn'
-GasMenu = 'Menu'                # 8.0-9.5 Tgas by 0.1, and 1000 Tgas
-MaxTx = '1'
-Trusting = 'TRUE'
-```
-
-The runner folds the printed values into intervals and checks them. Values at most
-`window_step` apart (100 Ggas by default) join one interval, so the step must be at least
-the menu's step. `python3 tools/windows.py --step 100 <log>` does the same for any TLC log
-and prints the intervals in Tgas.
-
-`expect_window` takes two forms:
-
-- **A string** checks the union of all labels.
-- **A table** (`expect_window = { Counted = "8600-9000" }`) checks each label separately, and
-  fails if a label it does not list prints anything.
-
-Windows inherit the precision of the tables: only trust a window that is wider than the
-rounding bound summed over its path, and only on calibrated tables. With the default
-`FeeRounding = "up"` the fee table never understates a fee and the unused-gas split never
-gives a child more than nearcore does (it hands out no whole-Ggas remainder,
-[G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)), so as far as the fee
-table and the split go a window's lower edge errs high, never low: by less than 4 Ggas per
-action-only receipt, plus less than 1 Ggas per weighted child for each split on the path,
-plus what the smaller leftover passes on. Burns are only as good as their calibration
-([N-burn](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Under `"nearest"` either
-edge can err by a few Ggas either way, the split included.
-
-## Least gas and size sweeps
-
-A window maps where something breaks on a menu of values. Two questions need exact edges:
-the least prepaid gas at which a run's operation is safe, and how a contract behaves at its own
-size cap and at the protocol limit. `[[sweep]]` tables in `runs.toml` answer both; run them with
-`--sweep` (they are validated on every load, and skipped otherwise). Each sweep value is one
-TLC run of a base run of the same file with a knob constant set to the value.
-
-**Least gas.**
-
-```toml
-[[sweep]]
-id = "vault_need"
-kind = "least_gas"
-run = "vault_gas_short"       # base run: its constants, budget and workers
-knob = "GasMenu"              # the constant set to each value (or a list of constants)
-form = '{%d}'                 # its TLA+ text; %d is the value (default '%d')
-lo = 0                        # a value where success fails
-hi = 300000                   # a value where it holds
-success = ["OwedOK"]          # what "safe" means (default: the run's invariants)
-window_run = "vault_gas_win"  # optional: bracket from a window run's top bad value
-expect_need = 8600            # optional
-# exact = true                # optional: scan the bracket instead of bisecting
-# step = 100                  # optional, with exact: scan in steps of 100 (default 1: every value)
-covers = ["on_deliver"]       # optional, for the audit: the receipts whose edge the knob moves
-```
-
-The runner checks that `success` holds at `hi` and fails at `lo`, bisects in between (about
-20 TLC runs over 0..1,000,000 Ggas; with `window_run`, the window's top bad value and the next
-menu step bracket it in a few), and reports `need − 1`, `need` and `need + 1` with their
-verdicts. The sweep fails unless `need − 1` fails and both `need` and `need + 1` hold; a
-failure at `need + 1` is reported as non-monotone.
-
-Bisection finds *a* boundary: a value where success fails one below and holds at it. That
-is the least gas only if success is monotone in the knob, and bisection does not check it:
-with success at 20 and again from 50 up, it can report 50. So the result reads `boundary N`.
-Gas is not always monotone: more gas for a parent can let a child commit that would
-otherwise have failed cleanly, and then run its owed callback short
-(`examples/trie-gas/leftover` has the same shape for trie gas). `exact = true` (or
-`--exact` on the command line, for every least-gas sweep it runs) scans `lo..hi` in steps
-of `step` (or `--gas-step N`; `hi` always included), one TLC run each: every value at step
-1, the default, and only a sample at a larger step, which can miss a flip between two
-scanned values,
-and reports `need N`, the least scanned value at which `success` holds, with the values
-where the verdict flips. It fails if success fails at a scanned value above `N` and says
-where (`non-monotone: ... fails at 21..49 above it; ... holds at every scanned value from
-50`). A scan costs one TLC run per value: narrow the bracket first (a bisection or a window
-run) and scan around it. Give `success` explicitly when the run's
-invariants also hold at low gas for the wrong reason: below the gas the first receipt needs,
-nothing happens and every invariant holds, so `lo` must sit in the failing region (the
-window's top value does). Any other verdict (an `Assert`, a deadlock, a timeout) stops the
-sweep with an error. The base run's own `expect` does not matter: a must-fail run is the
-natural base. `--least-gas 'GasMenu={%d}' --gas-range 0:300000 [--success OwedOK]` runs the
-same search ad hoc on each selected run; add `--exact [--gas-step N]` to scan instead.
-
-**Sizes.**
-
-```toml
-[[sweep]]
-id = "memo_cap"
-kind = "size"
-run = "vault_log_capped"
-knob = "Memos"
-form = '{%d}'
-cap = 16377                   # the contract's own cap (optional)
-limit = "MaxLogBytes"         # the protocol limit: a number or a NearAsync limit name
-floor = 1                     # optional: drop values below it (default 0)
-expect = { "16378" = "pass" } # optional, per value: "pass", "violation <Inv>", "assert", "deadlock"
-[sweep.constants]             # optional overrides of the base run's constants
-MemoCap = "16377"
-```
-
-The values are 1, `cap` and `limit`, each with −1 and +1, at or above `floor`. Each runs with
-the base run's invariants (or `success`), and its verdict is reported; a value listed in
-`expect` must match. The limit names are NearAsync's (`MaxActionsPerReceipt`,
-`MaxPromisesPerCall`, `MaxJointInputs`, `MaxReturnedData`, `MaxLogs`, `MaxLogBytes`), read
-from the run's library. `examples/owed-effect` has both kinds; `examples/limits` sweeps joint
-inputs around 128.
-
-`least_gas` bisects any knob, not only gas, wherever success is monotone in it. To find the
-size at which something stops fitting, make success the failure you are looking for:
-`examples/event-logs/batch-payout`'s `payout_edge` sweeps a batch's size with `success =
-["NeverPaid"]` (the recipient never receives the batch), which fails while the batch's event
-fits and holds from the first size whose event is over 16384 bytes, so the reported
-`boundary` is that size (217 ids per class there; add `exact = true` to check it by scanning).
-
-## Auditing what the runs reach
-
-The runs check what you modelled. The audit reports what you modelled but never pushed to its
-edges, and, from an inventory you give it, what you never modelled at all. It is on for every
-plain run, and `--no-audit` turns it off. The runner sets the library's `AuditOn`, so `Exec`
-prints one fact for each distinct receipt it runs. The fact records:
-
-- the receipt's marks, and whether it is a callback;
-- the gas mode and `TrieGasWorst`;
-- whether its budget is fixed (static gas, weight 0);
-- the logs and writes its outcome declares.
-
-After the runs the runner prints the gaps for each `runs.toml`:
-
-| rule | reported for | closed by |
-|---|---|---|
-| `gas` | an owed receipt that no gas-mode run executes | a gas-mode run that reaches it |
-| `trie` | an owed receipt, or a callback with a fixed budget, that runs in gas mode but never with `TrieGasWorst` | a run with `TrieGasWorst = "TRUE"` |
-| `writes` | the same, which declares no writes in its `TrieGasWorst` runs | `OWriteKey` for each storage write and remove it makes |
-| `least-gas` | the same, with no `least_gas` sweep that covers it | a sweep of its budget or of the prepaid gas, listing it in `covers` |
-| `logs` | an owed receipt that declares no logs in any run | its logs and events, declared with lengths from its input (`OLog`, `EvLen`) |
-| `log-size` | an owed receipt or a callback that logs, with no sweep that covers its log size | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs`, listing it in `covers` |
-| `inventory` | a method in `[audit] methods` that your contract's code runs in no run (the library's token implementations do not count) | a run that reaches it |
-
-A sweep counts for a receipt only if two things hold:
-
-- its `covers` lists the receipt, method or `acct.method`. `"on_refund"` closes the rule of
-  the sweep's kind: `least-gas` for a `least_gas` sweep, `log-size` for a `size` sweep.
-  `"on_refund log-size"` names the rule, for a `least_gas` search over a size (as
-  `payout_edge` does); `least-gas` can only come from a `least_gas` sweep;
-- its base run actually runs the receipt (a `window_run` that does is not enough: the sweep
-  varies the base run).
-
-The credit comes from `runs.toml`: the sweep need not have run in this invocation, so run
-`--sweep` to check that it holds.
-
-Each role of a method is judged on its own executions: owed ones, and unowed ones as a
-callback. A direct call of the same method closes nothing. A method with both roles gets
-its gaps per role, labelled `(owed)` or `(callback)`. For such a method a covers entry must
-name the role (`"on_refund least-gas owed"`), or it credits nothing; so must an entry naming
-only the method when, on any account, the method is seen in both roles. A named role matches
-that role even when the selected runs show only one. The library's token implementations
-are judged apart from your contract's own executions of the same key; where both run it, a
-covers entry credits only your own.
-
-The audit cannot see a handler you left out: it leaves no facts. The inventory closes that gap.
-Fill `methods` from the source, not from the model:
-
-- every callback the contract schedules (`.then(...)`, `#[private]` methods);
-- every method other contracts call on it: token receivers (`*_on_transfer`), and resolvers
-  of its own transfers.
-
-A method no run executes is then reported.
-
-```toml
-[audit]
-methods = ["ft_on_transfer", "on_resolve", "v.on_refund"]   # method, or acct.method
-
-[audit.accept]
-"on_refund trie" = "writes no storage: it only sends a Transfer"
-"v.on_legacy" = "out of scope: disabled by the owner since the last upgrade"
-```
-
-`accept` silences a gap and prints its reason instead:
-
-- `"<key> <rule>"` accepts one rule;
-- `"<key> <rule> owed"` (or `callback`) accepts one role's gap, for a method with both;
-- `"<key>"` accepts every rule for that key;
-- the key is `acct.method` or `method`.
-
-Gaps of the library's own token methods (`ft_resolve_transfer`, `mt_resolve_transfer`) are
-listed apart: they are standard implementations, worth checking only where your contract
-depends on them.
-
-A plain run only prints the report. With `--anti-vacuity`, each open gap fails like a
-vacuous witness, and so does a runs.toml with no `[audit] methods`:
-
-```
-audit: 3 runs.toml file(s) checked, 2 open; FAILED: audit:v.on_res gas@my/runs.toml audit:methods@my/runs.toml
-```
-
-A gap closes when a run or sweep reaches what it names, or when you accept it with a reason.
-Gaps of the library's token methods never fail. Neither does a runs.toml of which only some
-runs were selected: a run left out may close its gaps. Its header says so.
-
-- Facts come only from the runs that ran in this invocation. With some runs selected, the
-  header says how many, and gaps are judged on those.
-- A run whose library predates the hook runs as before and contributes nothing.
-- With the audit off, `Exec` is unchanged. With it on, TLC checks one set membership per
-  receipt run (a few percent of the time). Each worker prints a fact once; the runner merges
-  them.
-- A fact is printed when TLC evaluates `Exec`. A conjunct after `Exec` that rules the step
-  out still leaves the fact, so put a handler's guards before `Exec`.
-- Witness, mutant and sweep jobs are never audited.
-- Outside the runner, `AuditOn <- TRUE` in a cfg prints the same tuples; a run that sets
-  `AuditOn` itself keeps its value, and its facts are still read.
-- Account ids in keys may hold dots (`vault.near.on_refund`); the method is the part after
-  the last dot.
+## Running and checking a model
+
+The runner, its `runs.toml` format, counterexample traces, must-fail runs, witnesses and
+mutants, print-only windows, least-gas and size sweeps, and the audit are documented in
+[RUNNER.md](RUNNER.md).
 
 ## Worked material
 
 All examples are toy contracts written for this repo.
 
-- **`examples/minimal`**: the complete minimal model above. Copy it to start.
+- **`examples/minimal`**: the model the [tutorial](TUTORIAL.md) builds. Copy it to start.
 - **`examples/pay`**: a contract that pays out of an internal balance through
   `ft_transfer_call` and reconciles in its callback.
   - fault-mode runs over every receiver behaviour and two token deviations;

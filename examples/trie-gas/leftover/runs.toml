@@ -103,7 +103,7 @@ class = "off-by-one guard"
 runs = ["leftover_worst_ok"]
 killed_by = ["OwedOK"]
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 [audit]
 methods = ["go", "work", "on_ping"]

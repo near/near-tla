@@ -150,7 +150,7 @@ limit = 408
 floor = 1
 expect = { "1" = "pass", "2" = "pass", "407" = "violation OwedOK", "408" = "violation OwedOK", "409" = "violation OwedOK" }
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 [audit]
 methods = ["send", "on_take"]

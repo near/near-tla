@@ -4,6 +4,203 @@ This page lists every runtime rule the library models. For each rule it gives th
 the rule comes from, the model operator that encodes it, and how far the rule has been checked.
 After that comes everything the library does **not** model, and what each omission could hide.
 
+## Reading this page
+
+This is the library's trust document. A model built on these modules is only as faithful as
+the runtime rules underneath it, and this page writes those rules down: what nearcore does,
+where in nearcore's source it does it, which operator encodes it, and how far the encoding has
+been checked. Use it to judge how much a model run tells you about a real contract.
+
+**How to read an entry.** Every rule has an id whose letter names its family: R receipts, C
+callbacks and promise results, G gas, A accounts, K signer and access keys, M multi-action
+receipts, S scheduling, B staking and balance, T tokens, F the model's own failure modes. Each
+entry has four fields:
+
+- **Rule:** what nearcore does, in a sentence or two.
+- **nearcore:** the source lines it comes from, at commit b7b4737.
+- **Model:** the operator or constant that encodes it, in `modules/NearAsync.tla` unless
+  another module is named.
+- **Validated:** how far the rule has been checked, as a level. **sim** means the rule's case
+  ran in near-contract-sim, which executes receipts with nearcore's own runtime, and agreed:
+  either a conformance flow compared the model with the sim receipt by receipt, or a test in
+  `conformance/tests/` checked nearcore against the rule as written here. **nearcore
+  reading** means the rule was read in the nearcore source and not run. **recalled** means
+  neither: treat it as an assumption. Many entries split a rule into parts at different
+  levels.
+
+The full definitions, with the size of the conformance run, are under
+[How to read the entries](#how-to-read-the-entries). The [rule index](#rule-index) below lists
+every rule with its level.
+
+**What a pass means.** When TLC finds no violation in a model, that result holds only:
+
+- within the run's bounds: the finite constants it sets, such as `MaxBlk` for the block clock
+  and `MaxFails` for forced faults;
+- for the model's hand-written abstraction of the contract, not the contract's wasm
+  ([N-wasm](#scope-limits));
+- under the rules on this page, with the switches at the values the run sets (the defaults
+  unless it overrides them);
+- at protocol 88 ([Reference revision](#reference-revision)).
+
+What the library leaves out is listed under [Not modelled](#not-modelled), in three kinds. An
+**under-approximation** allows less behaviour than nearcore, or a different outcome, so it can
+hide a bug: a pass says nothing about the behaviour it leaves out. An **over-approximation**
+allows more behaviour than nearcore, so it can produce a counterexample that no network
+reaches: replay every counterexample on the compiled contract before you trust it
+([VALIDATING.md](VALIDATING.md)). A **scope limit** is a
+feature the library leaves out entirely: a contract that uses it cannot be modelled
+faithfully.
+
+**Safety only: no fairness, no liveness.** By design the library checks safety invariants
+only. It states no fairness conditions and checks no temporal properties (the runner can pass
+a `properties` list to TLC, but no example uses one). A rule such as
+"callbacks always run" (C1) is enforced as the safety invariant `NoOrphans`: every postponed
+callback still has its data in flight or a pending receipt that will deliver it, and every
+data receipt has a callback waiting for it. Witnesses then show that the callbacks are
+actually reached: each `[[witness]]` in a model's `runs.toml` names a situation, such as a
+callback running, that the runs must reach (checked with `--anti-vacuity`; see
+[Witnesses and mutants](RUNNER.md#witnesses-and-mutants)). The runner also turns TLC's deadlock
+check off by default (`deadlock = false`, which passes `-deadlock` to TLC), so a state with no
+enabled step is not reported unless the run sets `deadlock = true` (and then the model needs a
+terminal stutter step once idle, or quiescence is reported too).
+
+**TLC only.** The modules are written for the TLC model checker. They extend TLC's `TLC`
+module and use its `Assert`, `PrintT`, `TLCGet` and `TLCSet`, and runs change the library's
+settings by overriding definitions (`Name <- Def`). Apalache and TLAPS will not check the
+modules as they are.
+
+## Contents
+
+- [Reading this page](#reading-this-page) and the [rule index](#rule-index)
+- [Reference revision](#reference-revision), [How to read the entries](#how-to-read-the-entries)
+  and [Units](#units)
+- The rules, by family:
+  - [Receipts](#receipts): R1-R6
+  - [Callbacks and promise results](#callbacks-and-promise-results): C1-C7
+  - [Gas](#gas): G1-G7
+  - [Accounts](#accounts): A1-A10
+  - [Signer and access keys](#signer-and-access-keys): K1-K5, and M1 (multi-action receipts)
+  - [Scheduling](#scheduling): S1-S5
+  - [Staking and balance](#staking-and-balance): B1-B2
+  - [Tokens](#tokens): T1-T8
+  - [Failure modes in the model](#failure-modes-in-the-model): F1-F2
+- [Not modelled](#not-modelled): [at a glance](#not-modelled-at-a-glance),
+  [Over-approximations](#over-approximations),
+  [Under-approximations](#under-approximations-unsound-they-can-hide-bugs) and
+  [Scope limits](#scope-limits)
+
+## Rule index
+
+One row per rule, grouped by family; the id links to the entry.
+
+- **Main operators** are the operators, constants or switches the entry's Model field names
+  first, in `NearAsync` unless a module is named.
+- **Validated** is the strongest level the entry reports for any part of the rule, with the
+  version or contract it was checked on where the entry limits it to one. **model-only** (T7,
+  F2) marks a rule about the model itself, with no nearcore counterpart.
+- **Partial** marks an entry whose Validated field leaves a named part of the rule at a weaker
+  level: nearcore reading, source read, recalled, or not testable in the sim. Read the entry
+  to see which part.
+
+**[Receipts](#receipts)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [R1](#r1-action-receipts-and-data-receipts) | Action receipts and data receipts | `Rcpt`, `DataOf`, `DataOfSz` | sim | partial |
+| [R2](#r2-a-data-receipt-may-arrive-before-or-after-the-receipt-that-waits-on-it) | A callback runs once all its inputs arrive | `Runnable` | sim | |
+| [R3](#r3-one-atomic-step-per-receipt) | One atomic step per receipt | `Exec`, `Verdict`, `Ok` | sim | partial |
+| [R4](#r4-revert-scope-only-the-failing-receipt) | A failure reverts only that receipt | `FailP`, `FailOOG` | sim | partial |
+| [R5](#r5-deposit-refund-on-failure) | Deposit refunded on failure | `rto`, `ExecTransfer`, `ExecTransferFail` (`RefundBurn`) | sim | |
+| [R6](#r6-protocol-limits) | Protocol limits (actions, promises, inputs, logs) | `NActs`, `HostLimitErr`, `OLog` | sim | partial |
+
+**[Callbacks and promise results](#callbacks-and-promise-results)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [C1](#c1-callbacks-always-run) | Callbacks run, and see `Failed` for a failed input | `DataOf`, `IsFailed` | sim | |
+| [C2](#c2-a-callback-can-itself-fail) | A callback can itself fail | `Exec`, `ForcedFail` | sim | partial |
+| [C3](#c3-promise-result-shapes) | Promise result shapes | `RVal`, `IsFailed`, `NoRes` | sim | partial |
+| [C4](#c4-result-size) | Result size, bounded reads, read gas | `RValSz`, `RValLen`, `ResTooLong`, `OReadRes` | sim | partial |
+| [C5](#c5-returning-a-promise-forwards-its-result) | Returning a promise forwards its result | `RProm` | sim | |
+| [C6](#c6-joint-promises-promise_and) | Joint promises (`promise_and`) | `AndThen`, `JointRes`, `ResAt` | sim | partial |
+| [C7](#c7-yield-and-resume-nep-519) | Yield and resume (NEP-519) | `YieldRcpt`, `OResume`, `CanResume`, `PendingYieldRcpts` | sim | partial |
+
+**[Gas](#gas)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [G1](#g1-prepaid-gas) | Prepaid gas bounds a call | `WithGas`, `LastGas` | sim | |
+| [G2](#g2-static-gas-checked-at-promise-creation) | Static gas reserved at promise creation | `GasOK`, `KidsCost`, `ZeroGasKid` | sim | |
+| [G3](#g3-weight-and-the-leftover-split-distribute_gas) | Leftover gas split by weight | `Give`, `Share`, `SureShare`, `PerAction` | sim | |
+| [G4](#g4-who-pays-action-send-and-exec-fees) | The creator pays send and exec fees | `NearFees`: `ActionFee`, `TransferFeeTotal`, `DataDepFee` | sim | partial |
+| [G5](#g5-out-of-gas-revert-scope) | Out of gas is an ordinary failure | `FailOOG` | sim | |
+| [G6](#g6-storage-gas-and-trie-depth) | Storage writes pay per trie node (opt-in) | `OWriteKey`, `TrieGasWorst`, `TrieGasAt` | sim | partial |
+| [G7](#g7-a-floor-from-host-costs) | A floor from host costs (opt-in) | `HostFloorGas`, `HostFloor` | nearcore reading | |
+
+**[Accounts](#accounts)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [A1](#a1-account-existence) | Account existence | `Exists`, `AcctExists` | sim | partial |
+| [A2](#a2-account-types-by-id-pattern) | Account type from the id pattern | `RcvKinds`, `AcctKind`, `IsImplicit`, `UniversalOn` | sim | partial |
+| [A3](#a3-implicit-account-creation-on-transfer) | A Transfer creates an implicit account | `ExecTransfer`, `NearKeys.ExecTransferK` | sim | partial |
+| [A4](#a4-transfer-to-a-missing-named-account-fails-and-refunds) | A Transfer to a missing named account fails | `ExecTransferFail` | sim | |
+| [A5](#a5-function-call-to-an-account-without-code-fails) | A call to an account without code fails | `CallTargetOK`, `HasCode`, `CallsNeedCode` | sim | |
+| [A6](#a6-createaccount) | CreateAccount | `CreateAcctRcpt`, `ExecAcct`, `AcctErr` | sim | |
+| [A7](#a7-deleteaccount) | DeleteAccount | `DeleteAcctRcpt`, `WithDeleteTo`, `DeletesAcct` | sim | |
+| [A8](#a8-account-actions-in-a-call-receipt) | Account actions and a call in one receipt | `WithCreate`, `WithDeleteTo`, `AcCallErr`, `BalSeen` | sim | |
+| [A9](#a9-deploycontract) | DeployContract | `WithDeploy`, `DeployRcpt`, `CodeOf` | sim | |
+| [A10](#a10-global-contracts-nep-591) | Global contracts (NEP-591) | `WithDeployGlobal`, `WithUseGlobal`, `ExecGDist` | sim | |
+
+**[Signer and access keys](#signer-and-access-keys)**, with M1 (multi-action receipts), which
+sits at the end of that section
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [K1](#k1-signer-and-signer-public-key-propagate) | Signer and its key propagate | `Signer`, `SignerKey`, `SubmitAs`, `TrackSigner` | sim | partial |
+| [K2](#k2-full-access-versus-function-call-keys) | Full-access versus function-call keys | `NearKeys`: `KeyCanSign`, `SubmitSigned`, `WithAllowance` | sim | partial |
+| [K3](#k3-addkey-and-deletekey) | AddKey and DeleteKey | `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct` | sim | |
+| [K4](#k4-delegate-actions-nep-366-meta-transactions) | Delegate actions (meta transactions) | `NearKeys`: `SignedDelegate`, `SubmitDelegate`, `ExecDelegate` | sim | partial |
+| [K5](#k5-transaction-nonces) | Transaction nonces | `NearKeys`: `SignedTx`, `TxErr`, `SubmitTx` | sim | partial |
+| [M1](#m1-multi-action-receipts-are-atomic) | Multi-action receipts are atomic | `NearKeys`: `ExecWithKeys`, `WithKeyActs`; `TokBatchPerAction` | sim | |
+
+**[Scheduling](#scheduling)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [S1](#s1-local-receipts-first-the-exact-rule) | Local receipts first (opt-in) | `LocalPriorityOK`, `Schedulable` | sim | partial |
+| [S2](#s2-ordering-otherwise) | Otherwise any enabled receipt runs next | `Runnable` | sim (two parts, through S1 and S4) | partial |
+| [S3](#s3-block-clock) | Block clock | `blk`, `BlockTick`, `MaxBlk`, `ClockHorizonOK` | sim | partial |
+| [S4](#s4-no-per-pair-order) | No per-pair order | none: no ordering constraint | sim | partial |
+| [S5](#s5-instant-receipts) | Instant receipts (a lone DeleteAccount) | `InstantTag`, `InstantPending`, `InstantFirst` | sim | partial |
+
+**[Staking and balance](#staking-and-balance)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [B1](#b1-stake-action-failures) | Stake action failures | `ExecStake`, `EpochTick` | sim | partial |
+| [B2](#b2-balance-must-cover-storage-lackbalanceforstate) | Balance must cover storage | `StoragePerByte`, `Affordable`, `StorageFloor`, `OStor` | sim | |
+
+**[Tokens](#tokens)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [T1](#t1-nep-141-ft_transfer--ft_transfer_call) | NEP-141 `ft_transfer` / `ft_transfer_call` | `Nep141` / `Tokens`: `TokHandle`, `TokStep` | sim (5.29.1) | |
+| [T2](#t2-ft_resolve_transfer) | `ft_resolve_transfer` and its 42-byte bound | `ResolveRefundLim`, `NumOrChecked`, `TokResolveMaxLen` | sim (5.29.1) | |
+| [T3](#t3-gas-behaviour-of-ft_transfer_call-version-dependent) | Gas of `ft_transfer_call`, by version | `TokFtGasShape` | sim (5.29.1) | partial |
+| [T4](#t4-nep-145-storage_deposit) | NEP-145 storage management | `Nep145`: `SdAct`, `SuAct`, `SbAct` | sim (5.29.1) | |
+| [T5](#t5-nep-245-multi-token) | NEP-245 multi token | `Nep245`: `MtBatchResolveAct`, `MtGasShape`, `MtIdCount` | sim (near-sdk-contract-tools 4.0.0) | |
+| [T6](#t6-wnear) | wNEAR | `WNear` | sim (the repo's wNEAR-like probe only; wNEAR itself recalled) | partial |
+| [T7](#t7-token-deviations) | Token deviations | `Deviations`, `TokDev`, `MtDev` | model-only | |
+| [T8](#t8-event-logs-nep-297) | Event logs (NEP-297) | `EvLen`, `FtTransferLog`, `MtTransferLog`, `TokEvents` | sim | partial |
+
+**[Failure modes in the model](#failure-modes-in-the-model)**
+
+| Id | Rule | Main operators | Validated | Partial |
+|---|---|---|---|---|
+| [F1](#f1-forced-fault-switch-versus-gas-mode) | Forced faults versus gas mode | `GasMode`, `MayFail`, `ForcedFail` | sim (gas mode) | partial |
+| [F2](#f2-owed-callbacks-and-detached-work) | Owed callbacks and detached work | `WithOwed`, `WithDetached`, `OwedOK`, `DetachedVoided` | model-only | |
+
 ## Reference revision
 
 - **nearcore:** 2.14.0-rc.5, commit `b7b4737cab46f17a6daa2ed694d7aebbd204363a`. This is the
@@ -2464,6 +2661,75 @@ against the current module code; some may be fixed in the modules later.
   nearcore outcome with a different one. That is **unsound**: a real bug can be missed.
 - **Scope limit:** the feature is simply absent. A contract that uses it cannot be modelled
   faithfully with this library.
+
+### Not modelled at a glance
+
+One row per item below. The items are list entries, not headings, so each id links to its
+subsection. **At defaults** says whether the item affects a model that keeps the library's
+default settings: the local-priority switch off (it is opt-in, S1), `MaxBlk = 0` (no block
+clock), `StoragePerByte = FALSE`, `InstantFirst = TRUE`, `GlobalInstant = FALSE`,
+`BurnLostRefunds = TRUE`, `PooledGasOK = FALSE`, `TokBatchPerAction = TRUE`,
+`NonceHeight0 = −1` (no nonce ceiling), `FeeRounding = "up"`, and protocol 88. Many items
+also depend on what the model uses (yields, delegates, staking); the column says so where
+it matters. Gas items matter only in gas mode (`GasMode = "gas"`, F1). **Mitigation or
+example** is what the item itself names, if anything.
+
+| Id | Direction | What it is | At defaults | Mitigation or example |
+|---|---|---|---|---|
+| [N-shards](#over-approximations) | over | No shards, blocks or latency: any causally enabled order | yes | |
+| [N-congestion](#over-approximations) | over | Congestion control, bandwidth scheduler, delayed receipts | yes (free ordering covers every delay with the local-priority switch off) | |
+| [N-instant](#over-approximations) | over | Instant receipts run as ordinary ones | only with `InstantFirst <- FALSE`; at the default, only the order among instant receipts | `examples/account-lifecycle/instant` (`instant_off_spurious`) |
+| [N-local-off](#over-approximations) | over | With local priority off, a self-signed first receipt may run late | yes (the switch is off by default) | a violation stands unless the chunk provably cannot be at its limit (S1) |
+| [N-local-per-account](#over-approximations) | over | Local priority is per receiving account, not chunk-wide | only with the local-priority switch on | |
+| [N-tx-validity](#over-approximations) | over | Transaction checks beyond K5: nonces without `SubmitTx`, expiry, signatures | yes (`Submit`, `SubmitSigned`; no nonce ceiling) | submit with `SubmitTx` (K5); replay counterexamples in the sim |
+| [N-allowance](#over-approximations) | over | An allowance is charged and refunded at once; a refund stated too low under-approximates | only with an allowance (`WithAllowance`) | `examples/session-key`; a fresh key id (`session_rekey_fresh_id`) |
+| [N-fckey-one-action](#over-approximations) | over | `KeyCanSign` cannot see key actions bundled into a call | only with `WithKeyActs` | the model requires a full-access key itself |
+| [N-delegate-rekey](#over-approximations) | over | A re-added key's delegate nonce restarts at 0 | only when a key id is deleted and added again (or its account re-created) | replay its counterexamples in the sim |
+| [N-delegate-expiry](#over-approximations) | over | Without a clock, a delegate with an expiry may fail at any time | yes (`MaxBlk = 0`), for a delegate with an expiry | the block clock (S3): then exact, but for N-time |
+| [N-delegate-unkeyed](#over-approximations) | over | No key, nonce or permission check for users outside `KeyAccts` | yes, for delegating users outside `KeyAccts` | put delegating users in `KeyAccts` |
+| [N-delegate-forgery](#over-approximations) | over | `SignedDelegate` can be built for any account | yes (a modelling rule) | build a user's delegate only in that user's own step |
+| [N-time](#over-approximations) | over | Block timing: no latency bound, many receipts per height | yes | `YieldDeadlinesInBound` reports early timeouts |
+| [N-epoch-clock](#over-approximations) | over | Epochs and blocks tick independently | yes, for a model with both clocks | couple them in a step of the model's own |
+| [N-timeout-order](#over-approximations) | over | Yield timeouts in any order | yes | the block clock (S3) for "not before the deadline" |
+| [N-global-instant](#under-approximations-unsound-they-can-hide-bugs) | under | Global code published at the deploy, with no distribution receipt | only with `GlobalInstant <- TRUE` | run the default as well; `examples/account-lifecycle/global-upgrade` (`upgrade_use_race_instant`) |
+| [N-local-congested](#under-approximations-unsound-they-can-hide-bugs) | under | Local priority assumes the chunk is below its limits | only with the local-priority switch on | run with the switch off as well (S1) |
+| [N-clock-horizon](#under-approximations-unsound-they-can-hide-bugs) | under | The block clock stops at `MaxBlk` | only if the model's handlers, guards or invariants read the clock | `ClockHorizonOK(n, T)`; `examples/yield-clock` (`horizon_*`) |
+| [N-precision](#under-approximations-unsound-they-can-hide-bugs) | under | Rounding of fees, burns and the leftover split | yes in gas mode, for burns past their measured sizes or from hand-written tables; fees only with `FeeRounding = "nearest"` | `examples/fee-edge`, `examples/weight-split/remainder` |
+| [N-delegate-nonce](#under-approximations-unsound-they-can-hide-bugs) | under | Delegate nonces against direct transactions; no nonce ceiling | yes, where direct transactions use `SubmitSigned` (no ceiling by default) | a finite expiry without a clock, or `SubmitTx` |
+| [N-batch-oog](#under-approximations-unsound-they-can-hide-bugs) | under | Several function calls' gas pooled in one receipt | only with `PooledGasOK <- TRUE`, for a multi-call receipt without `pa` or with `TokBatchPerAction <- FALSE` | per-action outcomes (`pa`) |
+| [N-burn](#under-approximations-unsound-they-can-hide-bugs) | under | Burns are constants per path; trie shape and key count vary | yes in gas mode | `OWriteKey` with `TrieGasWorst` (G6); `examples/trie-gas/leftover` (`leftover_ends_only`) |
+| [N-keyfee](#under-approximations-unsound-they-can-hide-bugs) | under | AddKey per-byte fee from the model's method names | yes, where a model's names stand for longer real ones | `WithMethodBytes(p, n)` |
+| [N-burn-fail](#under-approximations-unsound-they-can-hide-bugs) | under | How much a failing receipt burns | yes | |
+| [N-storage](#under-approximations-unsound-they-can-hide-bugs) | under | Storage is not tracked per byte | yes (`StoragePerByte = FALSE`) | `StoragePerByte` (exact, with the caveats listed); `examples/storage-stake` (`vault_floor_misses_it`) |
+| [N-gas-money](#under-approximations-unsound-they-can-hide-bugs) | under | Gas as NEAR: price, purchase, burning, the account-creation charge | yes | |
+| [N-gas-refund](#under-approximations-unsound-they-can-hide-bugs) | under | Unused gas refunded as NEAR | yes | |
+| [N-refund-stuck](#under-approximations-unsound-they-can-hide-bugs) | under | A refund to an absent account stays in flight | only with `BurnLostRefunds <- FALSE` | `examples/account-lifecycle` (`refund_to_deleted_burns`) |
+| [N-universal](#under-approximations-unsound-they-can-hide-bugs) | under | Uninitialised universal accounts, checked only in part | yes, for `0u` ids (`UniversalOn = TRUE`) | |
+| [N-reward](#under-approximations-unsound-they-can-hide-bugs) | under | Gas rewards to contracts at 84-86 | no (0 from 87) | |
+| [N-validator](#under-approximations-unsound-they-can-hide-bugs) | under | Seat price, kickouts, slashing, reward shares | yes, for a staking model | |
+| [N-limits](#under-approximations-unsound-they-can-hide-bugs) | under | Protocol limits the model does not count | yes | keep counts well inside, state them (`OJoins`), or fail the call (`OErr`) |
+| [N-one-yocto](#under-approximations-unsound-they-can-hide-bugs) | under | A zero-balance contract attaching 1 yocto (85+) | depends on the model: only one that requires a balance for it | |
+| [N-input-87](#under-approximations-unsound-they-can-hide-bugs) | under | Promise-input size limit at 87 | no (88 cannot reach it) | |
+| [N-yield-payload](#under-approximations-unsound-they-can-hide-bugs) | under | Resume payload limit of 1024 bytes | yes, for a model with yields | fail an oversized resume in the handler (`OErr`) |
+| [N-acct-ids](#under-approximations-unsound-they-can-hide-bugs) | under | Account-id structure is a modelling input | yes: by default every CreateAccount fails | state `AcctParent` (`Parents`) and `TopCreator` |
+| [N-delete-large](#under-approximations-unsound-they-can-hide-bugs) | under | `DeleteAccountWithLargeState` needs per-byte storage | yes (`StoragePerByte = FALSE`) | `ACCT` in `MayFail`; with `StoragePerByte`, state `CodeSize` |
+| [N-mt](#under-approximations-unsound-they-can-hide-bugs) | under | NEP-245 implementations differ | yes, with `MtDev` empty | `MtDev[t] = {"zeroAmountSkipped", "selfTransferCredits"}`; `examples/mt-batch` |
+| [N-mtclass](#under-approximations-unsound-they-can-hide-bugs) | under | Ids of a class are always alike | only with `MtIdCount > 1` | split the class |
+| [N-wipe](#under-approximations-unsound-they-can-hide-bugs) | under | A deleted account's state in the model's own variables | yes, where accounts can be deleted and created again | reset it with `DeletesAcct(r)` |
+| [N-multi-receiver](#scope-limits) | scope | One receipt feeding several callbacks | yes (cannot be expressed) | |
+| [N-delegate](#scope-limits) | scope | What K4 leaves out: a meta transaction's gas money, `DelegateV2` | yes | fee estimate: `NearFeeTable!ActionFee("delegate", sir, kind)` |
+| [N-global](#scope-limits) | scope | What A10 leaves out: shard-by-shard distribution | yes | |
+| [N-upgrade](#scope-limits) | scope | Contract upgrades mid-flow | yes | dispatch on `CodeOf(r.to)`; `examples/account-lifecycle/global-upgrade` (`upgrade_assumes_old_code`) |
+| [N-deterministic](#scope-limits) | scope | State init (NEP-616) and the no-key bootstrap | yes | |
+| [N-gas-keys](#scope-limits) | scope | Gas keys (85+) | yes | |
+| [N-compute](#scope-limits) | scope | Compute costs versus gas | yes | covered by the free ordering with the local-priority switch off |
+| [N-wasm](#scope-limits) | scope | Contract semantics below the hand-written handlers | yes | replay counterexamples in the sim |
+| [N-events](#scope-limits) | scope | Log contents (only their count and bytes are modelled) | yes | |
+| [N-views](#scope-limits) | scope | View calls | yes | |
+| [N-resharding](#scope-limits) | scope | Resharding and missing chunks | yes | |
+
+That makes 15 over-approximations, 25 under-approximations and 11 scope limits, 51 items in
+all.
 
 ### Over-approximations
 

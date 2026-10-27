@@ -4,7 +4,7 @@ With the audit on (the default; `run.py --no-audit` turns it off), the runner se
 library's `AuditOn`, and `Exec` prints one AUDIT tuple per distinct fact about each receipt it
 runs (NearAsync.AuditFact). After the runs, the runner reports per runs.toml the gaps below,
 from those facts, the file's `[[sweep]]` tables and its `[audit]` table
-(docs/USAGE.md, "Auditing what the runs reach"):
+(docs/RUNNER.md, "Auditing what the runs reach"):
 
   gas        an owed receipt that no gas-mode run executes
   trie       an owed receipt, or a callback with a fixed budget (weight 0), that runs in gas

@@ -1,5 +1,11 @@
 # Conformance
 
+> **For maintainers.** This page is about how the library itself is checked against nearcore.
+> You do not need it to model a contract. The suite needs near-contract-sim, which is a private
+> repository today ([Access to the sim](#access-to-the-sim)); its results are committed here
+> and CI reruns them nightly. To check your own counterexamples on real wasm, see
+> [VALIDATING.md](VALIDATING.md).
+
 The conformance suite checks the model against nearcore. It runs generic probe contracts in
 near-contract-sim, which executes receipts with nearcore's own `Runtime::apply`, sweeps each
 transaction over a grid of prepaid gas, and compares every receipt with what the model predicts

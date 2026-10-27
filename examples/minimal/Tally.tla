@@ -1,6 +1,6 @@
 -------------------------------- MODULE Tally --------------------------------
 (***************************************************************************)
-(* The complete minimal model from docs/USAGE.md.                          *)
+(* The minimal model that docs/TUTORIAL.md builds step by step.            *)
 (*                                                                         *)
 (* User U calls C.ping() with a 1-unit deposit.  ping calls D.work() and   *)
 (* then its own callback C.done():                                         *)

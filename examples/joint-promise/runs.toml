@@ -148,7 +148,7 @@ replace = 'LET nf   == Cardinality({i \in 1..1 : IsFailed(ResAt(r, i))})'
 class = "wrong result position"
 runs = ["joint_ok"]
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 # The model's methods: the calls users and other contracts make, and the callbacks.
 [audit]

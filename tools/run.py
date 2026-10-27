@@ -26,7 +26,9 @@ runs.toml format
   library = "../../modules"   # relative to runs.toml. Default ../../modules, and if that
                               # does not exist (a model outside examples/<name>/), the
                               # modules/ dir of the repo this runner lives in. An explicit
-                              # library, --library or $NEAR_TLA_LIBRARY always wins
+                              # library, --library or $NEAR_TLA_LIBRARY always wins.
+                              # A list of dirs is accepted, as are dirs joined with
+                              # the path separator in --library / $NEAR_TLA_LIBRARY
   platform_defaults = true    # optional: fill NearAsync's platform constants this file
                               # leaves unset with PLATFORM_DEFAULTS: Exists = Accounts, no
                               # staking, no storage floor, fault mode, no outcome log.
@@ -148,7 +150,7 @@ Sweeps (run with --sweep, after the plain runs; always validated)
   floor = 1                   # optional: drop values below it (default 0)
   expect = { "16378" = "pass" }   # optional: verdicts per value ("pass", "violation Inv",
                               # "assert", "deadlock"); without it every verdict is reported
-  Each value runs with the base run's invariants (or `success`). The sweep fails on a
+  Each value runs with the base run's invariants. The sweep fails on a
   value whose verdict differs from `expect`, or on a timeout or error.
 
 Audit (on by default; --no-audit turns it off)
@@ -186,7 +188,7 @@ Checks
   the only entry of `properties`; TLC's "Temporal properties were violated" then
   matches it.
 - A run slower than budget_s fails but is still reported; a run still going after
-  3 x budget_s is killed and reported as "timeout".
+  3 x budget_s (and at least budget_s + 30 s) is killed and reported as "timeout".
 
 Peel mode (--peel): on a violation, drop the violated invariant/property and rerun
 until the run is clean, stops for another reason, or nothing is left; report the set
@@ -1188,7 +1190,7 @@ def tlc_once(run: Run, mod: str, invs, props, jar: str, workers: int, defs=(), p
              hard: float | None = None, audit_on: bool = False) -> Attempt:
     """Generate the wrapper + cfg in a fresh temp dir, run TLC there, write build/<log>.
     `defs` go into the wrapper; `patch` runs TLC on a patched copy of the spec or library
-    dir; `hard` (default 3 x budget_s) is when TLC is stopped; `audit_on` sets AuditOn."""
+    dir; `hard` (default max(3 x budget_s, budget_s + 30)) is when TLC is stopped; `audit_on` sets AuditOn."""
     tla, cfg = wrapper(run, mod, invs, props, defs, audit_on)
     work = tempfile.mkdtemp(prefix=f"tlc-{mod}-", dir="/tmp" if os.path.isdir("/tmp") else None)
     if hard is None:

@@ -16,6 +16,26 @@ near-contract-sim: 29e909033bb59eab792dee136e9d02870488bc3e
 near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ```
 
+### In short
+
+The first release. Relative to the pre-release module set, it:
+
+- models the rest of NEAR's asynchronous runtime at protocol 88: joint callbacks
+  (`promise_and`), yield/resume with a block clock, local receipts, per-byte storage staking,
+  access keys, nonces and delegate actions, the account lifecycle and global contracts, and
+  the protocol limits;
+- treats gas as a quantity checked against nearcore receipt by receipt (fault mode or gas
+  mode), with calibrated tables for the standard tokens, a host-cost floor for contracts
+  without measurements, owed callbacks, worst-case trie gas and least-gas sweeps;
+- ships a runner (`tools/run.py`) with must-pass and must-fail runs, witnesses, mutants,
+  print-only gas windows, sweeps, an audit of what the runs reach, and counterexamples printed
+  as a readable story;
+- documents every rule with its nearcore citation and validation level, and every omission
+  with what it could hide (`docs/SEMANTICS.md`); adds a concepts page, a tutorial, runner and
+  validation guides, and an agent skill (`skills/near-tla`).
+
+Models written against the pre-release set need the migrations under Breaking.
+
 ### Breaking
 
 Each entry ends with its migration.
@@ -514,7 +534,26 @@ them. A model that lists platform variables one by one must add each.
 
 ### Added
 
-- **The runner's audit** (`tools/audit.py`; USAGE "Auditing what the runs reach", habit 7
+- **Counterexamples as a story** (`tools/tlctrace.py`, used by `tools/run.py --print-trace`).
+  For a near-tla model each step says which receipt ran and how it ended (committed, failed,
+  failed with its deposit refunded, out of gas, forced fault), which receipts and data it
+  created, and which other variables changed, field by field. Promise-result sentinels are
+  decoded (`v = -4` prints as `NOPR`), platform variables that never change are left out, the
+  step header keeps the action's module and line, and the model's variables are listed
+  together at the last state. `tlctrace.py --raw` prints the previous summary.
+- **`platform_defaults = true` in `runs.toml`** (`tools/run.py`). Fills the `NearAsync`
+  constants a model leaves unset with neutral values: `Exists = Accounts`, no staking
+  (`StakingAcct` any account, `MinStake = 1`, `MaxEpoch = MaxReward = 0`), a zero
+  `StorageFloor`, fault mode with empty gas tables, and `LogOn = FALSE`. `Accounts`, `MayFail`
+  and `MaxFails` stay explicit. `examples/minimal` uses it; its state counts are unchanged.
+- **Docs for new users:** `docs/CONCEPTS.md` (NEAR's execution model and TLA+ in a page each,
+  the vocabulary, what a pass and a failure mean, bounds), `docs/TUTORIAL.md` (the minimal
+  model step by step, beside its Rust), `docs/RUNNER.md` (the runner's reference, moved out of
+  USAGE), `docs/VALIDATING.md` (replaying a counterexample in a near-workspaces sandbox or the
+  sim, and writing it up), and index tables in `docs/SEMANTICS.md`.
+- **An agent skill**, `skills/near-tla/SKILL.md`: the method as steps with checks, for coding
+  agents.
+- **The runner's audit** (`tools/audit.py`; RUNNER "Auditing what the runs reach", habit 7
   of "The method"). On by default for plain runs, `--no-audit` to turn it off. The runner sets
   `NearAsync.AuditOn`, so `Exec` prints one fact per distinct receipt it runs, once per TLC
   worker (`AuditFact`; an `ASSUME` initialises the register `AuditReg` that remembers them). After the runs it reports, per `runs.toml`:

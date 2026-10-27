@@ -1838,7 +1838,7 @@ ExecKeep(r, O, keep) ==
     ELSE IF v = "oog" THEN FailWhyLK(r, "oog", FailWhy(r, O), OogNeed(r, O), keep)
     ELSE IF v = "either" THEN Commit(r, O) \/ FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
     ELSE FailWhyLK(r, "fail", FailWhy(r, O), 0, keep)
-\* The runner's audit (tools/run.py, docs/USAGE.md "Auditing what the runs
+\* The runner's audit (tools/run.py, docs/RUNNER.md "Auditing what the runs
 \* reach"): with AuditOn, Exec prints an AUDIT tuple for each distinct fact
 \* about a receipt it runs (once per TLC worker: the register is per worker): its account and method, whether it is owed, detached or
 \* a callback, the gas mode, TrieGasWorst, whether its static gas is known and

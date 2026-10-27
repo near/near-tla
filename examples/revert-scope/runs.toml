@@ -95,7 +95,7 @@ replace = 'h  == Rcpt(nid, r.tx, E, V, "hold", Arg(d), d, U, nid + 1)'
 class = "wrong refund account"
 runs = ["revert_scope_ok"]
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 # The model's methods: the calls users and other contracts make, and the callbacks.
 [audit]

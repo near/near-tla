@@ -280,7 +280,7 @@ expect = { "1" = "pass", "2" = "pass", "16377" = "pass", "16378" = "violation Ow
 [sweep.constants]
 MemoCap = "16378"
 
-# ---- audit (docs/USAGE.md, "Auditing what the runs reach") ----
+# ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 
 [audit]
 methods = ["withdraw", "on_deliver"]
