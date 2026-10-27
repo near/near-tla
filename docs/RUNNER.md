@@ -351,13 +351,14 @@ it waits for.
 | `updated #4 ...` | a receipt still waiting whose record changed in this step |
 | `data -> #3: Failed` | a new data receipt, carrying a promise result to callback #3 (or to data id 3 of a joint callback) |
 | `near.c: 0 -> 1` | a variable that changed, field by field |
-| `warning: receipts share an id (#7): check the ids count of the Outcome that created them` | two receipts in flight have the same id (below) |
+| `warning: receipts share an id (#7): check the ids the model gave them` | two receipts in flight have the same id (below) |
 | `(no change)` | nothing the printer shows changed in this step |
 
-**Receipts that share an id** are a modelling error, not a contract bug. The usual cause is an
-`Outcome` whose `ids` count is smaller than the number of ids its receipts use. The library
-removes a receipt by its id, so running one of the pair removes the other too, and the story
-shows only one of them. Fix the count and run again.
+**Receipts that share an id** are a modelling error, not a contract bug. An `Outcome` whose
+`ids` count is too small no longer gets this far: `Commit` asserts the ids of its children.
+A shared id can still come from a receipt the model builds outside an outcome, such as a
+`Submit` with a fixed id. The library removes a receipt by its id, so running one of the pair
+removes the other too, and the story shows only one of them. Fix the id and run again.
 
 **How a receipt ended**, after the colon of a `ran` line, is one of:
 

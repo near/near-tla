@@ -261,8 +261,8 @@ buggy one, so one model can check both.
 `IF r.fr # C THEN OErr(O, "private") ELSE O`, which fails the receipt as the panic would.
 
 Get `ids` right. It must equal the number of fresh ids the handler used. If it is too small,
-two receipts get the same id, the library keeps only one of them, and the model reports
-violations that are not in the contract. The counterexample warns when two receipts share an id.
+two receipts would get the same id and the library would lose one of them, so `Exec` stops
+TLC with an `Assert` that names the method, `nid`, `ids` and the ids the children used.
 
 > **Sending NEAR.** `Promise::new(to).transfer(x)` is a built-in Transfer receipt:
 > `Rcpt(nid, r.tx, to, C, XFER, r.a, x, C, 0)` in `ready`, with `out = x` so the amount
@@ -301,18 +301,19 @@ Two rules:
 
 ## Step 5: the dispatcher and the steps
 
-The dispatcher sends each receipt to the code that runs it. Built-in receipts (Transfers,
-refunds) go to the library's `ExecBuiltin`; everything else to a contract:
+The dispatcher sends each receipt to the code that runs it. Receipts that run no contract
+code (Transfers, refunds, account actions) go to the library's `PlatformStep`; everything else
+to a contract:
 
 ```tla
 Step(r) ==
-    CASE IsBuiltin(r)              -> ExecBuiltin(r) /\ UNCHANGED mine  \* Transfer, refund, Stake
-      [] ~IsBuiltin(r) /\ r.to = D -> RunD(r)
-      [] OTHER                     -> RunC(r)
+    CASE IsPlatformRcpt(r)              -> PlatformStep(r) /\ UNCHANGED mine  \* no contract code
+      [] ~IsPlatformRcpt(r) /\ r.to = D -> RunD(r)
+      [] OTHER                          -> RunC(r)
 ```
 
-Keep the arms of a `CASE` from overlapping. A refund to D is built-in and goes to D, so the D
-arm also says `~IsBuiltin(r)`. TLC happens to take the first arm that matches, but TLA+ does not
+Keep the arms of a `CASE` from overlapping. A refund to D runs no contract code and goes to
+D, so the D arm also says `~IsPlatformRcpt(r)`. TLC happens to take the first arm that matches, but TLA+ does not
 promise an order, and another tool may pick either.
 
 A user's transaction is a step too. `Submit` sends U's call to `ping`, with a deposit of 1, as

@@ -532,7 +532,35 @@ them. A model that lists platform variables one by one must add each.
   raise `MtGasIds` / `MtGasIdLen`, or check them in fault mode. A model id longer than 2
   characters that stands for a 2-byte id gets `MtIdLen`.
 
+- **`Commit` asserts an outcome's fresh ids.** The children's receipt ids and the joint
+  callbacks' data ids must be distinct and lie in `nid .. nid + O.ids - 1` (`IdsOK`). A count
+  that was too small used to give two receipts one id, and the library, which removes a
+  receipt by its id, then dropped the twin silently, so the model reported violations the
+  contract does not have. No repo run changed verdict or state count. Migration: a model that
+  now stops on `outcome ids` had a miscounted `Outcome`; count every fresh id the handler
+  uses, data ids of `AndThen` included.
+- **`Exec` asserts on receipts that run no contract code.** Besides delegate and account
+  receipts, a built-in (Transfer, refund, Stake, global distribution) or key receipt handed
+  to `Exec` is now an `Assert`; it used to run as a contract call. No repo run changed.
+  Migration: route those receipts to `PlatformStep` (or `ExecBuiltin`, `ExecAcct`), and key
+  receipts to `ExecKeyAct`.
+
 ### Added
+
+- **`PlatformStep(r)` and `IsPlatformRcpt(r)`** (`NearAsync`): one dispatcher arm for the
+  receipts that run no contract code, built-ins and account actions, so that a model's other
+  arms can exclude them and no two arms overlap. `PlatformStepK` and `IsPlatformRcptK`
+  (`NearKeys`) also run delegate receipts and an account receipt's key actions. The header
+  skeleton and `examples/minimal` use it.
+- **The audit names unmarked callbacks** (`tools/audit.py`): a callback that ran, is not
+  marked owed or detached, and never ran in gas mode is listed in a note under the report,
+  since the audit cannot judge it. Not a gap: nothing fails.
+- **`examples/pay` marks `on_paid` owed.** It credits back what the receiver did not use, so
+  it must not fail. `pay_forced` and `pay_gas` now expect `OwedOK`, which reports the failure
+  as soon as `on_paid` fails; `Books`, which breaks once the pay settles, is mapped by
+  `pay_gas_win`.
+- **An `Assert` message prints on one line** (`tools/tlcparse.py`): TLC prints a tuple one
+  element per line, and the runner used to show only the first.
 
 - **Counterexamples as a story** (`tools/tlctrace.py`, used by `tools/run.py --print-trace`).
   For a near-tla model each step says which receipt ran and how it ended (committed, failed,
@@ -1339,3 +1367,14 @@ them. A model that lists platform variables one by one must add each.
 - `ResMinBytes`: a result with `len = 0` and `sz = 1` is at least 1 byte (it was
   0), so `ResTooLong(res, 0)` is TRUE for it. Only a bound below 1 byte sees the
   difference; with any positive bound (the resolver's 42) `sz <= 1` stays short.
+
+### Deprecated
+
+These settings exist only to keep an older model's behaviour, and will be removed in a later
+release. A new model sets none of them.
+
+- `CallsNeedCode = FALSE` (calls run whatever code the receiver has).
+- `BurnLostRefunds = FALSE` (a refund to a missing account stays in flight).
+- `ResultReadGas = FALSE` (reads declared with `OReadRes` cost no gas).
+- `TokEvents = FALSE` for older behaviour. Setting it because the model declares the
+  token's events itself stays supported.

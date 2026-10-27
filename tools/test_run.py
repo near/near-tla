@@ -218,6 +218,8 @@ class ParseTest(unittest.TestCase):
         r = tlcparse.parse(ASSERT, 14)
         self.assertEqual(r.verdict, "assert")
         self.assertEqual(r.message, '"missing key"')
+        tup = ASSERT.replace('"missing key"', '<< "outcome ids",\n   "ping",\n   {2, 3} >>')
+        self.assertEqual(tlcparse.parse(tup, 14).message, '<< "outcome ids", "ping", {2, 3} >>')
 
     def test_assumption(self):
         self.assertEqual(tlcparse.parse(ASSUME, 10).verdict, "assumption")
@@ -1406,6 +1408,18 @@ class AuditTest(unittest.TestCase):
                          [("v.on_cb", "least-gas", True), ("v.on_cb", "log-size", False)])
         _, n = audit.gaps({"a": {owed_gas, cb}}, [], None, {})
         self.assertEqual(n, 1)
+
+    def test_unmarked_callbacks(self):
+        plain = fact(m="on_x")                                   # an unmarked callback, fault mode
+        owed = fact(m="on_y", owed=True)
+        gas = fact(m="on_z", mode="gas")
+        call = fact(m="go", cb=False)
+        lib = fact(m="ft_resolve_transfer", lib=True)
+        self.assertEqual(audit.unmarked_callbacks({"a": {plain, owed, gas, call, lib}}), ["v.on_x"])
+        # marked owed in another run: judged by the audit, so no note
+        self.assertEqual(audit.unmarked_callbacks({"a": {plain}, "b": {fact(m="on_x", owed=True)}}), [])
+        rep = audit.Report("r.toml", 1, 1, [], 0, True, 0, ["v.on_x"])
+        self.assertIn("note: callbacks not marked owed, run in fault mode only: v.on_x", audit.render(rep))
 
     def test_method_only_covers_and_library_apart(self):
         # a.on_cb owed, b.on_cb an unowed callback, in one base run: "on_cb" alone is ambiguous

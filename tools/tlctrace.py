@@ -504,7 +504,7 @@ def story(text: str, width: int = 160) -> str:
             _diff(k, P.get(k), S[k], said)
         if dup:
             said.append(f"warning: receipts share an id ({', '.join(f'#{i}' for i in dup)}): check the ids "
-                        "count of the Outcome that created them")
+                        "the model gave them")
         if not said:
             said.append("(no change)")
         lines += [f"    {_cut(s, width)}" for s in said]

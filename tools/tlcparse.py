@@ -119,9 +119,11 @@ def parse(text: str, exit_code: int | None) -> Result:
     if any(found(p) for p in PARSE_ERROR_PATTERNS):
         r.verdict, r.message = "error", "parse/semantic: " + _error_message(text)
         return r
-    m = found(r"^Error: The first argument of Assert evaluated to FALSE; the second argument was:\s*\n?(.*)")
+    m = found(r"^Error: The first argument of Assert evaluated to FALSE; the second argument was:[ \t]*\n?"
+              r"((?:(?!Error:).+\n?)*)")
     if m:
-        r.verdict, r.message = "assert", m.group(1).strip()[:300]
+        # TLC prints a tuple one element per line; join it into one line.
+        r.verdict, r.message = "assert", " ".join(m.group(1).split())[:300]
         return r
     if found(r"^Error: The first argument of Assert evaluated to FALSE"):
         r.verdict = "assert"

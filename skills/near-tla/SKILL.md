@@ -71,7 +71,8 @@ failure would break.
 Copy the closest example from `NT/examples/` (start from `minimal` if unsure) and follow
 `NT/docs/TUTORIAL.md` for the shape: variables and `Init` with `PlatformInit`, one handler per
 method returning an `Outcome`, a run step with `Exec(r, O)` and the state change guarded by
-`Ok(r, O)`, a dispatcher, one `Submit` step per user action, and `ForcedFail` in `Next`. Name
+`Ok(r, O)`, a dispatcher whose first arm is `PlatformStep` (`PlatformStepK` with keys), one
+`Submit` step per user action, and `ForcedFail` in `Next`. Name
 the steps of `Next` so traces label them. Look up each feature where `NT/docs/USAGE.md` covers
 it:
 
@@ -89,7 +90,7 @@ it:
 
 Keep each handler faithful to the code path by path: every `require!` becomes an `OErr`, every
 branch that creates receipts creates the same ones, and `ids` counts exactly the fresh ids
-used (a wrong count gives two receipts one id and fake violations). Note in a comment the
+used (a wrong count stops TLC with an `Assert` naming the method). Note in a comment the
 source lines each handler models.
 
 **Done when** `python3 NT/tools/sany.py <model-dir>` parses, and every inventory method has a

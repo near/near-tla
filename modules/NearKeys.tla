@@ -596,4 +596,17 @@ ExecDelegate(r) ==
           \/ /\ DelegMayExpire(sd) \/ DelegErr(r) # ""
              /\ FailP(r, FALSE)
              /\ UNCHANGED keyVars
+
+\* NearAsync's PlatformStep with keys: built-ins (ExecBuiltinK), account
+\* receipts with their key actions (ExecAcctK) and delegate receipts
+\* (ExecDelegate).  AddKey and DeleteKey receipts need the key and its
+\* permission from the model, so they keep their own arm, ExecKeyAct(r, k, p):
+\*   CASE IsPlatformRcptK(r) -> PlatformStepK(r) /\ UNCHANGED mine
+\*     [] IsKeyRcpt(r)       -> ExecKeyAct(r, r.a.k, FullPerm) /\ UNCHANGED mine
+\*     [] OTHER              -> Run(r)
+IsPlatformRcptK(r) == IsPlatformRcpt(r) \/ IsDeleg(r)
+PlatformStepK(r) ==
+    IF IsBuiltin(r) THEN ExecBuiltinK(r)
+    ELSE IF IsAcctRcpt(r) THEN ExecAcctK(r)
+    ELSE ExecDelegate(r)
 =============================================================================

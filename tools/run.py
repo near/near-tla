@@ -1907,7 +1907,8 @@ def audit_reports(runs: list[Run], outs: list[Outcome]) -> list[audit.Report]:
         refs = [audit.SweepRef(sw.id, sw.kind, [sw.run], sw.covers) for sw in _SWEEPS.get(toml, [])]
         gaps, subjects = audit.gaps(by_run, refs, cfg.methods, cfg.accept)
         reps.append(audit.Report(rel(toml), len(by_run), cfg.runs, gaps, subjects,
-                                 cfg.methods is not None, hookless.get(toml, 0)))
+                                 cfg.methods is not None, hookless.get(toml, 0),
+                                 audit.unmarked_callbacks(by_run)))
     return reps
 
 

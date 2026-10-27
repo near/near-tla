@@ -154,6 +154,7 @@ class Report:
     subjects: int = 0
     inventory: bool = False
     hookless: int = 0  # runs that ran without the audit hook (an older library): no facts
+    unmarked: list[str] = field(default_factory=list)  # unmarked callbacks run in fault mode only
 
     @property
     def whole(self) -> bool:
@@ -246,6 +247,19 @@ def gaps(facts: dict[str, set[Fact]], sweeps: list[SweepRef], methods: list[str]
     return out, subjects
 
 
+def unmarked_callbacks(facts: dict[str, set[Fact]]) -> list[str]:
+    """The contract's own callbacks that no run marks owed or detached and no run executes in
+    gas mode. The audit judges only marked receipts, so a refunding callback left unmarked
+    would pass it unseen: the report names these for a person to check."""
+    by: dict[str, list[Fact]] = {}
+    for fs in facts.values():
+        for f in fs:
+            if not f.lib:
+                by.setdefault(f.key, []).append(f)
+    return sorted(k for k, fs in by.items()
+                  if any(f.cb for f in fs) and not any(f.owed or f.detached or f.mode == "gas" for f in fs))
+
+
 def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, role: str,
                ambiguous, shadowed):
     """(rule, text) for each gap of one role of a method: `sub` its executions in that role,
@@ -307,6 +321,10 @@ def render(rep: Report) -> str:
     for g in own:
         if g.accepted:
             lines.append(f"  {g.label:{width}}  {g.rule:9}  accepted: {g.accepted}")
+    if rep.unmarked:
+        lines.append(f"  note: callbacks not marked owed, run in fault mode only: {', '.join(rep.unmarked)}; "
+                     "mark each one that restores state or refunds (OwedMethods), or the audit "
+                     "cannot judge it")
     if lib:
         by: dict[str, list[str]] = {}
         for g in lib:

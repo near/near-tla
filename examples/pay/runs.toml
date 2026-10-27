@@ -7,16 +7,18 @@
 # Honored a settled pay was refunded what the receiver asked back, capped at amt (NEP-141).
 # NoOverdraft  C never pays out more than ib holds.
 # Sane    native NEAR conserved, token supply = sum of balances, balance domains, no orphans.
+# OwedOK  on_paid, which credits back what RX did not use, never fails (OwedMethods marks it).
 
 spec = "Pay"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "Honored", "NoOverdraft", "Sane"]
+invariants = ["Books", "Honored", "NoOverdraft", "Sane", "OwedOK"]
 
 # Shared constants; each run overrides a few. Values are TLA+ expression text.
 [constants]
 Accounts = "Accts"
+OwedMethods = '{"on_paid"}'      # on_paid credits back what RX did not use: it must not fail
 StakingAcct = '"c"'
 MinStake = "1"
 StorageFloor = "PFloor"
@@ -85,10 +87,11 @@ tags = ["tokens:deviation"]
 Dev = '{"resolveNoCap"}'
 
 # One forced failure of on_paid: the tokens come back to C but ib is never credited.
+# OwedOK reports it as soon as on_paid fails; Books would break once the pay settles.
 [[run]]
 name = "pay_forced"
 expect = "violation"
-invariant = "Books"
+invariant = "OwedOK"
 tags = ["semantics:callback-failure"]
 [run.constants]
 MayFail = '{"on_paid"}'
@@ -96,7 +99,9 @@ MaxFails = "1"
 
 # Gas mode with the illustrative table, one transaction, prepaid 39.0-42.0 Tgas in
 # 0.1 steps plus 300 Tgas. pay needs 2.0 burn + 2 x 0.9 fees + 35 + 1 static = 39.8 Tgas;
-# from there on_paid can run out of gas, so the first violation is at 39.8 Tgas.
+# from there on_paid can run out of gas, so the first violation is at 39.8 Tgas
+# (OwedOK, as soon as on_paid runs out; Books breaks once the pay settles, and
+# pay_gas_win maps that window).
 # The token uses the default "standard" gas shape (near-contract-standards 5.x):
 # ft_transfer_call needs 1.6 burn + 0.9 (ft_on_transfer fee, static 0) + 0.9 + 5
 # (resolver) = 8.4 Tgas of its >= 35 and gives the rest to ft_on_transfer (weight 1).
@@ -106,7 +111,7 @@ MaxFails = "1"
 [[run]]
 name = "pay_gas"
 expect = "violation"
-invariant = "Books"
+invariant = "OwedOK"
 # One worker keeps the breadth-first search order (and so the reported trace) deterministic.
 workers = 1
 expect_output = 'gas \|-> 39800\]>>'
@@ -267,3 +272,8 @@ runs = ["pay_std"]
 # The model's methods: the calls users and other contracts make, and the callbacks.
 [audit]
 methods = ["ft_on_transfer", "on_paid", "pay"]
+
+[audit.accept]
+"on_paid trie" = "H_on_paid declares no storage write in this toy; a real contract's credit to ib is one: declare it with OWriteKey and run TrieGasWorst"
+"on_paid least-gas" = "on_paid shares the leftover (weight 1), so its need is a prepaid-gas window, not a budget: pay_gas_win maps it, 39.8-40.7 Tgas"
+"on_paid logs" = "H_on_paid declares no log in this toy"

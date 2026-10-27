@@ -62,9 +62,9 @@ RunD(r) ==
 
 (* ---- dispatcher, transactions, Next ----------------------------------- *)
 Step(r) ==
-    CASE IsBuiltin(r)              -> ExecBuiltin(r) /\ UNCHANGED mine  \* Transfer, refund, Stake
-      [] ~IsBuiltin(r) /\ r.to = D -> RunD(r)
-      [] OTHER                     -> RunC(r)
+    CASE IsPlatformRcpt(r)              -> PlatformStep(r) /\ UNCHANGED mine  \* no contract code
+      [] ~IsPlatformRcpt(r) /\ r.to = D -> RunD(r)
+      [] OTHER                          -> RunC(r)
 
 Ping ==
     /\ ntx < MaxTx

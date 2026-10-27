@@ -228,11 +228,11 @@ These are definitions with a default, not constants. Leave them alone, or overri
 
 | definition | default | override when |
 |---|---|---|
-| `CallsNeedCode` | `TRUE` | never, unless you are keeping an older model's behaviour (calls run whatever code the receiver has; a missing receiver still fails them) |
-| `BurnLostRefunds` | `TRUE` | never, unless keeping older behaviour (a refund to a missing account stays in flight) |
+| `CallsNeedCode` | `TRUE` | **deprecated** (to be removed in a later release); never, unless you are keeping an older model's behaviour (calls run whatever code the receiver has; a missing receiver still fails them) |
+| `BurnLostRefunds` | `TRUE` | **deprecated** (to be removed in a later release); never, unless keeping older behaviour (a refund to a missing account stays in flight) |
 | `InstantFirst` | `TRUE` | never, unless you want the over-approximation without instant receipts ([S5](SEMANTICS.md#s5-instant-receipts)): `FALSE` lets other receipts, transactions and blocks run between a receipt and the lone DeleteAccount it creates |
-| `ResultReadGas` | `TRUE` | never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
-| `TokEvents` | `TRUE` | never, unless keeping older behaviour or the model declares the token's events itself: `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
+| `ResultReadGas` | `TRUE` | **deprecated** (to be removed in a later release); never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
+| `TokEvents` | `TRUE` | the model declares the token's events itself (setting it to keep older behaviour is **deprecated**, to be removed in a later release): `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
 | `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 | `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
 
@@ -345,7 +345,7 @@ Outcome(ready, post, ret, out, ids)
 | `post` | new postponed callbacks |
 | `ret` | the return value: `RVal(v)`, `RValSz(v, n)` (a value of `n` KB), `RValLen(v, b)` (a value of `b` bytes), or `RProm` |
 | `out` | the total deposit attached to new receipts (debited from the receiver) |
-| `ids` | how many fresh ids the handler used |
+| `ids` | how many fresh ids the handler used. `Commit` asserts that the children's receipt ids and the joint callbacks' data ids are distinct and lie in `nid .. nid + ids - 1` |
 
 Adjust an outcome with:
 
@@ -429,15 +429,21 @@ Pick a runnable receipt and route it:
 
 ```tla
 Step(r) ==
-    CASE IsBuiltin(r) -> ExecBuiltin(r) /\ UNCHANGED mine        \* Transfer, refund, Stake
-      [] r.to = D     -> RunD(r)
-      [] OTHER        -> RunC(r)
+    CASE IsPlatformRcpt(r)              -> PlatformStep(r) /\ UNCHANGED mine  \* no contract code
+      [] ~IsPlatformRcpt(r) /\ r.to = D -> RunD(r)
+      [] OTHER                          -> RunC(r)
 
 Next == \/ Ping                                                  \* submit transactions
         \/ \E r \in Runnable : Step(r)
         \/ \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
 ```
 
+- `PlatformStep(r)` runs the receipts that run no contract code: built-ins (Transfer, refund,
+  Stake, global distribution) with `ExecBuiltin`, and account actions with `ExecAcct`.
+  `IsPlatformRcpt(r)` says which receipts those are. With `NearKeys` use `IsPlatformRcptK` and
+  `PlatformStepK`, which also run delegate receipts and an account receipt's key actions.
+  `Exec` asserts if it is handed one of these receipts, or a key receipt.
+- Keep the arms from overlapping: a `CASE` whose guards overlap may take either arm.
 - `Runnable` is every ready receipt plus every postponed callback whose data has arrived (with
   `r.res` filled in). `Schedulable` is the same with local-receipt priority applied
   ([section 11](#11-local-receipt-priority)).
@@ -1384,7 +1390,7 @@ modelled; SEMANTICS A6). A handler emits these like any child; a script submits 
 (`Submit(DeleteAcctRcpt(nid, t, "p", args, "b", 0))`: `p` deletes itself, its balance goes to
 `b`).
 
-Route them in the dispatcher before your handlers:
+Route them in the dispatcher before your handlers (`PlatformStep` does both arms, section 6):
 
 ```tla
 Run == \E r \in Runnable :

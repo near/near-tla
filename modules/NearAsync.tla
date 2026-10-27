@@ -17,8 +17,8 @@
 (*   Run(r) == LET O == H_m(r) IN                                          *)
 (*               /\ Exec(r, O)                    \* the library's verdict *)
 (*               /\ n' = IF Ok(r, O) THEN <new n> ELSE n                   *)
-(*   Step(r) == CASE IsBuiltin(r) -> ExecBuiltin(r) /\ UNCHANGED n         *)
-(*                [] OTHER        -> Run(r)                                *)
+(*   Step(r) == CASE IsPlatformRcpt(r) -> PlatformStep(r) /\ UNCHANGED n   *)
+(*                [] OTHER             -> Run(r)                           *)
 (*   Next == \/ <a user's transaction: Submit(WithGas(Rcpt(...), g))>      *)
 (*           \/ \E r \in Runnable : Step(r)                                *)
 (*           \/ \E r \in Runnable : ForcedFail(r) /\ UNCHANGED n           *)
@@ -1678,10 +1678,13 @@ NewRcptLimitErr(O) == \E c \in Kids(O) : NActs(c) > MaxActionsPerReceipt
 \* child, more than 100 actions) and the storage check run after the call
 \* (an unaffordable receipt fails either way).  A
 \* Delegate receipt runs no code: a dispatcher that hands one to a contract
-\* handler is a modelling error (an Assert).
+\* handler is a modelling error (an Assert), as is one that hands it a
+\* built-in, key or account receipt.
 Verdict(r, O) ==
     IF IsDeleg(r) THEN Assert(FALSE, <<"DELEGATE receipt passed to Exec; run it with NearKeys' ExecDelegate", r.id>>)
     ELSE IF IsAcctRcpt(r) THEN Assert(FALSE, <<"ACCOUNT receipt passed to Exec; run it with ExecAcct (NearKeys: ExecAcctK)", r.id>>)
+    ELSE IF IsBuiltin(r) THEN Assert(FALSE, <<"built-in receipt passed to Exec; run it with ExecBuiltin or PlatformStep", r.id, r.m>>)
+    ELSE IF IsKeyRcpt(r) THEN Assert(FALSE, <<"AddKey/DeleteKey receipt passed to Exec; run it with NearKeys' ExecKeyAct", r.id>>)
     ELSE IF AcCall(r) /\ AcCallErr(r, O) # "" THEN "fail"
     ELSE IF ~PoolCheck(r, O) THEN "fail"
     ELSE IF ~CallTargetOK(r) THEN "fail"
@@ -1762,9 +1765,21 @@ CommitAc(r, O) ==
     /\ guse' = UsesNext(r)
     /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, burnt, blk, gcode, gnonce, ofail>>
 
-\* Commit: platform part.  The contract conjoins its own state update.
-Commit(r, O) ==
-    IF AcCall(r) THEN CommitAc(r, O) ELSE
+\* The fresh ids an outcome uses, its children's receipt ids and its joint
+\* callbacks' data ids, must be distinct and lie in nid .. nid + O.ids - 1.
+\* A wrong count (Outcome's ids) gives two receipts one id, and RemR / RemP,
+\* which remove by id, then drop the twin: an Assert, not a fake violation.
+IdsOK(O) ==
+    LET rids == {c.id : c \in Kids(O)}
+        dids == UNION {IF IsJoint(c) THEN {c.ins[i] : i \in DOMAIN c.ins} ELSE {} : c \in O.post}
+        nd   == RcptSum(LAMBDA c : IF IsJoint(c) THEN Len(c.ins) ELSE 0, O.post)
+    IN /\ Cardinality(rids) = Cardinality(Kids(O))
+       /\ Cardinality(dids) = nd
+       /\ rids \cap dids = {}
+       /\ rids \cup dids \subseteq nid .. (nid + O.ids - 1)
+
+\* A function call's commit, the platform part.
+CommitCall(r, O) ==
     /\ rq'   = RemR(r) \cup {InstantTag(c) : c \in Give(r, O, O.ready)}
     /\ post' = RemP(r) \cup {InstantTagP(c) : c \in Give(r, O, O.post)}
     /\ data' = RemD(r) \cup (IF O.ret.k = "val" THEN DataOfLen(r, TRUE, O.ret.v, RetSz(O), RetLen(O)) ELSE {})
@@ -1774,6 +1789,12 @@ Commit(r, O) ==
     /\ rlog' = LogR(r, "ok")
     /\ stor' = IF StoragePerByte /\ StorDelta(O) # 0 THEN [stor EXCEPT ![r.to] = StorAfter(r, O)] ELSE stor
     /\ UNCHANGED <<locked, proposal, epoch, fails, paid, minted, oog, txsig, created, burnt, blk, deleted, code, gcode, guse, gnonce, ofail>>
+
+\* Commit: platform part.  The contract conjoins its own state update.
+Commit(r, O) ==
+    /\ Assert(IdsOK(O), <<"outcome ids: its children's ids must be distinct and in nid..nid+ids-1",
+                          r.m, "nid", nid, "ids", O.ids, "used", {c.id : c \in Kids(O)}>>)
+    /\ IF AcCall(r) THEN CommitAc(r, O) ELSE CommitCall(r, O)
 
 \* r's marks when it runs (F2): a subset of {"owed", "detached"}; a receipt
 \* can carry both, and each check reads its own.
@@ -2043,6 +2064,17 @@ ExecAcct(r) ==
     /\ IsAcctRcpt(r)
     /\ Assert(r.ac.ka = <<>>, <<"ACCOUNT receipt with key actions: run it with NearKeys' ExecAcctK", r.id>>)
     /\ ExecAcctWith(r, 0, TRUE)
+
+\* A dispatcher's arm for the receipts that run no contract code: built-ins
+\* (Transfer, refund, Stake, global distribution) and account actions.  The
+\* contract conjoins UNCHANGED of its own variables, and its other arms
+\* exclude these receipts, so that no two arms overlap:
+\*   CASE IsPlatformRcpt(r) -> PlatformStep(r) /\ UNCHANGED mine
+\*     [] ~IsPlatformRcpt(r) /\ r.to = D -> RunD(r)
+\*     [] OTHER -> RunC(r)
+\* With NearKeys use IsPlatformRcptK / PlatformStepK.
+IsPlatformRcpt(r) == IsBuiltin(r) \/ IsAcctRcpt(r)
+PlatformStep(r)   == IF IsBuiltin(r) THEN ExecBuiltin(r) ELSE ExecAcct(r)
 
 \* Did this step delete r.to?  A primed read, like Ok: conjoin it after
 \* ExecAcct / ExecAcctK, to reset the model's own state for the account
