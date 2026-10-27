@@ -119,8 +119,13 @@ truncated or duplicated sweep fails.
 
 ## Results
 
-Results at the pins in [conformance/README.md](../conformance/README.md#pins), on the library
-at this commit:
+Results at the pins in [conformance/README.md](../conformance/README.md#pins), recorded on
+2026-10-27 on the library at commit `2f41549`. The model side of all three sets was run on
+that library. The `probes` and `probes2` sweeps date from 2026-10-24. The `mt` sweep was
+rerun on 2026-10-27, and `tla/CalibMt.tla` and `modules/CalibStdMt.tla` regenerate from it
+unchanged. Every sweep's flows file and probe wasm hashes match the committed ones.
+
+The flow set `probes`:
 
 | | |
 |---|---|
