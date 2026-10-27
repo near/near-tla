@@ -286,10 +286,11 @@ Notes on each part:
   Use the deposit your contract expects, not the model's toy number.
 - **Prepaid gas.** Without `.gas(..)` a call gets 10 Tgas, a different transaction from the
   trace's. `.max_gas()` attaches 1000 Tgas.
-- **Balances.** Unused gas comes back to the signer as a refund receipt a block or more after
-  the call, and the signer paid for all the prepaid gas up front. Compare the contract's own
-  state (its ledger, its counts) where you can. To compare NEAR balances, `worker.fast_forward(5)`
-  first, attach only the gas the trace needs, and allow for the gas the signer paid.
+- **Balances.** A balance read straight after `transact()` with `.max_gas()` has been seen to
+  disagree with the transfers the call made, by far more than the gas cost; the cause was not
+  isolated. Compare the contract's own state (its ledger, its counts) where you can. To compare
+  NEAR balances, attach only the gas the trace needs, `worker.fast_forward(5)` before reading,
+  and allow for the gas the signer paid.
 
 #### Read the outcome
 

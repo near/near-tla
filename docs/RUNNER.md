@@ -762,6 +762,10 @@ No violation means `S` never happens: the row reads `never reached`, with the no
 documented with `expect = "unreachable"` and a `reason`; then the runner requires the pass, and
 fails if the situation is ever reached.
 
+A violation by the initial state shows nothing was reached: the row reads `reached at Init`
+and fails, with a note. It almost always means `S` was written without its `~( )`. The
+summary line counts it under `other`.
+
 ### Mutants
 
 A mutant is a deliberate bug that some run must catch. The runner copies the `.tla` files of
