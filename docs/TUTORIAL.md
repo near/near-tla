@@ -16,7 +16,7 @@ to the names used here.
 
 - [Before you start](#before-you-start)
 - [The contract](#the-contract)
-- [Step 1: write the property first](#step-1-write-the-property-first)
+- [Step 1: write the invariant first](#step-1-write-the-invariant-first)
 - [Step 2: state and the initial state](#step-2-state-and-the-initial-state)
 - [Step 3: the handlers](#step-3-the-handlers)
 - [Step 4: run a handler](#step-4-run-a-handler)
@@ -37,12 +37,11 @@ You need Java 21, Python 3.11 or later, and the TLC jar the README's
 python3 tools/run.py examples/minimal
 ```
 
-Your own model can live anywhere. The runner finds the library by itself when you run the
-runner from your near-tla checkout:
+Your own model can live anywhere. Call your checkout's `run.py` from any directory and it
+finds the library. Once you have written the model and its `runs.toml` (Step 6):
 
 ```sh
-mkdir -p ~/models/tally
-python3 ~/src/near-tla/tools/run.py ~/models/tally      # wherever your checkout is
+python3 ~/src/near-tla/tools/run.py ~/models/tally      # wherever your checkout and model are
 ```
 
 ## The contract
@@ -94,7 +93,7 @@ impl Tally {
 }
 ```
 
-D is one line:
+D's `work` just counts:
 
 ```rust
 #[near]
@@ -119,9 +118,10 @@ On NEAR, `work` can fail (it can panic, or run out of gas) after `ping` has alre
 happened. The model will find this, and then show that the correct `done` has no such bug
 within the bounds we choose.
 
-## Step 1: write the property first
+## Step 1: write the invariant first
 
-Before writing any handler, write down what must hold. Here it is one line:
+Before writing any handler, write down what must hold. A property that must be true in every
+state is an **invariant**. Here it is one line:
 
 ```tla
 Counted == Idle => n = works
@@ -134,7 +134,8 @@ Writing the property first keeps the model honest: you decide what "correct" mea
 see what the model can do. Prefer properties about each user or each operation over one grand
 total; a total can balance while one user's money moves to another.
 
-The model also checks three library sanity properties, which every model should list:
+The model also checks three library sanity invariants, which every model should list
+(`InitU` and `gas` are declared in Step 2):
 
 ```tla
 Sane == NearConserved(InitU) /\ GasBounded(LAMBDA t : gas[t]) /\ NoOrphans
@@ -143,6 +144,9 @@ Sane == NearConserved(InitU) /\ GasBounded(LAMBDA t : gas[t]) /\ NoOrphans
 - `NearConserved(InitU)`: NEAR is neither created nor lost (only U starts with NEAR, `InitU` of it).
 - `GasBounded(..)`: no receipt holds more gas than its transaction prepaid.
 - `NoOrphans`: every waiting callback has its input on the way. A dropped `.then` breaks it.
+
+Bundled as `Sane`, a violation says only `Sane`. When one happens, list the three as separate
+invariants (`Conserved == NearConserved(InitU)`, and so on) to see which one broke.
 
 ## Step 2: state and the initial state
 
@@ -168,6 +172,12 @@ vars == <<platformVars, mine>>
 - `ntx` counts the transactions sent so far, and `gas` records the prepaid gas of each one.
 - `platformVars` are the library's variables (the receipts in flight, balances, and so on).
   `vars` must contain both.
+
+Pick names the library does not already use. The platform's variables are `rq`, `post`,
+`data`, `near`, `locked`, `proposal`, `epoch`, `nid`, `fails`, `paid`, `minted`, `oog`, `rlog`,
+`txsig`, `created`, `burnt`, `blk`, `stor`, `deleted`, `code`, `gcode`, `guse`, `gnonce` and
+`ofail` (and `keys`, `sigpaid` with `NearKeys`). A clash makes TLC fail with an error that does
+not mention it, so the runner warns when a model declares a name the library already has.
 
 The initial state gives U its balance and everyone else nothing:
 
@@ -212,8 +222,8 @@ ext_worker::ext(worker).work()         // a call to D
 \* ping(): D.work().then(C.done()); returns done's result.
 H_ping(r) ==
     LET w  == Rcpt(nid, r.tx, D, C, "work", r.a, 0, C, nid + 1)
-        cb == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
-    IN Outcome({w}, {cb}, RProm, 0, 2)
+        dn == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
+    IN Outcome({w}, {dn}, RProm, 0, 2)
 ```
 
 `Rcpt(id, tx, to, fr, m, a, dep, rto, cb)` builds a receipt. Reading the arguments of `w`:
@@ -222,14 +232,16 @@ H_ping(r) ==
   `nid + 1`, so it reports `ids = 2`.
 - `tx = r.tx`: the same transaction as the receipt running now.
 - `to = D`, `fr = C`: from C to D.
-- `m = "work"`, `a = r.a`: the method and its arguments.
+- `m = "work"`, `a = r.a`: the method and its arguments. This model's arguments are a
+  placeholder record, `[x |-> 0]`, because no handler reads them.
 - `dep = 0`: no deposit attached. `rto = C`: refunds would go to C.
 - `cb = nid + 1`: **work's result goes to the receipt with id `nid + 1`**, which is `done`.
   This is how `.then` is wired.
 
-The callback `cb` goes in the `post` set, because it waits. Its own `cb` is `r.cb`: `ping`
-returns the promise, so whoever waits on `ping` gets `done`'s result. `RProm` says `ping`
-returns a promise.
+The callback `dn` goes in the outcome's `post` set, because it waits. Its last argument is
+`r.cb`: `done`'s result goes wherever `ping`'s would have gone. Here that is `0`, nowhere,
+because a user called `ping`. If a contract had called `ping` and waited on it, it would get
+`done`'s result, because `ping` returns the promise (`RProm`).
 
 `done` creates nothing and returns nothing (`EMPTY` is "empty bytes"). The decision is in the
 state change, which comes next:
@@ -244,9 +256,20 @@ NewN(r) == IF Trusting \/ ~IsFailed(r.res) THEN n + 1 ELSE n
 `result.is_err()`. The constant `Trusting` switches between the correct contract and the
 buggy one, so one model can check both.
 
+`#[private]` has no line in `H_done`, because in this model only `ping`'s `.then` ever creates a
+`done` receipt. If your model lets users call a private method directly, model the check:
+`IF r.fr # C THEN OErr(O, "private") ELSE O`, which fails the receipt as the panic would.
+
 Get `ids` right. It must equal the number of fresh ids the handler used. If it is too small,
-two receipts end up with the same id, and the model reports violations that are not in the
-contract.
+two receipts get the same id, the library keeps only one of them, and the model reports
+violations that are not in the contract. The counterexample warns when two receipts share an id.
+
+> **Sending NEAR.** `Promise::new(to).transfer(x)` is a built-in Transfer receipt:
+> `Rcpt(nid, r.tx, to, C, XFER, r.a, x, C, 0)` in `ready`, with `out = x` so the amount
+> leaves C's balance (a `.then` callback on it goes in `post`, with the Transfer's last
+> argument set to the callback's id). A Transfer fails when `to` is a named account that does
+> not exist, or when `MayFail` contains `"XFER"`; the amount then comes back to `rto` as a
+> refund receipt ([USAGE section 4](USAGE.md#4-receipts) lists the built-in kinds).
 
 ## Step 4: run a handler
 
@@ -283,10 +306,14 @@ refunds) go to the library's `ExecBuiltin`; everything else to a contract:
 
 ```tla
 Step(r) ==
-    CASE IsBuiltin(r) -> ExecBuiltin(r) /\ UNCHANGED mine     \* Transfer, refund, Stake
-      [] r.to = D     -> RunD(r)
-      [] OTHER        -> RunC(r)
+    CASE IsBuiltin(r)              -> ExecBuiltin(r) /\ UNCHANGED mine  \* Transfer, refund, Stake
+      [] ~IsBuiltin(r) /\ r.to = D -> RunD(r)
+      [] OTHER                     -> RunC(r)
 ```
+
+Keep the arms of a `CASE` from overlapping. A refund to D is built-in and goes to D, so the D
+arm also says `~IsBuiltin(r)`. TLC happens to take the first arm that matches, but TLA+ does not
+promise an order, and another tool may pick either.
 
 A user's transaction is a step too. `Submit` sends U's call to `ping`, with a deposit of 1, as
 transaction number `ntx + 1`. `WithGas` attaches prepaid gas from the menu (in fault mode the
@@ -319,6 +346,17 @@ Spec == Init /\ [][Next]_vars
 Giving each kind of step a name is optional, but the counterexample then says
 `RunReceipt` or `Fault` for each step instead of `Next`.
 
+That is the whole model. In the file, the parts go in this order: the module header and
+`EXTENDS`, constants and variables, the definitions `Init` uses, the handlers, the run steps,
+the dispatcher, `Ping`, `Init`, `Next` and `Spec`, and the properties. A TLA+ module ends with
+a line of `=` signs:
+
+```tla
+=============================================================================
+```
+
+Check that it parses: `python3 tools/sany.py <your model directory>`.
+
 ## Step 6: the runs
 
 `runs.toml`, beside the `.tla` file, says which TLC runs to do. Each run sets constants and
@@ -329,7 +367,7 @@ spec = "Tally"
 workers = 2
 budget_s = 60
 invariants = ["Counted", "Sane"]
-platform_defaults = true        # fill the platform constants this model does not use
+platform_defaults = true        # fill the platform constants this file leaves unset
 
 [constants]
 Accounts = 'Accts'
@@ -364,9 +402,11 @@ Trusting = 'TRUE'
 ```
 
 - Constant values are TLA+ expressions in single quotes: `'"u"'` is the string `"u"`.
-- `platform_defaults = true` fills the platform constants this model does not use (staking,
-  storage, the gas tables, the outcome log) with neutral values. You still set `Accounts`,
-  `MayFail` and `MaxFails`, because they define the world and its faults.
+- `platform_defaults = true` fills the platform constants this file leaves unset (staking,
+  storage, fault mode and empty gas tables, the outcome log) with neutral values; a run can
+  still set any of them, as the gas runs of Step 9 do. You still set `Accounts`, `MayFail`
+  and `MaxFails`, because they define the world and its faults. `TrackSigner = 'FALSE'` is
+  optional: it saves states in models that never read the signer.
 - `tally_ok` lets `work` fail once and expects every invariant to hold.
 - `tally_trusting` is the buggy contract, and **must** fail `Counted`. A must-fail run shows
   that the invariant can catch the bug it is there for.
@@ -382,48 +422,52 @@ python3 tools/run.py examples/minimal tally_ok tally_trusting --print-trace
 ```
 run            | expect            | actual            | generated | distinct | depth | secs | result
 ---------------+-------------------+-------------------+-----------+----------+-------+------+-------
-tally_ok       | pass              | pass              | 151       | 86       | 9     | 0.9  | ok
-tally_trusting | violation Counted | violation Counted | 22        | 21       | 5     | 0.8  | ok
+tally_ok       | pass              | pass              | 151       | 86       | 9     | 2.0  | ok
+tally_trusting | violation Counted | violation Counted | 22        | 21       | 5     | 1.5  | ok
+    trace:
+    State 1: Initial predicate
+        n = 0
+        near = [d |-> 0, c |-> 0, u |-> 2]
+        ntx = 0
+        works = 0
+        gas = <<0, 0>>
+        (18 platform variables never change here; to see them, rerun with --keep, then tools/tlctrace.py --raw <log>)
+    State 2: Ping (Tally:70)
+        submitted #1 ping u->c (tx 1, deposit 1, args [x |-> 0])
+        near.u: 2 -> 1
+        ntx: 0 -> 1
+    State 3: RunReceipt (Tally:82)
+        ran #1 ping u->c: committed
+            (tx 1, deposit 1, args [x |-> 0])
+        created #2 work c->d (tx 1, result to #3, args [x |-> 0])
+        created #3 done c->c (tx 1, args [x |-> 0]) (postponed)
+        near.c: 0 -> 1
+    State 4: Fault (Tally:83)
+        ran #2 work c->d: failed (forced fault)
+            (tx 1, result to #3, args [x |-> 0])
+        data -> #3: Failed
+    State 5: RunReceipt (Tally:82)
+        ran #3 done c->c, seeing Failed: committed
+            (tx 1, args [x |-> 0])
+        n: 0 -> 1
+    The model's variables at the last state:
+        n = 1
+        ntx = 1
+        works = 0
+        gas = <<0, 0>>
+    Label: forced (the forced-fault switch fired; ask whether the network can cause that failure)
 ```
 
 Both runs did what they were expected to do: `tally_ok` passed after exploring 86 distinct
 states, and `tally_trusting` violated `Counted`. `ok` in the last column means "as expected".
+A failing run stops at the first violation it finds, so its counts, and sometimes its trace,
+can differ from run to run when TLC uses more than one worker.
 
-`--print-trace` prints the counterexample for the failing run as a story, one block per
-state:
-
-```
-State 1: Initial predicate
-    n = 0
-    near = [d |-> 0, c |-> 0, u |-> 2]
-    ntx = 0
-    works = 0
-    gas = <<0, 0>>
-    (18 platform variables never change here; --raw shows them)
-State 2: Ping (Tally:70)
-    submitted #1 ping u->c (tx 1, deposit 1, args [x |-> 0])
-    near.u: 2 -> 1
-    ntx: 0 -> 1
-State 3: RunReceipt (Tally:82)
-    ran #1 ping u->c: committed
-        (tx 1, deposit 1, args [x |-> 0])
-    created #2 work c->d (tx 1, result to #3, args [x |-> 0])
-    created #3 done c->c (tx 1, args [x |-> 0]) (postponed)
-    near.c: 0 -> 1
-State 4: Fault (Tally:83)
-    ran #2 work c->d: failed (forced fault)
-        (tx 1, result to #3, args [x |-> 0])
-    data -> #3: Failed
-State 5: RunReceipt (Tally:82)
-    ran #3 done c->c, seeing Failed: committed
-        (tx 1, args [x |-> 0])
-    n: 0 -> 1
-The model's variables at the last state:
-    n = 1
-    ntx = 1
-    works = 0
-    gas = <<0, 0>>
-```
+`--print-trace` prints the failing run's counterexample under its row, as a story with one
+block per state. Each block names the step that `Next` took (`Ping`, `RunReceipt`, `Fault`),
+then what happened: the receipts that ran and how they ended, the receipts they created, and
+the variables that changed. The library's own variables are shown only when they change;
+[RUNNER.md](RUNNER.md#raw-values-and-logs) shows how to see all of them.
 
 Read it as the life of one transaction:
 
@@ -435,6 +479,11 @@ Read it as the life of one transaction:
 4. `done` runs, sees Failed, and commits anyway: the trusting version counts it. `n` becomes 1.
 
 Nothing is in flight now, and `n = 1` while `works = 0`, so `Counted` is false.
+
+The last line is the counterexample's **label**. `forced` means it needs a forced fault, so the
+question for a real contract is whether the network can make that call fail. The other labels
+are `caller-gas` (a receipt ran out of gas at a prepaid amount the user chose) and `no-fault`
+(no forced fault and no out-of-gas).
 
 That is the bug from [The contract](#the-contract), found by the model. On a real network the
 failure would come from `work` panicking or running out of gas. Before you report a
@@ -450,16 +499,22 @@ Failed and `Counted` would pass trivially.
 
 Two checks guard against that. They live in `runs.toml` and run with `--anti-vacuity`.
 
-A **witness** is a situation that must be reachable. The runner asks TLC to find a state where
-the expression is false, and fails if none exists:
+A **witness** is a situation that must be reachable. Write the situation `S` inside `~( )`.
+The runner checks `~(S)` as an invariant on the listed runs. A violation means TLC found a
+state where `S` holds, so the witness is reached. No violation means `S` never happens, and the
+witness fails. Leave out the `~` and the check means nothing; the runner fails a witness that
+is violated in the initial state for that reason:
 
 ```toml
 # done's failure arm is reached: done runs with a Failed result.
 [[witness]]
 id = "done_sees_failed"
 expr = '~(\E r \in Runnable : r.m = "done" /\ IsFailed(r.res))'
-runs = ["tally_ok", "tally_gas_ok"]
+runs = ["tally_ok"]
 ```
+
+(The finished example also lists `tally_gas_ok`, the gas-mode run of Step 9, where `done`
+sees Failed because `work` ran out of gas.)
 
 A **mutant** is a small deliberate bug. The runner patches a copy of the model and runs the
 listed passing runs on it; some invariant must fail. If every run still passes, the mutant
@@ -470,7 +525,7 @@ listed passing runs on it; some invariant must fail. If every run still passes, 
 [[mutant]]
 id = "dropped_then"
 file = "Tally.tla"
-find = 'IN Outcome({w}, {cb}, RProm, 0, 2)'
+find = 'IN Outcome({w}, {dn}, RProm, 0, 2)'
 replace = 'IN Outcome({w}, {}, RProm, 0, 2)'
 class = "dropped .then"
 runs = ["tally_ok"]
@@ -480,10 +535,22 @@ runs = ["tally_ok"]
 python3 tools/run.py examples/minimal --anti-vacuity
 ```
 
-The example has four witnesses (the system settles, it settles at the maximum gas, `done`
-sees success, `done` sees Failed) and four mutants (a dropped `.then`, a failure that is
-counted anyway, an inverted result check, swapped gas weights). All are reached or killed.
-[RUNNER.md](RUNNER.md#witnesses-and-mutants) explains the conventions.
+`--anti-vacuity` also fails on the audit's open gaps, which Step 10 covers. If you are typing
+along, add `--no-audit` until then.
+
+The example has four witnesses: the system settles, it settles at the maximum gas, `done`
+sees success, and `done` sees Failed. It has five mutants:
+
+- `ok_guard_dropped`: `RunD` counts a work without `Ok(r, O)`. This is the easiest mistake to
+  make in a model, and only a gas-mode run catches it: a forced fault fails `work` without
+  running its handler, so only running out of gas runs `work` and then fails it.
+- `dropped_then`, above.
+- `failed_work_counted`: `done` counts on both branches.
+- `failed_check_inverted`: `done` counts only failures.
+- `weights_swapped`: `done` gets the leftover gas instead of `work`.
+
+All are reached or killed. [RUNNER.md](RUNNER.md#witnesses-and-mutants) explains the
+conventions.
 
 ## Step 9: gas mode
 
@@ -491,10 +558,13 @@ So far TLC failed `work` by fiat. Gas mode asks a sharper question: with how muc
 does `work` run out?
 
 Gas mode needs two tables. `GasCall` gives each method's static gas and weight, from the
-Rust (`with_static_gas`, `with_unused_gas_weight`) and a fee. `GasBurn` gives the gas each
-method burns. The numbers below are **illustrative**, not measured; a real model measures
-them ([Calibrating](USAGE.md#calibrating)) or uses the host-cost floor
-([USAGE section 12](USAGE.md#gas-without-a-calibration-the-host-cost-floor)):
+Rust (`with_static_gas`, `with_unused_gas_weight`), and the execution fee the caller prepays
+for it ([USAGE section 12](USAGE.md#12-fault-mode-and-gas-mode) shows how to compute it). The
+static gas and weight are tuples with one entry per FunctionCall action in the receipt (a
+batch can have several; here there is one). `GasBurn` gives the gas each method burns, as
+`base + per * size` for a size the handler declares (here every `per` is 0). The numbers below are **illustrative**, not
+measured; a real model measures them ([Calibrating](USAGE.md#calibrating)) or uses the
+host-cost floor ([USAGE section 12](USAGE.md#gas-without-a-calibration-the-host-cost-floor)):
 
 ```tla
 \* Gas tables (Ggas).  ILLUSTRATIVE numbers, not measured (docs/USAGE.md, Calibrating).
@@ -530,16 +600,90 @@ MaxTx = '1'
 Trusting = 'TRUE'
 ```
 
-Its trace now says `ran #2 work c->d: out of gas` instead of a forced fault. A third run,
-`tally_gas_win`, prints the whole range of prepaid amounts at which `Counted` breaks and checks
-it is exactly 8.6-9.0 Tgas ([print-only windows](RUNNER.md#print-only-window-invariants)).
+Its trace now says `ran #2 work c->d: out of gas` instead of a forced fault.
+
+Its passing twin, `tally_gas_ok`, runs the correct `done` on the same menu, and also checks
+a second invariant:
+
+```toml
+[[run]]
+name = "tally_gas_ok"
+expect = "pass"
+invariants = ["Counted", "WorkFits", "Sane"]
+[run.constants]
+GasMode = '"gas"'
+GasCall = 'TGasCall'
+GasBurn = 'TGasBurn'
+GasMenu = 'Menu'
+MaxTx = '1'
+```
+
+```tla
+\* At the 1000 Tgas maximum every work commits.
+WorkFits == (Idle /\ \A t \in 1..ntx : gas[t] = 1000000) => works = ntx
+```
+
+`Counted` alone would not notice if `work` always ran out of gas: the correct `done` would see
+Failed every time and never count. `WorkFits` catches that, which is how the
+`weights_swapped` mutant of Step 8 is killed.
+
+A third run, `tally_gas_win`, maps the whole range of prepaid amounts at which `Counted`
+breaks. Its invariant never fails; it prints each bad end state with its prepaid gas, and the
+runner checks that the printed amounts form exactly the window 8.6-9.0 Tgas
+([print-only windows](RUNNER.md#print-only-window-invariants)):
+
+```tla
+WinCounted == (Idle /\ n # works) => PrintT(<<"WIN", "Counted", gas[ntx], oog>>)
+```
+
+```toml
+[[run]]
+name = "tally_gas_win"
+expect = "pass"
+invariants = ["WinCounted", "Sane"]
+expect_window = "8600-9000"
+[run.constants]
+GasMode = '"gas"'
+GasCall = 'TGasCall'
+GasBurn = 'TGasBurn'
+GasMenu = 'Menu'
+MaxTx = '1'
+Trusting = 'TRUE'
+```
 
 ## Step 10: the audit
 
-After the runs, the runner prints an audit: for each method you list, which kinds of failure
-the runs actually reached, and which they did not. A callback that completes earlier work
-deserves gas-mode runs, a least-gas sweep and its worst-case storage cost; the audit lists
-what is missing until each gap is closed by a run or accepted with a reason.
+After the runs, the runner prints an audit of what the runs did not push to its edges. It
+looks at two kinds of receipt:
+
+- **owed** receipts: a callback that completes or undoes earlier work must not fail, because
+  nothing runs after it to clean up. The audit cannot tell which callbacks those are, so it
+  sees only the ones you mark. Mark every one.
+- in gas mode, callbacks with a **fixed budget** (weight 0, so only their static gas).
+
+`done` is owed: if it failed after `work` committed, D would have counted a work that C never
+counts, and nothing would put that right. Mark it by name (or with `WithOwed` where the
+receipt is created), and add the library's `OwedOK` invariant, which fails if an owed receipt
+fails ([USAGE.md](USAGE.md#owed-callbacks-and-detached-work)):
+
+```toml
+invariants = ["Counted", "Sane", "OwedOK"]      # and add "OwedOK" to tally_gas_ok's list
+
+[constants]
+OwedMethods = '{"done"}'        # done must not fail: it records that the work happened
+```
+
+For an owed receipt like `done`, the audit reports a gap for each of these it is missing (a
+fixed-budget callback that is not owed gets only the `trie` and `least-gas` ones):
+
+- `gas`: a gas-mode run that executes it (`tally_gas_ok` closes this one);
+- `trie`: a run with `TrieGasWorst = 'TRUE'`, which charges each storage write it declares at
+  the deepest storage trie the run allows;
+- `least-gas`: a sweep that finds the least gas it needs;
+- `logs`: the logs it writes, declared in its outcome, since logs cost gas.
+
+It also checks that every method you list in `[audit] methods` runs in some run. Close each gap
+with a run, or accept it with a reason that names the evidence:
 
 ```toml
 # C's methods, from the source: the call users make and the callback it schedules.
@@ -548,9 +692,11 @@ methods = ["ping", "done"]
 
 [audit.accept]
 "done trie" = "done writes no storage in this toy (H_done declares no write)"
+"done logs" = "done logs nothing (H_done declares no log)"
 "done least-gas" = "done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge"
 ```
 
+The audit then reports `0 open gap(s), 3 accepted`, and `--anti-vacuity` passes with it on.
 [RUNNER.md](RUNNER.md#auditing-what-the-runs-reach) explains each kind of gap.
 
 ## Where to go next

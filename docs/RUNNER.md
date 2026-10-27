@@ -35,6 +35,7 @@ first: it explains receipts, callbacks and the other terms used here
 - [Print-only window invariants](#print-only-window-invariants)
 - [Least gas and size sweeps](#least-gas-and-size-sweeps)
 - [Auditing what the runs reach](#auditing-what-the-runs-reach)
+- [Advanced](#advanced): peel mode, definitions inside other modules, stack size
 
 ## Running checks
 
@@ -82,7 +83,7 @@ the sweeps.
 | `--workers N` | Lower every run's TLC worker count to at most N. A run's own `workers` (default 2, at most 4) is an upper bound: `--workers` can lower it, never raise it. |
 | `--json PATH` | Also write the results to PATH as JSON: every run, then every witness and mutant check, then every sweep row, with the table's fields, the notes, the kept log and the audit's facts. |
 | `--library DIR` | Use DIR as the library for every run, whatever `runs.toml` says. The environment variable `NEAR_TLA_LIBRARY` does the same. Several directories can be joined with the path separator (`:` on Linux and macOS). |
-| `--peel` | Peel mode, below. |
+| `--peel` | On a violation, drop the violated invariant and run again, to see every invariant a change breaks ([Peel mode](#peel-mode)). |
 | `--anti-vacuity` | After the runs, check every witness and mutant of the selected runs, and fail on open audit gaps ([Witnesses and mutants](#witnesses-and-mutants)). |
 | `--sweep` | After the runs, run every sweep whose base run is selected ([Least gas and size sweeps](#least-gas-and-size-sweeps)). |
 | `--least-gas`, `--gas-range`, `--success`, `--exact`, `--gas-step` | An ad hoc least-gas search on each selected run ([Least gas and size sweeps](#least-gas-and-size-sweeps)). |
@@ -90,9 +91,8 @@ the sweeps.
 | `--list` | List the selected runs and exit. |
 | `--jar JAR` | The TLC jar (default `tools/tla2tools.jar`, else `$TLA2TOOLS_JAR`). |
 
-`TLC_JAVA_OPTS` adds JVM options to every TLC process, for example `-Xmx4g` for a larger heap.
-They come after the runner's default thread stack, `-Xss16m`, so an `-Xss` there wins. A run's
-own `stack` comes after them and wins over both.
+`TLC_JAVA_OPTS` adds JVM options to every TLC process, for example `-Xmx4g` for a larger heap
+([Stack size and JVM options](#stack-size-and-jvm-options)).
 
 ### Where your model lives
 
@@ -102,27 +102,16 @@ runs. It does not have to be inside this repo.
 - **Inside `examples/<name>/`** of this repo, the runner finds the library at
   `../../modules`, the default.
 - **Anywhere else** (your own repo, a scratch directory), the runner falls back to the
-  `modules/` directory of the near-tla checkout the runner itself lives in. Run it from your
-  checkout: `python3 ~/src/near-tla/tools/run.py path/to/model/`.
+  `modules/` directory of the near-tla checkout it lives in. So you can call your checkout's
+  `run.py` from any directory, for example `python3 ~/src/near-tla/tools/run.py ~/models/tally`.
+  The model directory needs its `runs.toml`: on a directory without one, the runner prints
+  `no runs selected` and exits with code 2.
 - **To point at a specific library**, set `library = "path/to/modules"` in `runs.toml`
   (relative to the `runs.toml`). `--library DIR` and the environment variable
   `NEAR_TLA_LIBRARY` override it for every run.
 
 The runner passes the library to TLC as `-DTLA-Library=<spec dir>:<library>`, so modules
 beside your spec (a calibrated table, say) are found first.
-
-### Peel mode
-
-A violating run stops at the first invariant that breaks. To see every invariant a change
-breaks, run with `--peel`. On a violation, the runner drops the violated invariant or property
-and runs TLC again, until the run is clean, stops for another reason, or nothing is left to
-check. The `actual` column then shows the set of names that broke, such as
-`peeled {Books, Sane}`.
-
-In peel mode, `expect = "violation"` means that the run's `invariant` is in that set and the
-last rerun ended clean (or with every name peeled). Any other expectation requires that nothing
-was peeled. Peel mode checks verdicts, budgets and vacuity only, not `expect_output` or
-`expect_window`.
 
 ## Reading the output
 
@@ -140,9 +129,10 @@ tally_gas_win      | pass              | pass              | 63        | 63     
 
 5/5 runs as expected
 
-audit examples/minimal/runs.toml: 1 owed or fixed-budget receipt(s), 0 open gap(s), 2 accepted
+audit examples/minimal/runs.toml: 1 owed or fixed-budget receipt(s), 0 open gap(s), 3 accepted
   c.done    trie       accepted: done writes no storage in this toy (H_done declares no write)
   c.done    least-gas  accepted: done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge
+  c.done    logs       accepted: done logs nothing (H_done declares no log)
 ```
 
 Progress lines (`running tally_ok (examples/minimal) ...`) go to standard error; the table
@@ -183,17 +173,9 @@ A row is `ok` when all of these hold:
   `budget_s` + 30 seconds if that is later, is stopped and reported as `timeout`.
 - **`expect_output` and `expect_window` match**, if the run has them.
 
-**What a pass means.** `ok` on a `pass` run says that every invariant the run lists held in
-every state TLC reached. That claim has limits, and they matter:
-
-- **It holds only within the run's bounds**: the constants that bound what TLC explores, such
-  as `MaxTx` (transactions), `MaxFails` (forced faults) and, in gas mode, the prepaid amounts
-  in the gas menu. A bug that needs one more transaction, one more fault or a prepaid amount
-  outside the menu is invisible to the run.
-- **It holds for the model's hand-written abstraction of the contract**, not for the compiled
-  contract. A branch your handler leaves out cannot fail in the model.
-
-[What a pass means](CONCEPTS.md#what-a-pass-means) lists every limit.
+**What a pass means.** A pass holds only within limits, such as the run's bounds and the
+model's abstraction of the contract; [What a pass means](CONCEPTS.md#what-a-pass-means) lists
+them.
 
 **Must-fail runs are part of the method.** `ok` on a `violation` run says that the invariant
 can fail, for the reason the run sets up. An invariant that has never failed may be vacuous, so
@@ -232,12 +214,14 @@ and keep them when the job fails or with `--keep`.
 After the tables, the runner prints one audit report per `runs.toml`. It counts the owed
 receipts (receipts that must not fail, such as a callback that refunds) and the callbacks with
 a fixed gas budget that the runs executed, then lists each gap: something the runs modelled
-but never pushed to its edge.
+but never pushed to its edge. A receipt counts as owed only if you mark it, so a refunding
+callback you left unmarked can leave the report at `0 open gap(s)`
+([What the audit judges](#what-the-audit-judges)).
 Accepted gaps are listed with their reason. When only some of a file's runs were selected, the
 header says so, and the gaps are judged on those runs only:
 
 ```
-audit examples/minimal/runs.toml (1 of 5 runs; sweeps and gaps judged on those): 1 owed or fixed-budget receipt(s), 0 open gap(s), 2 accepted
+audit examples/minimal/runs.toml (1 of 5 runs; sweeps and gaps judged on those): 1 owed or fixed-budget receipt(s), 0 open gap(s), 3 accepted
 ```
 
 In a plain invocation the report is for information. With `--anti-vacuity`, each open gap
@@ -255,10 +239,13 @@ This is the minimal model's trusting callback in gas mode, which must fail `Coun
 python3 tools/run.py examples/minimal tally_gas_trusting --print-trace --workers 1
 ```
 
+The trace is printed under the run's row in the table, after a `trace:` line. The summary line
+and the audit report follow it; they are left out here.
+
 ```
 run                | expect            | actual            | generated | distinct | depth | secs | result
 -------------------+-------------------+-------------------+-----------+----------+-------+------+-------
-tally_gas_trusting | violation Counted | violation Counted | 53        | 53       | 5     | 0.8  | ok
+tally_gas_trusting | violation Counted | violation Counted | 53        | 53       | 5     | 1.1  | ok
     trace:
     State 1: Initial predicate
         n = 0
@@ -266,7 +253,7 @@ tally_gas_trusting | violation Counted | violation Counted | 53        | 53     
         ntx = 0
         works = 0
         gas = <<0>>
-        (18 platform variables never change here; --raw shows them)
+        (18 platform variables never change here; to see them, rerun with --keep, then tools/tlctrace.py --raw <log>)
     State 2: Ping (Tally:70)
         submitted #1 ping u->c (tx 1, deposit 1, gas 8600, args [x |-> 0])
         near.u: 2 -> 1
@@ -291,6 +278,7 @@ tally_gas_trusting | violation Counted | violation Counted | 53        | 53     
         ntx = 1
         works = 0
         gas = <<8600>>
+    Label: caller-gas (a receipt ran out of gas at a prepaid amount the caller chose)
 ```
 
 Read it step by step:
@@ -308,9 +296,12 @@ Read it step by step:
    anyway: `n` goes from 0 to 1.
 6. **At the last state** nothing is in flight, `n = 1` and `works = 0`, so
    `Counted == Idle => n = works` is false.
+7. **The label**, `caller-gas`, says what kind of failure the trace needs: here, an out-of-gas
+   at the prepaid amount the user chose, not a forced fault.
 
 The same model's fault-mode twin, `tally_trusting`, tells the same story with a forced fault
-instead: its state 4 reads `Fault (Tally:83)` and `ran #2 work c->d: failed (forced fault)`.
+instead: its state 4 reads `Fault (Tally:83)` and `ran #2 work c->d: failed (forced fault)`,
+and its label is `forced`.
 
 ### The kinds of line
 
@@ -329,32 +320,58 @@ With the disjuncts written inline in `Next`, every step is labelled `Next` and o
 number tells them apart. A stuttering step prints its header and nothing else.
 
 **Receipts** are written `#id method predecessor->receiver`: `#2 work c->d` is receipt 2, a
-call of `work` from `c` to `d`. The details in parentheses are, where they apply: the
-transaction (`tx 1`); the attached deposit (`deposit 1`); the attached gas in Ggas, one number
-per function call (`gas 5000`); the promise result a callback has been given (`sees ...`);
-where the receipt's result goes (`result to #3`); the marks `owed` and `detached`; and the
-arguments, with empty fields left out (`args [x |-> 0]`).
+call of `work` from `c` to `d`. The details in parentheses are, where they apply:
+
+- the transaction (`tx 1`);
+- the attached deposit (`deposit 1`);
+- the attached gas in Ggas, one number per function call (`gas 5000`);
+- for an `ACCOUNT` receipt, its account actions: `CreateAccount`, `DeleteAccount, beneficiary b`,
+  or both, joined with `+`;
+- the promise result a callback has been given (`sees ...`);
+- where the receipt's result goes (`result to #3`);
+- the marks `owed` and `detached`;
+- the arguments, with empty fields left out (`args [x |-> 0]`).
+
+A joint callback (one that waits on several promises, `promise_and`) waits for **data ids**,
+not receipt ids. So on a call whose result feeds a joint callback, `result to #5` names data
+id 5, which is not a receipt: the joint callback's `(postponed: ...)` line lists the data ids
+it waits for.
 
 | line | meaning |
 |---|---|
 | `submitted #1 ping u->c (...)` | the first receipt of a new transaction |
 | `ran #2 work c->d: out of gas` | receipt #2 ran in this step; after the colon, how it ended. The next line gives its details |
-| `ran #3 done c->c, seeing Failed: committed` | a callback ran; `seeing` gives the promise results it consumed |
+| `ran #3 done c->c, seeing Failed: committed` | a callback ran; `seeing` gives the promise result it consumed |
+| `ran #4 on_both s->s, seeing Failed, 1: committed` | a joint callback ran; `seeing` gives the result of each of its inputs, in order |
+| `ran #2 on_answer q->q, seeing Failed (timed out): committed` | a yield callback ran because its deadline passed, and sees `Failed` |
 | `created #2 work c->d (...)` | a receipt this step created |
 | `created #3 done c->c (...) (postponed)` | a callback that waits for its input before it can run |
+| `... (postponed: a joint callback, waits for the results sent to #5, #6)` | a joint callback; it runs once a result has reached each of these data ids |
+| `... (postponed: a yield, until resumed or block 12)` | a yield callback; it runs when resumed, or with `Failed` once the block clock reaches 12 (or `MaxBlk`, the clock's bound) |
 | `updated #4 ...` | a receipt still waiting whose record changed in this step |
-| `data -> #3: Failed` | a new data receipt, carrying a promise result to callback #3 |
+| `data -> #3: Failed` | a new data receipt, carrying a promise result to callback #3 (or to data id 3 of a joint callback) |
 | `near.c: 0 -> 1` | a variable that changed, field by field |
+| `warning: receipts share an id (#7): check the ids count of the Outcome that created them` | two receipts in flight have the same id (below) |
 | `(no change)` | nothing the printer shows changed in this step |
+
+**Receipts that share an id** are a modelling error, not a contract bug. The usual cause is an
+`Outcome` whose `ids` count is smaller than the number of ids its receipts use. The library
+removes a receipt by its id, so running one of the pair removes the other too, and the story
+shows only one of them. Fix the count and run again.
 
 **How a receipt ended**, after the colon of a `ran` line, is one of:
 
 - `committed`: it ran to the end and its changes stand;
-- `failed`: it failed for another reason (a panic, say), and its changes were reverted;
+- `committed (deleted p)`, `committed (created q)`: it committed, and an account was deleted
+  or created (by a `DeleteAccount` or `CreateAccount`, or a Transfer that creates an implicit
+  account). When both happen, both are named, separated by `;`;
+- `failed`: it failed (a panic, say), and its changes were reverted;
 - `failed (forced fault)`: TLC chose to fail it, through the forced-fault switch (`MayFail`,
   `MaxFails`);
-- `failed (deposit refunded)`: it failed, and a refund receipt returns its deposit;
-- `out of gas`: it needed more gas than it held.
+- `failed (deposit refunded)`: it failed, and a system refund receipt returns its deposit;
+- `out of gas`: it needed more gas than it held;
+- `burnt (a does not exist; 2 burnt)`: a refund reached an account that no longer exists, so
+  its amount (2 here) was burnt instead of credited.
 
 **Promise results** are decoded wherever they appear (`data ->`, `seeing`, `sees`):
 
@@ -363,9 +380,7 @@ arguments, with empty fields left out (`args [x |-> 0]`).
 - `EMPTY`: Successful, empty bytes (a Transfer, or a method that returns `()`);
 - `MAL`: Successful, malformed bytes the callback cannot parse;
 - `NONEMPTY`: Successful, other bytes (a JSON object, `null`, ...);
-- `NOPR (no promise result)`: the receipt has no promise results at all;
-- `joint callback (not a result)`: the marker a joint callback carries in place of a result
-  (it reads its inputs with `NRes` and `ResAt`).
+- `NOPR (no promise result)`: the receipt has no promise results at all.
 
 A result whose size is stated ends with it, in bytes and KB: `7 (42 B, 1 KB)`.
 
@@ -384,12 +399,25 @@ account's liquid balance), print as changes like your own.
 **The first state** lists your model's variables, and the platform variables (those
 `NearAsync` and `NearKeys` declare) that change somewhere in the trace; the receipt
 bookkeeping is left out while it is empty. Platform variables that never change in the trace
-are left out, and a line says how many.
+are left out, and a line says how many and how to see them: keep the log with
+`run.py --keep`, then run `tlctrace.py --raw` on it ([Raw values and logs](#raw-values-and-logs)).
 
-**The model's variables at the last state** closes the trace. It lists every variable that is
+**The model's variables at the last state** follows the last step. It lists every variable that is
 not a platform variable (a token module's `tk` and `mtk` count as yours) at the last state TLC
 printed. For an invariant violation, that is the state that breaks the invariant: check the
 invariant against these values.
+
+**The label** is the last line, `Label: <kind> (<what it means>)`. It is the library's `Label`
+of the last state ([section 13 of USAGE](USAGE.md#13-the-forced-fault-switch-and-labels)):
+
+- `forced`: the forced-fault switch fired somewhere in the trace;
+- `caller-gas`: no forced fault, but a receipt ran out of gas at a prepaid amount the caller
+  chose;
+- `no-fault`: neither; any failure in the trace follows from the code and the accounts.
+
+It tells you what a replay must reproduce
+([Step 2 of VALIDATING](VALIDATING.md#step-2-decide-what-each-failure-needs)). It is printed
+only for a spec with the platform variables `fails` and `oog`.
 
 ### How outcomes are inferred
 
@@ -398,16 +426,31 @@ left in the platform variables, testing in this order:
 
 1. `out of gas` if the step added an entry to `oog`;
 2. `failed (forced fault)` if the forced-fault counter `fails` grew;
-3. `failed` if the receipt's callback was sent a `Failed` result;
-4. `failed (deposit refunded)` if the step created a system refund receipt with the next id;
-5. `failed` if the step used up one receipt id and created nothing else, which is what a failure
-   without a callback or a deposit leaves;
-6. `committed` otherwise.
+3. `burnt (...)` if the receipt is a refund and `burnt` grew: its receiver no longer exists;
+4. `committed (deleted ...)` or `committed (created ...)` if `deleted` or `created` gained an
+   account;
+5. `failed` if the receipt's callback was sent a `Failed` result;
+6. `failed (deposit refunded)` if the step created a system refund receipt with the next free
+   id, and no balance in `near` changed;
+7. `failed` if the step used up exactly one receipt id, created nothing with it (no receipt,
+   no data receipt), and no balance in `near` changed. This is what a failure without a
+   callback or a deposit leaves;
+8. `committed` otherwise.
+
+Rules 6 and 7 test `near` because a failed receipt moves no balance: its changes are reverted.
+Rule 5 comes before rule 6, so a failed receipt that has a callback reads plain `failed`, even
+when its deposit is refunded too. Look for a `created #k REFUND system->...` line in the same
+step.
+
+**Which results a callback saw** is inferred the same way. `seeing` lists the data receipts the
+step consumed that were addressed to the receipt: to its own id, or, for a joint callback, to
+each data id it waits for, in that order. A yield callback that consumed none ran because its
+deadline passed, and reads `seeing Failed (timed out)`.
 
 One case is ambiguous. `oog` is a set of `<<transaction, method>>` pairs, so a second
-out-of-gas of the same method in the same transaction does not change it. Such a failure reads
-as a plain one, with a warning:
-`failed (or out of gas again: oog already holds this tx and method)`.
+out-of-gas of the same method in the same transaction does not change it. When `oog` already
+holds the receipt's pair, any of the `failed` outcomes of rules 5 to 7 gets a warning appended,
+for example `failed (or out of gas again: oog already holds this tx and method)`.
 
 ### Raw values and logs
 
@@ -421,10 +464,12 @@ python3 tools/tlctrace.py --raw examples/minimal/build/tally_gas_trusting.log  #
 ```
 
 `tools/tlctrace.py <log>` prints the story for any kept TLC log. The runner deletes the log of
-a run that met its expectation, and a must-fail run that failed as expected did, so add
-`--keep` to have a log to read. `--raw` prints the full initial state, then for each step the
-action and every variable that changed, as TLC printed it. Values longer than 160 characters
-are cut with `...`; `--width N` changes the limit (0: no limit). For a spec without the
+every run that met its expectation, including a must-fail run that failed. Add `--keep` to keep
+it.
+
+`--raw` prints the full initial state, then for each step the action and every variable that
+changed, as TLC printed it and in full. The story cuts values longer than 160 characters with
+`...`. `--width N` sets the limit for either form (0: no limit). For a spec without the
 platform variables, or a value the printer cannot parse, the story falls back to the raw form.
 
 ### A trace is a hypothesis
@@ -515,18 +560,8 @@ TOML integers and booleans are accepted too (`MaxTx = 2`, `Trusting = false`, wh
 Constants and overridable definitions are set the same way: the runner turns each entry into
 TLC's `Name <- ...`, which assigns a `CONSTANT` and overrides a definition alike.
 [Constants and overridable definitions](USAGE.md#2-constants-and-overridable-definitions) lists
-both for the library.
-
-**A definition inside another module** takes a module-qualified key, `Mod!Name`:
-
-```toml
-"NearFees!FeeRounding" = '"nearest"'
-```
-
-It overrides a definition of a module the spec EXTENDS or INSTANCEs, directly or through its
-modules: TLC's `Name <- [Mod] expr`, which also reaches a named instance such as `NearAsync`'s
-`NearFeeTable`. It works for definitions only. A `CONSTANT` of `Mod` given this way is an
-error: assign it unqualified, or bind it with `INSTANCE Mod WITH`.
+both for the library. A definition inside another module takes a module-qualified key,
+`Mod!Name` ([A definition inside another module](#a-definition-inside-another-module)).
 
 ### Keys
 
@@ -545,7 +580,7 @@ over the file's.
 | `invariants` | `[]` | the invariants TLC checks |
 | `properties` | `[]` | the temporal properties TLC checks |
 | `deadlock` | `false` | `true` makes a stuck state an error (below) |
-| `stack` | `"16m"` | the JVM thread stack (`-Xss`) of each TLC run (below) |
+| `stack` | `"16m"` | the JVM thread stack (`-Xss`) of each TLC run ([Stack size and JVM options](#stack-size-and-jvm-options)) |
 | `tags` | `[]` | free-form labels, such as `"gas:out-of-gas"`; `--list` shows them |
 | `platform_defaults` | `false` | for a spec that extends `NearAsync`: fill the platform constants the model does not set (below) |
 | `[constants]` | none | constants for every run of the file |
@@ -573,7 +608,8 @@ source's methods and the accepted gaps ([Auditing what the runs reach](#auditing
   empty INVARIANTS section can pass without looking at a single state.
   `allow_no_invariants = "why"` is the explicit exception.
 - **`expect = "violation"`** needs `invariant`, naming one of the run's `invariants` or
-  `properties`; TLC must report that one. TLC does not name a violated temporal property, so
+  `properties`; TLC must report that one. When a state breaks several invariants, TLC
+  reports the first in the run's list, so put the one the run targets first. TLC does not name a violated temporal property, so
   when `invariant` names a property, that property must be the only entry of `properties`;
   TLC's "Temporal properties were violated" then matches it.
 - **`expect = "assert"`** needs TLC to stop on a failed `Assert`, such as a missing gas key.
@@ -581,13 +617,9 @@ source's methods and the accepted gaps ([Auditing what the runs reach](#auditing
 
 **Deadlock.** By default the runner passes TLC `-deadlock`, which turns deadlock checking off:
 a system that has finished, with nothing left to run, is fine. `deadlock = true` makes a state
-with no next step an error, so a stuck receipt is reported. Add a terminal stutter step once
-the model is idle, or quiescence is reported too.
-
-**Stack.** TLC evaluates recursive operators on the JVM thread stack. Every run gets `"16m"`,
-enough for the library's sums over a thousand receipts and more; `stack` sets another size,
-such as `"512k"`. A recursive operator of your own that takes one element per level can still
-overflow on a large set: split the set instead, as `NearAsync.KeySum` does.
+with no next step an error, so a stuck receipt is reported. Then also add a do-nothing step for
+when the model is idle, such as `Idle /\ UNCHANGED vars` as a disjunct of `Next`, or every
+finished state is reported as a deadlock.
 
 ### Platform defaults
 
@@ -686,10 +718,6 @@ For every invariant:
    Then a later change that makes the invariant vacuous turns the must-fail run into a pass,
    and the runner reports it.
 
-A `pass` run must check at least one invariant: properties alone do not count, since a run
-with an empty INVARIANTS section can pass without looking at a single state.
-`allow_no_invariants = "why"` is the explicit exception.
-
 ## Witnesses and mutants
 
 A pass says that no reachable state breaks an invariant. It does not say that the invariant
@@ -713,9 +741,9 @@ python3 tools/run.py examples/pay --anti-vacuity
 
 ### Witnesses
 
-A witness names a situation that must be reachable. Write it as the **negation** of the
-situation: the runner defines `Wit_<id> == <expr>` in the run's wrapper and checks it alone,
-and TLC must report it violated, which means some reachable state is the situation.
+A witness names a situation `S` that must be reachable. Write `S` inside `~( )`: the runner
+defines `Wit_<id> == ~(S)` in the run's wrapper and has TLC check it alone, as an invariant. A
+violation means TLC found a state where `S` holds, so the situation was reached.
 
 ```toml
 [[witness]]
@@ -729,9 +757,10 @@ runs = ["pay_unreg"]            # globs over this file's runs
 defaults to every `expect = "pass"` run without `expect_window`; the witness is checked once
 per listed run.
 
-A pass is reported as `never reached`, with the note `vacuous: witness <id> never reached`, and
-fails. A situation that is out of reach by design is documented with `expect = "unreachable"`
-and a `reason`; then the runner requires the pass, and fails if the situation is ever reached.
+No violation means `S` never happens: the row reads `never reached`, with the note
+`vacuous: witness <id> never reached`, and fails. A situation that is out of reach by design is
+documented with `expect = "unreachable"` and a `reason`; then the runner requires the pass, and
+fails if the situation is ever reached.
 
 ### Mutants
 
@@ -793,16 +822,18 @@ shortened:
 ```
 check                        | run                   | expect  | actual          | secs | result
 -----------------------------+-----------------------+---------+-----------------+------+-------
-witness ping_settles         | tally_ok              | reached | reached         | 0.8  | ok
-witness done_sees_failed     | tally_gas_ok          | reached | reached         | 0.8  | ok
-mutant dropped_then          | tally_ok              | killed  | killed Sane     | 0.8  | ok
-    tally_ok: violation Sane (8 distinct, 0.8s)
-mutant weights_swapped       | tally_gas_ok          | killed  | killed WorkFits | 0.8  | ok
-    tally_gas_ok: violation WorkFits (63 distinct, 0.8s)
+witness ping_settles         | tally_ok              | reached | reached         | 0.9  | ok
+witness done_sees_failed     | tally_gas_ok          | reached | reached         | 0.9  | ok
+mutant ok_guard_dropped      | tally_gas_ok          | killed  | killed Counted  | 0.9  | ok
+    tally_gas_ok: violation Counted (53 distinct, 0.9s)
+mutant dropped_then          | tally_ok              | killed  | killed Sane     | 0.9  | ok
+    tally_ok: violation Sane (8 distinct, 0.9s)
+mutant weights_swapped       | tally_gas_ok          | killed  | killed WorkFits | 1.0  | ok
+    tally_gas_ok: violation WorkFits (63 distinct, 1.0s)
 
-examples/minimal: mutants 4: killed 4, equivalent 0, survived 0, timeout 0, other 0; witnesses 4 (7 jobs): reached 7, unreachable as documented 0, never reached 0, other 0
+examples/minimal: mutants 5: killed 5, equivalent 0, survived 0, timeout 0, other 0; witnesses 4 (7 jobs): reached 7, unreachable as documented 0, never reached 0, other 0
 
-11/11 checks as expected
+12/12 checks as expected
 ```
 
 Each witness gets one row per run. Each mutant gets one row, with a note per run saying what
@@ -887,8 +918,8 @@ Trusting = 'TRUE'
 ```
 
 The runner folds the printed values into intervals and checks them; the table shows what it
-found under the row (`window Counted 8600-9000`). Values at most `window_step` apart (100 Ggas
-by default) join one interval, so the step must be at least the menu's step.
+found under the row (`window Counted 8600-9000`). Values at most `window_step` apart (an integer in Ggas, written
+without quotes; 100 by default) join one interval, so the step must be at least the menu's step.
 `python3 tools/windows.py --step 100 <log>` does the same for any TLC log, and prints the
 intervals in Tgas.
 
@@ -898,17 +929,13 @@ intervals in Tgas.
 - **A table** (`expect_window = { Counted = "8600-9000" }`) checks each label separately, and
   fails if a label it does not list prints anything.
 
-Windows inherit the precision of the tables: only trust a window that is wider than the
-rounding bound summed over its path, and only on calibrated tables
-([Calibrating](USAGE.md#calibrating)). With the default `FeeRounding = "up"`, the fee table
-never understates a fee, and the unused-gas split never gives a child more than nearcore does
-(it hands out no whole-Ggas remainder,
-[G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). So, as far as the fee
-table and the split go, a window's lower edge errs high, never low: by less than 4 Ggas per
-action-only receipt, plus less than 1 Ggas per weighted child for each split on the path, plus
-what the smaller leftover passes on. Burns are only as good as their calibration
-([N-burn](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Under `"nearest"`,
-either edge can err by a few Ggas either way, the split included.
+Windows inherit the precision of the tables. Trust a window only on calibrated tables
+([Calibrating](USAGE.md#calibrating)), and only when it is wider than the rounding on its path.
+With the default rounding (`FeeRounding = "up"`), fees and the leftover split can put a
+window's lower edge a few Ggas high per receipt on its path, never low; under `"nearest"`,
+either edge can be a few Ggas off either way
+([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Burns are only
+as good as their calibration.
 
 ## Least gas and size sweeps
 
@@ -1017,13 +1044,14 @@ The runs check what you modelled. The audit reports what you modelled but never 
 edges and, from an inventory you give it, what you never modelled at all. It is on for every
 plain run; `--no-audit` turns it off.
 
-This is the minimal model's report. Its one owed or fixed-budget receipt, `c.done`, has two
-gaps, both accepted with a reason:
+This is the minimal model's report. Its one owed receipt, `c.done`, has three gaps, all
+accepted with a reason:
 
 ```
-audit examples/minimal/runs.toml: 1 owed or fixed-budget receipt(s), 0 open gap(s), 2 accepted
+audit examples/minimal/runs.toml: 1 owed or fixed-budget receipt(s), 0 open gap(s), 3 accepted
   c.done    trie       accepted: done writes no storage in this toy (H_done declares no write)
   c.done    least-gas  accepted: done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge
+  c.done    logs       accepted: done logs nothing (H_done declares no log)
 ```
 
 The runner sets the library's `AuditOn`, so `Exec` prints one fact for each distinct receipt
@@ -1037,6 +1065,22 @@ it runs. The fact records:
 An **owed** receipt is one that must not fail: a callback that completes or undoes what an
 earlier receipt committed
 ([Owed callbacks and detached work](USAGE.md#owed-callbacks-and-detached-work)).
+
+### What the audit judges
+
+The audit cannot tell which of your callbacks matter. It judges:
+
+- **receipts you mark owed**: with `WithOwed(...)` where you create the receipt, or by naming
+  its method in `OwedMethods` (that form counts only a postponed callback on its own account).
+  List `OwedOK` among the run's invariants too: it is the check that an owed receipt never
+  fails. Every rule below except `inventory` applies to owed receipts;
+- **callbacks with a fixed budget** (static gas, weight 0), in gas-mode runs: the `trie`,
+  `writes` and `least-gas` rules;
+- **callbacks that declare logs**: the `log-size` rule.
+
+Every other receipt gets no gaps. So a callback that completes or undoes earlier work (a
+refund, a credit back on `Failed`), left unmarked, with no logs, and run only in fault mode,
+leaves the report at `0 open gap(s)`. Mark every such callback owed.
 
 ### The gaps
 
@@ -1070,16 +1114,17 @@ The credit comes from `runs.toml`: the sweep need not have run in this invocatio
 
 ### Methods with two roles
 
-Each role of a method is judged on its own executions: owed ones, and unowed ones as a
-callback. A direct call of the same method closes nothing. A method with both roles gets its
-gaps per role, labelled `(owed)` or `(callback)`.
+Some methods run in two roles: as an owed callback in one place and as a plain callback in
+another. The audit judges each role on its own runs and reports its gaps per role, labelled
+`(owed)` or `(callback)`. A direct call of the method, not as a callback, closes neither.
 
-For such a method a covers entry must name the role (`"on_refund least-gas owed"`), or it
-credits nothing. So must an entry naming only the method when, on any account, the method is
-seen in both roles. A named role matches that role even when the selected runs show only one.
+A `covers` entry for such a method must name the role, as in `"on_refund least-gas owed"`, or
+it credits nothing. An entry that names only the method, with no account, needs the role as
+soon as the method runs in both roles on any account. An entry that names a role credits that
+role even when the selected runs show only one role.
 
-The library's token implementations are judged apart from your contract's own executions of
-the same key. Where both run it, a covers entry credits only your own.
+Where the library's token code and your contract both run a method, a `covers` entry credits
+only your contract's runs.
 
 ### The inventory: `[audit] methods`
 
@@ -1142,3 +1187,46 @@ runs were selected: a run left out may close its gaps. Its header says so.
   `AuditOn` itself keeps its value, and its facts are still read.
 - Account ids in keys may hold dots (`vault.near.on_refund`); the method is the part after
   the last dot.
+- Facts are keyed by account and method, not by the constants a run sets. A fix switch's
+  runs therefore close the gaps of the same method as written. To see the gaps of the contract
+  as written, name only its runs on the command line.
+
+## Advanced
+
+### Peel mode
+
+A violating run stops at the first invariant that breaks. To see every invariant a change
+breaks, run with `--peel`. On a violation, the runner drops the violated invariant or property
+and runs TLC again, until the run is clean, stops for another reason, or nothing is left to
+check. The `actual` column then shows the set of names that broke, such as
+`peeled {Books, Sane}`.
+
+In peel mode, `expect = "violation"` means that the run's `invariant` is in that set and the
+last rerun ended clean (or with every name peeled). Any other expectation requires that nothing
+was peeled. Peel mode checks verdicts, budgets and vacuity only, not `expect_output` or
+`expect_window`.
+
+### A definition inside another module
+
+A constant key can override a definition of another module, with a module-qualified key,
+`Mod!Name`:
+
+```toml
+"NearFees!FeeRounding" = '"nearest"'
+```
+
+It overrides a definition of a module the spec EXTENDS or INSTANCEs, directly or through its
+modules: TLC's `Name <- [Mod] expr`, which also reaches a named instance such as `NearAsync`'s
+`NearFeeTable`. It works for definitions only. A `CONSTANT` of `Mod` given this way is an
+error: assign it unqualified, or bind it with `INSTANCE Mod WITH`.
+
+### Stack size and JVM options
+
+TLC evaluates recursive operators on the JVM thread stack. Every run gets `"16m"`, enough for
+the library's sums over a thousand receipts and more; the key `stack` sets another size, such
+as `"512k"`. A recursive operator of your own that takes one element per level can still
+overflow on a large set: split the set instead, as `NearAsync.KeySum` does.
+
+`TLC_JAVA_OPTS` adds JVM options to every TLC process, for example `-Xmx4g` for a larger heap.
+They come after the runner's default thread stack, `-Xss16m`, so an `-Xss` there wins. A run's
+own `stack` comes after them and wins over both.

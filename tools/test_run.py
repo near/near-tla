@@ -282,6 +282,8 @@ class TraceTest(unittest.TestCase):
         self.assertIn("The model's variables at the last state:\n    n = 1\n    works = 0", s)
         self.assertNotIn("gcode", s)  # a platform variable that never changes
         self.assertIn("platform variables never change here", s)
+        self.assertTrue(s.endswith("Label: caller-gas (a receipt ran out of gas at a prepaid amount the "
+                                   "caller chose)"), s[-200:])
 
     def test_story_failure_kinds(self):
         def step(**after):
@@ -298,6 +300,38 @@ class TraceTest(unittest.TestCase):
         self.assertIn(": failed (deposit refunded)", step(nid="4", rq=(
             '{[id |-> 3, tx |-> 1, m |-> "REFUND", fr |-> "system", to |-> "u", dep |-> 1, cb |-> 0, '
             'g |-> <<>>, a |-> [x |-> 0], res |-> [ok |-> TRUE, v |-> -4, sz |-> 0, len |-> 0]]}')))
+
+    def test_story_account_actions_burns_joins_and_yields(self):
+        R = ('[id |-> {id}, tx |-> 1, m |-> "{m}", fr |-> "{fr}", to |-> "{to}", dep |-> {dep}, cb |-> {cb}, '
+             'g |-> <<>>, a |-> [ ], res |-> [ok |-> TRUE, v |-> -4, sz |-> 0, len |-> 0]{extra}]')
+
+        def story(p, s):
+            base = {"rq": "{}", "post": "{}", "data": "{}", "nid": "9", "fails": "0", "oog": "{}",
+                    "near": "[a |-> 1, b |-> 0]", "burnt": "0", "deleted": "{}", "created": "{}"}
+            block = lambda n, h, vs: f"State {n}: {h}\n" + "".join(f"/\\ {k} = {v}\n" for k, v in vs.items())
+            return tlctrace.summary(block(1, "<Initial predicate>", {**base, **p}) + "\n" +
+                                    block(2, "<Next>", {**base, **p, **s}) + "\n")
+        acct = R.format(id=3, m="ACCOUNT", fr="a", to="a", dep=0, cb=0,
+                        extra=', ac |-> [mk |-> FALSE, bnf |-> "b", ka |-> <<>>]')
+        payout = R.format(id=9, m="REFUND", fr="system", to="b", dep=1, cb=0, extra="")
+        s = story({"rq": "{" + acct + "}"}, {"rq": "{" + payout + "}", "nid": "10", "deleted": '{"a"}',
+                                             "near": "[a |-> 0, b |-> 0]"})
+        self.assertIn("ran #3 ACCOUNT a->a: committed (deleted a)", s)
+        self.assertIn("DeleteAccount, beneficiary b", s)
+        refund = R.format(id=4, m="REFUND", fr="system", to="a", dep=2, cb=0, extra="")
+        self.assertIn("ran #4 REFUND system->a: burnt (a does not exist; 2 burnt)",
+                      story({"rq": "{" + refund + "}"}, {"rq": "{}", "burnt": "2"}))
+        joint = R.format(id=4, m="on_both", fr="s", to="s", dep=0, cb=0, extra=", ins |-> <<5, 6>>")
+        d = "[tx |-> 1, to |-> {to}, v |-> {v}, ok |-> {ok}, sz |-> 0, len |-> 0]"
+        s = story({"post": "{" + joint + "}",
+                   "data": "{" + d.format(to=6, v=1, ok="TRUE") + ", " + d.format(to=5, v=0, ok="FALSE") + "}"},
+                  {"post": "{}", "data": "{}"})
+        self.assertIn("ran #4 on_both s->s, seeing Failed, 1: committed", s)
+        yld = R.format(id=2, m="on_answer", fr="q", to="q", dep=0, cb=0, extra=", ydl |-> 0")
+        self.assertIn("seeing Failed (timed out)", story({"post": "{" + yld + "}"}, {"post": "{}"}))
+        twin = R.format(id=7, m="x", fr="a", to="b", dep=0, cb=0, extra="")
+        twin2 = R.format(id=7, m="y", fr="a", to="b", dep=0, cb=0, extra="")
+        self.assertIn("warning: receipts share an id (#7)", story({}, {"rq": "{" + twin + ", " + twin2 + "}"}))
 
     def test_story_skips_stuttering(self):
         s = tlctrace.summary(NEAR_TRACE + "State 6: Stuttering\n\n")
@@ -372,6 +406,17 @@ class LoadAndWrapperTest(unittest.TestCase):
         self.assertEqual(a.library, [str((self.d / "lib").resolve())])
         self.assertEqual((a.init, a.next, a.invariants, a.deadlock), ("Init", "Next", ["Inv"], False))
         self.assertEqual((a.workers, b.workers), (2, 1))
+
+    def test_name_clash_with_library_warns(self):
+        lib = self.d / "lib"
+        lib.mkdir()
+        write(lib, "Base.tla", "---- MODULE Base ----\nVARIABLES locked\nO == 1\nF(x) == LET t == x IN t\n====\n")
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\nEXTENDS Base\nVARIABLES mine\n"
+              "G == LET O == 2 IN O\nt == 0\n====\n")
+        r = self.load('spec = "Toy"\nlibrary = "lib"\ninvariants = ["Inv"]\n[[run]]\nname = "a"\nexpect = "pass"\n')[0]
+        self.assertIsNone(run.name_clashes(r))
+        write(self.d, "Toy.tla", "---- MODULE Toy ----\nEXTENDS Base\nVARIABLES locked\n====\n")
+        self.assertIn("locked (Base)", run.name_clashes(r))
 
     def test_platform_defaults_fill_only_unset_constants(self):
         a, b = self.load("""
@@ -768,6 +813,7 @@ WIT = "[[witness]]\nid = \"seen\"\nexpr = '~(x > 0)'\n"
 MUT = ("[[mutant]]\nid = \"m\"\nfile = \"Toy.tla\"\nfind = \"x + 1\"\nreplace = \"x\"\n"
        "class = \"dropped step\"\n")
 WIT_INV = INV.replace("Invariant Small", "Invariant Wit_seen")
+WIT_INIT = "Error: Invariant Wit_seen is violated by the initial state:\n/\\ x = 0\n\n"
 
 
 class AntiVacuityLoadTest(unittest.TestCase):
@@ -886,6 +932,7 @@ class AntiVacuityFakeTLCTest(unittest.TestCase):
     def test_witness_verdicts(self):
         cases = [
             ("", WIT_INV, 12, True, "reached"),
+            ("", WIT_INIT, 12, False, "reached at Init"),  # the ~( ) left out
             ("", PASS, 0, False, "never reached"),
             ('expect = "unreachable"\nreason = "bounded"\n', PASS, 0, True, "never reached"),
             ('expect = "unreachable"\nreason = "bounded"\n', WIT_INV, 12, False, "reached"),

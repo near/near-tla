@@ -28,7 +28,7 @@ If this skill sits at `NT/skills/near-tla/`, NT is two levels up. Otherwise use 
 Read `NT/docs/CONCEPTS.md` once: the vocabulary table maps NEAR terms to model names, and
 "What a pass means" sets the claims you may make.
 
-**Done when** `python3 NT/tools/run.py NT/examples/minimal` ends with `5/5 runs as expected`.
+**Done when** `python3 NT/tools/run.py NT/examples/minimal` reports `5/5 runs as expected`.
 
 ## Step 1: inventory the contract
 
@@ -36,8 +36,11 @@ Read the contract source. In a scratch file `model/INVENTORY.md` beside where th
 live (inside the user's project), list:
 
 - every public method a user or another contract can call, with its deposit and who may call it;
-- every cross-contract call it makes (`ext_*::ext(..)`, `Promise::new(..)`), with its static gas
-  and weight, and the callback chained with `.then`;
+- every cross-contract call and Transfer it makes (`ext_*::ext(..)`, `Self::ext(..)`,
+  `Promise::new(..)`), with its static gas and weight, and the callback chained with `.then`.
+  A call that sets neither gets near-sdk's defaults, static gas 0 and weight 1: write those
+  down, because a callback that only shares the leftover can be starved by the caller's
+  choice of prepaid gas;
 - every callback (`#[private]` methods reached by `.then`), what it reads from its promise result,
   and what it completes or undoes;
 - the state each method writes before the call goes out, and the assets that move (NEAR,
@@ -55,7 +58,10 @@ ask: after everything settles (`Idle`), is every user whole? Prefer per-user and
 obligations ("each deposit is credited or refunded once") over one conservation total, which
 balances while one user's money moves to another. Add the library sanity checks
 (`NearConserved`, `GasBounded`, `NoOrphans`) and, for each callback that completes or undoes
-an earlier commit, mark it owed (`OwedMethods`) and check `OwedOK`.
+an earlier commit, mark it owed (`OwedMethods`) and check `OwedOK`. The audit in step 5 sees
+only the callbacks you mark, so mark every one that restores state, refunds or credits back.
+The platform variable `paid` records the NEAR each account received from Transfers and
+refunds, per transaction, which is what a per-payee property needs.
 
 **Done when** every callback row of the inventory is covered by a property that a mishandled
 failure would break.
@@ -71,10 +77,11 @@ it:
 
 | the contract uses | USAGE section |
 |---|---|
+| NEAR Transfers, refunds | 4. Receipts (`XFER`; `MayFail = {"XFER"}` lets a Transfer fail, and its amount comes back to `rto`) |
 | fungible tokens, `ft_transfer_call` | 8. Calling tokens, 9. Receiving tokens |
 | signer, access keys, nonces, meta transactions | 10. Signer and keys |
 | self-signed transactions | 11. Local-receipt priority |
-| gas budgets, prepaid gas | 12. Fault mode and gas mode |
+| gas budgets, prepaid gas, a child's `fee` | 12. Fault mode and gas mode |
 | callbacks that must not fail | 13, "Owed callbacks and detached work" |
 | `promise_and`, yield/resume, block height | 14. Joint callbacks, yield/resume and the block clock |
 | storage deposits | 15. Storage staking per byte |
@@ -94,29 +101,49 @@ In `runs.toml` (reference: `NT/docs/RUNNER.md`), set `platform_defaults = true`,
 and small bounds: two or three accounts, `MaxTx` of 1 or 2, one forced fault. Then, for each
 property:
 
-- a **must-pass** run of the contract as written, in fault mode with the calls that can fail in
-  `MayFail`;
+- a run of the contract as written, in fault mode with the calls that can fail in `MayFail`,
+  expected to pass;
 - a **must-fail** run that breaks it on purpose (a switch constant that reproduces the bug
   class the property guards: a callback that ignores its result, a missing rollback), with
   `expect = "violation"` and the property named;
-- **witnesses** that each callback's success arm and failure arm are reached;
-- **mutants** for the bug classes: a dropped `.then`, a failure branch that skips its rollback,
-  an inverted result check.
+- **witnesses** that each callback's success arm and failure arm are reached, each written
+  as `expr = '~(S)'` for the situation `S`;
+- **mutants** for the bug classes: a missing `Ok(r, O)` guard, a dropped `.then`, a failure
+  branch that does the success work, an inverted result check.
 
-List the contract's methods in `[audit] methods`.
+TLC names the first invariant in a run's list that a state violates, so put the one a
+must-fail run targets first in that run's `invariants`. List the contract's methods in
+`[audit] methods`.
 
-**Done when** `python3 NT/tools/run.py <model-dir> --anti-vacuity` reports every run as
-expected, every witness reached and every mutant killed. A surviving mutant means a property
+When a run of the contract as written fails, triage it (step 6) before going on. If it is a
+contract bug, set that run to `expect = "violation"` with the invariant TLC named, and add a
+fix switch: a constant that applies the fix you will suggest, with its own runs expected to
+pass. Witnesses and mutants run only on passing runs, so point them at the fixed variant's
+runs.
+
+**Done when** `python3 NT/tools/run.py <model-dir> --anti-vacuity --no-audit` reports every
+run as expected, every witness reached and every mutant killed (the audit's gaps are step
+5's). A surviving mutant means a property
 is too weak: strengthen the property, not the mutant.
 
 ## Step 5: go to gas mode where it matters
 
-For each owed callback and each call with a fixed gas budget, add a gas-mode run. Without
-measured burns, use the host-cost floor (`HostFloorGas`, USAGE section 12): a callback that
-runs out on the floor runs out on real wasm too. Declare storage writes (`OWriteKey`) and run
-with `TrieGasWorst`; find the least gas with a sweep. Then read the audit the runner prints
-after the table and close each gap with a run, or accept it in `[audit.accept]` with a reason
-that cites the source line or a run.
+For each owed callback, each callback that shares the leftover gas (a weight above 0, the
+near-sdk default) and each call with a fixed gas budget, add a gas-mode run. Without measured
+burns, use the host-cost floor (`HostFloorGas`, USAGE section 12). Its verdicts differ:
+
+- a callback with a fixed budget (weight 0) that runs out on the floor runs out on real wasm
+  too: a finding;
+- a window for a weighted callback is illustrative: the floor under-counts the creator's burn,
+  which leaves the callback more gas than nearcore would. It says where to look; step 7 finds
+  the real edges on the wasm.
+
+Declare storage writes (`OWriteKey`) and run with `TrieGasWorst`; find the least gas with a
+sweep. Then read the audit the runner prints after the table and close each gap with a run,
+or accept it in `[audit.accept]` with a reason that cites the source line or a run. The audit
+keys on method names, not on switches, so a fixed variant's runs also close the as-written
+method's gaps: to see the gaps of the contract as written, name only its runs
+(`run.py <model-dir> <run> ...`), and the audit judges those alone.
 
 **Done when** the audit reports 0 open gaps and every accept names its evidence.
 
@@ -128,11 +155,21 @@ For each run that fails unexpectedly, print the trace:
 python3 NT/tools/run.py <model-dir> <run> --print-trace
 ```
 
-Walk it step by step against the source and classify it:
+The story's last line is the label. `forced`: the trace needs a forced fault, so ask whether
+the network can make that call fail. `caller-gas`: a receipt ran out of gas at a prepaid
+amount the caller chose, which any user can do. `no-fault`: the bug needs only the order of
+receipts shown.
+
+Walk the trace step by step against the source and classify it:
 
 - **contract bug**: the code does what the trace does. Keep it as a hypothesis for step 7.
 - **model error**: a handler does something the code does not. Fix the handler, rerun, and
   note the fix.
+- **gas tables wrong**: a gas-mode trace turns on a static gas, weight, fee or burn that does
+  not match the source or a measurement. Fix the table and rerun.
+- **library wrong**: the platform step itself disagrees with the nearcore source that its
+  SEMANTICS entry cites. That is a near-tla bug, not a contract finding: give the user the
+  trace and the entry so they can report it to near-tla.
 - **unreachable**: the schedule needs an order a network does not produce. Name the
   over-approximation in `NT/docs/SEMANTICS.md` ("Not modelled") that allows it. A reorder of
   two receipts between the same pair of accounts is reachable (SEMANTICS S4), so it stays a
@@ -143,15 +180,22 @@ SEMANTICS entry) written down.
 
 ## Step 7: validate on the compiled contract
 
-Follow `NT/docs/VALIDATING.md`. Build the contract's wasm and write a near-workspaces sandbox
-test that replays each contract-bug hypothesis: the same transactions, the prepaid gas from a
-gas-mode trace, a stub receiver that fails where the trace has a forced fault, and an
-assertion of the broken property. Use near-contract-sim if the user has access. When an
-ordering cannot be forced in the sandbox, replay the failure parts and argue the order from
-the SEMANTICS ordering rules (S1-S5) and the code.
+Follow `NT/docs/VALIDATING.md`. First, for each forced fault in the trace, name what makes
+that call fail on a real network: the callee panics on these arguments, the receiver account
+does not exist, an untrusted contract chooses to fail. A forced fault with no such cause means
+the finding is "not reproduced", and you say so.
+
+Then build the contract's wasm and write a near-workspaces sandbox test that replays each
+contract-bug hypothesis: the same transactions, a stub receiver that fails only where you
+named a cause, and an assertion of the broken property. For a `caller-gas` trace, start from
+its prepaid gas and bisect on the wasm: the model's window says where to look, and the
+sandbox finds the real edges. Use near-contract-sim if the user has access. When an order
+cannot be forced in the sandbox, replay the failure parts: the finding is then confirmed for
+its failures only, and the order is argued from the SEMANTICS ordering rules (S1-S5) and the
+code. Say which.
 
 **Done when** each finding has a passing replay test that shows the bug, or is marked "not
-replayed" with the reason and the code-reading argument.
+reproduced" or "not replayed" with the reason and the code-reading argument.
 
 ## Step 8: report
 

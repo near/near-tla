@@ -6,12 +6,13 @@
 # Counted  C's count of works matches D's once nothing is in flight.
 # WorkFits (gas mode) at the 1000 Tgas maximum every work commits.
 # Sane     NEAR conserved, gas bounded by each transaction's prepaid gas, no orphans.
+# OwedOK   done, which must not fail, never fails (OwedMethods marks it).
 
 spec = "Tally"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Counted", "Sane"]
+invariants = ["Counted", "Sane", "OwedOK"]
 # Fill the platform constants this model does not use (no staking, no storage floor,
 # fault mode unless a run says otherwise): see `python3 tools/run.py --help`.
 platform_defaults = true
@@ -29,6 +30,7 @@ MaxTx = '2'
 InitU = '2'
 GasMenu = '{0}'
 Trusting = 'FALSE'
+OwedMethods = '{"done"}'        # done must not fail: it records that the work happened
 
 # work may fail once; done checks the result, so the counts agree.
 [[run]]
@@ -56,7 +58,7 @@ Trusting = 'TRUE'
 [[run]]
 name = "tally_gas_ok"
 expect = "pass"
-invariants = ["Counted", "WorkFits", "Sane"]
+invariants = ["Counted", "WorkFits", "Sane", "OwedOK"]
 tags = ["gas:out-of-gas"]
 [run.constants]
 GasMode = '"gas"'
@@ -120,10 +122,20 @@ id = "done_sees_failed"
 expr = '~(\E r \in Runnable : r.m = "done" /\ IsFailed(r.res))'
 runs = ["tally_ok", "tally_gas_ok"]
 
+# D's count changes even when work fails: the Ok guard is missing. Only gas mode
+# runs work and then fails it (a forced fault never runs the handler).
+[[mutant]]
+id = "ok_guard_dropped"
+file = "Tally.tla"
+find = "works' = IF Ok(r, O) THEN works + 1 ELSE works"
+replace = "works' = works + 1"
+class = "missing Ok guard"
+runs = ["tally_gas_ok"]
+
 [[mutant]]
 id = "dropped_then"
 file = "Tally.tla"
-find = 'IN Outcome({w}, {cb}, RProm, 0, 2)'
+find = 'IN Outcome({w}, {dn}, RProm, 0, 2)'
 replace = 'IN Outcome({w}, {}, RProm, 0, 2)'
 class = "dropped .then"
 runs = ["tally_ok"]
@@ -133,7 +145,7 @@ id = "failed_work_counted"
 file = "Tally.tla"
 find = 'THEN n + 1 ELSE n'
 replace = 'THEN n + 1 ELSE n + 1'
-class = "failure branch skips rollback"
+class = "failure branch does the success work"
 runs = ["tally_ok", "tally_gas_ok"]
 
 [[mutant]]
@@ -164,4 +176,5 @@ methods = ["ping", "done"]
 
 [audit.accept]
 "done trie" = "done writes no storage in this toy (H_done declares no write)"
+"done logs" = "done logs nothing (H_done declares no log)"
 "done least-gas" = "done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge"

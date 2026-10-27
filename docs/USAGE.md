@@ -157,52 +157,84 @@ tables, no outcome log; [Platform defaults](RUNNER.md#platform-defaults)).
 These are definitions with a default, not constants. Leave them alone, or override them in
 `runs.toml` like a constant (the runner turns the entry into TLC's `Name <- Def`).
 
+**Accounts and code**
+
 | definition | default | override when |
 |---|---|---|
 | `Contracts` | `Accounts` | some accounts have no code: a function call to an account outside `Contracts` fails |
-| `CallsNeedCode` | `TRUE` | never, unless you are keeping an older model's behaviour (calls run whatever code the receiver has; a missing receiver still fails them) |
 | `AcctKind` | every account `"named"` | an account is NEAR-implicit, eth-implicit, deterministic or universal; toy ids cannot match the real patterns, so you state the kind. `AcctKinds(eth, nearImp)` builds the common case |
 | `UniversalOn` | `TRUE` (protocol 87+) | you model the rules before protocol 87, where a universal id is named and a Transfer to an absent one fails: `FALSE`. It is independent of `NearFees.FeeProtocol`, which selects fees only ([VERSIONING](VERSIONING.md#what-feeprotocol-does-and-does-not-change)) |
+| `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
+| `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
+| `InitCode` | `"code"` for every account | a model reads `CodeOf` and its contracts start with different code: each account's tag at the start (only the accounts in `Contracts` have code) |
+| `EthWalletCode` | `"eth_wallet"` | a model reads `CodeOf`: the tag of the eth wallet contract an eth-implicit account gets when a Transfer creates it (again) |
+| `InitGCode` | nothing published | global contracts published at the start: a function from identifiers (`GHash(t)`, `GAcct(a)`) to code tags, `(GHash("child") :> "child")` ([section 16](#global-contracts)) |
+| `InitUses` | no account uses one | accounts that run a global contract at the start: account to identifier; it wins over `InitCode`. With `StoragePerByte`, count the identifier's bytes (`IdLen`) in `StorageInit` |
+
+**Signer and keys**
+
+| definition | default | override when |
+|---|---|---|
 | `TrackSigner` | `TRUE` | the model never reads the signer: `FALSE` saves states. Do not read the signer with `FALSE`: with `PlatformInit` (`txsig` starts empty) that is a TLC error, but with an `Init` that pre-sizes `txsig` it silently returns the initial value |
-| `BurnLostRefunds` | `TRUE` | never, unless keeping older behaviour (a refund to a missing account stays in flight) |
 | `DefaultKey` | `"default"` | your key ids differ and you use `Submit` |
+| `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); another key type (a key with an allowance, `WithAllowance`, already counts its 16 bytes) |
+
+**The block clock**
+
+| definition | default | override when |
+|---|---|---|
+| `MaxBlk` | `0` (no clock) | the model uses the block clock: the bound on `blk` ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)) |
+| `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
+| `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
+
+**Storage**
+
+| definition | default | override when |
+|---|---|---|
+| `StoragePerByte` | `FALSE` | the model tracks storage in bytes: `TRUE` replaces the fixed `StorageFloor` with `stor` priced per byte ([section 15](#15-storage-staking-per-byte)) |
+| `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
+| `StorBytes` | empty | handlers read measured bytes with `OStorKey(O, key, size)`: the calibrator's table, `[key -> [base, per]]` keyed like `GasBurn` (a missing key is an `Assert`; unread without `StoragePerByte`) ([section 15](#bytes-from-the-calibrator)) |
+| `CodeSize` | 0 bytes for every account | with `StoragePerByte` and DeleteAccount: the code bytes in each contract's `StorageInit`, which the 10,000-byte delete limit leaves out |
+| `CodeLen` | 0 bytes for every code tag | with `StoragePerByte` and DeployContract: the bytes of each code tag a model deploys, `("child" :> 300000)` ([section 16](#16-creating-and-deleting-accounts)) |
+| `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
+| `GlobalByteCost` | `<<1, 10000>>` (0.0001 NEAR per byte) | your NEAR unit is not 1 NEAR, as for `StorageByteCost`: the burn of a DeployGlobalContract per code byte, `num/den` units; the burn of a deploy must be a whole number of units (an `Assert`) |
+| `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
+
+**Gas**
+
+| definition | default | override when |
+|---|---|---|
 | `PooledGasOK` | `FALSE` | a receipt with several function calls and no `pa` should pool their gas: `TRUE` (otherwise an `Assert`) |
+| `HostFloorGas` | `FALSE` | gas mode without a calibrated table: `TRUE` adds the host-cost floor of each outcome's declared writes and logs to its burn, and a missing `GasBurn` key counts as 0 ([section 12](#gas-without-a-calibration-the-host-cost-floor)) |
+| `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at every extra trie-node count up to its worst case ([section 12](#worst-case-storage-gas-trie-depth)) |
+| `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
+| `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
+| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
+| `MtGasIds` | 3 | gas mode, with a burn table of your own measured on larger NEP-245 batches: the most ids a batch may carry before it is an `Assert` (`CalibStdMt` is measured at 1-3; the resolver's burn grows faster than linearly) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
+| `MtGasIdLen` | 2 | gas mode, with a burn table of your own measured on longer NEP-245 token ids: the most bytes an id (`MtIdLen`, else the model id's length) may have before a call carrying it is an `Assert` (`CalibStdMt` is measured on 2-byte ids; the burn grows with the length) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
+
+**Tokens**
+
+| definition | default | override when |
+|---|---|---|
 | `TokFtGasShape` | `"standard"` per token | the token is near-contract-standards 3.x/4.x style: `"reserve"`. This can change verdicts, not only gas windows; tokens built on 3.x/4.x (many older deployments) use the reserve shape, so check your token's version |
 | `TokOnTransferStatic`, `TokOnTransferWeight` | -1 per token (the shape's default) | the token gives `ft_on_transfer` a different static or weight |
 | `TokResolveStatic` | 5000 Ggas per token | the token's resolver has a different static gas |
 | `TokResolveMaxLen` | 42 bytes per token (`FtMaxResultLen`) | the token is near-contract-standards 5.23.0 or older (3.x/4.x) and reads the receiver's result unbounded: -1. With 42, a longer result counts as all unused ([T2](SEMANTICS.md#t2-ft_resolve_transfer)) |
-| `MaxBlk` | `0` (no clock) | the model uses the block clock: the bound on `blk` ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)) |
-| `YieldTicks` | `0` | the model uses the clock: a yield's timeout in ticks (nearcore: 200 blocks) |
-| `TickAnytime` | `TRUE` | no handler reads `blk` or `BlockTs`: `FALSE` lets blocks pass only while a yield's deadline is ahead, which saves states |
-| `StoragePerByte` | `FALSE` | the model tracks storage in bytes: `TRUE` replaces the fixed `StorageFloor` with `stor` priced per byte ([section 15](#15-storage-staking-per-byte)) |
-| `StorageInit` | 0 bytes for every account | with `StoragePerByte`: each account's storage usage at the start (record, keys, code, data). An entry of at most 770 bytes is exempt |
-| `StorBytes` | empty | handlers read measured bytes with `OStorKey(O, key, size)`: the calibrator's table, `[key -> [base, per]]` keyed like `GasBurn` (a missing key is an `Assert`; unread without `StoragePerByte`) ([section 15](#bytes-from-the-calibrator)) |
-| `InstantFirst` | `TRUE` | never, unless you want the over-approximation without instant receipts ([S5](SEMANTICS.md#s5-instant-receipts)): `FALSE` lets other receipts, transactions and blocks run between a receipt and the lone DeleteAccount it creates |
-| `AcctParent` | every account top-level | the model creates sub-accounts: each account's direct parent, `Parents({<<"s.c", "c">>})` ([section 16](#16-creating-and-deleting-accounts)) |
-| `TopCreator` | `"top-creator"` (no model account) | the model creates top-level accounts: the account standing for the protocol's `registrar_account_id` |
-| `CodeSize` | 0 bytes for every account | with `StoragePerByte` and DeleteAccount: the code bytes in each contract's `StorageInit`, which the 10,000-byte delete limit leaves out |
-| `CodeLen` | 0 bytes for every code tag | with `StoragePerByte` and DeployContract: the bytes of each code tag a model deploys, `("child" :> 300000)` ([section 16](#16-creating-and-deleting-accounts)) |
-| `EthWalletCode` | `"eth_wallet"` | a model reads `CodeOf`: the tag of the eth wallet contract an eth-implicit account gets when a Transfer creates it (again) |
-| `InitCode` | `"code"` for every account | a model reads `CodeOf` and its contracts start with different code: each account's tag at the start (only the accounts in `Contracts` have code) |
-| `InitGCode` | nothing published | global contracts published at the start: a function from identifiers (`GHash(t)`, `GAcct(a)`) to code tags, `(GHash("child") :> "child")` ([section 16](#global-contracts)) |
-| `InitUses` | no account uses one | accounts that run a global contract at the start: account to identifier; it wins over `InitCode`. With `StoragePerByte`, count the identifier's bytes (`IdLen`) in `StorageInit` |
-| `GlobalByteCost` | `<<1, 10000>>` (0.0001 NEAR per byte) | your NEAR unit is not 1 NEAR, as for `StorageByteCost`: the burn of a DeployGlobalContract per code byte, `num/den` units; the burn of a deploy must be a whole number of units (an `Assert`) |
-| `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
-| `StorageByteCost` | `<<1, 100000>>` (1 unit = 1 NEAR) | your NEAR unit is not 1 NEAR: one byte costs `num/den` units, `<<1, 100>>` for 1 unit = 1 milliNEAR |
-| `IdBytes(s)`, `KeyBytes(p)` | 10; the borsh formula | `NearKeys`, with `StoragePerByte`: the real length of the receiver id a model id stands for (method names count as written, or as `WithMethodBytes` states); another key type (a key with an allowance, `WithAllowance`, already counts its 16 bytes) |
-| `TokRegBytes` | 0 per token and holder | with `StoragePerByte`: `TokRegBytes[t][h]`, the bytes holder `h`'s registration adds to token `t`, for every `h` in `TokHolders[t]` (near-contract-standards: `StdRegBytes(len(id))` = 61 + the real id's length, measured; `TokStorageMin` stays the price of the longest id, `StdRegBytes(64)` = 125 bytes) |
-| `ResultReadGas` | `TRUE` | never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
-| `TokEvents` | `TRUE` | never, unless keeping older behaviour or the model declares the token's events itself: `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
 | `EvAcctLen`, `EvAmtExp`, `MtIdLen` | each model value's own length | the events' byte lengths matter: the real length of account ids and token ids, a token's decimal exponent ([section 8](#event-logs)) |
 | `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) (at least 1) |
-| `MtGasIds` | 3 | gas mode, with a burn table of your own measured on larger NEP-245 batches: the most ids a batch may carry before it is an `Assert` (`CalibStdMt` is measured at 1-3; the resolver's burn grows faster than linearly) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
-| `MtGasIdLen` | 2 | gas mode, with a burn table of your own measured on longer NEP-245 token ids: the most bytes an id (`MtIdLen`, else the model id's length) may have before a call carrying it is an `Assert` (`CalibStdMt` is measured on 2-byte ids; the burn grows with the length) ([section 8](#batches-of-hundreds-of-ids-id-classes)) |
-| `TrieGasWorst` | `FALSE` | gas mode, and the model declares storage writes with `OWriteKey`: `TRUE` also runs each such receipt at every extra trie-node count up to its worst case ([section 12](#worst-case-storage-gas-trie-depth)) |
+
+**Leave at the default.** These keep an older model's behaviour, or save states at the cost of hiding behaviours. A new model sets none of them.
+
+| definition | default | override when |
+|---|---|---|
+| `CallsNeedCode` | `TRUE` | never, unless you are keeping an older model's behaviour (calls run whatever code the receiver has; a missing receiver still fails them) |
+| `BurnLostRefunds` | `TRUE` | never, unless keeping older behaviour (a refund to a missing account stays in flight) |
+| `InstantFirst` | `TRUE` | never, unless you want the over-approximation without instant receipts ([S5](SEMANTICS.md#s5-instant-receipts)): `FALSE` lets other receipts, transactions and blocks run between a receipt and the lone DeleteAccount it creates |
+| `ResultReadGas` | `TRUE` | never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
+| `TokEvents` | `TRUE` | never, unless keeping older behaviour or the model declares the token's events itself: `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
+| `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 | `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
-| `TrieAcctLen` | 64 | with `TrieGasWorst`: the real length of the receiver's account id in bytes (one value for all accounts) |
-| `HostFloorGas` | `FALSE` | gas mode without a calibrated table: `TRUE` adds the host-cost floor of each outcome's declared writes and logs to its burn, and a missing `GasBurn` key counts as 0 ([section 12](#gas-without-a-calibration-the-host-cost-floor)) |
-| `TokBatchPerAction` | `TRUE` | token batches should be one gas pool with the whole-batch key: `FALSE` (also set `PooledGasOK <- TRUE` if the batch has several gas entries) ([section 12](#per-action-gas-pa)) |
-| `NearFees!FeeRounding` | `"up"` | you want the fee table's earlier rounding to the nearest Ggas, closer to nearcore's figures but able to understate a fee by a few Ggas: `"nearest"`. A definition inside the `NearFeeTable` instance, so the key is module-qualified: `"NearFees!FeeRounding" = '"nearest"'`, which the runner turns into a generated definition and TLC's `FeeRounding <- [NearFees] <that definition>`. In a hand-written cfg, define the value in your spec (`FeeNearest == "nearest"`) and write `FeeRounding <- [NearFees] FeeNearest`: TLC rejects a string literal on the right of `<-` as an undefined identifier. `"up"` also keeps the unused-gas split from handing out its whole-Ggas remainder ([N-precision](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs), [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)). A module-qualified key overrides definitions only; the runner rejects one that names a `CONSTANT` |
 
 A value for an overridable definition is a definition in your spec, named in `runs.toml`.
 Pick names the library does not export (`ReserveShape`, for example, is a `Nep141` operator):
@@ -290,8 +322,8 @@ the callback goes into the postponed set, and the callback's own `cb` is the cal
 ```tla
 H_ping(r) ==
     LET w  == Rcpt(nid, r.tx, D, C, "work", r.a, 0, C, nid + 1)
-        cb == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
-    IN Outcome({w}, {cb}, RProm, 0, 2)
+        dn == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
+    IN Outcome({w}, {dn}, RProm, 0, 2)
 ```
 
 `RProm` returns the promise: the caller's result is the callback's. `examples/pay/Pay.tla`
@@ -890,7 +922,10 @@ can make a callback run out while its call succeeded. In gas mode:
   as the region around each edge: a failure can exist only at high gas;
 - a receipt needs `Burn + Σ over its children (fee + static)`. `Burn` comes from
   `GasBurn[key] = [base, per]` (`base + per * size`); each child's static, weight and exec fee
-  come from `GasCall[key] = [st, wt, fee]`, looked up as `"acct.method"`, then `"method"`;
+  come from `GasCall[key] = [st, wt, fee]`, looked up as `"acct.method"`, then `"method"`.
+  For a function-call child, `fee` is the exec fee its creator prepays,
+  `NearFeeTable!OneCallReceiptExecFee(n)` with `n` the method name's length plus the argument
+  bytes; its send fees are part of the creator's burn;
 - if the need exceeds the attached gas, the receipt runs out of gas and fails like any
   failure. A panic whose outcome names its panic-path burn key (`OPanicKey(O, k)`) is
   labelled out of gas when that burn plus the children created before the panic exceeds the
@@ -1058,9 +1093,10 @@ Every counterexample carries a label (`Label`):
   panics or does not exist, an untrusted receiver).
 - `"caller-gas"`: a real out-of-gas in gas mode. The `oog` ghost lists `<<tx, method>>` of what
   ran out. Reachable by choosing the prepaid gas.
-- `"no-fault"`: neither. The bug needs no failure at all, only an order.
+- `"no-fault"`: neither. Any failure in the trace follows from the code and the accounts (a
+  `require!`, a missing account), so the bug needs only the order of receipts shown.
 
-Put the label in your printed output when you triage. `LogOn = TRUE` keeps a per-receipt log
+The counterexample story prints the label on its last line. `LogOn = TRUE` keeps a per-receipt log
 in `rlog` (`[tx, id, m, to, st, g]`), which is what conformance runs compare.
 
 ### Owed callbacks and detached work

@@ -44,8 +44,10 @@ each receipt runs on its own, later, on the account that receives it.
   with the same revert scope as any failure.
 - **Order is loose.** Receipts of different transactions interleave freely. Even two receipts
   from one account to another can run in the opposite order to the one they were created in
-  ([S4](SEMANTICS.md#s4-no-per-pair-order)). A transaction whose signer is also its receiver
-  starts with a local receipt, which runs earlier ([S1](SEMANTICS.md#s1-local-receipts-first-the-exact-rule)).
+  ([S4](SEMANTICS.md#s4-no-per-pair-order)). One exception: a transaction whose signer is also
+  its receiver starts with a local receipt, which runs in the same chunk, ahead of the
+  receipts already waiting for that account
+  ([S1](SEMANTICS.md#s1-local-receipts-first-the-exact-rule)).
 
 Most cross-contract bugs come from these rules: a callback that trusts a failed call, state
 committed before a call that later fails, a refund that arrives after something else has used
@@ -55,7 +57,9 @@ the money, a callback starved of gas.
 
 TLA+ describes a system as **states** and **steps**. A state is a value for each variable.
 A step is a relation between one state and the next, written with primed variables:
-`n' = n + 1` means "in the next state, `n` is one more than now".
+`n' = n + 1` means "in the next state, `n` is one more than now". A **behaviour** is one
+possible run of the system: a sequence of states, starting from an initial state, each
+following from the one before by a step.
 
 - **A spec** gives the initial states (`Init`) and the steps allowed from any state (`Next`).
   `Next` is usually a disjunction (`\/`) of actions: "a user submits a transaction, or some
@@ -69,10 +73,26 @@ A step is a relation between one state and the next, written with primed variabl
   many faults. TLC checks every behaviour within those bounds, exhaustively. It does not prove
   anything about larger bounds.
 
-You need very little TLA+ syntax to read a near-tla model: records `[a |-> 1, b |-> 2]`, sets
-`{1, 2}`, sequences `<<1, 2>>`, functions `[a \in S |-> 0]`, `LET .. IN`, `IF .. THEN .. ELSE`,
-`CASE`, `\E x \in S : P` (some x) and `\A x \in S : P` (every x). The video course and
-the reference on the TLA+ website explain each in a few minutes.
+In a near-tla model, each step is one of: a user submits a transaction, one runnable receipt
+runs (atomically, as on NEAR), TLC forces a fault, or the block clock ticks. Any runnable
+receipt may go next. There are no blocks, chunks or shards, so the model allows every order
+that the receipts' dependencies allow
+([N-shards](SEMANTICS.md#over-approximations)).
+
+You need little TLA+ syntax to read a near-tla model:
+
+- definitions `F == ...` and `F(x) == ...`; `/\` (and), `\/` (or), `~` (not), `=>` (implies),
+  `#` (not equal);
+- `x'` (x in the next state) and `UNCHANGED x` (x stays the same);
+- records `[a |-> 1, b |-> 2]` and their fields `r.a`; sets `{1, 2}`; sequences `<<1, 2>>`;
+- functions `[a \in S |-> 0]`, `f[k]`, and `[f EXCEPT ![k] = v]` (f with one entry changed);
+- `LET .. IN`, `IF .. THEN .. ELSE`, `CASE`;
+- `\E x \in S : P` (some x) and `\A x \in S : P` (every x);
+- `LAMBDA t : e` (a nameless operator), and TLC's `k :> v` (a one-entry function) and `f @@ g`
+  (two functions merged, `f` winning).
+
+Leslie Lamport's [video course](https://lamport.azurewebsites.net/video/videos.html) and
+[Learn TLA+](https://learntla.com) explain each of these.
 
 ## How near-tla fits together
 
@@ -110,7 +130,7 @@ run; most names are defined in `modules/NearAsync.tla`.
 | transaction | `Submit(WithGas(Rcpt(...), g))` | a step of your `Next`; `r.tx` is its transaction id |
 | receipt | a record built by `Rcpt(id, tx, to, fr, m, a, dep, rto, cb)` | every receipt has the same fields |
 | receiver, predecessor | `r.to`, `r.fr` | `env::current_account_id()`, `env::predecessor_account_id()` |
-| signer | `Signer(r)` | read from `txsig`; switch it off with `TrackSigner <- FALSE` if the model never reads it |
+| signer | `Signer(r)` | read from `txsig`; switch it off with `TrackSigner = 'FALSE'` in `runs.toml` if the model never reads it |
 | method and arguments | `r.m`, `r.a` | `r.a` is a record you define |
 | attached deposit | `r.dep` | in toy units of NEAR |
 | refund account | `r.rto` | the predecessor, unless the contract set `refund_to` |
@@ -126,11 +146,29 @@ run; most names are defined in `modules/NearAsync.tla`.
 | liquid balance | `near[a]` | |
 | prepaid gas | `WithGas(r, g)` | in Ggas: 1 Tgas = 1000 Ggas |
 | static gas, weight | `GasCall` table, or `WithStatic`, `WithWeight` | per method |
-| gas burnt | `GasBurn` table | per method or per code path (`OKey`) |
+| gas burnt | `GasBurn` table | per method, or per code path: `OKey(O, key)` makes an outcome burn under its own key |
 | ran out of gas | recorded in `oog` | |
 | a failure TLC may inject | `ForcedFail(r)`, for methods in `MayFail`, at most `MaxFails` times | counted in `fails` |
 | nothing in flight | `Idle` | no ready receipts, no postponed callbacks, no data |
-| Transfer, refund | receipts with `m = "XFER"`, `m = "REFUND"` | run by `ExecBuiltin` |
+| Transfer, refund | receipts with `m = XFER`, `m = REFND` (the strings `"XFER"`, `"REFUND"`) | run by `ExecBuiltin`. A Transfer fails if its receiver is a named account that does not exist, or when `MayFail` contains `"XFER"`; its amount then comes back to `rto` as a refund. A `DeleteAccount`'s payout to the beneficiary is a `REFUND` receipt too |
+| NEAR received | `paid[tx][a]` | what account `a` received from Transfers and refunds in transaction `tx`; per-payee properties read it |
+| method returns a promise | `RProm`, and the returned receipt's `cb = r.cb` | the caller then gets that promise's result |
+| `#[private]` | `IF r.fr # r.to THEN OErr(O, "private") ELSE O` | omit it when no step of the model calls the method from another account |
+| `promise_and` (joint callback) | a callback with `ins`, the ids of the data it waits for | [USAGE section 14](USAGE.md#14-joint-callbacks-yieldresume-and-the-block-clock) |
+| yield / resume | a postponed callback with a deadline `ydl` | it runs with the resumed value, or with Failed at its timeout |
+| owed callback | `WithOwed`, `OwedMethods`, checked by `OwedOK` | a callback that must not fail, because it completes or undoes earlier work ([USAGE](USAGE.md#owed-callbacks-and-detached-work)) |
+
+Terms of the method itself:
+
+| term | meaning |
+|---|---|
+| platform | the library's part of the model: its variables (`platformVars`), the receipt pool, balances, gas and the built-in receipts |
+| must-pass run | a run with `expect = "pass"`: every invariant must hold |
+| must-fail run | a run with `expect = "violation"`: a deliberately broken variant that must break the named invariant, showing the invariant can catch that bug |
+| vacuous pass | a pass that proves nothing, because the run never reached the situation the invariant is about, or the invariant could not fail |
+| witness | a situation that must be reachable in a passing run; `--anti-vacuity` fails if TLC never reaches it |
+| mutant | a small deliberate bug patched into a copy of the model; some passing run must then fail, or the properties miss that kind of bug |
+| label | what a counterexample needs: `forced` (a forced fault), `caller-gas` (out of gas at a prepaid amount the caller chose) or `no-fault` (neither); printed on the story's last line |
 
 The full list of what each operator encodes, with nearcore citations, is in
 [SEMANTICS.md](SEMANTICS.md).
@@ -158,18 +196,23 @@ A run that passes means: **in every behaviour TLC explored, every invariant held
 strong statement, with four limits.
 
 1. **Within the bounds.** TLC explored the runs' constants: so many users, so many
-   transactions (`MaxTx`), so many forced faults (`MaxFails`), the prepaid gas amounts in the
-   menu. A bug that needs three transactions is invisible to a run with two.
+   transactions (`MaxTx`), so many forced faults (`MaxFails`), the prepaid gas amounts the
+   run lists. A bug that needs three transactions is invisible to a run with two. A method outside
+   `MayFail` fails only where the model makes it fail: an `OErr` in its handler, a missing
+   account, or running out of gas in gas mode.
 2. **For your abstraction of the contract.** The handlers are hand-written. If a handler
    skips a branch the real code has, the model cannot find bugs in that branch
    ([N-wasm](SEMANTICS.md#scope-limits)).
 3. **Under the rules the library encodes.** Those are nearcore's at protocol version 88
-   (nearcore 2.14.0-rc.5). Some runtime behaviour is left out. Most omissions are
-   over-approximations, which can only add behaviours. But 25 of the 51 entries in
-   [Not modelled](SEMANTICS.md#not-modelled) are under-approximations, which can hide bugs,
-   and several apply at the default settings (for example per-byte storage staking, off by
-   default, and the rounding of fees and burns). Read that list for the features your
-   contract uses.
+   (nearcore 2.14.0-rc.5). Some runtime behaviour is left out, and each omission is listed in
+   [Not modelled](SEMANTICS.md#not-modelled). Over-approximations only add behaviours, so
+   they can give a counterexample no network reaches, but never hide a bug.
+   Under-approximations can hide bugs. Some apply to every model: storage is not tracked per
+   byte unless you turn it on, gas is not money (no gas price, purchase or refund of unused
+   gas as NEAR), the protocol's size limits are not counted, and a failing receipt's burn is
+   not modelled. Others apply only when your contract uses the feature, or in gas mode. The
+   [at-a-glance table](SEMANTICS.md#not-modelled-at-a-glance) says which apply at the
+   defaults; read it for the features your contract uses.
 4. **For the properties you wrote.** TLC checks the invariants you list and nothing else.
    A property that is too weak (a total that balances while one user's money moves to
    another) passes on a broken contract.
@@ -222,7 +265,9 @@ Accounts are strings, so TLC's symmetry reduction does not apply.
 - **TLC only.** The library uses TLC's `Assert`, `PrintT`, `TLCGet` and `TLCSet`, and the
   runner overrides definitions through the TLC config. Apalache and TLAPS will not check it as
   it is.
-- **One flat namespace.** Models `EXTENDS` the modules, so library operator names are visible
-  in your model. If TLC reports a name clash, rename your operator.
+- **One flat namespace.** Models `EXTENDS` the modules, so the library's variables and
+  operators are visible in your model, and your names must differ from them. TLC reports a
+  clash only as a warning in its log and then fails with an unrelated-looking error, so the
+  runner checks for clashes and names them before the run.
 - **Toy units.** Balances and deposits are small integers; gas is in Ggas. The fee operators
   take bytes, and some sizes are in KB ([Units](SEMANTICS.md#units)).

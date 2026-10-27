@@ -540,7 +540,13 @@ them. A model that lists platform variables one by one must add each.
   created, and which other variables changed, field by field. Promise-result sentinels are
   decoded (`v = -4` prints as `NOPR`), platform variables that never change are left out, the
   step header keeps the action's module and line, and the model's variables are listed
-  together at the last state. `tlctrace.py --raw` prints the previous summary.
+  together at the last state. The last line gives the counterexample's label (`forced`,
+  `caller-gas` or `no-fault`, the library's `Label`). Receipts that share an id, a sign of a
+  wrong `ids` count, are flagged. `tlctrace.py --raw` prints the previous summary.
+- **A warning for names that clash with the library** (`tools/run.py`). A model that declares
+  a variable, constant or top-level definition the modules it extends already have (`locked`,
+  `paid`) gets a warning naming each one before the run; TLC itself reports the clash only in
+  its log, as a SANY warning, and then fails with an unrelated error.
 - **`platform_defaults = true` in `runs.toml`** (`tools/run.py`). Fills the `NearAsync`
   constants a model leaves unset with neutral values: `Exists = Accounts`, no staking
   (`StakingAcct` any account, `MinStake = 1`, `MaxEpoch = MaxReward = 0`), a zero
@@ -552,7 +558,14 @@ them. A model that lists platform variables one by one must add each.
   USAGE), `docs/VALIDATING.md` (replaying a counterexample in a near-workspaces sandbox or the
   sim, and writing it up), and index tables in `docs/SEMANTICS.md`.
 - **An agent skill**, `skills/near-tla/SKILL.md`: the method as steps with checks, for coding
-  agents.
+  agents, from an inventory of the contract to a sandbox replay and a findings report.
+- **`examples/minimal` follows its own tutorial more closely.** Its dispatcher arms no longer
+  overlap (`~IsBuiltin(r) /\ r.to = D`); `done` is marked owed (`OwedMethods`, `OwedOK`),
+  with its `logs` gap accepted; and a new mutant, `ok_guard_dropped`, checks that a missing
+  `Ok(r, O)` guard is caught. Its state counts are unchanged.
+- **A witness violated by the initial state fails** (`tools/run.py --anti-vacuity`), as
+  `reached at Init`: it shows nothing was reached, and is almost always a situation written
+  without its `~( )`.
 - **The runner's audit** (`tools/audit.py`; RUNNER "Auditing what the runs reach", habit 7
   of "The method"). On by default for plain runs, `--no-audit` to turn it off. The runner sets
   `NearAsync.AuditOn`, so `Exec` prints one fact per distinct receipt it runs, once per TLC

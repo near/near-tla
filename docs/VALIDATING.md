@@ -60,7 +60,8 @@ python3 tools/run.py <path> <run> --print-trace
 
 For a log kept with `--keep` (in `build/` beside the `runs.toml`),
 `python3 tools/tlctrace.py <log>` prints the same. [RUNNER.md](RUNNER.md#reading-a-counterexample)
-explains every kind of line. Here is `tally_trusting`, from State 2 on:
+explains every kind of line. Here is `tally_trusting`, from State 2 on (the runner prints it
+indented under the run's row in the table, after a `trace:` line):
 
 ```
 State 2: Ping (Tally:70)
@@ -86,6 +87,7 @@ The model's variables at the last state:
     ntx = 1
     works = 0
     gas = <<0, 0>>
+Label: forced (the forced-fault switch fired; ask whether the network can cause that failure)
 ```
 
 The words that matter for a replay:
@@ -93,16 +95,25 @@ The words that matter for a replay:
 - `submitted #1 ping u->c` is a new transaction: signer `u` calls `ping` on `c`. `#1` is the
   model's receipt id; on the network a receipt id is a hash.
 - `created #2 work c->d` is a receipt that `#1` created. `result to #3` means its result goes
-  to receipt `#3`. `(postponed)` marks a callback waiting for its results.
-- `ran #k ...: <outcome>` is a receipt running. The outcome is `committed`, `failed`,
-  `failed (forced fault)`, `failed (deposit refunded)` or `out of gas`.
-- `seeing X` is the promise result a callback read; `data -> #3: X` is a result on its way to
-  receipt `#3`. `X` is `Failed`, a number, or one of `EMPTY`, `MAL`, `NONEMPTY`, `NOPR`
-  ([section 7 of USAGE](USAGE.md#7-reading-promise-results)).
+  to receipt `#3`. `(postponed)` marks a callback waiting for its results; a joint callback
+  (`promise_and`) or a yield says what it waits for. A joint callback waits for data ids, so
+  `result to #5` on a call that feeds one names data id 5, not a receipt.
+- `ran #k ...: <outcome>` is a receipt running. The outcome is `committed`,
+  `committed (deleted a)` or `committed (created a)`, `failed`, `failed (forced fault)`,
+  `failed (deposit refunded)`, `out of gas`, or `burnt (a does not exist; 2 burnt)` for a
+  refund to an account that no longer exists
+  ([The kinds of line](RUNNER.md#the-kinds-of-line) explains each).
+- `seeing X` is the promise result a callback read: for a joint callback, one per input in
+  order (`seeing Failed, 1`), and for a yield whose deadline passed, `seeing Failed (timed out)`.
+  `data -> #3: X` is a result on its way to receipt `#3`. `X` is `Failed`, a number, or one of
+  `EMPTY`, `MAL`, `NONEMPTY`, `NOPR` ([section 7 of USAGE](USAGE.md#7-reading-promise-results)).
 - `gas g` on a receipt is its attached gas in Ggas (1 Tgas = 1000 Ggas); on a submitted
   receipt it is the transaction's prepaid gas. Fault-mode traces show none.
 - Deposits and balances are in the model's toy units, not yoctoNEAR
   ([Vocabulary](CONCEPTS.md#vocabulary)).
+- `Label:` on the last line says what kind of failure the trace needs: `forced` (a forced
+  fault fired), `caller-gas` (a receipt ran out of gas at the prepaid amount chosen) or
+  `no-fault` (neither). [Step 2](#step-2-decide-what-each-failure-needs) says what each needs.
 
 Now turn the story into a list. Write down every transaction, every receipt, every failure,
 and every place where the order was a choice:
@@ -115,25 +126,33 @@ Order:         none chosen: #1 creates #2 and #3, and #3 waits for #2's result
 Property:      Counted (n = works once nothing is in flight): n = 1, works = 0
 ```
 
-The order line is the one people skip. Two receipts are ordered by the trace itself only if
-one descends from the other: it was created by the other, directly or through other receipts,
-or waits for its result. A transaction submitted after a receipt ran can follow that receipt on
-a network too, because its user can wait. Any other pair (two children of one receipt, the
-receipts of two transactions in flight together) ran in an order the model chose, and the
-replay has to reach that order or argue that it is reachable.
+The order line is the one people skip. The trace itself fixes the order of two receipts when:
+
+- one created the other, directly or through other receipts;
+- one waits for the other's result;
+- one belongs to a transaction sent after the other ran (its user can wait for that).
+
+The model chose every other order, such as two children of one receipt, or the receipts of two
+transactions in flight together. The replay must reach that order, or you must argue that it
+is reachable.
 
 ## Step 2: decide what each failure needs
 
 On a real network nothing fails "because the model said so". Each failure in the trace needs
-a cause the replay can produce.
+a cause the replay can produce, and you name that cause before you build the replay.
+
+A **stub**, a small contract you deploy in place of another, may stand in only for a
+*receiver* that can really fail, or answer that way, on the network: an untrusted token, a
+callee that panics on some input or state. Never stub the contract under test: its own code
+must run as compiled. With no real-network cause, the trace does not reproduce, and a stub
+would only make it look as if it did.
 
 - **`failed (forced fault)`.** The forced-fault switch fired: the method is in `MayFail`, and
   TLC failed it without a reason ([F1](SEMANTICS.md#f1-forced-fault-switch-versus-gas-mode)).
-  The counterexample's label is `"forced"`
-  ([section 13 of USAGE](USAGE.md#13-the-forced-fault-switch-and-labels)). Find a cause on
-  real wasm:
-  - a receiver that panics: deploy a stub in its place, or put the real receiver in a state
-    where it panics (an unregistered account, a balance too low);
+  Find a cause on real wasm:
+  - a receiver that can panic on the network: put the real receiver in a state where it
+    panics (an unregistered account, a balance too low), or, if it is a contract you do not
+    control, deploy a stub in its place that panics, and say why the real one can;
   - a prepaid gas at which it runs out: possible only if the receipt's gas depends on the
     prepaid amount (it gets a weighted share of its creator's leftover,
     [G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)) or its burn grows with
@@ -145,19 +164,28 @@ a cause the replay can produce.
 
   If no cause exists, the trace does not reproduce as it stands
   ([When it does not reproduce](#when-it-does-not-reproduce)).
-- **`out of gas`.** A gas-mode failure: the receipt's need exceeded its attached gas. The
-  label is `"caller-gas"`. Reproduce it with the transaction's prepaid gas, the `gas` on the
-  `submitted` line, not with a fault. The story cannot always tell a second out-of-gas of the
-  same method in the same transaction from a plain failure, and then says
-  `(or out of gas again: ...)`.
+- **`out of gas`.** A gas-mode failure: the receipt's need exceeded its attached gas.
+  Reproduce it with the transaction's prepaid gas, the `gas` on the `submitted` line, not with
+  a fault. The story cannot always tell a second out-of-gas of the same method in the same
+  transaction from a plain failure, and then says `(or out of gas again: ...)`.
 - **`failed` or `failed (deposit refunded)`.** The handler panicked (`OErr`), an action failed,
   or a host limit was hit. Reproduce it with the same arguments and state.
+- **`committed (deleted a)`, `committed (created a)` and `burnt (...)`.** Not failures, so they
+  need no cause: an account action committed, or a refund reached an account that no longer
+  exists (usually one a `DeleteAccount` earlier in the trace removed) and was burnt. Replay
+  those steps as they are.
 - **A receiver's answer the model chose.** A callback `seeing` a number, `EMPTY`, `MAL` or
   `NONEMPTY` from a receiver the model lets answer anything (for example through
-  `RecvOutcome`). Reproduce it with a stub receiver that returns those bytes.
-- **An order the model chose.** A run labelled `"no-fault"` needs no failure at all, only an
-  order. Force the order where you can (the sim), and otherwise argue it from nearcore's
-  rules ([below](#what-the-sandbox-cannot-do-force-an-order)).
+  `RecvOutcome`). If the real receiver can answer with those bytes, reproduce it with a stub
+  receiver that returns them.
+- **An order the model chose.** A trace with no failure at all needs only an order. Force the
+  order where you can (the sim), and otherwise argue it from nearcore's rules
+  ([below](#what-the-sandbox-cannot-do-force-an-order)).
+
+The trace's last line, `Label: ...`, gives the library's label for the whole trace: `forced`
+if any forced fault fired, else `caller-gas` if a receipt ran out of gas, else `no-fault`
+([section 13 of USAGE](USAGE.md#13-the-forced-fault-switch-and-labels)). A trace can hold
+failures of several kinds, so go through each failure line, not only the label.
 
 If the failed receipt is marked owed or detached, the library records the failure in its
 variable `ofail`, with the cause (`why`) and, for out of gas, the gas the receipt had (`g`) and
@@ -165,23 +193,28 @@ needed (`need`) ([Owed callbacks and detached work](USAGE.md#owed-callbacks-and-
 
 ## Step 3: replay it
 
+With public tools, a counterexample that depends on receipt order is confirmed in its failures
+only; its order is argued from SEMANTICS S1-S5 and the code, and the write-up says so. The
+sandbox cannot force an order
+([What the sandbox cannot do](#what-the-sandbox-cannot-do-force-an-order)); only the private
+sim can.
+
 ### In a local sandbox with near-workspaces
 
 [near-workspaces](https://github.com/near/near-workspaces-rs) (Rust) starts a local nearcore
-node, the sandbox, deploys your compiled wasm to it, and sends real transactions. It is public.
-This section uses the near-workspaces 0.23 API. The model encodes protocol 88 (nearcore
-2.14.0-rc.5, [Reference revision](SEMANTICS.md#reference-revision)); in the near-workspaces
-repository, the `near-workspaces-v0.23.0` tag runs a nearcore 2.13 sandbox, and nearcore 2.14
-support came in the commit tagged `near-workspaces-v0.24.0-rc.1`, with the same API. Use a
-release that runs nearcore 2.14 where you can, and record which version the sandbox ran:
-`worker.status().await?` returns the node's version and protocol version. The sandbox runs on
-macOS (Intel and Apple silicon) and on x86-64 Linux.
+node, the sandbox, deploys your compiled wasm to it, and sends real transactions. It is public,
+and the sandbox runs on macOS (Intel and Apple silicon) and on x86-64 Linux.
+
+The model encodes nearcore 2.14 (protocol 88, nearcore 2.14.0-rc.5;
+[Reference revision](SEMANTICS.md#reference-revision)). near-workspaces 0.24 runs a
+nearcore 2.14 sandbox; 0.23 has the same API but runs nearcore 2.13. Record what the sandbox
+ran: `worker.status().await?` returns the node's version and protocol version.
 
 Put the replay in an integration test of your contract's crate:
 
 ```toml
 [dev-dependencies]
-near-workspaces = "0.23"
+near-workspaces = "0.24"          # runs a nearcore 2.14 sandbox
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 anyhow = "1"
@@ -253,6 +286,10 @@ Notes on each part:
   Use the deposit your contract expects, not the model's toy number.
 - **Prepaid gas.** Without `.gas(..)` a call gets 10 Tgas, a different transaction from the
   trace's. `.max_gas()` attaches 1000 Tgas.
+- **Balances.** Unused gas comes back to the signer as a refund receipt a block or more after
+  the call, and the signer paid for all the prepaid gas up front. Compare the contract's own
+  state (its ledger, its counts) where you can. To compare NEAR balances, `worker.fast_forward(5)`
+  first, attach only the gas the trace needs, and allow for the gas the signer paid.
 
 #### Read the outcome
 
@@ -283,8 +320,12 @@ outcome's block: `worker.view_block().block_hash(o.block_hash).await?.height()`.
 #### Make a receiver fail or answer
 
 near-workspaces has no fault injection. To make a receiver fail, or return a chosen value,
-deploy a small stub contract in its place. This one, in near-sdk 5, panics in `work` by
-default, and returns bytes you choose once `set_answer` is called:
+deploy a small stub contract in its place, but only for a receiver that can really fail or
+answer that way on the network, never for the contract under test
+([Step 2](#step-2-decide-what-each-failure-needs)).
+
+This stub, in near-sdk 5, panics in `work` by default, and returns bytes you choose once
+`set_answer` is called:
 
 ```rust
 use near_sdk::{env, near};
@@ -421,11 +462,9 @@ order is reachable on a network.
 Load can reorder receipts without any switch. S4's buffer bypass was shown in the sim with no
 fault injected: large calls (about 1.2 MB each) filled the link's grant, and a later small call
 between the same two accounts ran a block before the ones still buffered. You can try to build
-that load in the
-sandbox. Short of that, a counterexample whose bug needs a specific interleaving cannot be
-forced there. Replay the
-failure parts in the sandbox, then argue the order from nearcore's rules and the contract's
-code, and write the argument down:
+that load in the sandbox. Short of that, a counterexample whose bug needs a specific
+interleaving cannot be forced there. Replay the failure parts in the sandbox, then argue the
+order from nearcore's rules and the contract's code, and write the argument down:
 
 - [S1](SEMANTICS.md#s1-local-receipts-first-the-exact-rule): a transaction's first receipt is
   local when its receiver is its signer, and runs in the same chunk before delayed and incoming
@@ -521,9 +560,13 @@ Gas verdicts need the same care without measured burns
 
 - keep to fault mode for conclusions that depend on a burn you estimated;
 - use gas mode with the host-cost floor (`HostFloorGas <- TRUE`, an empty `GasBurn`, and the
-  static gas and weights your contract declares) for each callback with a fixed budget. A
-  callback that runs out on the floor runs out on real wasm too: that is a finding, not an
-  estimate ([Gas without a calibration](USAGE.md#gas-without-a-calibration-the-host-cost-floor));
+  static gas and weights your contract declares) for each callback with a fixed budget
+  ([Gas without a calibration](USAGE.md#gas-without-a-calibration-the-host-cost-floor)). The
+  floor is sound only for a callback with weight 0 whose declared writes and logs happen on
+  that path, whose static gas is the code's, and whose trie charge, if the trace uses one, is
+  reachable. Its rule, [G7](SEMANTICS.md#g7-a-floor-from-host-costs), was checked by reading
+  nearcore only. So replay at the trace's gas before you report a callback that runs out on
+  the floor;
 - treat every other gas window, and every pass on the floor, as illustrative.
 
 ## When it does not reproduce
@@ -565,11 +608,11 @@ from it: transactions, receipts, failures, orders.
 panics, prepaid gas p, a state).
 
 **Replay.** One of:
-- sandbox: the test file, the near-workspaces version, the sandbox's nearcore and protocol
-  version (`worker.status()`), the wasm's sha256, and what it showed;
+- sandbox: the test file, the wasm's sha256, and what it showed;
 - sim: the test file, the sim's revision, and what it showed;
 - by code reading: not replayed, and the walk-through.
-For any order the replay could not force, the argument from SEMANTICS S1-S5.
+Whether the trace's order was reproduced or argued. For any order the replay could not force,
+the argument from SEMANTICS S1-S5.
 
 **Run.** The model directory and run name, the command, and the bounds and switches of the
 run: MaxTx, MayFail, MaxFails, GasMode (and GasMenu, the gas tables and where their numbers
@@ -577,8 +620,9 @@ come from), whether the model conjoins LocalPriorityOK, MaxBlk, InstantFirst, Fe
 TrieGasWorst, HostFloorGas.
 
 **Versions.** The near-tla commit (`git rev-parse HEAD` in your checkout) and release; the
-nearcore rules it encodes (protocol 88, nearcore 2.14.0-rc.5, from SEMANTICS); the contract's
-commit and the wasm's sha256.
+nearcore rules it encodes (protocol 88, nearcore 2.14.0-rc.5, from SEMANTICS); for a sandbox
+replay, the near-workspaces version and the sandbox's nearcore and protocol versions
+(`worker.status()`); the contract's commit and the wasm's sha256.
 
 **Fix.** The change, the model run that passes with it, and the must-fail run that still
 fails on the old code.

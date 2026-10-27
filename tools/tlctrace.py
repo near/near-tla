@@ -17,8 +17,9 @@ the action name and only the variables that changed.
 `summary(text)` does the same for any spec, and for a near-tla model (one with the
 platform variables rq and post) tells each step as a story instead:
 
-    State 3: RunReceipt (Tally:83)
-        ran #2 work c->d (tx 1, gas 5100): out of gas
+    State 4: RunReceipt (Tally:82)
+        ran #2 work c->d: out of gas
+            (tx 1, gas 5000, result to #3)
         data -> #3: Failed
 
 It names the receipt each step ran and how it ended (committed, failed, out of gas,
@@ -301,6 +302,12 @@ def rcpt_details(r) -> str:
     g = r.get("g")
     if isinstance(g, Seq) and any(x != 0 for x in g):
         bits.append("gas " + ", ".join(fmt(x) for x in g))
+    ac = r.get("ac")
+    if isinstance(ac, Rec):
+        acts = (["CreateAccount"] if ac.get("mk") is True else []) + \
+               ([f"DeleteAccount, beneficiary {_plain(ac['bnf'])}"] if ac.get("bnf") not in (None, "") else [])
+        if acts:
+            bits.append(" + ".join(acts))
     res = r.get("res")
     if isinstance(res, Rec) and res.get("v") != -4:
         bits.append(f"sees {result_text(res)}")
@@ -315,6 +322,37 @@ def rcpt_details(r) -> str:
     return ", ".join(bits)
 
 
+def _inputs(r) -> list:
+    """The data ids receipt r waits on: its `ins` for a joint callback, else its own id."""
+    ins = r.get("ins") if isinstance(r, Rec) else None
+    return list(ins) if isinstance(ins, Seq) else [r.get("id")] if isinstance(r, Rec) else []
+
+
+def _seeing(r, P: dict, S: dict) -> str:
+    """The promise results receipt r consumed when it ran, in input order."""
+    gone = [d for d in _new(S.get("data"), P.get("data")) if isinstance(d, Rec)]
+    seen = []
+    for i in _inputs(r):
+        hit = [d for d in gone if d.get("to") == i]
+        if hit:
+            seen.append(result_text(hit[0]))
+    if seen:
+        return f", seeing {', '.join(seen)}"
+    if "ydl" in r:
+        return ", seeing Failed (timed out)"
+    return ""
+
+
+def _waits(r) -> str:
+    """For a postponed receipt: what it waits on."""
+    if "ydl" in r:
+        return f" (postponed: a yield, until resumed or block {r['ydl']})"
+    ins = r.get("ins")
+    if isinstance(ins, Seq):
+        return f" (postponed: a joint callback, waits for the results sent to {', '.join(f'#{x}' for x in ins)})"
+    return " (postponed)"
+
+
 def _by_id(*sets) -> dict:
     out = {}
     for s in sets:
@@ -324,19 +362,45 @@ def _by_id(*sets) -> dict:
     return out
 
 
+def _dup_ids(*sets) -> list:
+    ids = [r["id"] for s in sets if isinstance(s, list) for r in s if isinstance(r, Rec) and "id" in r]
+    return sorted({i for i in ids if ids.count(i) > 1})
+
+
 def _new(prev, cur) -> list:
     """Elements of set `cur` not in set `prev`, by their text."""
     seen = {fmt(x) for x in prev} if isinstance(prev, list) else set()
     return [x for x in cur if fmt(x) not in seen] if isinstance(cur, list) else []
 
 
+def _grew(P: dict, S: dict, k: str) -> list:
+    return _new(P.get(k), S.get(k))
+
+
 def _outcome(r, P: dict, S: dict, added: dict, new_data: list) -> str:
     """How receipt r, gone between states P and S, ended. Read from the platform
-    variables: NearAsync's Commit and Fail differ in what they leave behind."""
-    if _new(P.get("oog"), S.get("oog")):
+    variables: NearAsync's commit and failure paths differ in what they leave behind.
+    The rules, in order:
+      out of gas        oog gained an element
+      forced fault      fails grew
+      burnt             a refund ran and burnt grew (its receiver is gone)
+      account action    deleted or created gained an account: the action committed
+      failed            a Failed data receipt went to r's callback, or nothing but a fresh
+                        id changed, or a system refund with the next id appeared while no
+                        balance moved (a failure leaves `near` unchanged)
+      committed         anything else
+    """
+    if _grew(P, S, "oog"):
         return "out of gas"
     if isinstance(S.get("fails"), int) and S["fails"] > P.get("fails", 0):
         return "failed (forced fault)"
+    if r.get("m") == "REFUND" and isinstance(S.get("burnt"), int) and S["burnt"] > P.get("burnt", 0):
+        return f"burnt ({_plain(r.get('to'))} does not exist; {S['burnt'] - P.get('burnt', 0)} burnt)"
+    gone, made = _grew(P, S, "deleted"), _grew(P, S, "created")
+    if gone or made:
+        what = [f"deleted {', '.join(_plain(x) for x in gone)}"] if gone else []
+        what += [f"created {', '.join(_plain(x) for x in made)}"] if made else []
+        return f"committed ({'; '.join(what)})"
     # oog is a set of <<tx, method>>: a second out-of-gas of the same method in the same
     # transaction does not grow it, so that failure reads as a plain one.
     again = " (or out of gas again: oog already holds this tx and method)" \
@@ -344,11 +408,12 @@ def _outcome(r, P: dict, S: dict, added: dict, new_data: list) -> str:
     if r.get("cb") and any(isinstance(d, Rec) and d.get("to") == r["cb"] and d.get("ok") is False
                            for d in new_data):
         return "failed" + again
+    still = fmt(P.get("near")) == fmt(S.get("near"))
     nid0 = P.get("nid")
     refund = added.get(nid0)
-    if refund is not None and refund.get("m") == "REFUND" and refund.get("fr") == "system":
+    if still and refund is not None and refund.get("m") == "REFUND" and refund.get("fr") == "system":
         return "failed (deposit refunded)" + again
-    if isinstance(nid0, int) and S.get("nid") == nid0 + 1 and nid0 not in added and not new_data:
+    if still and isinstance(nid0, int) and S.get("nid") == nid0 + 1 and nid0 not in added and not new_data:
         return "failed" + again
     return "committed"
 
@@ -403,7 +468,8 @@ def story(text: str, width: int = 160) -> str:
                 lines.append(f"    {k} = {_cut(fmt(S[k]), width)}")
             hidden = [k for k in names if k in PLATFORM and k not in changes]
             if hidden:
-                lines.append(f"    ({len(hidden)} platform variables never change here; --raw shows them)")
+                lines.append(f"    ({len(hidden)} platform variables never change here; "
+                             "to see them, rerun with --keep, then tools/tlctrace.py --raw <log>)")
             prev = S
             continue
         if not S:  # "Stuttering", or a state TLC printed without variables
@@ -411,19 +477,19 @@ def story(text: str, width: int = 160) -> str:
         P = prev
         before = _by_id(P.get("rq"), P.get("post"))
         after = _by_id(S.get("rq"), S.get("post"))
+        dup = _dup_ids(S.get("rq"), S.get("post"))
         added = {i: r for i, r in after.items() if i not in before}
         new_data = _new(P.get("data"), S.get("data"))
         said = []
         for i, r in before.items():
             if i not in after:
-                seen = [d for d in _new(S.get("data"), P.get("data")) if isinstance(d, Rec) and d.get("to") == i]
-                sees = f", seeing {', '.join(result_text(d) for d in seen)}" if seen else ""
+                sees = _seeing(r, P, S)
                 said.append(f"ran {rcpt_head(r)}{sees}: {_outcome(r, P, S, added, new_data)}")
                 if rcpt_details(r):
                     said.append(f"    ({rcpt_details(r)})")
         old_tx = {r.get("tx") for r in before.values()} | set(range(1, 1 + _txs(P)))
         for i, r in sorted(added.items()):
-            where = " (postponed)" if any(x is r for x in S.get("post", [])) else ""
+            where = _waits(r) if any(x is r for x in S.get("post", [])) else ""
             verb = "submitted" if not said and r.get("tx") not in old_tx else "created"
             said.append(f"{verb} {rcpt_text(r)}{where}")
         for i, r in after.items():
@@ -436,16 +502,36 @@ def story(text: str, width: int = 160) -> str:
             if k in STORY_VARS:
                 continue
             _diff(k, P.get(k), S[k], said)
+        if dup:
+            said.append(f"warning: receipts share an id ({', '.join(f'#{i}' for i in dup)}): check the ids "
+                        "count of the Outcome that created them")
         if not said:
             said.append("(no change)")
         lines += [f"    {_cut(s, width)}" for s in said]
         prev = S
     mine = [k for k in names if k not in PLATFORM]
+    last = next((vs for _, _, vs in reversed(st) if vs), {})
     if len(st) > 1 and mine:
-        last = next(vs for _, _, vs in reversed(st) if vs)
         lines.append("The model's variables at the last state:")
         lines += [f"    {k} = {_cut(fmt(last[k]), width)}" for k in mine]
+    if "fails" in last and "oog" in last:
+        lines.append(f"Label: {_label(last)}")
     return "\n".join(lines)
+
+
+LABELS = {
+    "forced": "the forced-fault switch fired; ask whether the network can cause that failure",
+    "caller-gas": "a receipt ran out of gas at a prepaid amount the caller chose",
+    "no-fault": "no forced fault and no out-of-gas; any failure follows from the code and the accounts",
+}
+
+
+def _label(S: dict) -> str:
+    """The library's Label of a counterexample, from its last state (NearAsync's Label)."""
+    fails = str(S.get("fails", "0"))
+    k = ("forced" if fails.isdigit() and int(fails) > 0
+         else "caller-gas" if fmt(S.get("oog")) != "{}" else "no-fault")
+    return f"{k} ({LABELS[k]})"
 
 
 def _txs(S: dict) -> int:
@@ -467,13 +553,15 @@ def summary(text: str, width: int = 160) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--width", type=int, default=160, help="truncate values to N chars (0 = no limit)")
+    ap.add_argument("--width", type=int, default=None,
+                    help="truncate values to N chars (0 = no limit; default 160, and no limit with --raw)")
     ap.add_argument("--raw", action="store_true", help="every variable as TLC printed it, changes only")
     ap.add_argument("log")
     a = ap.parse_args(argv)
     with open(a.log, encoding="utf-8", errors="replace") as f:
         text = f.read()
-    print(raw_summary(text, a.width) if a.raw else summary(text, a.width))
+    width = a.width if a.width is not None else (0 if a.raw else 160)
+    print(raw_summary(text, width) if a.raw else summary(text, width))
     return 0
 
 

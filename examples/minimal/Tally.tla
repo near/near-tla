@@ -40,8 +40,8 @@ TGasBurn == ("ping" :> [base |-> 1000, per |-> 0])
 \* ping(): D.work().then(C.done()); returns done's result.
 H_ping(r) ==
     LET w  == Rcpt(nid, r.tx, D, C, "work", r.a, 0, C, nid + 1)
-        cb == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
-    IN Outcome({w}, {cb}, RProm, 0, 2)
+        dn == Rcpt(nid + 1, r.tx, C, C, "done", r.a, 0, C, r.cb)
+    IN Outcome({w}, {dn}, RProm, 0, 2)
 
 \* done(): count the work only if it succeeded (Trusting: count it anyway).
 H_done(r) == Outcome({}, {}, RVal(EMPTY), 0, 0)
@@ -62,9 +62,9 @@ RunD(r) ==
 
 (* ---- dispatcher, transactions, Next ----------------------------------- *)
 Step(r) ==
-    CASE IsBuiltin(r) -> ExecBuiltin(r) /\ UNCHANGED mine     \* Transfer, refund, Stake
-      [] r.to = D     -> RunD(r)
-      [] OTHER        -> RunC(r)
+    CASE IsBuiltin(r)              -> ExecBuiltin(r) /\ UNCHANGED mine  \* Transfer, refund, Stake
+      [] ~IsBuiltin(r) /\ r.to = D -> RunD(r)
+      [] OTHER                     -> RunC(r)
 
 Ping ==
     /\ ntx < MaxTx

@@ -20,27 +20,37 @@ entry has four fields:
 - **nearcore:** the source lines it comes from, at commit b7b4737.
 - **Model:** the operator or constant that encodes it, in `modules/NearAsync.tla` unless
   another module is named.
-- **Validated:** how far the rule has been checked, as a level. **sim** means the rule's case
-  ran in near-contract-sim, which executes receipts with nearcore's own runtime, and agreed:
-  either a conformance flow compared the model with the sim receipt by receipt, or a test in
-  `conformance/tests/` checked nearcore against the rule as written here. **nearcore
-  reading** means the rule was read in the nearcore source and not run. **recalled** means
-  neither: treat it as an assumption. Many entries split a rule into parts at different
-  levels.
+- **Validated:** how far the rule has been checked, as a level. From weakest to strongest:
+  - **recalled:** neither read nor run. Treat it as an assumption.
+  - **nearcore reading:** read in the nearcore source, not run. **source read** is the same
+    for code outside nearcore: a NEP text, near-sdk or a token library, read at the version
+    the entry names.
+  - **sim:** the rule's case ran in near-contract-sim, which executes receipts with
+    nearcore's own runtime, and agreed. This covers two kinds of check. Where the entry
+    names a conformance flow, the flow compared the model with the sim receipt by receipt
+    ("sim, model compared"). Where it names a test in `conformance/tests/`, the test
+    checked nearcore against the rule as written here, with no model run ("sim, nearcore
+    behaviour only").
+
+  **model-only** stands apart: the rule is about the model itself, with no nearcore
+  behaviour to check it against (T7, F2, and F1's fault mode). Many entries split a rule
+  into parts at different levels.
 
 The full definitions, with the size of the conformance run, are under
-[How to read the entries](#how-to-read-the-entries). The [rule index](#rule-index) below lists
-every rule with its level.
+[How to read the entries](#how-to-read-the-entries). The [rule index](#rule-index) below gives
+every rule's weakest and best part. It does not separate the two kinds of "sim"; the entry
+does.
 
-**What a pass means.** When TLC finds no violation in a model, that result holds only:
+Receipt order is not part of the conformance comparison (see "What is compared" in
+[CONFORMANCE.md](CONFORMANCE.md#what-is-compared)). The ordering rules rest on targeted sim
+tests ([S1](#s1-local-receipts-first-the-exact-rule), [S4](#s4-no-per-pair-order)) and on
+reading nearcore ([S2](#s2-ordering-otherwise)).
 
-- within the run's bounds: the finite constants it sets, such as `MaxBlk` for the block clock
-  and `MaxFails` for forced faults;
-- for the model's hand-written abstraction of the contract, not the contract's wasm
-  ([N-wasm](#scope-limits));
-- under the rules on this page, with the switches at the values the run sets (the defaults
-  unless it overrides them);
-- at protocol 88 ([Reference revision](#reference-revision)).
+**What a pass means.** A pass holds only within limits, which
+[What a pass means](CONCEPTS.md#what-a-pass-means) lists. This page supplies the ones that
+come from the library: the rules a pass assumes and how far each is checked, the switches
+that change them (a run gets the defaults unless it overrides them), the protocol version
+they encode (88, [Reference revision](#reference-revision)), and what they leave out.
 
 What the library leaves out is listed under [Not modelled](#not-modelled), in three kinds. An
 **under-approximation** allows less behaviour than nearcore, or a different outcome, so it can
@@ -95,111 +105,113 @@ One row per rule, grouped by family; the id links to the entry.
 
 - **Main operators** are the operators, constants or switches the entry's Model field names
   first, in `NearAsync` unless a module is named.
-- **Validated** is the strongest level the entry reports for any part of the rule, with the
-  version or contract it was checked on where the entry limits it to one. **model-only** (T7,
-  F2) marks a rule about the model itself, with no nearcore counterpart.
-- **Partial** marks an entry whose Validated field leaves a named part of the rule at a weaker
-  level: nearcore reading, source read, recalled, or not testable in the sim. Read the entry
-  to see which part.
+- **Weakest part** is the lowest level the entry's Validated field gives any part of the
+  rule, with that part in brackets. Treat the rule as checked no better than this.
+- **Best part** is the highest level the entry reports for any part of the rule, with the
+  version or contract it was checked on where the entry limits it to one. Where the two
+  columns agree, the whole rule is at that level.
+- The levels, from weakest to strongest: recalled; nearcore reading or source read; sim.
+  **model-only** (T7, F2, and F1's fault mode) marks a rule about the model itself, with no
+  nearcore counterpart. [Reading this page](#reading-this-page) defines each.
 
 **[Receipts](#receipts)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [R1](#r1-action-receipts-and-data-receipts) | Action receipts and data receipts | `Rcpt`, `DataOf`, `DataOfSz` | sim | partial |
-| [R2](#r2-a-data-receipt-may-arrive-before-or-after-the-receipt-that-waits-on-it) | A callback runs once all its inputs arrive | `Runnable` | sim | |
-| [R3](#r3-one-atomic-step-per-receipt) | One atomic step per receipt | `Exec`, `Verdict`, `Ok` | sim | partial |
-| [R4](#r4-revert-scope-only-the-failing-receipt) | A failure reverts only that receipt | `FailP`, `FailOOG` | sim | partial |
-| [R5](#r5-deposit-refund-on-failure) | Deposit refunded on failure | `rto`, `ExecTransfer`, `ExecTransferFail` (`RefundBurn`) | sim | |
-| [R6](#r6-protocol-limits) | Protocol limits (actions, promises, inputs, logs) | `NActs`, `HostLimitErr`, `OLog` | sim | partial |
+| [R1](#r1-action-receipts-and-data-receipts) | Action receipts and data receipts | `Rcpt`, `DataOf`, `DataOfSz` | nearcore reading (the action receipt's other fields) | sim |
+| [R2](#r2-a-data-receipt-may-arrive-before-or-after-the-receipt-that-waits-on-it) | A callback runs once all its inputs arrive | `Runnable` | sim | sim |
+| [R3](#r3-one-atomic-step-per-receipt) | One atomic step per receipt | `Exec`, `Verdict`, `Ok` | nearcore reading (no other receipt interleaves) | sim |
+| [R4](#r4-revert-scope-only-the-failing-receipt) | A failure reverts only that receipt | `FailP`, `FailOOG` | nearcore reading (the proposals and burnt amounts it clears) | sim |
+| [R5](#r5-deposit-refund-on-failure) | Deposit refunded on failure | `rto`, `ExecTransfer`, `ExecTransferFail` (`RefundBurn`) | sim | sim |
+| [R6](#r6-protocol-limits) | Protocol limits (actions, promises, inputs, logs) | `NActs`, `HostLimitErr`, `OLog` | nearcore reading (a delegate's inner actions, 4 MiB of code, yields' promises, nested `promise_and` calls) | sim |
 
 **[Callbacks and promise results](#callbacks-and-promise-results)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [C1](#c1-callbacks-always-run) | Callbacks run, and see `Failed` for a failed input | `DataOf`, `IsFailed` | sim | |
-| [C2](#c2-a-callback-can-itself-fail) | A callback can itself fail | `Exec`, `ForcedFail` | sim | partial |
-| [C3](#c3-promise-result-shapes) | Promise result shapes | `RVal`, `IsFailed`, `NoRes` | sim | partial |
-| [C4](#c4-result-size) | Result size, bounded reads, read gas | `RValSz`, `RValLen`, `ResTooLong`, `OReadRes` | sim | partial |
-| [C5](#c5-returning-a-promise-forwards-its-result) | Returning a promise forwards its result | `RProm` | sim | |
-| [C6](#c6-joint-promises-promise_and) | Joint promises (`promise_and`) | `AndThen`, `JointRes`, `ResAt` | sim | partial |
-| [C7](#c7-yield-and-resume-nep-519) | Yield and resume (NEP-519) | `YieldRcpt`, `OResume`, `CanResume`, `PendingYieldRcpts` | sim | partial |
+| [C1](#c1-callbacks-always-run) | Callbacks run, and see `Failed` for a failed input | `DataOf`, `IsFailed` | sim | sim |
+| [C2](#c2-a-callback-can-itself-fail) | A callback can itself fail | `Exec`, `ForcedFail` | nearcore reading (what the callback reverts) | sim |
+| [C3](#c3-promise-result-shapes) | Promise result shapes | `RVal`, `IsFailed`, `NoRes` | nearcore reading (`NotReady`) | sim |
+| [C4](#c4-result-size) | Result size, bounded reads, read gas | `RValSz`, `RValLen`, `ResTooLong`, `OReadRes` | nearcore reading (protocol 87's input limit); source read (the bounded read) | sim |
+| [C5](#c5-returning-a-promise-forwards-its-result) | Returning a promise forwards its result | `RProm` | sim | sim |
+| [C6](#c6-joint-promises-promise_and) | Joint promises (`promise_and`) | `AndThen`, `JointRes`, `ResAt` | nearcore reading (the callback runs after the last input) | sim |
+| [C7](#c7-yield-and-resume-nep-519) | Yield and resume (NEP-519) | `YieldRcpt`, `OResume`, `CanResume`, `PendingYieldRcpts` | nearcore reading (the callback runs after the resume or timeout) | sim |
 
 **[Gas](#gas)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [G1](#g1-prepaid-gas) | Prepaid gas bounds a call | `WithGas`, `LastGas` | sim | |
-| [G2](#g2-static-gas-checked-at-promise-creation) | Static gas reserved at promise creation | `GasOK`, `KidsCost`, `ZeroGasKid` | sim | |
-| [G3](#g3-weight-and-the-leftover-split-distribute_gas) | Leftover gas split by weight | `Give`, `Share`, `SureShare`, `PerAction` | sim | |
-| [G4](#g4-who-pays-action-send-and-exec-fees) | The creator pays send and exec fees | `NearFees`: `ActionFee`, `TransferFeeTotal`, `DataDepFee` | sim | partial |
-| [G5](#g5-out-of-gas-revert-scope) | Out of gas is an ordinary failure | `FailOOG` | sim | |
-| [G6](#g6-storage-gas-and-trie-depth) | Storage writes pay per trie node (opt-in) | `OWriteKey`, `TrieGasWorst`, `TrieGasAt` | sim | partial |
-| [G7](#g7-a-floor-from-host-costs) | A floor from host costs (opt-in) | `HostFloorGas`, `HostFloor` | nearcore reading | |
+| [G1](#g1-prepaid-gas) | Prepaid gas bounds a call | `WithGas`, `LastGas` | sim | sim |
+| [G2](#g2-static-gas-checked-at-promise-creation) | Static gas reserved at promise creation | `GasOK`, `KidsCost`, `ZeroGasKid` | sim | sim |
+| [G3](#g3-weight-and-the-leftover-split-distribute_gas) | Leftover gas split by weight | `Give`, `Share`, `SureShare`, `PerAction` | sim | sim |
+| [G4](#g4-who-pays-action-send-and-exec-fees) | The creator pays send and exec fees | `NearFees`: `ActionFee`, `TransferFeeTotal`, `DataDepFee` | nearcore reading (fees of function-call children) | sim |
+| [G5](#g5-out-of-gas-revert-scope) | Out of gas is an ordinary failure | `FailOOG` | sim | sim |
+| [G6](#g6-storage-gas-and-trie-depth) | Storage writes pay per trie node (opt-in) | `OWriteKey`, `TrieGasWorst`, `TrieGasAt` | nearcore reading (the `2L + 2` bound) | sim |
+| [G7](#g7-a-floor-from-host-costs) | A floor from host costs (opt-in) | `HostFloorGas`, `HostFloor` | nearcore reading | nearcore reading |
 
 **[Accounts](#accounts)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [A1](#a1-account-existence) | Account existence | `Exists`, `AcctExists` | sim | partial |
-| [A2](#a2-account-types-by-id-pattern) | Account type from the id pattern | `RcvKinds`, `AcctKind`, `IsImplicit`, `UniversalOn` | sim | partial |
-| [A3](#a3-implicit-account-creation-on-transfer) | A Transfer creates an implicit account | `ExecTransfer`, `NearKeys.ExecTransferK` | sim | partial |
-| [A4](#a4-transfer-to-a-missing-named-account-fails-and-refunds) | A Transfer to a missing named account fails | `ExecTransferFail` | sim | |
-| [A5](#a5-function-call-to-an-account-without-code-fails) | A call to an account without code fails | `CallTargetOK`, `HasCode`, `CallsNeedCode` | sim | |
-| [A6](#a6-createaccount) | CreateAccount | `CreateAcctRcpt`, `ExecAcct`, `AcctErr` | sim | |
-| [A7](#a7-deleteaccount) | DeleteAccount | `DeleteAcctRcpt`, `WithDeleteTo`, `DeletesAcct` | sim | |
-| [A8](#a8-account-actions-in-a-call-receipt) | Account actions and a call in one receipt | `WithCreate`, `WithDeleteTo`, `AcCallErr`, `BalSeen` | sim | |
-| [A9](#a9-deploycontract) | DeployContract | `WithDeploy`, `DeployRcpt`, `CodeOf` | sim | |
-| [A10](#a10-global-contracts-nep-591) | Global contracts (NEP-591) | `WithDeployGlobal`, `WithUseGlobal`, `ExecGDist` | sim | |
+| [A1](#a1-account-existence) | Account existence | `Exists`, `AcctExists` | nearcore reading (state inits) | sim |
+| [A2](#a2-account-types-by-id-pattern) | Account type from the id pattern | `RcvKinds`, `AcctKind`, `IsImplicit`, `UniversalOn` | nearcore reading | sim (fees by pattern only) |
+| [A3](#a3-implicit-account-creation-on-transfer) | A Transfer creates an implicit account | `ExecTransfer`, `NearKeys.ExecTransferK` | nearcore reading (the eth-wallet hash; a call to an eth-implicit account) | sim |
+| [A4](#a4-transfer-to-a-missing-named-account-fails-and-refunds) | A Transfer to a missing named account fails | `ExecTransferFail` | sim | sim |
+| [A5](#a5-function-call-to-an-account-without-code-fails) | A call to an account without code fails | `CallTargetOK`, `HasCode`, `CallsNeedCode` | sim | sim |
+| [A6](#a6-createaccount) | CreateAccount | `CreateAcctRcpt`, `ExecAcct`, `AcctErr` | sim | sim |
+| [A7](#a7-deleteaccount) | DeleteAccount | `DeleteAcctRcpt`, `WithDeleteTo`, `DeletesAcct` | sim | sim |
+| [A8](#a8-account-actions-in-a-call-receipt) | Account actions and a call in one receipt | `WithCreate`, `WithDeleteTo`, `AcCallErr`, `BalSeen` | sim | sim |
+| [A9](#a9-deploycontract) | DeployContract | `WithDeploy`, `DeployRcpt`, `CodeOf` | sim | sim |
+| [A10](#a10-global-contracts-nep-591) | Global contracts (NEP-591) | `WithDeployGlobal`, `WithUseGlobal`, `ExecGDist` | sim | sim |
 
 **[Signer and access keys](#signer-and-access-keys)**, with M1 (multi-action receipts), which
 sits at the end of that section
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [K1](#k1-signer-and-signer-public-key-propagate) | Signer and its key propagate | `Signer`, `SignerKey`, `SubmitAs`, `TrackSigner` | sim | partial |
-| [K2](#k2-full-access-versus-function-call-keys) | Full-access versus function-call keys | `NearKeys`: `KeyCanSign`, `SubmitSigned`, `WithAllowance` | sim | partial |
-| [K3](#k3-addkey-and-deletekey) | AddKey and DeleteKey | `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct` | sim | |
-| [K4](#k4-delegate-actions-nep-366-meta-transactions) | Delegate actions (meta transactions) | `NearKeys`: `SignedDelegate`, `SubmitDelegate`, `ExecDelegate` | sim | partial |
-| [K5](#k5-transaction-nonces) | Transaction nonces | `NearKeys`: `SignedTx`, `TxErr`, `SubmitTx` | sim | partial |
-| [M1](#m1-multi-action-receipts-are-atomic) | Multi-action receipts are atomic | `NearKeys`: `ExecWithKeys`, `WithKeyActs`; `TokBatchPerAction` | sim | |
+| [K1](#k1-signer-and-signer-public-key-propagate) | Signer and its key propagate | `Signer`, `SignerKey`, `SubmitAs`, `TrackSigner` | nearcore reading (the refunds' signer) | sim |
+| [K2](#k2-full-access-versus-function-call-keys) | Full-access versus function-call keys | `NearKeys`: `KeyCanSign`, `SubmitSigned`, `WithAllowance` | nearcore reading (the no-key bootstrap; a re-added key's refund) | sim |
+| [K3](#k3-addkey-and-deletekey) | AddKey and DeleteKey | `NearKeys`: `AddKeyRcpt`, `DelKeyRcpt`, `ExecKeyAct` | sim | sim |
+| [K4](#k4-delegate-actions-nep-366-meta-transactions) | Delegate actions (meta transactions) | `NearKeys`: `SignedDelegate`, `SubmitDelegate`, `ExecDelegate` | nearcore reading (`DelegateV2`; a delegate carrying a delegate) | sim |
+| [K5](#k5-transaction-nonces) | Transaction nonces | `NearKeys`: `SignedTx`, `TxErr`, `SubmitTx` | nearcore reading (the order of the checks; `NonceTooLarge`) | sim |
+| [M1](#m1-multi-action-receipts-are-atomic) | Multi-action receipts are atomic | `NearKeys`: `ExecWithKeys`, `WithKeyActs`; `TokBatchPerAction` | sim | sim |
 
 **[Scheduling](#scheduling)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [S1](#s1-local-receipts-first-the-exact-rule) | Local receipts first (opt-in) | `LocalPriorityOK`, `Schedulable` | sim | partial |
-| [S2](#s2-ordering-otherwise) | Otherwise any enabled receipt runs next | `Runnable` | sim (two parts, through S1 and S4) | partial |
-| [S3](#s3-block-clock) | Block clock | `blk`, `BlockTick`, `MaxBlk`, `ClockHorizonOK` | sim | partial |
-| [S4](#s4-no-per-pair-order) | No per-pair order | none: no ordering constraint | sim | partial |
-| [S5](#s5-instant-receipts) | Instant receipts (a lone DeleteAccount) | `InstantTag`, `InstantPending`, `InstantFirst` | sim | partial |
+| [S1](#s1-local-receipts-first-the-exact-rule) | Local receipts first (opt-in) | `LocalPriorityOK`, `Schedulable` | nearcore reading (the storage-proof limit) | sim |
+| [S2](#s2-ordering-otherwise) | Otherwise any enabled receipt runs next | `Runnable` | nearcore reading | sim (two parts only, through S1 and S4) |
+| [S3](#s3-block-clock) | Block clock | `blk`, `BlockTick`, `MaxBlk`, `ClockHorizonOK` | nearcore reading (the epoch height) | sim |
+| [S4](#s4-no-per-pair-order) | No per-pair order | none: no ordering constraint | nearcore reading (missed chunks) | sim |
+| [S5](#s5-instant-receipts) | Instant receipts (a lone DeleteAccount) | `InstantTag`, `InstantPending`, `InstantFirst` | nearcore reading (a contract's own self-delete) | sim |
 
 **[Staking and balance](#staking-and-balance)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [B1](#b1-stake-action-failures) | Stake action failures | `ExecStake`, `EpochTick` | sim | partial |
-| [B2](#b2-balance-must-cover-storage-lackbalanceforstate) | Balance must cover storage | `StoragePerByte`, `Affordable`, `StorageFloor`, `OStor` | sim | |
+| [B1](#b1-stake-action-failures) | Stake action failures | `ExecStake`, `EpochTick` | nearcore reading (the epoch-side release and rewards) | sim |
+| [B2](#b2-balance-must-cover-storage-lackbalanceforstate) | Balance must cover storage | `StoragePerByte`, `Affordable`, `StorageFloor`, `OStor` | sim | sim |
 
 **[Tokens](#tokens)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [T1](#t1-nep-141-ft_transfer--ft_transfer_call) | NEP-141 `ft_transfer` / `ft_transfer_call` | `Nep141` / `Tokens`: `TokHandle`, `TokStep` | sim (5.29.1) | |
-| [T2](#t2-ft_resolve_transfer) | `ft_resolve_transfer` and its 42-byte bound | `ResolveRefundLim`, `NumOrChecked`, `TokResolveMaxLen` | sim (5.29.1) | |
-| [T3](#t3-gas-behaviour-of-ft_transfer_call-version-dependent) | Gas of `ft_transfer_call`, by version | `TokFtGasShape` | sim (5.29.1) | partial |
-| [T4](#t4-nep-145-storage_deposit) | NEP-145 storage management | `Nep145`: `SdAct`, `SuAct`, `SbAct` | sim (5.29.1) | |
-| [T5](#t5-nep-245-multi-token) | NEP-245 multi token | `Nep245`: `MtBatchResolveAct`, `MtGasShape`, `MtIdCount` | sim (near-sdk-contract-tools 4.0.0) | |
-| [T6](#t6-wnear) | wNEAR | `WNear` | sim (the repo's wNEAR-like probe only; wNEAR itself recalled) | partial |
-| [T7](#t7-token-deviations) | Token deviations | `Deviations`, `TokDev`, `MtDev` | model-only | |
-| [T8](#t8-event-logs-nep-297) | Event logs (NEP-297) | `EvLen`, `FtTransferLog`, `MtTransferLog`, `TokEvents` | sim | partial |
+| [T1](#t1-nep-141-ft_transfer--ft_transfer_call) | NEP-141 `ft_transfer` / `ft_transfer_call` | `Nep141` / `Tokens`: `TokHandle`, `TokStep` | source read (the NEP text) | sim (5.29.1) |
+| [T2](#t2-ft_resolve_transfer) | `ft_resolve_transfer` and its 42-byte bound | `ResolveRefundLim`, `NumOrChecked`, `TokResolveMaxLen` | source read (other versions) | sim (5.29.1) |
+| [T3](#t3-gas-behaviour-of-ft_transfer_call-version-dependent) | Gas of `ft_transfer_call`, by version | `TokFtGasShape` | recalled (versions before 5.23.0) | sim (5.29.1) |
+| [T4](#t4-nep-145-storage_deposit) | NEP-145 storage management | `Nep145`: `SdAct`, `SuAct`, `SbAct` | source read (the NEP text) | sim (5.29.1) |
+| [T5](#t5-nep-245-multi-token) | NEP-245 multi token | `Nep245`: `MtBatchResolveAct`, `MtGasShape`, `MtIdCount` | source read (the NEP text) | sim (near-sdk-contract-tools 4.0.0) |
+| [T6](#t6-wnear) | wNEAR | `WNear` | recalled (wNEAR itself) | sim (the repo's wNEAR-like probe only) |
+| [T7](#t7-token-deviations) | Token deviations | `Deviations`, `TokDev`, `MtDev` | model-only | model-only |
+| [T8](#t8-event-logs-nep-297) | Event logs (NEP-297) | `EvLen`, `FtTransferLog`, `MtTransferLog`, `TokEvents` | source read (`ft_mint`, `mt_burn`) | sim |
 
 **[Failure modes in the model](#failure-modes-in-the-model)**
 
-| Id | Rule | Main operators | Validated | Partial |
+| Id | Rule | Main operators | Weakest part | Best part |
 |---|---|---|---|---|
-| [F1](#f1-forced-fault-switch-versus-gas-mode) | Forced faults versus gas mode | `GasMode`, `MayFail`, `ForcedFail` | sim (gas mode) | partial |
-| [F2](#f2-owed-callbacks-and-detached-work) | Owed callbacks and detached work | `WithOwed`, `WithDetached`, `OwedOK`, `DetachedVoided` | model-only | |
+| [F1](#f1-forced-fault-switch-versus-gas-mode) | Forced faults versus gas mode | `GasMode`, `MayFail`, `ForcedFail` | model-only (fault mode) | sim (gas mode) |
+| [F2](#f2-owed-callbacks-and-detached-work) | Owed callbacks and detached work | `WithOwed`, `WithDetached`, `OwedOK`, `DetachedVoided` | model-only | model-only |
 
 ## Reference revision
 
@@ -227,28 +239,42 @@ Each rule has four fields:
   nearcore root.
 - **Model:** the operator or constant that encodes it, in `modules/NearAsync.tla` unless another
   module is named. The names are the current code's.
-- **Validated:** one of these levels:
+- **Validated:** one of these levels. The strongest is sim and the weakest recalled;
+  model-only stands apart:
   - **sim** means a per-receipt conformance run in this repo (`conformance/`, see
-    [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model. Rules the conformance flows were
-    written to cover carry the marker `<!-- conformance -->` in the source of this page, and
-    each such entry says what the sim checked, if anything. The run on the current library
-    (74 flows, 97,162 prepaid points, 227,922 sim receipts; and the flow set `probes2`, 28 flows,
-    36,764 points, 122,825 receipts) found no status, window-edge, attached-gas or deposit
-    mismatch ([results](../conformance/README.md#results-at-the-pins)). The comparison sees
-    each receipt's status and attached gas (in `probes2` its deposit too), by transaction, the
-    yields still parked at the end, and the window edges, but not the order in which receipts
-    run; the calibration checks the leftover split and the action-only fees. A rule is "sim"
-    where a flow exercises it and that comparison would show a difference. Where a flow covers
-    only part of a rule, the entry says which part; the rest keeps its earlier level.
+    [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model ("sim, model compared"). Rules the
+    conformance flows were written to cover carry the marker `<!-- conformance -->` in the
+    source of this page, and each such entry says what the sim checked, if anything. The run on
+    the current library (74 flows, 97,162 prepaid points, 227,922 sim receipts; and the flow set
+    `probes2`, 28 flows, 36,764 points, 122,825 receipts) found no status, window-edge,
+    attached-gas or deposit mismatch ([results](../conformance/README.md#results-at-the-pins)).
+    The comparison sees each receipt's status and attached gas (in `probes2` its deposit too),
+    by transaction, the yields still parked at the end, and the window edges, but not the order
+    in which receipts run; the calibration checks the leftover split and the action-only fees. A
+    rule is "sim" where a flow exercises it and that comparison would show a difference. Where a
+    flow covers only part of a rule, the entry says which part; the rest keeps its earlier
+    level.
 
     "sim" also covers a named test in `conformance/tests/` that runs the rule's case in the
     sim and asserts what nearcore did, with no model run ("sim (`conformance/tests/<file>.rs`,
-    `<test>`)"). Such a test checks nearcore against the rule as written here, not the
-    model's encoding of it; `examples/platform-selftest` checks the encoding. These tests run
-    on the committed probe wasms and print what they observed (`--nocapture`).
+    `<test>`)"; "sim, nearcore behaviour only"). Such a test checks nearcore against the rule
+    as written here, not the model's encoding of it; `examples/platform-selftest` checks the
+    encoding. These tests run on the committed probe wasms and print what they observed
+    (`--nocapture`).
   - **nearcore reading** means the rule was read in the nearcore source at b7b4737 and not
     exercised here.
+  - **source read** is the same level for code outside nearcore: the rule was read in a NEP
+    text, near-sdk, near-contract-standards or near-sdk-contract-tools, at the version the
+    entry names, and not run. The token entries use it (T1-T5, T8, with "source only" in
+    T8), and so does C4 for near-sdk's bounded read ("SDK source read"). Where a token entry
+    adds "sim" for one version, the NEP text and the other versions it read stay at source
+    read.
   - **recalled** means it was neither read nor run. Treat it as an assumption.
+  - **model-only** means the rule is about the model itself and has no nearcore behaviour to
+    check against: a deliberate departure from a standard (T7), a check the model adds over
+    rules validated elsewhere (F2), or fault mode, which fails a receipt without naming a
+    cause (F1). The examples an entry names check that the model does what the entry says;
+    nothing compares it with nearcore.
 
 ## Units
 
@@ -2001,9 +2027,12 @@ Each rule has four fields:
   order (`chain/chain/src/stateless_validation/chunk_validation.rs:510-514`, S2), and the
   buffer bypass needs the earlier receipt not to fit the link's remaining limits. A
   counterexample that reverses such receipts can still be spurious, so its particular
-  schedule must still be shown reachable (N-shards; replay it in the sim). The library offers
-  no switch that imposes a pair order, because no such order
-  holds for all shard layouts and loads; a contract that needs one must enforce it itself
+  schedule must still be shown reachable (N-shards). Replay it on the compiled contract (or in
+  near-contract-sim, with access, which can force the order). The sandbox cannot force an
+  order: replay the failures there and argue the order from S1-S5
+  ([VALIDATING.md](VALIDATING.md#what-the-sandbox-cannot-do-force-an-order)). The library
+  offers no switch that imposes a pair order, because no such order holds for all shard
+  layouts and loads; a contract that needs one must enforce it itself
   (sequence numbers, or one message in flight at a time). `examples/pair-order` shows both:
   a receiver that assumes in-order delivery fails (`pair_assumes_fifo`), and one that keeps
   the highest sequence number seen passes (`pair_seqno_ok`).
@@ -2656,10 +2685,10 @@ against the current module code; some may be fixed in the modules later.
 
 - **Over-approximation:** the model allows more behaviour than nearcore. That is sound for
   safety (no real bug is missed), but it can produce counterexamples no network can reach.
-  Replay every counterexample in the sim.
+  Replay every counterexample on the compiled contract ([VALIDATING.md](VALIDATING.md)).
 - **Under-approximation:** the model allows less behaviour than nearcore, or replaces a
   nearcore outcome with a different one. That is **unsound**: a real bug can be missed.
-- **Scope limit:** the feature is simply absent. A contract that uses it cannot be modelled
+- **Scope limit:** the feature is absent. A contract that uses it cannot be modelled
   faithfully with this library.
 
 ### Not modelled at a glance
@@ -2681,10 +2710,10 @@ example** is what the item itself names, if anything.
 | [N-instant](#over-approximations) | over | Instant receipts run as ordinary ones | only with `InstantFirst <- FALSE`; at the default, only the order among instant receipts | `examples/account-lifecycle/instant` (`instant_off_spurious`) |
 | [N-local-off](#over-approximations) | over | With local priority off, a self-signed first receipt may run late | yes (the switch is off by default) | a violation stands unless the chunk provably cannot be at its limit (S1) |
 | [N-local-per-account](#over-approximations) | over | Local priority is per receiving account, not chunk-wide | only with the local-priority switch on | |
-| [N-tx-validity](#over-approximations) | over | Transaction checks beyond K5: nonces without `SubmitTx`, expiry, signatures | yes (`Submit`, `SubmitSigned`; no nonce ceiling) | submit with `SubmitTx` (K5); replay counterexamples in the sim |
+| [N-tx-validity](#over-approximations) | over | Transaction checks beyond K5: nonces without `SubmitTx`, expiry, signatures | yes (`Submit`, `SubmitSigned`; no nonce ceiling) | submit with `SubmitTx` (K5); replay counterexamples on the compiled contract ([VALIDATING.md](VALIDATING.md)) |
 | [N-allowance](#over-approximations) | over | An allowance is charged and refunded at once; a refund stated too low under-approximates | only with an allowance (`WithAllowance`) | `examples/session-key`; a fresh key id (`session_rekey_fresh_id`) |
 | [N-fckey-one-action](#over-approximations) | over | `KeyCanSign` cannot see key actions bundled into a call | only with `WithKeyActs` | the model requires a full-access key itself |
-| [N-delegate-rekey](#over-approximations) | over | A re-added key's delegate nonce restarts at 0 | only when a key id is deleted and added again (or its account re-created) | replay its counterexamples in the sim |
+| [N-delegate-rekey](#over-approximations) | over | A re-added key's delegate nonce restarts at 0 | only when a key id is deleted and added again (or its account re-created) | replay its counterexamples on the compiled contract ([VALIDATING.md](VALIDATING.md)) |
 | [N-delegate-expiry](#over-approximations) | over | Without a clock, a delegate with an expiry may fail at any time | yes (`MaxBlk = 0`), for a delegate with an expiry | the block clock (S3): then exact, but for N-time |
 | [N-delegate-unkeyed](#over-approximations) | over | No key, nonce or permission check for users outside `KeyAccts` | yes, for delegating users outside `KeyAccts` | put delegating users in `KeyAccts` |
 | [N-delegate-forgery](#over-approximations) | over | `SignedDelegate` can be built for any account | yes (a modelling rule) | build a user's delegate only in that user's own step |
@@ -2723,7 +2752,7 @@ example** is what the item itself names, if anything.
 | [N-deterministic](#scope-limits) | scope | State init (NEP-616) and the no-key bootstrap | yes | |
 | [N-gas-keys](#scope-limits) | scope | Gas keys (85+) | yes | |
 | [N-compute](#scope-limits) | scope | Compute costs versus gas | yes | covered by the free ordering with the local-priority switch off |
-| [N-wasm](#scope-limits) | scope | Contract semantics below the hand-written handlers | yes | replay counterexamples in the sim |
+| [N-wasm](#scope-limits) | scope | Contract semantics below the hand-written handlers | yes | a pass says nothing about it; a replay on the compiled contract checks one trace ([VALIDATING.md](VALIDATING.md)) |
 | [N-events](#scope-limits) | scope | Log contents (only their count and bytes are modelled) | yes | |
 | [N-views](#scope-limits) | scope | View calls | yes | |
 | [N-resharding](#scope-limits) | scope | Resharding and missing chunks | yes | |
@@ -2768,7 +2797,8 @@ all.
   (N-gas-money), signatures and gas-key nonces. A key added again after a DeleteKey starts
   at nonce 0, where nearcore starts it at `(h − 1) × 1e6` (N-delegate-rekey), so a
   transaction signed for the old key can run again. Each hides a refusal: a model that
-  relies on one must replay its counterexamples in the sim.
+  relies on one must replay its counterexamples on the compiled contract
+  ([VALIDATING.md](VALIDATING.md)).
 - **N-allowance. The allowance's cost and refund.** The model charges an allowance (K2) its
   transaction's stated cost (`WithTxCost`) and adds the stated refund back at once; nearcore
   adds each gas refund only when its refund receipt runs, so while refunds are in flight the
@@ -2807,8 +2837,9 @@ all.
   such replay, which is sound. A per-key high-water mark that survives a re-add would forbid
   that last replay, which nearcore allows: an under-approximation, so the model does not keep
   one. A model that deletes and re-adds a key id may see replays nearcore refuses; replay
-  them in the sim. The same holds for an account deleted and created again (A7): its keys, and
-  their nonces, start afresh.
+  those counterexamples on the compiled contract ([VALIDATING.md](VALIDATING.md)). The same
+  holds for an account deleted and created again (A7): its keys, and their nonces, start
+  afresh.
 - **N-delegate-expiry. Delegate expiry without a clock.** With `MaxBlk = 0` a delegate that has
   an expiry (`mbh # NoExpiry`) may fail at any time (`DelegMayExpire`). This also stands in for
   the outer-receipt failures the model leaves out (`DelegateActionNonceTooLarge` with no
@@ -3148,8 +3179,9 @@ all.
   example deploy, `core/parameters/res/runtime_configs/84.yaml`). This affects chunk packing,
   that is timing only, which the free ordering covers with the local-priority switch OFF.
 - **N-wasm. Contract semantics.** The model's handlers are hand-written abstractions of the
-  contract. Wasm-level behaviour (panics on overflow, serialization, unexpected host errors) is
-  covered only by replaying counterexamples in the sim.
+  contract. A pass says nothing about wasm-level behaviour: panics from overflow, serialization
+  or deserialization, unexpected host errors, and code paths the handlers leave out. A replay
+  on the compiled contract ([VALIDATING.md](VALIDATING.md)) checks it for that one trace.
 - **N-events. Logs and events (NEP-297).** Not modelled, apart from their count and bytes
   against the protocol limits (`OLog`, R6): the token handlers declare theirs (T8), a
   model's own handlers what they declare. A failed receipt keeps its logs

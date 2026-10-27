@@ -964,6 +964,53 @@ def check_constants(run: Run) -> str | None:
     return None
 
 
+_TOP_DEF = re.compile(r"^(?:LOCAL[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\([^)]*\)[ \t]*)?==", re.M)
+
+
+def _globals(src: str) -> set[str]:
+    """A module's global names: CONSTANTs, VARIABLEs and definitions that start a line
+    (LET definitions, which are indented, are local)."""
+    s = strip_tla(src)
+    out: set[str] = set(_TOP_DEF.findall(s))
+    for m in re.finditer(r"\b(?:VARIABLES?|CONSTANTS?)\b", s):
+        out.update(_id_list(s, m.end()))
+    return out
+
+
+def name_clashes(run: Run) -> str | None:
+    """A warning naming the spec's variables, constants and definitions that a module it
+    EXTENDS (the library) already declares: TLA+ reports such a clash only as a SANY
+    warning in the log, and the run then fails with an unrelated-looking error."""
+    dirs = [str(run.dir), *run.library]
+    own = Path(run.dir) / f"{run.spec}.tla"
+    if not own.is_file():
+        return None
+    src = own.read_text(encoding="utf-8", errors="replace")
+    ext = module_names(src)[0]
+    mine = _globals(src)
+    theirs: dict[str, str] = {}
+    seen: set[str] = set()
+    todo = list(ext)
+    while todo:
+        mod = todo.pop()
+        if mod in seen or mod in NO_CONSTANT_MODULES:
+            continue
+        seen.add(mod)
+        path = next((Path(d) / f"{mod}.tla" for d in dirs if (Path(d) / f"{mod}.tla").is_file()), None)
+        if path is None:
+            continue
+        msrc = path.read_text(encoding="utf-8", errors="replace")
+        for n in _globals(msrc):
+            theirs.setdefault(n, mod)
+        todo += module_names(msrc)[0]
+    clash = sorted(mine & set(theirs))
+    if not clash:
+        return None
+    named = ", ".join(f"{n} ({theirs[n]})" for n in clash)
+    return (f"{run.spec}.tla declares names the library already uses: {named}; rename them, or "
+            f"TLC may fail with an error that does not mention the clash")
+
+
 def find_tomls(p: Path) -> list[Path]:
     if p.is_file():
         return [p]
@@ -1438,6 +1485,11 @@ def do_witness(w: Witness, run: Run, jar: str, workers: int | None, keep: bool) 
         notes.append(f"vacuous: witness {w.id} never reached")
     if actual == "reached" and w.expect == "unreachable":
         notes.append(f"witness {w.id} reached, but marked unreachable ({w.reason})")
+    if actual == "reached" and "violated by the initial state" in a.tlc_text:
+        ok = False
+        actual = "reached at Init"
+        notes.append(f"vacuous: witness {w.id} is violated by the initial state, so it shows "
+                     f"nothing was reached; write the situation S as expr = '~(S)'")
     keep_or_clean(run, [a], ok, keep)
     return Outcome(run.name, rel(run.dir), w.expect, actual, ok, a.wall, run.budget_s, res.generated,
                    res.distinct, res.depth, res.tlc_seconds, notes, "" if ok and not keep else rel(a.log_path),
@@ -1909,6 +1961,10 @@ def main(argv=None) -> int:
                 r.library = [str(Path(x).resolve()) for x in lib.split(os.pathsep)]
         for r in runs:
             warn = check_constants(r)
+            if warn:
+                print(f"warning: {warn}", file=sys.stderr)
+        for spec_dir in dict.fromkeys((r.dir, r.spec) for r in runs):
+            warn = name_clashes(next(r for r in runs if (r.dir, r.spec) == spec_dir))
             if warn:
                 print(f"warning: {warn}", file=sys.stderr)
         if a.list:

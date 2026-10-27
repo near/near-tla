@@ -12,8 +12,9 @@ sandbox happens to produce.
 near-tla encodes NEAR's runtime rules as reusable TLA+ modules. You write a small model of
 your contract's methods on top of them and state what must always hold, for example "a user's
 deposit is either credited or refunded". The TLC model checker then tries every order of
-receipts and every failure the runtime allows, within bounds you choose, and shows you a step
-by step counterexample when the property breaks.
+receipts and every failure you enable (the calls you let fail, out of gas at the prepaid amounts
+you list), within bounds you choose, and shows you a step by step counterexample when the
+property breaks.
 
 It catches bugs such as:
 
@@ -46,8 +47,8 @@ in a correct version and a buggy one:
 python3 tools/run.py examples/minimal
 ```
 
-Every run prints `ok`: the correct version passes and the buggy one fails, as each run's
-`expect` says. To see the bug the buggy version has, print its counterexample:
+Every run prints `ok`: each did what its entry in `runs.toml` expects, and the buggy version
+fails on purpose. To see the bug the buggy version has, print its counterexample:
 
 ```sh
 python3 tools/run.py examples/minimal tally_trusting --print-trace
@@ -61,7 +62,8 @@ To run every example in the repo: `python3 tools/run.py examples/`.
 
 ## What a result means
 
-**A pass** means every property held in every behaviour TLC explored. It holds:
+**A pass** means every invariant held in every behaviour (every possible run) TLC explored.
+It holds:
 
 - within the run's bounds: the number of transactions, forced failures and prepaid gas amounts
   you chose;
@@ -82,25 +84,24 @@ local sandbox.
 
 - **Every rule cites nearcore** at a pinned revision (2.14.0-rc.5, commit `b7b4737`): the
   `path:line` it comes from, the operator that encodes it, and how far it has been checked.
-- **Gas and fees are checked against nearcore**, receipt by receipt, through near-contract-sim,
-  which runs nearcore's own `Runtime::apply`. Probe contracts are swept over a grid of prepaid
-  gas, and each receipt's status, attached gas and failure edge are compared with the model:
-  74 flows at 1313 prepaid amounts each and 28 more flows for a second probe, all matching, and
-  108,986 child gas splits, all within the comparison's tolerance of 5 Ggas
-  ([CONFORMANCE.md](docs/CONFORMANCE.md)). These are probe contracts written to exercise the
-  rules, not production contracts.
+- **Gas and fees are checked against nearcore.** A private simulator, near-contract-sim, runs
+  nearcore's own `Runtime::apply` on small test contracts written to exercise the rules, across
+  a grid of prepaid gas. Every receipt's status matched the model, every attached gas was
+  within 5 Ggas, and every one of 108,986 gas splits between child calls matched exactly
+  ([CONFORMANCE.md](docs/CONFORMANCE.md) has the counts). Users replay their own
+  counterexamples with the public near-workspaces sandbox instead
+  ([VALIDATING.md](docs/VALIDATING.md)).
+- **Receipt order is not part of that comparison.** The ordering rules rest on targeted
+  simulator tests (local receipts first, no order between a pair of accounts) and on reading
+  nearcore (the rest), as each rule's entry in SEMANTICS says.
 - **What is not modelled is listed**, entry by entry, with what each omission could hide
   ([Not modelled](docs/SEMANTICS.md#not-modelled)). Of its 51 entries, 15 are
   over-approximations (the model allows more than a network does, so it can report a
   counterexample no network reaches), 25 are under-approximations (they can hide bugs; several
   apply at the default settings) and 11 are outside the library's scope.
-- **The library is checked like a model:** every example has must-fail runs, witnesses that
-  its situations are reached and mutants that its properties catch, all run in CI.
-
-near-contract-sim is a private repository today. The conformance results are in this repo,
-and maintainers with access reproduce them; CI runs them nightly. Users validate their
-counterexamples with the public near-workspaces sandbox instead
-([VALIDATING.md](docs/VALIDATING.md)).
+- **The library is checked like a model.** The examples carry their own checks that a pass
+  means something: must-fail runs, mutants their properties must catch, and witnesses that
+  their situations are reached. CI runs them all.
 
 ## Documentation
 
@@ -193,16 +194,11 @@ protocol version.
 
 Planned next:
 
-- Promote the remaining rules to "sim" validation; multi-shard order and missed chunks (S2, S4)
-  need a multi-shard sim.
-- Close more of the [Not modelled](docs/SEMANTICS.md#not-modelled) list: the rest of
-  transaction validity, the limits the model cannot count, deterministic-account state init,
-  gas keys.
-- The rest of the second probe's rule parts as model-vs-sim flows, starting with interleaved
-  appends (G3).
-- More calibrated standard tables (other near-contract-standards versions, other NEP-245
-  implementations), more event logs (wNEAR's, NEP-171's, id classes whose ids differ), and
-  NEP-245's resolver read declared with its byte bound, as `Tokens` does for NEP-141.
+- Check more of the runtime rules against the simulator, including the order of receipts
+  across shards, which needs a multi-shard simulator.
+- Model more of what is [not modelled](docs/SEMANTICS.md#not-modelled) today: the rest of
+  transaction validity, the protocol limits, state init for deterministic accounts, gas keys.
+- Measured gas tables for more token implementations and versions, and more event logs.
 
 ## License
 
