@@ -154,8 +154,6 @@ vars == <<platformVars, mine>>
 Accts   == {U, C, D}
 TxIds   == 1..MaxTx
 Near0   == [a \in Accts |-> IF a = U THEN InitU ELSE 0]
-Floor0  == [a \in Accts |-> 0]
-NoTable == [x \in {} |-> 0]
 Menu    == {t * 100 : t \in 80..95} \cup {1000000}   \* 8.0-9.5 Tgas by 0.1, and the 1000 Tgas maximum
 
 \* Gas tables (Ggas).  ILLUSTRATIVE numbers, not measured.
@@ -205,9 +203,11 @@ Init == /\ PlatformInit(Near0, TxIds)
         /\ n = 0 /\ works = 0 /\ ntx = 0
         /\ gas = [t \in TxIds |-> 0]
 
-Next == \/ Ping
-        \/ \E r \in Runnable : Step(r)
-        \/ \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
+\* Named steps, so a trace says which kind of step each state took.
+RunReceipt == \E r \in Runnable : Step(r)
+Fault      == \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
+
+Next == Ping \/ RunReceipt \/ Fault
 Spec == Init /\ [][Next]_vars
 
 Counted == Idle => n = works
@@ -233,22 +233,13 @@ workers = 2
 library = "../../modules"
 budget_s = 60
 invariants = ["Counted", "Sane"]
+platform_defaults = true        # fill the platform constants this model does not use
 
 # TLA+ expression text. Single quotes keep backslashes and double quotes literal.
 [constants]
 Accounts = 'Accts'
-Exists = 'Accts'
-StorageFloor = 'Floor0'
-StakingAcct = '"c"'
-MinStake = '1'
-MaxEpoch = '0'
-MaxReward = '0'
-GasMode = '"fault"'
-GasCall = 'NoTable'
-GasBurn = 'NoTable'
-MayFail = '{}'
+MayFail = '{}'                  # no forced faults unless a run allows them
 MaxFails = '0'
-LogOn = 'FALSE'
 TrackSigner = 'FALSE'           # the model never reads the signer
 U = '"u"'
 C = '"c"'

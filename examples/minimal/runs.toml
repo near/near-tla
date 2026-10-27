@@ -12,22 +12,15 @@ workers = 2
 library = "../../modules"
 budget_s = 60
 invariants = ["Counted", "Sane"]
+# Fill the platform constants this model does not use (no staking, no storage floor,
+# fault mode unless a run says otherwise): see `python3 tools/run.py --help`.
+platform_defaults = true
 
 # TLA+ expression text. Single quotes keep backslashes and double quotes literal.
 [constants]
 Accounts = 'Accts'
-Exists = 'Accts'
-StorageFloor = 'Floor0'
-StakingAcct = '"c"'
-MinStake = '1'
-MaxEpoch = '0'
-MaxReward = '0'
-GasMode = '"fault"'
-GasCall = 'NoTable'
-GasBurn = 'NoTable'
-MayFail = '{}'
+MayFail = '{}'                  # no forced faults unless a run allows them
 MaxFails = '0'
-LogOn = 'FALSE'
 TrackSigner = 'FALSE'           # the model never reads the signer
 U = '"u"'
 C = '"c"'

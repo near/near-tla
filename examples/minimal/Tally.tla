@@ -26,8 +26,6 @@ vars == <<platformVars, mine>>
 Accts   == {U, C, D}
 TxIds   == 1..MaxTx
 Near0   == [a \in Accts |-> IF a = U THEN InitU ELSE 0]
-Floor0  == [a \in Accts |-> 0]
-NoTable == [x \in {} |-> 0]
 Menu    == {t * 100 : t \in 80..95} \cup {1000000}   \* 8.0-9.5 Tgas by 0.1, and the 1000 Tgas maximum
 
 \* Gas tables (Ggas).  ILLUSTRATIVE numbers, not measured (docs/USAGE.md, Calibrating).
@@ -80,9 +78,11 @@ Init == /\ PlatformInit(Near0, TxIds)
         /\ n = 0 /\ works = 0 /\ ntx = 0
         /\ gas = [t \in TxIds |-> 0]
 
-Next == \/ Ping
-        \/ \E r \in Runnable : Step(r)
-        \/ \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
+\* Named steps, so a trace says which kind of step each state took.
+RunReceipt == \E r \in Runnable : Step(r)
+Fault      == \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
+
+Next == Ping \/ RunReceipt \/ Fault
 Spec == Init /\ [][Next]_vars
 
 (* ---- properties --------------------------------------------------------- *)

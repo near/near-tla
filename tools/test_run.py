@@ -59,6 +59,76 @@ The depth of the complete state graph search is 3.
 Finished in 00s at (2026-01-01 00:00:00)
 """
 
+_R = ('[id |-> {id}, tx |-> 1, m |-> "{m}", fr |-> "{fr}", to |-> "{to}", dep |-> {dep}, cb |-> {cb}, '
+      'g |-> <<{g}>>, a |-> [ ], res |-> [ok |-> TRUE, v |-> -4, sz |-> 0, len |-> 0]]')
+_PING = _R.format(id=1, m="ping", fr="u", to="c", dep=1, cb=0, g="0")
+_WORK = _R.format(id=2, m="work", fr="c", to="d", dep=0, cb=3, g="5000")
+_DONE = _R.format(id=3, m="done", fr="c", to="c", dep=0, cb=0, g="")
+NEAR_TRACE = f"""\
+Error: Invariant Counted is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\\ rq = {{}}
+/\\ post = {{}}
+/\\ data = {{}}
+/\\ nid = 1
+/\\ fails = 0
+/\\ oog = {{}}
+/\\ gcode = << >>
+/\\ near = [d |-> 0, c |-> 0, u |-> 2]
+/\\ n = 0
+/\\ works = 0
+
+State 2: <Ping line 72, col 9 to line 76, col 30 of module Toy>
+/\\ rq = {{{_PING}}}
+/\\ post = {{}}
+/\\ data = {{}}
+/\\ nid = 2
+/\\ fails = 0
+/\\ oog = {{}}
+/\\ gcode = << >>
+/\\ near = [d |-> 0, c |-> 0, u |-> 1]
+/\\ n = 0
+/\\ works = 0
+
+State 3: <Next line 84, col 12 to line 84, col 38 of module Toy>
+/\\ rq = {{{_WORK}}}
+/\\ post = {{{_DONE}}}
+/\\ data = {{}}
+/\\ nid = 4
+/\\ fails = 0
+/\\ oog = {{}}
+/\\ gcode = << >>
+/\\ near = [d |-> 0, c |-> 1, u |-> 1]
+/\\ n = 0
+/\\ works = 0
+
+State 4: <Next line 84, col 12 to line 84, col 38 of module Toy>
+/\\ rq = {{}}
+/\\ post = {{{_DONE}}}
+/\\ data = {{[tx |-> 1, to |-> 3, v |-> 0, ok |-> FALSE, sz |-> 0, len |-> 0]}}
+/\\ nid = 5
+/\\ fails = 0
+/\\ oog = {{<<1, "work">>}}
+/\\ gcode = << >>
+/\\ near = [d |-> 0, c |-> 1, u |-> 1]
+/\\ n = 0
+/\\ works = 0
+
+State 5: <Next line 84, col 12 to line 84, col 38 of module Toy>
+/\\ rq = {{}}
+/\\ post = {{}}
+/\\ data = {{}}
+/\\ nid = 5
+/\\ fails = 0
+/\\ oog = {{<<1, "work">>}}
+/\\ gcode = << >>
+/\\ near = [d |-> 0, c |-> 1, u |-> 1]
+/\\ n = 1
+/\\ works = 0
+
+"""
+
 ASSERT = """\
 Error: The first argument of Assert evaluated to FALSE; the second argument was:
 "missing key"
@@ -192,6 +262,57 @@ class TraceTest(unittest.TestCase):
     def test_single_variable(self):
         self.assertEqual(tlctrace.states(DEADLOCK), [(1, "Initial predicate", {"x": "0"})])
 
+    def test_parse_value(self):
+        v = tlctrace.parse_value('[a |-> <<1, -4>>, b |-> {"x", y}, c |-> ("k" :> TRUE @@ "j" :> FALSE)]')
+        self.assertEqual(v, {"a": [1, -4], "b": ["x", "y"], "c": [("k", True), ("j", False)]})
+        self.assertIsInstance(v["b"][1], tlctrace.Atom)
+        self.assertEqual(tlctrace.fmt(tlctrace.parse_value("[ok |-> TRUE, v |-> -4]")), "[ok |-> TRUE, v |-> NOPR]")
+        with self.assertRaises(ValueError):
+            tlctrace.parse_value("[a |-> ]")
+
+    def test_story_names_receipts_and_outcomes(self):
+        s = tlctrace.summary(NEAR_TRACE)
+        self.assertIn("State 2: Ping (Toy:72)\n    submitted #1 ping u->c (tx 1, deposit 1)", s)
+        self.assertIn("ran #1 ping u->c: committed\n        (tx 1, deposit 1)", s)
+        self.assertIn("created #3 done c->c (tx 1) (postponed)", s)
+        self.assertIn("ran #2 work c->d: out of gas\n        (tx 1, gas 5000, result to #3)\n"
+                      "    data -> #3: Failed", s)
+        self.assertIn("ran #3 done c->c, seeing Failed: committed\n        (tx 1)\n    n: 0 -> 1", s)
+        self.assertIn("near.c: 0 -> 1", s)
+        self.assertIn("The model's variables at the last state:\n    n = 1\n    works = 0", s)
+        self.assertNotIn("gcode", s)  # a platform variable that never changes
+        self.assertIn("platform variables never change here", s)
+
+    def test_story_failure_kinds(self):
+        def step(**after):
+            p = {"rq": '{[id |-> 2, tx |-> 1, m |-> "w", fr |-> "c", to |-> "d", dep |-> 0, cb |-> 0, '
+                       'g |-> <<>>, a |-> [x |-> 0], res |-> [ok |-> TRUE, v |-> -4, sz |-> 0, len |-> 0]]}',
+                 "post": "{}", "data": "{}", "nid": "3", "fails": "0", "oog": "{}"}
+            s = {**p, "rq": "{}", **after}
+            block = lambda n, h, vs: f"State {n}: {h}\n" + "".join(f"/\\ {k} = {v}\n" for k, v in vs.items())
+            return tlctrace.summary(block(1, "<Initial predicate>", p) + "\n" + block(2, "<Next>", s))
+        self.assertIn(": failed (forced fault)", step(fails="1", nid="4"))
+        self.assertIn(": out of gas", step(oog='{<<1, "w">>}', nid="4"))
+        self.assertIn(": failed\n", step(nid="4") + "\n")
+        self.assertIn(": committed", step())
+        self.assertIn(": failed (deposit refunded)", step(nid="4", rq=(
+            '{[id |-> 3, tx |-> 1, m |-> "REFUND", fr |-> "system", to |-> "u", dep |-> 1, cb |-> 0, '
+            'g |-> <<>>, a |-> [x |-> 0], res |-> [ok |-> TRUE, v |-> -4, sz |-> 0, len |-> 0]]}')))
+
+    def test_story_skips_stuttering(self):
+        s = tlctrace.summary(NEAR_TRACE + "State 6: Stuttering\n\n")
+        self.assertIn("State 6: Stuttering", s)
+        self.assertEqual(s.count("ran #"), 3)
+        self.assertIn("The model's variables at the last state:\n    n = 1", s)
+
+    def test_story_args_leave_out_empty_fields(self):
+        r = tlctrace.parse_value('[id |-> 2, tx |-> 1, m |-> "f", fr |-> "c", to |-> "t", '
+                                 'a |-> [amt |-> 0, msg |-> "", ids |-> <<>>, force |-> FALSE, rc |-> "rx"]]')
+        self.assertEqual(tlctrace.rcpt_text(r), '#2 f c->t (tx 1, args [amt |-> 0, force |-> FALSE, rc |-> "rx"])')
+
+    def test_raw_summary_for_other_specs(self):
+        self.assertEqual(tlctrace.summary(INV), tlctrace.raw_summary(INV))
+
 
 class WindowsTest(unittest.TestCase):
     LOG = '<<"WIN", "Bal", 1200, {}>>\n<<"WIN",\n  "Bal", 1100, {"cb"}>>\n<<"WIN", "Bal", 1500>>\n' \
@@ -251,6 +372,28 @@ class LoadAndWrapperTest(unittest.TestCase):
         self.assertEqual(a.library, [str((self.d / "lib").resolve())])
         self.assertEqual((a.init, a.next, a.invariants, a.deadlock), ("Init", "Next", ["Inv"], False))
         self.assertEqual((a.workers, b.workers), (2, 1))
+
+    def test_platform_defaults_fill_only_unset_constants(self):
+        a, b = self.load("""
+            spec = "Toy"
+            invariants = ["Inv"]
+            platform_defaults = true
+            [constants]
+            GasMode = '"gas"'
+            [[run]]
+            name = "a"
+            expect = "pass"
+            [[run]]
+            name = "b"
+            expect = "pass"
+            platform_defaults = false
+            """)
+        self.assertEqual(a.constants["GasMode"], '"gas"')
+        self.assertEqual(a.constants["Exists"], "Accounts")
+        self.assertEqual(a.constants["StakingAcct"], "CHOOSE a \\in Accounts : TRUE")
+        self.assertEqual(set(a.constants), set(run.PLATFORM_DEFAULTS))
+        self.assertNotIn("MayFail", a.constants)
+        self.assertEqual(b.constants, {"GasMode": '"gas"'})
 
     def test_workers_flag_only_lowers(self):
         a, b = self.load("""

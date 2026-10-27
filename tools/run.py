@@ -27,6 +27,10 @@ runs.toml format
                               # does not exist (a model outside examples/<name>/), the
                               # modules/ dir of the repo this runner lives in. An explicit
                               # library, --library or $NEAR_TLA_LIBRARY always wins
+  platform_defaults = true    # optional: fill NearAsync's platform constants this file
+                              # leaves unset with PLATFORM_DEFAULTS: Exists = Accounts, no
+                              # staking, no storage floor, fault mode, no outcome log.
+                              # Accounts, MayFail and MaxFails are always yours to set
   [constants]                 # optional: file-level constants shared by every run
   U = '"u"'
 
@@ -251,7 +255,7 @@ IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 FILE_KEYS = {"spec", "workers", "library", "budget_s", "init", "next", "specification",
              "invariants", "properties", "deadlock", "tags", "constants", "run", "witness", "mutant",
-             "sweep", "stack", "audit"}
+             "sweep", "stack", "audit", "platform_defaults"}
 RUN_ONLY_KEYS = {"name", "expect", "invariant", "expect_output", "expect_window", "window_step",
                  "allow_no_invariants"}
 RUN_KEYS = (FILE_KEYS - {"run", "witness", "mutant", "sweep", "audit"}) | RUN_ONLY_KEYS
@@ -264,6 +268,22 @@ SWEEP_KEYS = {"id", "kind", "run", "knob", "covers", "form", "constants", "lo", 
 SWEEP_KINDS = ("least_gas", "size")
 LEAST_GAS_ONLY = {"lo", "hi", "success", "window_run", "window_label", "expect_need", "exact", "step"}
 SIZE_ONLY = {"cap", "limit", "floor", "expect"}
+
+# platform_defaults = true: values for the NearAsync CONSTANTS a model that does not use
+# the feature still has to set. Accounts, MayFail and MaxFails stay explicit: they are the
+# model's world and its fault assumption.
+PLATFORM_DEFAULTS = {
+    "Exists": "Accounts",                         # every account exists at the start
+    "StakingAcct": "CHOOSE a \\in Accounts : TRUE",  # unused while MaxEpoch = 0
+    "MinStake": "1",
+    "MaxEpoch": "0",                              # no epochs: no staking rewards
+    "MaxReward": "0",
+    "StorageFloor": "[a \\in Accounts |-> 0]",
+    "GasMode": '"fault"',
+    "GasCall": "[k \\in {} |-> 0]",
+    "GasBurn": "[k \\in {} |-> 0]",
+    "LogOn": "FALSE",
+}
 
 # Standard and community modules that declare no CONSTANTS.
 NO_CONSTANT_MODULES = {
@@ -472,6 +492,8 @@ def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
                 if not all(IDENT_RE.match(x) for x in k.split("!", 1)):
                     raise ConfigError(f"{where}: bad constant name {k!r} (Name or Mod!Name)")
                 consts[k] = tla_value(k, v)
+        if _typed(where, m, "platform_defaults", bool, False):
+            consts = {**{k: v for k, v in PLATFORM_DEFAULTS.items() if k not in consts}, **consts}
         defs: dict[str, str] = {}
         for k in consts:
             d = const_def_name(k)
