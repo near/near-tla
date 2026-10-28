@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 /// near-contract-sim's rev, as pinned in `Cargo.toml` (checked against
 /// `Cargo.lock` by `provenance`).
-pub const SIM_REV: &str = "29e909033bb59eab792dee136e9d02870488bc3e";
+pub const SIM_REV: &str = "4be28150bce8a564836eafdaf4caa49e43b1dca5";
 
 /// 1 Ggas, the model's gas unit.
 pub const GGAS: u64 = 1_000_000_000;

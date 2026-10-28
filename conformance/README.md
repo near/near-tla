@@ -27,8 +27,8 @@ is a git dependency.
 
 | | |
 |---|---|
-| near-contract-sim | `29e909033bb59eab792dee136e9d02870488bc3e` (git dependency, `Cargo.toml`) |
-| nearcore | `2.14.0-rc.5`, rev `b7b4737cab46f17a6daa2ed694d7aebbd204363a` (from the sim's lock file, copied to `Cargo.lock`) |
+| near-contract-sim | `4be28150bce8a564836eafdaf4caa49e43b1dca5` (git dependency, `Cargo.toml`) |
+| nearcore | `2.14.0`, rev `bc4e9e8cfb03d9e82f027883055624e18576993e` (from the sim's lock file, copied to `Cargo.lock`) |
 | protocol version | 88 (read from the sim at run time; matches `NearFees.tla`'s `FeeProtocol`) |
 | Rust | 1.95.0 (`rust-toolchain.toml`) |
 | near-sdk / near-contract-standards | 5.29.1 (probe contracts) |
@@ -37,10 +37,10 @@ is a git dependency.
 `calibrate` prints all of these and writes them into every table it emits. It reads the nearcore
 pin from `Cargo.lock` and the protocol version from the running sim.
 
-These features are not available at this sim rev: `Config::minimum_stake`, `Tx::gas_windows` and
-`Fault::HoldUntil`. Instead of `gas_windows`, the crate sweeps the grid itself, cloning the sim
-once per point. What the sim offers for yields at this rev, and what the flows use of it, is in
-[Async patterns](#async-patterns-joint-promises-and-yieldresume).
+This sim rev has `Config::minimum_stake`, `Tx::gas_edges` (which replaced `Tx::gas_windows`) and
+`Fault::HoldUntil`, but the crate uses none of them. Instead of `gas_edges`, it sweeps the grid
+itself, cloning the sim once per point. What the sim offers for yields at this rev, and what the
+flows use of it, is in [Async patterns](#async-patterns-joint-promises-and-yieldresume).
 
 ## Layout
 
@@ -543,7 +543,7 @@ whichever transaction resumed it.
 - the deadline's length (200 blocks): the model runs on a one-tick clock;
 - the race at the deadline (a resume that runs before the timeout's resume receipt wins): one
   outcome per point leaves no room for it; near-contract-sim's own tests cover it
-  (`tests/yields.rs:70-92` at its rev 29e9090);
+  (`tests/yields.rs:70-92` at its rev 4be2815);
 - what a callback reads (the payload or `Failed`, each joint result): the comparison sees
   statuses and gas, not results; only `on_order` (and `probe2`'s `on_expect`, in the set
   `probes2`) turns a result into a status;

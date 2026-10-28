@@ -814,7 +814,7 @@ Each rule has four fields:
   every yield callback), and with 0 gas it fails the creator (`yield_cb0`), although the
   yield is stored, not sent. The flows run the model on a one-tick clock, so the 200-block
   deadline and the race at it are not checked there (near-contract-sim's own tests cover the
-  race, `tests/yields.rs:70-92` at its rev 29e9090), and what the callback reads is not
+  race, `tests/yields.rs:70-92` at its rev 4be2815), and what the callback reads is not
   compared. Nor is the order in which receipts run: that the callback runs after the resume
   or the timeout follows from how the flows run (each step once the chain is idle; the sim's
   `transact()` returns with the yield parked) and from the nearcore reading, not from the
@@ -2038,8 +2038,8 @@ Each rule has four fields:
 - **Validated:** the buffer bypass: sim (`conformance/tests/semantics.rs`,
   `later_receipt_overtakes_buffered`: six ~1.2 MB calls from `p-probe` to `q-probe` fill the
   single shard's grant to itself; a small call `p-probe` makes after three of them, in the
-  same block, runs a block before them). This is the sim's own `tests/order.rs:400-433`
-  (near-contract-sim `29e9090`) on the probe contracts, with no fault injected. Missed
+  same block, runs a block before them). This is the sim's own `tests/order.rs:402-435`
+  (near-contract-sim `4be2815`) on the probe contracts, with no fault injected. Missed
   chunks: nearcore reading; not sim-testable (the sim misses no chunks).
   <!-- conformance --> The comparison does not see order.
 

@@ -13,7 +13,7 @@
 //! test prints what it observed; `cargo test --test receipts --
 //! --nocapture` shows it.
 //!
-//! nearcore references are at the pinned rev b7b4737 (README, "Pins").
+//! nearcore references are at the pinned rev bc4e9e8 (README, "Pins").
 //! Every test runs on the committed probe wasms (`probes/res/`); the host
 //! calls the first probes do not make are on `probe2` (on `z-probe.near`).
 use near_contract_sim::nearcore::near_parameters::ActionCosts;

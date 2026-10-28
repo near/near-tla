@@ -5,7 +5,7 @@
 //! Each test prints what it observed; `cargo test --test gas -- --nocapture`
 //! shows it.
 //!
-//! nearcore references are at the pinned rev b7b4737 (README, "Pins"):
+//! nearcore references are at the pinned rev bc4e9e8 (README, "Pins"):
 //! `runtime/runtime/src/ext.rs:163-178` (`storage_set` looks the key up with
 //! `KeyLookupMode::MemOrTrie` and charges the nodes it touched),
 //! `:248-264` (`storage_remove`, the same), `:200-203` (`storage_get` looks

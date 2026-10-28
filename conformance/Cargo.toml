@@ -13,7 +13,7 @@ description = "Checks near-tla's per-receipt predictions against nearcore's runt
 
 [dependencies]
 # Private repo. Pinned by rev; see README.md for fetching and for a local [patch].
-near-contract-sim = { git = "https://github.com/near/near-contract-sim", rev = "29e909033bb59eab792dee136e9d02870488bc3e" }
+near-contract-sim = { git = "https://github.com/near/near-contract-sim", rev = "4be28150bce8a564836eafdaf4caa49e43b1dca5" }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"

@@ -9,7 +9,7 @@
 //! storage check (B2). Each test prints what it observed; `cargo test
 //! --test accounts -- --nocapture` shows it.
 //!
-//! nearcore references are at the pinned rev b7b4737 (README, "Pins").
+//! nearcore references are at the pinned rev bc4e9e8 (README, "Pins").
 //! Every test runs on the committed probe wasms (`probes/res/`); the
 //! contract-created Stake is on `probe2` (on `z-probe.near`).
 use near_contract_sim::nearcore::near_parameters::ActionCosts;

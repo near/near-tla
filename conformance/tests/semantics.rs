@@ -321,7 +321,7 @@ fn resume_by_another_account_returns_false() {
 /// calls fill the grant of the route the (single) shard has to itself, so
 /// some wait a block in the buffer; a small call p-probe makes after them,
 /// in the same block, goes out at once and runs first. The same as the
-/// sim's own tests/order.rs:400-433, on the probe contracts; nothing is
+/// sim's own tests/order.rs:402-435, on the probe contracts; nothing is
 /// injected, this is nearcore's congestion control.
 #[test]
 fn later_receipt_overtakes_buffered() {

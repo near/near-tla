@@ -120,12 +120,13 @@ truncated or duplicated sweep fails.
 ## Results
 
 Results at the pins in [conformance/README.md](../conformance/README.md#pins), recorded on
-2026-10-27 on the library at commit `b3caa4d`. The model side of all three sets was run on that
-library. The sweeps were taken through near-contract-sim at its pinned rev on nearcore
-2.14.0-rc.5: `probes` and `probes2` on 2026-10-24, `mt` on 2026-10-27; `tla/CalibMt.tla` and
-`modules/CalibStdMt.tla` regenerate from them unchanged. The same sim rev built against
-nearcore 2.14.0 (`bc4e9e8`), the revision the library cites, gives byte-identical sweeps for
-all 121 flows. Every sweep's flows file and probe wasm hashes match the committed ones.
+2026-10-27 through near-contract-sim `4be2815` on nearcore 2.14.0 (`bc4e9e8`), the revision the
+library cites. The model side of all three sets was run on the library at commit `b7dc6fe`; the
+commit that records these results changes only comments in the library. All three sweeps were taken on 2026-10-27, and the calibrated tables regenerate from them with only
+their header's pin lines changed. Every sweep's JSONL, for all 121 flows, is byte-identical to
+the one taken through the previous pin (sim `29e9090` on nearcore 2.14.0-rc.5); only the
+provenance in its `.meta.json` differs. Every sweep's flows file and probe wasm hashes match the
+committed ones.
 
 The flow set `probes`:
 

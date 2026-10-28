@@ -14,7 +14,7 @@ Tokens, Nep245, plus a separate NearKeys).
 
 ```
 nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
-near-contract-sim: 29e909033bb59eab792dee136e9d02870488bc3e
+near-contract-sim: 4be28150bce8a564836eafdaf4caa49e43b1dca5
 near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ```
 
@@ -1317,8 +1317,10 @@ them. A model that lists platform variables one by one must add each.
   is `pv >= 88`, and `UniversalOn`'s documentation says 88. The promise-input size limit is
   off at 87 and 88, since 2.14.0 schedules `ReceiptPromiseInputSizeLimit` for 157, so
   SEMANTICS drops N-input-87. Every citation is now at `bc4e9e8`; the ones whose lines moved
-  (`version.rs`, `signature.rs`, `chain.rs`, `88.yaml`) were re-read there. Migration: a model
-  at `FeeProtocol = 87` that sends to a universal id now pays a named receiver's Transfer fee.
+  (`version.rs`, `signature.rs`, `chain.rs`, `88.yaml`) were re-read there. The conformance
+  suite now runs on near-contract-sim `4be2815`, built against 2.14.0; its sweeps of all 121
+  flows are byte-identical to those on rc.5. Migration: a model at `FeeProtocol = 87` that
+  sends to a universal id now pays a named receiver's Transfer fee.
 - `NearAsync`: `Sum` (the deposits in flight, read by `NearConserved`) and `KidsCost` (gas
   mode) no longer recurse once per receipt. With a few hundred receipts in flight that
   recursion ran past the JVM's thread stack: `limits`' `limit_join_128` (129 receipts) threw

@@ -9,7 +9,7 @@
 //! (`lifecycle.rs`, `deploy_storage_delta`). Each test prints what it
 //! observed; `cargo test --test limits -- --nocapture` shows it.
 //!
-//! nearcore references are at the pinned rev b7b4737 (README, "Pins"); the
+//! nearcore references are at the pinned rev bc4e9e8 (README, "Pins"); the
 //! values are protocol 88's
 //! (core/parameters/src/snapshots/near_parameters__config_store__tests__88.json.snap:241-256).
 //! The batches run on the committed `probe` wasm; the promise count needs
