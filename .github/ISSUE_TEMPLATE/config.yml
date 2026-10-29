@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: A security vulnerability in near-tla or its tooling
+    url: https://github.com/near/near-tla/security/policy
+    about: Report it privately through NEAR's security policy, not in an issue.
+  - name: A bug that near-tla found in someone else's contract
+    url: https://github.com/near/near-tla/blob/main/docs/VALIDATING.md#writing-up-a-finding
+    about: Send it to that contract's maintainers through their disclosure channel. Do not post the model or the trace here.

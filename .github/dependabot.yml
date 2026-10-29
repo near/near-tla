@@ -1,0 +1,13 @@
+# Keeps the SHA-pinned actions in .github/workflows current. Titles get the `ci` type so they
+# pass the conventional-commits check.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
