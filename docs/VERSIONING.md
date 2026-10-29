@@ -22,12 +22,57 @@ The rule of thumb: **anything that can change the verdict of an existing model i
 | A semantic fix that changes a verdict of an existing model | major |
 | Comment, citation or documentation fixes | patch |
 
-Before 1.0.0, a minor release may carry a major change. Every such break goes under "Breaking"
-in `CHANGELOG.md` with a one-line migration.
+Before 1.0.0, a minor release may carry a major change.
+
+The version is the one in the root `Cargo.toml`, and release `X.Y.Z` is the git tag `vX.Y.Z`.
+The library is TLA+, not Rust: that manifest only carries the version for release-plz, and
+the conformance crate (`conformance/`) is a separate workspace with a version of its own.
+
+## Commits pick the bump
+
+release-plz reads the Conventional Commit titles merged since the last tag, picks the bump
+from them, and writes the release's section of `CHANGELOG.md` from them. So a commit's type
+has to match the table above:
+
+| commit | listed in `CHANGELOG.md` under | bump while 0.x | bump from 1.0 |
+|---|---|---|---|
+| a `!` title (`feat!:`, `fix!:`, ...) or a `BREAKING CHANGE:` footer | Breaking | minor | major |
+| `feat` | Added | minor | minor |
+| `fix` | Fixed | patch | patch |
+| any other type (`docs`, `test`, `ci`, `chore`, `refactor`, ...) | not listed | none on its own | none on its own |
+
+A breaking change says how to migrate in its `BREAKING CHANGE:` footer, and its entry ends
+with that text. A commit of another type is released with the next listed change; a
+documentation or citation fix that users should see is a `fix`. A squash merge's commit
+takes the pull request's title, so the title carries the type and the `!`.
+
+## Making a release
+
+`.github/workflows/release-plz.yml` runs release-plz on every push to `main` (configuration:
+`release-plz.toml`).
+
+1. Once a listed change is on `main`, release-plz opens a release pull request, titled
+   `chore: release vX.Y.Z`, and updates it as more changes land. It bumps the version in
+   `Cargo.toml` and `Cargo.lock` and adds the release's section to `CHANGELOG.md`. The workflow
+   then starts `ci.yml` on the release branch, since a branch that GITHUB_TOKEN pushed starts no
+   workflow by itself.
+2. Before merging it, check the bump against the table above and fix it if needed (the version
+   in `Cargo.toml` and `Cargo.lock` and the section's heading, or `release-plz set-version`), add
+   the protocol assumptions below under the section's heading, and edit the entries if they
+   need it. Do this last: when `main` moves on, release-plz replaces an edited release pull
+   request with a new one, without the edits.
+3. Merging it makes release-plz tag `vX.Y.Z` and publish a GitHub release whose notes are the
+   section. Nothing goes to crates.io.
+
+release-plz takes the last release from the newest `vX.Y.Z` tag and needs the root `Cargo.toml`
+in that tag's tree. `v0.1.0` predates that manifest, so 0.1.1 was prepared by hand: the change
+that added release-plz set the version to 0.1.1 and wrote its section, and the workflow tagged
+`v0.1.1` when that change was merged.
 
 ## Each release states its protocol assumptions
 
-Every release section in `CHANGELOG.md` carries these lines:
+Every release section in `CHANGELOG.md` carries these lines, which release-plz does not
+write (step 2 above):
 
 ```
 nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
@@ -131,7 +176,8 @@ change" in the PR description.
    cited code at the new revision and confirm it still does what the rule says. Then update the
    line numbers and the reference revision at the top of `SEMANTICS.md`. A moved line with
    changed logic is a semantic change: it needs a module change, a must-fail example and a
-   `CHANGELOG.md` entry (`CONTRIBUTING.md`).
+   commit title that release-plz lists in `CHANGELOG.md` ([Commits pick the
+   bump](#commits-pick-the-bump), `CONTRIBUTING.md`).
 6. **Edit `NearFees.tla`.** Add the version to `FeeVersions`, add `IF pv >= <v>` branches for
    changed rows, update every citation, and extend the `ASSUME` self-checks with the new totals.
    Change `FeeProtocol` only if the default should move; that is a major change.

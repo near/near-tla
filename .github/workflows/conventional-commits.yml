@@ -4,10 +4,18 @@ name: conventional-commits
 # CHANGELOG.md and the next version from those titles. So the title, and every commit in the
 # pull request, must be a Conventional Commit: `type(scope)!: summary`, scope and `!` optional.
 # The title and messages reach the shell only through env, never interpolated into the script.
+# release-plz's release PRs get no pull_request event (GITHUB_TOKEN made them), so
+# release-plz.yml dispatches this workflow on the release branch with the PR's number.
 
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: pull request number
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -22,8 +30,10 @@ jobs:
     steps:
       - name: The title is a Conventional Commit
         env:
-          TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
         run: |
+          TITLE=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .title)
           if printf '%s\n' "$TITLE" | grep -Eq "$PATTERN"; then
             echo "title ok: $TITLE"
           else
@@ -34,7 +44,7 @@ jobs:
       - name: Every commit is a Conventional Commit (merge commits excepted)
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
         run: |
           set -euo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" \

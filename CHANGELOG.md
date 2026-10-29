@@ -1,30 +1,32 @@
 # Changelog
 
-All notable changes to the `modules/` library are recorded here. The format
-follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
-`docs/VERSIONING.md`.
+All notable changes to the `modules/` library are recorded here. Versions follow
+`docs/VERSIONING.md`: while the version is 0.x, a breaking change or an addition moves the
+minor version (0.1 to 0.2), and a fix moves the patch.
 
-The entries below are relative to the pre-release module set that existing
-models were written against (NearAsync, TokenCommon, Nep145, Nep141, WNear,
-Tokens, Nep245, plus a separate NearKeys).
+release-plz writes each section from the Conventional Commit titles merged since the last
+tag: **Breaking** for a `!` title or a `BREAKING CHANGE:` footer, **Added** for `feat`,
+**Fixed** for `fix`. Other types are not listed. A breaking entry ends with the text of its
+`BREAKING CHANGE:` footer, which says how to migrate. Before merging the release pull
+request, the maintainer adds the release's protocol assumptions under its heading
+(`docs/VERSIONING.md`).
 
-## [Unreleased]
+0.1.0 was written by hand in the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+format. Its entries are relative to the pre-release module set that existing models were
+written against (NearAsync, TokenCommon, Nep145, Nep141, WNear, Tokens, Nep245, plus a
+separate NearKeys).
 
-### Changed
+## [0.1.1] - 2026-10-29
 
-- **Conformance re-pinned to the near-contract-sim v0.1.0 release** (git tag `v0.1.0`,
-  `96bc8fb`), from `4be2815`. The sim's public repository starts at `c40ce15`, and `4be2815`,
-  the pin of near-tla 0.1.0, is on none of its branches or tags. The sim's v0.1.0 is `c40ce15`
-  plus two commits that change only its docs, its release configuration and a docs test: its
-  `src`, `Cargo.toml` and `Cargo.lock` are byte-identical to `c40ce15`'s, still on nearcore
-  2.14.0 (`bc4e9e8`). The conformance crate follows the sim's renames (a receipt outcome's
-  `receipt_id` and `receiver_id`) and gives `Fixture::init` its arguments with
-  `.args_json(..)`. The sweeps of all 121 flows, taken through both `c40ce15` and v0.1.0, are
-  byte-identical to those on `4be2815`, the generated tables change only their `sim rev`
-  line, and all 121 flows pass with no mismatch. The sim test citations are at v0.1.0:
-  `tests/order.rs:414-447` (was `402-435`); `tests/yields.rs:70-92` did not move. The sim is
-  public, so `conformance.yml` fetches it over https with no credentials; the deploy key is no
-  longer used. Migration: none (no rule, fee or calibrated number changes).
+```
+nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+near-contract-sim: 96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2
+near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
+```
+
+### Fixed
+
+- conformance: Pin near-contract-sim v0.1.0 and fetch it over https
 
 ## [0.1.0] - 2026-10-27
 

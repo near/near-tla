@@ -35,6 +35,8 @@ tools/check_links.py  offline Markdown link check (CI runs it)
 tools/test_run.py     the runner's self-tests (python3 -m unittest tools/test_run.py)
 tools/tlcparse.py     TLC output parsing shared by the tools
 conformance/          Rust conformance + calibration crate (standalone; CI does not build it)
+Cargo.toml            carries near-tla's version for release-plz (never built; tools/version.rs is
+                      its empty target); release-plz.toml configures the releases
 conformance/probes/   probe contracts (Rust -> wasm), committed with their hashes
 conformance/flows/    flow specs (probes.toml, actions.toml, storage.toml, example.toml)
 conformance/tla/      the model side of conformance runs

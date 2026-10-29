@@ -114,7 +114,7 @@ local sandbox.
 | [VALIDATING.md](docs/VALIDATING.md) | when TLC finds a counterexample: replay it, write it up |
 | [SEMANTICS.md](docs/SEMANTICS.md) | to know exactly which runtime rule each operator encodes, and what is left out |
 | [CONFORMANCE.md](docs/CONFORMANCE.md) | maintainers: how the model is checked against nearcore |
-| [VERSIONING.md](docs/VERSIONING.md) | what a release promises, and how protocol upgrades are handled |
+| [VERSIONING.md](docs/VERSIONING.md) | what a release promises, how releases are made, and how protocol upgrades are handled |
 
 ## Using it with an AI coding agent
 
@@ -185,8 +185,9 @@ shared `NearAsync` base.
 
 ## Status and versioning
 
-The current release is 0.1.0 (tag `v0.1.0`); later changes accumulate under `[Unreleased]` in
-[`CHANGELOG.md`](CHANGELOG.md). The behaviour encoded is protocol version **88** at nearcore
+Each release is a `vX.Y.Z` tag with its section in [`CHANGELOG.md`](CHANGELOG.md); release-plz
+writes the sections from the commit titles, and its open release pull request shows what the
+next release holds. The behaviour encoded is protocol version **88** at nearcore
 2.14.0. `NearFees` also carries the fee tables of 84-87, selected by `FeeProtocol`; the
 other rules are 88's. [VERSIONING.md](docs/VERSIONING.md) says what counts as a breaking
 change, what each release states about its protocol assumptions, and how the library moves to a

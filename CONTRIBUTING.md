@@ -98,8 +98,9 @@ of these:
    the rule "nearcore reading" or "recalled", not "sim".
 4. **`docs/SEMANTICS.md` updated:** the rule, the citation, the operator, and the validation
    level. If the change adds or removes an approximation, update "Not modelled" as well.
-5. **`CHANGELOG.md` updated.** A break of an operator name, arity or meaning goes under
-   "Breaking" with a one-line migration.
+5. **A Conventional Commit title** that release-plz turns into the `CHANGELOG.md` entry:
+   `feat` for an addition, `fix` for a correction. A break of an operator name, arity or meaning
+   is a `!` title with a `BREAKING CHANGE:` footer that gives the one-line migration.
 
 **A new example** ships witnesses and mutants in its `runs.toml`, beside its must-pass and
 must-fail runs (see [Witnesses and mutants](docs/RUNNER.md#witnesses-and-mutants)):
@@ -147,3 +148,9 @@ check fails a pull request whose title or commits don't follow this.
 - No personal details in files, logs or commit messages: no names, emails, machine names or
   home-directory paths (write `~`). The runner rewrites `$HOME` to `~` in logs.
 - Commit with your normal git identity. Do not add AI-attribution trailers or footers.
+
+## Releases
+
+release-plz makes the releases: it bumps the version in the root `Cargo.toml` and writes
+`CHANGELOG.md`'s sections from the Conventional Commit titles merged to `main`, through a
+release pull request. See [Making a release](docs/VERSIONING.md#making-a-release).

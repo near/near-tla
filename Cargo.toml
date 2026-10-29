@@ -1,0 +1,20 @@
+# near-tla's version. The library is TLA+, not Rust: this package exists so that release-plz
+# (release-plz.toml) can read, bump and tag the version. It is never built or published.
+# release-plz needs it here, at the repository root, and it counts every commit that touches
+# the files Cargo would package from here: everything except conformance/, which is a crate of
+# its own (docs/VERSIONING.md).
+[package]
+name = "near-tla"
+version = "0.1.1"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/near/near-tla"
+description = "TLA+ modules that model how nearcore executes receipts (this manifest only carries the version)"
+
+# Cargo requires a target; this one is empty.
+[lib]
+path = "tools/version.rs"
+
+# Standalone: conformance/ is its own workspace, with its own lock file and toolchain.
+[workspace]
