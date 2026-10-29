@@ -128,6 +128,18 @@ the nearcore revision and the protocol version.
 - Shrink scope before adding symmetry tricks: fewer accounts, smaller amounts, shorter gas
   menus. A run that needs minutes belongs in a local-only config, not in `runs.toml`.
 
+## Commits and pull requests
+
+Changes reach `main` only through pull requests, which are squash-merged: the pull request's
+title becomes the commit on `main`. Titles and commit messages follow
+[Conventional Commits](https://www.conventionalcommits.org/): `type(scope): summary`, for example
+`feat(nep245): ...`, `fix(conformance): ...`, `docs: ...`, `test: ...`, `ci: ...`,
+`refactor: ...` or `chore: ...`. The scope is optional and lower case. Mark a breaking change (as
+[docs/VERSIONING.md](docs/VERSIONING.md) defines it) with `!` after the type (`feat!: ...`) or a
+`BREAKING CHANGE:` footer, and write its migration in that footer. release-plz writes
+[CHANGELOG.md](CHANGELOG.md) and the next version from the titles. The `conventional-commits`
+check fails a pull request whose title or commits don't follow this.
+
 ## Content rules
 
 - Examples are fresh toy contracts written for this repo. Do not add models, configs, traces,
