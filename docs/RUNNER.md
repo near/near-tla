@@ -50,7 +50,7 @@ python3 tools/run.py 'pay_*'                                           # runs by
 python3 tools/run.py --list path/to/model/                             # list the runs, run nothing
 ```
 
-You need Python 3.11 or later, Java 21, and the pinned TLC jar at `tools/tla2tools.jar`
+You need Python 3.11 or later, Java 17 or later (CI uses 21), and the pinned TLC jar at `tools/tla2tools.jar`
 ([Quickstart](../README.md#quickstart)). `--jar JAR` points at another jar; the environment
 variable `TLA2TOOLS_JAR` is used when `tools/tla2tools.jar` is missing.
 
@@ -201,7 +201,10 @@ The runner generates each run's wrapper (`MC_<run>.tla`) and config (`MC_<run>.c
 temporary directory, so that nothing stale can shadow a module, and runs TLC there. TLC's
 output goes to `build/<run>.log` beside the `runs.toml`, with your home directory written as
 `~` and temporary directories as `<tmp>`. Each log starts with the Java command line and ends
-with a `# runner:` line giving the wall time, TLC's exit code and the verdict.
+with a `# runner:` line giving the wall time, TLC's exit code and the verdict. `~` and `<tmp>`
+are placeholders, so a path from a log cannot be pasted into a shell as it is; to rerun TLC by
+hand, use the wrapper and config the runner keeps in `build/` (see below), not the paths in
+the logged command line.
 
 The wrapper, config and log stay in `build/` only for runs that did not match their
 expectation, or for every run with `--keep`. Otherwise the runner deletes them. `build/` is
