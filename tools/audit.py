@@ -22,7 +22,7 @@ Each role of a method is judged on its own executions: owed ones, and unowed one
 callback; a direct call of the same method closes nothing. A sweep counts for the receipts in
 its `covers`: "<method>" closes least-gas for a least_gas sweep and log-size for a size
 sweep; "<method> <rule>" names the rule. A method with both roles has a gap per role,
-labelled (owed) or (callback); for it a covers entry must name the role, "<method> <rule>
+labeled (owed) or (callback); for it a covers entry must name the role, "<method> <rule>
 <role>", or it credits nothing (an entry naming only the method needs the role if the method
 is seen in both roles on any account). A role named in a covers entry or accept key matches that role
 whether or not the selected runs show the other.
@@ -109,11 +109,11 @@ class Gap:
     lib: bool = False
     accepted: str | None = None
     role: str = ""     # "owed" or "callback" ("" for an inventory gap)
-    labelled: bool = False  # the method shows both roles here: label the role
+    labeled: bool = False  # the method shows both roles here: label the role
 
     @property
     def label(self) -> str:
-        return f"{self.key} ({self.role})" if self.labelled else self.key
+        return f"{self.key} ({self.role})" if self.labeled else self.key
 
 
 @dataclass

@@ -1,4 +1,4 @@
-# Modelling guide
+# Modeling guide
 
 This guide covers everything a model of a real contract needs beyond the
 [tutorial](TUTORIAL.md): the modules to choose, the constants, receipts and handlers in full,
@@ -10,7 +10,7 @@ its model.
 - Running checks, reading traces, witnesses, mutants, sweeps and the audit:
   [RUNNER.md](RUNNER.md).
 - Replaying a counterexample on the compiled contract: [VALIDATING.md](VALIDATING.md).
-- Which runtime rule each operator encodes, and what is not modelled:
+- Which runtime rule each operator encodes, and what is not modeled:
   [SEMANTICS.md](SEMANTICS.md).
 
 The sections build on each other. 1-7 are the basics every model uses. 8-11 and 14-16 are
@@ -51,7 +51,7 @@ These seven habits separate a model that finds real bugs from one that produces 
 noise. The rest of this guide is the mechanics.
 
 1. **Write the properties first.** Before any handler, write down what must hold: books
-   balance, every refund is honoured, nothing is paid twice, a callback's cleanup always
+   balance, every refund is honored, nothing is paid twice, a callback's cleanup always
    happens. Prefer per-user and per-operation obligations over one conservation total: a total
    cannot tell you that one user's money moved to another.
 2. **Treat gas as a quantity.** A receipt runs out of gas because its need exceeds the gas it
@@ -147,7 +147,7 @@ tables, no outcome log; [Platform defaults](RUNNER.md#platform-defaults)).
 | `MayFail`, `MaxFails` | the forced-fault switch ([section 13](#13-the-forced-fault-switch-and-labels)) |
 | `LogOn` | keep the per-receipt outcome log `rlog` (conformance runs; FALSE otherwise) |
 
-`NearKeys` adds `KeyAccts` (accounts whose keys are modelled). The token modules add
+`NearKeys` adds `KeyAccts` (accounts whose keys are modeled). The token modules add
 `TokYocto` (1 to model the 1-yocto attachments, 0 to skip them), `TokenAccts`, `TokHolders`,
 `TokStorageMin`, `TokDev`, `TokCallReserve` and `WNearAccts`; `Nep245` adds `MtAccts`,
 `MtHolders`, `MtIds`, `MtDev` and `MtCallReserve` (and the overridable `MtGasShape`, see
@@ -225,15 +225,15 @@ These are definitions with a default, not constants. Leave them alone, or overri
 | `EvAcctLen`, `EvAmtExp`, `MtIdLen` | each model value's own length | the events' byte lengths matter: the real length of account ids and token ids, a token's decimal exponent ([section 8](#event-logs)) |
 | `MtIdCount` | 1 for every id | a NEP-245 batch of many ids: the number of ids each model id stands for ([section 8](#batches-of-hundreds-of-ids-id-classes)) (at least 1) |
 
-**Leave at the default.** These keep an older model's behaviour, or save states at the cost of hiding behaviours. A new model sets none of them.
+**Leave at the default.** These keep an older model's behavior, or save states at the cost of hiding behaviors. A new model sets none of them.
 
 | definition | default | override when |
 |---|---|---|
-| `CallsNeedCode` | `TRUE` | **deprecated** (to be removed in a later release); never, unless you are keeping an older model's behaviour (calls run whatever code the receiver has; a missing receiver still fails them) |
-| `BurnLostRefunds` | `TRUE` | **deprecated** (to be removed in a later release); never, unless keeping older behaviour (a refund to a missing account stays in flight) |
+| `CallsNeedCode` | `TRUE` | **deprecated** (to be removed in a later release); never, unless you are keeping an older model's behavior (calls run whatever code the receiver has; a missing receiver still fails them) |
+| `BurnLostRefunds` | `TRUE` | **deprecated** (to be removed in a later release); never, unless keeping older behavior (a refund to a missing account stays in flight) |
 | `InstantFirst` | `TRUE` | never, unless you want the over-approximation without instant receipts ([S5](SEMANTICS.md#s5-instant-receipts)): `FALSE` lets other receipts, transactions and blocks run between a receipt and the lone DeleteAccount it creates |
-| `ResultReadGas` | `TRUE` | **deprecated** (to be removed in a later release); never, unless keeping older behaviour: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
-| `TokEvents` | `TRUE` | the model declares the token's events itself (setting it to keep older behaviour is **deprecated**, to be removed in a later release): `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
+| `ResultReadGas` | `TRUE` | **deprecated** (to be removed in a later release); never, unless keeping older behavior: `FALSE` stops charging the reads outcomes declare with `OReadRes` ([section 7](#reading-a-large-result-costs-gas)) |
+| `TokEvents` | `TRUE` | the model declares the token's events itself (setting it to keep older behavior is **deprecated**, to be removed in a later release): `FALSE` stops the token handlers from declaring their NEP-297 events and plain logs ([section 8](#event-logs)) |
 | `GlobalInstant` | `FALSE` | state counts only: `TRUE` publishes a global deploy at its commit, without the distribution receipt. Unsound: it hides the window in which a use fails or users still run the old code ([N-global-instant](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)) |
 | `TrieGasEnds` | `FALSE` | with `TrieGasWorst`: `TRUE` takes only no extra nodes and the worst case; fewer states, **unsound** |
 
@@ -264,13 +264,13 @@ mine == <<n, works, ntx, gas>>
 vars == <<platformVars, mine>>                  \* add tk and keyVars if you extend those modules
 ```
 
-Initialise every platform variable with one helper:
+Initialize every platform variable with one helper:
 
 | helper | use |
 |---|---|
 | `PlatformInit(near0, txIds)` | `near0`: `[Accounts -> Nat]`; `txIds`: the transaction ids (the domain of the `paid` ghost) |
 | `PlatformInitStaked(near0, locked0, txIds)` | the same, with `locked0` already staked on `StakingAcct` |
-| `PlatformInitExtra` | for a model that initialises the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `code`, `gcode`, `guse`, `gnonce`, `blk`, `stor`, `ofail` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage /\ PlatformInitOwed`) |
+| `PlatformInitExtra` | for a model that initializes the older platform variables itself: only `txsig`, `created`, `burnt`, `deleted`, `code`, `gcode`, `guse`, `gnonce`, `blk`, `stor`, `ofail` (= `PlatformInitSigner /\ PlatformInitAccounts /\ PlatformInitClock /\ PlatformInitStorage /\ PlatformInitOwed`) |
 | `KeysInit(keys0)` | `NearKeys`: `keys0` maps each `KeyAccts` account to its key map |
 | `tk = [t \in {FT} \|-> Ledger(balances, registered)]` | tokens: balances on `TokHolders[t]` and the registered set |
 
@@ -356,7 +356,7 @@ Adjust an outcome with:
   path that burns differently: `OKey(O, "withdraw/refund")`.
 - `OSz(O, n)`: the size (KB) the burn grows with, for a key with a per-KB slope.
 - `OPanicKey(O, k)`: the burn key of a failing outcome's panic path, so a panic the gas could
-  not reach is labelled out of gas ([section 12](#12-fault-mode-and-gas-mode)). Per action:
+  not reach is labeled out of gas ([section 12](#12-fault-mode-and-gas-mode)). Per action:
   `OPanicAt(O, i, k)`.
 
 Return values carry a size in KB, rounded up (1 KB = 1000 bytes): `RValSz(v, n)`. The callback
@@ -574,7 +574,7 @@ What the callback sees:
 - `storage_deposit` returns `NONEMPTY` (a JSON object).
 
 See [Tokens](SEMANTICS.md#tokens) for each method's rules. `TokDev` selects non-standard
-behaviours per token: `resolveIgnoresResult`, `resolveNoCap`, `retBytes`,
+behaviors per token: `resolveIgnoresResult`, `resolveNoCap`, `retBytes`,
 `sdRefundToAccount` and `autoRegister`. `MtDev` does the same for a NEP-245 token, and also
 takes `zeroAmountSkipped` and `selfTransferCredits`: near-sdk-contract-tools 4.0.0 skips a
 zero amount and lets a transfer to oneself raise one's balance, where the model panics on
@@ -619,7 +619,7 @@ grow with every one. An id class gives that size without the vectors: with
 1 of each of the first 200 and 25 of each of the others. `mtk`'s balance of a class is each
 of its ids' balance, a receiver answers one value per class (`MtRet(<<u1, u2>>)`), and the
 resolver caps and refunds per id as before; the event and the burn size count 400. Set
-`MtIdLen` for the ids' byte length. This covers only behaviours in which the ids of a class
+`MtIdLen` for the ids' byte length. This covers only behaviors in which the ids of a class
 stay alike: a transfer of part of a class, or a receiver answering differently for ids of
 one class, cannot be written (T5 has the exact boundary; N-mtclass). `mt_transfer` on a class
 of more than one id is an `Assert`. So is, in gas mode, any NEP-245 call outside the ids
@@ -689,7 +689,7 @@ Four ways to submit a transaction, all on its first receipt:
 
 Every receipt of the transaction sees the signer: `Signer(r)` (`env::signer_account_id()`),
 `SignerKey(r)` (`env::signer_account_pk()`), `SignerOf(tx)`. Use `r.fr` for the predecessor.
-A contract that authorises on the signer instead of the predecessor is a classic bug;
+A contract that authorizes on the signer instead of the predecessor is a classic bug;
 `examples/signer-propagation` shows it.
 
 `SubmitSigned` checks the key's permission. It also counts signed transactions per account in
@@ -817,7 +817,7 @@ gas and any deposit ([K4](SEMANTICS.md#k4-delegate-actions-nep-366-meta-transact
 inner call sees the **user as predecessor** (`r.fr`) and the **relayer as signer**
 (`Signer(r)`, `SignerKey(r)`). Only the signer and its key carry over to the receipts it
 spawns: each of those sees its immediate creator as predecessor, so for user → C → D, D sees
-C as predecessor and the relayer as signer. A contract that pays or authorises
+C as predecessor and the relayer as signer. A contract that pays or authorizes
 `env::signer_account_id()` serves the relayer here.
 
 - `SignedDelegate(s, k, n, mbh, c)` is user `s`'s signature with its key `k`: nonce `n`,
@@ -868,7 +868,7 @@ What the model must do:
   when `blk > mbh`; for `ClockHorizonOK` that comparison counts `T = mbh + 1`
   ([section 14](#14-joint-callbacks-yieldresume-and-the-block-clock)). That is the general
   bound. An absolute expiry height saturates: if no other comparison reads the clock, every
-  height above `mbh` behaves alike, so `MaxBlk = mbh + 1` covers every behaviour
+  height above `mbh` behaves alike, so `MaxBlk = mbh + 1` covers every behavior
   (`meta_expiry_clock` in `examples/meta-tx`).
 - Delegate nonces are tracked per key and do not see the nonces of direct transactions with
   the same key, and a re-added key starts again at 0
@@ -935,7 +935,7 @@ can make a callback run out while its call succeeded. In gas mode:
   bytes; its send fees are part of the creator's burn;
 - if the need exceeds the attached gas, the receipt runs out of gas and fails like any
   failure. A panic whose outcome names its panic-path burn key (`OPanicKey(O, k)`) is
-  labelled out of gas when that burn plus the children created before the panic exceeds the
+  labeled out of gas when that burn plus the children created before the panic exceeds the
   attached gas; without a panic key a panic is always a plain failure;
 - otherwise the leftover is split over the children's function-call actions by weight, each
   getting `floor(U * w / W)` Ggas. With the default `FeeRounding = "up"` the whole-Ggas
@@ -1066,7 +1066,7 @@ Need is then a lower bound of nearcore's, and the verdicts split:
 - **a finding:** a callback with a fixed budget (static gas, weight 0) gets exactly its static
   gas. If it runs out on the floor, it runs out on real wasm too, whatever the wasm burns on
   top.
-- **a finding if the depth is real:** with `TrieGasWorst` on as well, a failure labelled
+- **a finding if the depth is real:** with `TrieGasWorst` on as well, a failure labeled
   `"out of gas (worst-case trie depth)"` also needs the trie charge the trace chose. That
   charge is an upper bound ([G6](SEMANTICS.md#g6-storage-gas-and-trie-depth)). It holds for
   distinct keys, each declared once, at a depth other users can build by storing keys that
@@ -1090,7 +1090,7 @@ the least budget for 81, 5049 Ggas.
 ## 13. The forced-fault switch and labels
 
 `ForcedFail(r)` fails a receipt whose method is in `MayFail`, at most `MaxFails` times per
-behaviour, with the same revert scope as a real failure. Add it as its own disjunct of `Next`
+behavior, with the same revert scope as a real failure. Add it as its own disjunct of `Next`
 (see [section 6](#6-the-dispatcher-and-next)). It works in both modes, so you can layer "this
 callee may also fail" on a gas-mode run.
 
@@ -1251,7 +1251,7 @@ an argument, so the runner cannot override it: compute your own function of `blk
   ([N-clock-horizon](SEMANTICS.md#under-approximations-unsound-they-can-hide-bugs)). Take `T`
   = the largest number of blocks any comparison with the clock counts (`blk >= at + CancelAt`
   counts `CancelAt`; `>` and `=` count one more; a comparison with a yield's deadline counts
-  `YieldTicks` more), and `n` = the most steps in one behaviour that read or record `blk` or
+  `YieldTicks` more), and `n` = the most steps in one behavior that read or record `blk` or
   `BlockTs`, create a yield or run a yield callback. The `+ 1` is the state an invariant
   reads after the last of them; do not count it in `n`. Define it in your module
   (`HorizonOK == ClockHorizonOK(2 * MaxTx, CancelAt)`) and list it. If you choose a smaller
@@ -1261,7 +1261,7 @@ an argument, so the runner cannot override it: compute your own function of `blk
   invariant that fails only in the gap after the last step.
 
 With `TickAnytime <- FALSE`, no handler reading the clock and at most `k` yields per
-behaviour, `MaxBlk = k * YieldTicks` is enough. Keep `TickAnytime` TRUE whenever a handler reads
+behavior, `MaxBlk = k * YieldTicks` is enough. Keep `TickAnytime` TRUE whenever a handler reads
 `blk` or `BlockTs`: with FALSE the clock stops when no yield is pending, which can hide a bug
 (`cancel_after_answer` in `yield-clock` passes with it). `BlockTick` and `EpochTick` are
 independent.
@@ -1387,7 +1387,7 @@ Account actions travel in an ACCOUNT receipt (`m = ACCT`), which runs no code:
 In gas mode each constructor sets `gf` to the receipt's whole send + exec fee from the fee
 table, the prepaid reservation, whether the receipt succeeds or fails (nearcore refunds a
 failed receipt the exec fees of the actions after the failing one as gas, which is not
-modelled; SEMANTICS A6). A handler emits these like any child; a script submits them like any transaction
+modeled; SEMANTICS A6). A handler emits these like any child; a script submits them like any transaction
 (`Submit(DeleteAcctRcpt(nid, t, "p", args, "b", 0))`: `p` deletes itself, its balance goes to
 `b`).
 
@@ -1482,7 +1482,7 @@ Tick == ~InstantPending /\ round' = round + 1 /\ UNCHANGED platformVars
 ```
 
 Forgetting it is sound: your step may then run between a creator and its delete, which only
-adds behaviours. The beneficiary's payout is not instant, nor is a delete that is a
+adds behaviors. The beneficiary's payout is not instant, nor is a delete that is a
 transaction's first receipt, nor `[Transfer, DeleteAccount]`. `InstantFirst <- FALSE` turns
 the rule off, an over-approximation (N-instant): a self-closing contract then shows a
 spurious use-after-close (`examples/account-lifecycle/instant`).
@@ -1641,13 +1641,13 @@ All examples are toy contracts written for this repo.
 - **`examples/minimal`**: the model the [tutorial](TUTORIAL.md) builds. Copy it to start.
 - **`examples/pay`**: a contract that pays out of an internal balance through
   `ft_transfer_call` and reconciles in its callback.
-  - fault-mode runs over every receiver behaviour and two token deviations;
+  - fault-mode runs over every receiver behavior and two token deviations;
   - gas-mode runs: the out-of-gas edge, a print-only window, and the same window on the
     measured `CalibStd` table.
 - **`examples/platform-selftest`**: deterministic scenarios with known nearcore outcomes. They
   cover receipts, results, accounts, refunds, staking, storage, keys, gas, tokens, joint
   callbacks and yields. It checks
-  the library, and it is a catalogue of how to drive each operator.
+  the library, and it is a catalog of how to drive each operator.
 - **The semantic examples**, each a must-pass and a must-fail pair for one rule:
 
   | example | rule |

@@ -62,7 +62,7 @@ To run every example in the repo: `python3 tools/run.py examples/`.
 
 ## What a result means
 
-**A pass** means every invariant held in every behaviour (every possible run) TLC explored.
+**A pass** means every invariant held in every behavior (every possible run) TLC explored.
 It holds:
 
 - within the run's bounds: the number of transactions, forced failures and prepaid gas amounts
@@ -95,8 +95,8 @@ nearcore's runtime and can force the trace's failures and receipt order, or in a
 - **Receipt order is not part of that comparison.** The ordering rules rest on targeted
   simulator tests (local receipts first, no order between a pair of accounts) and on reading
   nearcore (the rest), as each rule's entry in SEMANTICS says.
-- **What is not modelled is listed**, entry by entry, with what each omission could hide
-  ([Not modelled](docs/SEMANTICS.md#not-modelled)). Of its 51 entries, 15 are
+- **What is not modeled is listed**, entry by entry, with what each omission could hide
+  ([Not modeled](docs/SEMANTICS.md#not-modeled)). Of its 51 entries, 15 are
   over-approximations (the model allows more than a network does, so it can report a
   counterexample no network reaches), 25 are under-approximations (they can hide bugs; several
   apply at the default settings) and 11 are outside the library's scope.
@@ -110,7 +110,7 @@ nearcore's runtime and can force the trace's failures and receipt order, or in a
 |---|---|
 | [CONCEPTS.md](docs/CONCEPTS.md) | first: NEAR's execution model and TLA+ in a page each, the vocabulary, what a result means |
 | [TUTORIAL.md](docs/TUTORIAL.md) | to write your first model, step by step |
-| [USAGE.md](docs/USAGE.md) | while modelling your contract: tokens, keys, gas, storage, accounts, calibration |
+| [USAGE.md](docs/USAGE.md) | while modeling your contract: tokens, keys, gas, storage, accounts, calibration |
 | [RUNNER.md](docs/RUNNER.md) | to run checks, read traces, and make sure a pass means something |
 | [VALIDATING.md](docs/VALIDATING.md) | when TLC finds a counterexample: replay it, write it up |
 | [SEMANTICS.md](docs/SEMANTICS.md) | to know exactly which runtime rule each operator encodes, and what is left out |
@@ -151,7 +151,7 @@ Other agents can be pointed at the `SKILL.md` file directly.
 | `NearAsync` | the platform: receipts, callbacks and promise results, joint callbacks (`promise_and`), yield/resume with its timeout, a block clock, revert scope, deposit refunds, Transfer and Stake, account kinds and implicit creation, calls to code-less accounts, signer propagation, local receipts, storage staking (a fixed floor, or per byte), and gas as a bounded quantity (fault mode or gas mode) |
 | `NearKeys` | access keys: full-access and function-call permissions, signed submission, AddKey/DeleteKey receipts and their storage bytes, key actions bundled atomically with a call, delegate actions |
 | `NearFees` | NEAR's action and receipt fees in Ggas, per protocol version 84-88 (pure definitions) |
-| `TokenCommon` | the shared token argument record, selectable non-standard behaviours, resolver arithmetic, an arbitrary receiver |
+| `TokenCommon` | the shared token argument record, selectable non-standard behaviors, resolver arithmetic, an arbitrary receiver |
 | `Nep145` | NEP-145 storage management and the token ledger |
 | `Nep141` | NEP-141 fungible-token core, including `ft_transfer_call` and its resolver and gas shape |
 | `WNear` | wNEAR's `near_deposit` / `near_withdraw` |
@@ -181,14 +181,14 @@ shared `NearAsync` base.
 - **Safety properties.** Models check invariants; there is no liveness or fairness. "Callbacks
   always run" is checked as the invariant `NoOrphans`
   ([CONCEPTS.md](docs/CONCEPTS.md#design-choices)).
-- **Bounded.** TLC explores every behaviour within the constants you set, and nothing beyond
+- **Bounded.** TLC explores every behavior within the constants you set, and nothing beyond
   them ([choosing bounds](docs/CONCEPTS.md#bounds-and-the-size-of-the-state-space)).
 
 ## Status and versioning
 
 Each release is a `vX.Y.Z` tag with its section in [`CHANGELOG.md`](CHANGELOG.md); release-plz
 writes the sections from the commit titles, and its open release pull request shows what the
-next release holds. The behaviour encoded is protocol version **88** at nearcore
+next release holds. The behavior encoded is protocol version **88** at nearcore
 2.14.0. `NearFees` also carries the fee tables of 84-87, selected by `FeeProtocol`; the
 other rules are 88's. [VERSIONING.md](docs/VERSIONING.md) says what counts as a breaking
 change, what each release states about its protocol assumptions, and how the library moves to a
@@ -198,7 +198,7 @@ Planned next:
 
 - Check more of the runtime rules against the simulator, including the order of receipts
   across shards, which needs a multi-shard simulator.
-- Model more of what is [not modelled](docs/SEMANTICS.md#not-modelled) today: the rest of
+- Model more of what is [not modeled](docs/SEMANTICS.md#not-modeled) today: the rest of
   transaction validity, the protocol limits, state init for deterministic accounts, gas keys.
 - Measured gas tables for more token implementations and versions, and more event logs.
 

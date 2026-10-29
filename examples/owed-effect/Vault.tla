@@ -36,7 +36,7 @@ CONSTANTS U, V, T,
     MaxTx,      \* withdraw transactions
     Amts,       \* amounts U may withdraw
     InitBal,    \* U's balance in V
-    TResps,     \* T.deliver behaviours: subset of {"ok", "panic", "mal"}
+    TResps,     \* T.deliver behaviors: subset of {"ok", "panic", "mal"}
     Memos,      \* memo lengths (bytes) U may send
     GasMenu,    \* prepaid gas U may attach (gas mode), Ggas
     MemoCap,    \* withdraw refuses a longer memo

@@ -170,7 +170,7 @@ MtPathKey(r, m, p) == IF CallKey(r.to, m \o "/" \o p) \in DOMAIN GasBurn THEN m 
 (* the events, the gas size and the counts below use the k ids.  So a      *)
 (* batch of 200 ids of two amounts is <<"c1", "c2">> with MtIdCount =      *)
 (* [c1 |-> 100, c2 |-> 100], whatever 16-entry bound the vector code has.  *)
-(* Soundness boundary: the model represents exactly the real behaviours in *)
+(* Soundness boundary: the model represents exactly the real behaviors in  *)
 (* which (1) every id of a class has the same balance at every holder at   *)
 (* every step, (2) every operation names whole classes, one amount per id, *)
 (* (3) a receiver answers one value for all the ids of a class, and (4)    *)
@@ -178,7 +178,7 @@ MtPathKey(r, m, p) == IF CallKey(r.to, m \o "/" \o p) \in DOMAIN GasBurn THEN m 
 (* per-id cap and refund, the batch's balance checks and its atomicity are *)
 (* exact there (they are per id, and the ids of a class are alike);        *)
 (* repeated entries of one class are repeated ids, as in nearcore.  A      *)
-(* behaviour that sets the ids of a class apart (a transfer of some of     *)
+(* behavior that sets the ids of a class apart (a transfer of some of      *)
 (* them, a receiver keeping some and returning others, a contract's own    *)
 (* handler crediting one) is not represented: an under-approximation;      *)
 (* split the class to cover it.  A model reading mtk reads per-id balances *)
@@ -248,7 +248,7 @@ MtSingleRes(r) ==
     Assert(r.a.tids = <<r.a.tid>>,
            <<"mt_resolve_transfer: arguments with bat FALSE but tids # <<tid>>; build a batch's with MtBatchResArgs (or set bat |-> TRUE)",
              r.a.tid, r.a.tids>>)
-\* A single-id method on a class of several ids is a modelling error.
+\* A single-id method on a class of several ids is a modeling error.
 MtOneId(r, tid) ==
     Assert(MtCnt(tid) = 1, <<"a single-id NEP-245 method on an id class of several ids (MtIdCount)", r.m, tid>>)
 

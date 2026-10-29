@@ -122,7 +122,7 @@
 (*      (action_validation.rs:350-351, applied at lib.rs:968-978).  Under  *)
 (*      "up" the model cannot always tell 0 gas from a little: it then     *)
 (*      keeps both outcomes (ZeroGasKid, ZeroGasMaybe; Verdict "either").  *)
-(*    * a panic is labelled out-of-gas when its explicit panic-path burn   *)
+(*    * a panic is labeled out-of-gas when its explicit panic-path burn    *)
 (*      (OPanicKey) plus the children created before it exceeds the        *)
 (*      attached gas (gas_counter.rs:136-141, :155-174, :205-213).         *)
 (*    * action-only receipts never run out of gas.                         *)
@@ -142,7 +142,7 @@
 (* (GDIST, ExecGDist) and users resolve a by-account contract when each    *)
 (* receipt runs (A10).                                                     *)
 (*                                                                         *)
-(* What is not modelled is listed in docs/SEMANTICS.md, "Not modelled":    *)
+(* What is not modeled is listed in docs/SEMANTICS.md, "Not modeled":      *)
 (* among others congestion (a local receipt that does not fit the chunk's  *)
 (* compute limit is delayed, lib.rs:2513-2521), gas price and gas refunds  *)
 (* in NEAR, cross-shard distribution of global contracts, gas keys, and    *)
@@ -167,7 +167,7 @@ CONSTANTS
     MinStake,        \* epoch_info_provider.minimum_stake (scaled)
     StorageFloor,    \* [Accounts -> Nat]: liquid that must remain (LackBalanceForState)
     MayFail,         \* forced-fault switch: methods whose receipt may fail nondeterministically
-    MaxFails,        \* bound on forced failures per behaviour
+    MaxFails,        \* bound on forced failures per behavior
     MaxEpoch,        \* bound on epoch ticks
     MaxReward,       \* max reward per epoch tick
     Exists,          \* accounts that exist initially
@@ -202,7 +202,7 @@ VARIABLES
     guse,      \* accounts on a global contract: a partial function account -> identifier
     gnonce,    \* per identifier, the nonce of the last distribution applied (absent: 0)
     ofail      \* ghost: failed receipts the model marked owed or detached (OwedOK, DetachedVoided); with TrieGasWorst also unmarked ones (k = {})
-\* Every platform variable must be initialised: use PlatformInit /
+\* Every platform variable must be initialized: use PlatformInit /
 \* PlatformInitStaked, or conjoin PlatformInitExtra to an older Init.  TLC's
 \* "current state is not a legal state" on the initial state, with a
 \* platform variable such as txsig, blk, stor, deleted, code or gcode shown as null,
@@ -214,7 +214,7 @@ platformVars == <<rq, post, data, near, locked, proposal, epoch, nid, fails, pai
 
 ----------------------------------------------------------------------------
 (* Overridable definitions.  Override in the cfg with `Name <- MyDef`      *)
-(* (or a [run.constants] entry); the defaults keep the behaviour of models *)
+(* (or a [run.constants] entry); the defaults keep the behavior of models  *)
 (* that do not mention them.                                               *)
 
 \* Accounts with deployed code.  A function call to an account outside this
@@ -258,7 +258,7 @@ KindOf(a) == IF a \in DOMAIN AcctKind THEN AcctKind[a] ELSE "named"
 \* A refund never creates an account.  The model's Transfer receipts are
 \* single-action, so all of them qualify.
 \* UniversalOn: universal accounts exist (the protocol-88 `universal_accounts`
-\* feature, core/primitives-core/src/version.rs:643).  A behaviour switch,
+\* feature, core/primitives-core/src/version.rs:643).  A behavior switch,
 \* independent of NearFees.FeeProtocol (which selects fees only): TRUE is the
 \* pinned protocol 88's rule.  Overridable (`UniversalOn <- FALSE` for the
 \* rules before 88, where a universal id is an ordinary named id:
@@ -267,7 +267,7 @@ UniversalOn == TRUE
 IsImplicit(a) ==
     \/ KindOf(a) \in {"near_implicit", "eth_implicit", "deterministic"}
     \/ KindOf(a) = "universal" /\ UniversalOn
-\* An uninitialised universal account: created by a Transfer and waiting for
+\* An uninitialized universal account: created by a Transfer and waiting for
 \* its state init (actions.rs:276-282).  Every action but a Transfer fails on
 \* it with AccountNotInitialized (:880-887).  Without UniversalOn a 0u id is
 \* named, and an account with it is an ordinary one.
@@ -279,7 +279,7 @@ DefaultKey == "default"
 \* Block clock and yield timeouts.  blk is env::block_height(), advanced only
 \* by BlockTick, which a model adds to its Next.
 \* MaxBlk: bound on blk; 0 = no clock (blk stays 0).  A bound, not an
-\* abstraction: behaviours that need a later height are not explored (an
+\* abstraction: behaviors that need a later height are not explored (an
 \* under-approximation for a model that reads blk; see ClockHorizonOK).
 \* YieldTicks: a yield's timeout in ticks.  nearcore: the creating receipt's
 \* block height + yield_timeout_length_in_blocks (200 at protocol 88,
@@ -598,7 +598,7 @@ TimedOut(p) == /\ IsYield(p)
 \* change state outside receipts (a contract-side tick, a scripted step);
 \* one that forgets only allows more interleavings.  Tagged receipts run in
 \* any order among themselves (nearcore: creation order).
-\* InstantFirst <- FALSE: no receipt is instant (the earlier behaviour, an
+\* InstantFirst <- FALSE: no receipt is instant (the earlier behavior, an
 \* over-approximation: N-instant).
 InstantFirst == TRUE
 \* No code (CodeOf); the code a receipt with account actions deploys, if any
@@ -715,7 +715,7 @@ AcctExists(a) == (a \in Exists \/ a \in created) /\ a \notin deleted
 \* it is eth-implicit: a Transfer gives that one the protocol's wallet
 \* global contract (EthWalletCode), whether or not it is in Contracts
 \* (actions.rs:255-268).  A universal account created by a
-\* Transfer is also uninitialised (UninitUniversal; actions.rs:880-887,
+\* Transfer is also uninitialized (UninitUniversal; actions.rs:880-887,
 \* AccountNotInitialized).  DeleteAccount drops the account's entry in code,
 \* so an account created again starts with none.
 \* InitCode (overridable): the initial accounts' code tags, default "code".
@@ -772,7 +772,7 @@ CodeSeen(r) ==
     IF SetsCode(r) THEN CodeAfter(r) # NoCode
     ELSE HasCode(r.to)
 \* A missing or deleted receiver fails the call even with CallsNeedCode =
-\* FALSE (AccountDoesNotExist, actions.rs:874-879), as does an uninitialised
+\* FALSE (AccountDoesNotExist, actions.rs:874-879), as does an uninitialized
 \* universal one (AccountNotInitialized, :883-887).  A call in the same receipt
 \* as a CreateAccount, DeployContract or UseGlobalContract (HasAc, the
 \* factory batch) sees the account they leave (CodeAfter): a new account
@@ -1079,7 +1079,7 @@ CodeBytes(a) == IF a \in DOMAIN code THEN CodeLenOf(code[a])
 \* exec fee plus the exec fees of the actions it attempted (each burns its
 \* own as it starts, :588-592); the exec fees of the actions after it come
 \* back with the gas refund (:1299-1309).  Gas refunds, like the creation
-\* charge withheld on failure, are gas money, which is not modelled
+\* charge withheld on failure, are gas money, which is not modeled
 \* (N-gas-money; sim lifecycle.rs account_action_fees, create_batch_atomic).
 \* NearKeys.WithAcctKeys adds the key actions' fees.
 \* sir: the receipt is on its predecessor's own account.  AcctActsFee: the
@@ -1206,7 +1206,7 @@ DistRcpt(id, r) == Rcpt(id, r.tx, r.to, r.to, GDIST, [g |-> DgId(r), t |-> DgTag
 \* predecessor) (actions.rs:202; lib.rs:599-610).
 AcctActor(r) == IF r.ac.mk THEN r.to ELSE r.fr
 \* Does the receiver exist for the actions after CreateAccount?  A universal
-\* account created by a Transfer is uninitialised: only a Transfer accepts it
+\* account created by a Transfer is uninitialized: only a Transfer accepts it
 \* (actions.rs:880-887).
 AcctThere(r) == r.ac.mk \/ AcctExists(r.to)
 AcctInit(r)  == r.ac.mk \/ ~UninitUniversal(r.to)
@@ -1248,9 +1248,9 @@ UsesNext(r) ==
 \*    (:175-186); a sub-account only by its direct parent (:190-197).
 \*  Transfer: the receiver must exist (:842-849; an ACCOUNT receipt never
 \*    creates an implicit account, see ExecTransfer).
-\*  Key actions: exist, initialised, actor = the account (:862-886,
+\*  Key actions: exist, initialized, actor = the account (:862-886,
 \*    :755-801), each one applies (access_keys.rs:84, :158).
-\*  DeployContract: exists, initialised, actor = the account (:755-776).
+\*  DeployContract: exists, initialized, actor = the account (:755-776).
 \*  DeployGlobalContract, UseGlobalContract: the same (:755-776); then the
 \*    balance must cover the deploy's burn (LackBalanceForState,
 \*    global_contracts.rs:41-48) and the used identifier must be published
@@ -1598,7 +1598,7 @@ PromiseCount(S) == Cardinality(S) + NJoins(S)
 StatedJoins(R) == IF "nj" \in DOMAIN R THEN R.nj ELSE -1
 \* A stated count is at least the joint callbacks of the call's children S:
 \* each is the .then of at least one promise_and.  Below that (or negative)
-\* is a modelling error, so the model asserts before using it.
+\* is a modeling error, so the model asserts before using it.
 JoinsFieldOK(S, R) ==
     IF "nj" \notin DOMAIN R \/ R.nj >= NJoins(S) THEN TRUE
     ELSE Assert(FALSE, <<"a stated promise_and count (OJoins, or nj in a pa record) below the joint callbacks"
@@ -1678,7 +1678,7 @@ NewRcptLimitErr(O) == \E c \in Kids(O) : NActs(c) > MaxActionsPerReceipt
 \* child, more than 100 actions) and the storage check run after the call
 \* (an unaffordable receipt fails either way).  A
 \* Delegate receipt runs no code: a dispatcher that hands one to a contract
-\* handler is a modelling error (an Assert), as is one that hands it a
+\* handler is a modeling error (an Assert), as is one that hands it a
 \* built-in, key or account receipt.
 Verdict(r, O) ==
     IF IsDeleg(r) THEN Assert(FALSE, <<"DELEGATE receipt passed to Exec; run it with NearKeys' ExecDelegate", r.id>>)
@@ -1726,7 +1726,7 @@ LogR(r, st) ==
     IF LogOn THEN rlog \cup {[tx |-> r.tx, id |-> r.id, m |-> r.m, to |-> r.to, st |-> st, g |-> GasOf(r)]}
     ELSE rlog
 
-\* Which kind of failure a behaviour contains: "forced" (the switch fired),
+\* Which kind of failure a behavior contains: "forced" (the switch fired),
 \* "caller-gas" (a real out-of-gas), else "no-fault".
 Label == IF fails > 0 THEN "forced" ELSE IF oog # {} THEN "caller-gas" ELSE "no-fault"
 
@@ -1866,7 +1866,7 @@ ExecKeep(r, O, keep) ==
 \* its weight 0 (a fixed budget), its outcome's declared logs (count, bytes)
 \* and trie nodes, and whether the library's own token implementation ran it
 \* (ExecLib, from TokStep and MtStep).  The runner sets AuditOn; the ASSUME
-\* then initialises register AuditReg, which keeps the facts already printed.
+\* then initializes register AuditReg, which keeps the facts already printed.
 \* Off (the default), Exec is as before.  A fact is printed when TLC
 \* evaluates Exec, so a conjunct after Exec that rules the step out still
 \* leaves its fact: guard before Exec.
@@ -2122,7 +2122,7 @@ BlockTs == TsOf(blk)
 \* the deposit (NotEnoughBalance), and with StoragePerByte what is left must
 \* still cover its storage (InvalidTxError::LackBalanceForState,
 \* runtime/runtime/src/verifier.rs:375-386 in verify_and_charge_tx_ephemeral).
-\* Gas money is not modelled (docs/SEMANTICS.md, N-gas-money).  A deleted
+\* Gas money is not modeled (docs/SEMANTICS.md, N-gas-money).  A deleted
 \* signer cannot sign (InvalidTxError::SignerDoesNotExist, verifier.rs
 \* :170-175).  A scripted model branches on this rather than letting Submit
 \* disable its step.  A transaction of more than 100 actions (a delegate's
@@ -2199,11 +2199,11 @@ PlatformInitStaked(near0, locked0, txIds) ==
     /\ ofail = {}
 PlatformInit(near0, txIds) == PlatformInitStaked(near0, 0, txIds)
 
-\* Only the variables added in 0.1.0 and 0.2, for models that initialise the
+\* Only the variables added in 0.1.0 and 0.2, for models that initialize the
 \* others themselves.  The parts compose: a model with its own txsig
-\* initialiser (e.g. a pre-sized function) conjoins PlatformInitAccounts,
+\* initializer (e.g. a pre-sized function) conjoins PlatformInitAccounts,
 \* PlatformInitClock, PlatformInitStorage and PlatformInitOwed alone.
-\* PlatformInitAccounts also initialises ofail, so a model written before
+\* PlatformInitAccounts also initializes ofail, so a model written before
 \* ofail existed needs no change; PlatformInitOwed repeats it harmlessly.
 \* PlatformInitStorage does not check the initial cover: list
 \* StorageCovered as an invariant.
@@ -2261,26 +2261,26 @@ DetachedVoided(Voided(_)) == \A x \in DetachedFailed : TxSettled(x.tx) => Voided
 
 \* No pending yield's deadline lies past the clock bound.  When this fails,
 \* some yield could time out before its deadline (at blk = MaxBlk, see
-\* TimedOut), so a violation found in that run may be an artefact: raise
+\* TimedOut), so a violation found in that run may be an artifact: raise
 \* MaxBlk.  When it holds, no timeout in the run is premature.  It says
 \* nothing about what the bound leaves out (ClockHorizonOK).  Trivially
 \* TRUE without a clock.
 YieldDeadlinesInBound == MaxBlk = 0 \/ \A p \in post : IsYield(p) => p.ydl <= MaxBlk
 
-\* Clock horizon: does MaxBlk cover every behaviour of the model?  blk stops
+\* Clock horizon: does MaxBlk cover every behavior of the model?  blk stops
 \* at MaxBlk, so a guard of the model that only becomes TRUE past the bound
 \* (a cancel window, a late timeout) never fires there, and a run that
 \* passes says nothing about it: an under-approximation.  A check on the
 \* constants (list it as an invariant; it fails in the initial state).
 \* Assumption: every comparison with the clock (in handlers, guards and
 \* invariants) is x - h >= c or its negation, with 0 <= c <= T and h <= x
-\* each 0, blk, or a height recorded earlier in the behaviour (blk at some
+\* each 0, blk, or a height recorded earlier in the behavior (blk at some
 \* step, a yield's creation).  Count blk > h + c and blk = h + c as c + 1, a
 \* comparison with a yield's deadline (creation + YieldTicks) as
 \* YieldTicks + c, and one of BlockTs as the height it needs.  n: the most
-\* clock-relevant steps in one behaviour (steps that read or record blk or
+\* clock-relevant steps in one behavior (steps that read or record blk or
 \* BlockTs, yield creations, yield callbacks).
-\* Argument.  An invariant fails in the last state of some behaviour on an
+\* Argument.  An invariant fails in the last state of some behavior on an
 \* unbounded clock.  Let its clock-relevant steps run at heights
 \* b1 <= .. <= bn and its last state be at bf >= bn; with b0 = 0 that is
 \* n + 1 gaps.  Cut each gap to K = max(T, YieldTicks) blocks, dropping the
@@ -2288,11 +2288,11 @@ YieldDeadlinesInBound == MaxBlk = 0 \/ \A p \in post : IsYield(p) => p.ydl <= Ma
 \* unchanged, otherwise it is >= K >= c before and after.  So every
 \* handler, guard, timeout and invariant sees the same values; with
 \* TickAnytime = FALSE a kept tick keeps its offset in its gap, so the
-\* deadline it waits for is still ahead.  The cut behaviour ends at
+\* deadline it waits for is still ahead.  The cut behavior ends at
 \* bf <= (n + 1) * K: the + 1 is the final observation, the gap after the
 \* last step.  Sufficient, not necessary.  Without a clock (MaxBlk = 0)
 \* every gap is 0, which changes no comparison if T = 0; every yield may
-\* then time out at any moment (more behaviours, not fewer).
+\* then time out at any moment (more behaviors, not fewer).
 \* (blk <= MaxBlk always holds; it makes this a state predicate, which TLC
 \* reports as a violation rather than as an error at startup.)
 ClockHorizonOK(n, T) ==

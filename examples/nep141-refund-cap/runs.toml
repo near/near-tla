@@ -60,7 +60,7 @@ expect = "pass"
 [run.constants]
 XResps = '{"keep", "keepbig"}'
 
-# The same with a resolver that reads the result unbounded (5.23.0) and honours the "0".
+# The same with a resolver that reads the result unbounded (5.23.0) and honors the "0".
 [[run]]
 name = "refund_cap_oversized_unbounded"
 expect = "violation"

@@ -42,11 +42,11 @@ conformance/flows/    flow specs (probes.toml, actions.toml, storage.toml, examp
 conformance/tla/      the model side of conformance runs
 conformance/scripts/  gen_probes.py, mkconf.py, tlc.sh, conform.py
 docs/                 CONCEPTS.md (NEAR and TLA+ basics, vocabulary, what results mean),
-                      TUTORIAL.md (first model), USAGE.md (modelling guide), RUNNER.md (runs.toml,
+                      TUTORIAL.md (first model), USAGE.md (modeling guide), RUNNER.md (runs.toml,
                       traces, witnesses, mutants, sweeps, audit), VALIDATING.md (replaying a
                       counterexample), SEMANTICS.md (rules, citations, trust), CONFORMANCE.md,
                       VERSIONING.md
-skills/near-tla/      the agent skill for modelling a user's contract (SKILL.md)
+skills/near-tla/      the agent skill for modeling a user's contract (SKILL.md)
 ```
 
 ## How to run things
@@ -58,7 +58,7 @@ python3 tools/run.py 'pay_*' --print-trace   # some runs, with traces
 python3 tools/run.py path/to/model/ my_run   # one run of a model outside examples/
 ```
 
-`tools/tla2tools.jar` must be tla2tools v1.7.4 (see `CONTRIBUTING.md`). Modelling a contract:
+`tools/tla2tools.jar` must be tla2tools v1.7.4 (see `CONTRIBUTING.md`). Modeling a contract:
 `docs/TUTORIAL.md`, then `docs/USAGE.md`; the runner: `docs/RUNNER.md`. The conformance suite:
 `docs/CONFORMANCE.md`.
 
@@ -93,7 +93,7 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
 
 ## The method that works
 
-1. **Write the properties first.** State what must hold (books balance, every refund is honoured,
+1. **Write the properties first.** State what must hold (books balance, every refund is honored,
    no double pay) before you write the handlers. Prefer per-user and per-operation obligations to
    one conservation total: a total cannot tell you that one user's money moved to another.
 2. **Gas is a quantity, not a boolean.** In gas mode a receipt fails because its calibrated need
@@ -114,5 +114,5 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
    unless conjoined) and assumes the receiving chunk is not at its compute limit. A violation
    that appears only without it is reachable under congestion; dismiss it only with a concrete
    argument that the receiving chunk cannot be full (`docs/SEMANTICS.md`, S1).
-7. **Know what is not modelled.** Read the "Not modelled" section of `docs/SEMANTICS.md` before
+7. **Know what is not modeled.** Read the "Not modeled" section of `docs/SEMANTICS.md` before
    claiming a result. Under-approximations there can hide bugs.

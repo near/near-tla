@@ -509,7 +509,7 @@ class Conform(unittest.TestCase):
                 self.assertEqual(self.run_main(), 1)
 
     def test_repeated_equal_reports_pass(self):
-        # The same outcome reported twice (two behaviours reaching it) is fine.
+        # The same outcome reported twice (two behaviors reaching it) is fine.
         self.good()
         recs = [("ok", 10000), ("oog", 20000)]
         with open(os.path.join(self.build, "f.log"), "a") as f:

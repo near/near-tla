@@ -42,7 +42,7 @@ def reports(text: str) -> dict[str, set[int]]:
 
 
 def fold(values, step: int = 100) -> list[tuple[int, int]]:
-    """Sorted values -> closed intervals; neighbours at most `step` apart merge."""
+    """Sorted values -> closed intervals; neighbors at most `step` apart merge."""
     out: list[list[int]] = []
     for x in sorted(values):
         if out and x - out[-1][1] <= step:

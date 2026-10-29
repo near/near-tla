@@ -16,7 +16,7 @@
 (* transaction.  Signer0 signs a delegate for FirstRcpt (with the swept    *)
 (* gas) and Relayer0 submits it (SubmitDelegate); its first receipt, the   *)
 (* Delegate action on Signer0, runs with ExecDelegate.  alice's key is     *)
-(* modelled (KeyAccts), so the delegate's key and nonce checks run.        *)
+(* modeled (KeyAccts), so the delegate's key and nonce checks run.         *)
 (*                                                                         *)
 (* The probe contract (conformance/probes/probe), on accounts "p" and "q": *)
 (*   chain   creates kids (each its own function call with the static gas *)
@@ -73,7 +73,7 @@ ConfReserve == [t \in Toks |-> 0]
 \* Accounts with code (calls to any other account fail).
 ConfContracts == {"p", "q", "y"} \cup Toks
 
-\* Modelled keys: alice's, one full-access key (the key a relayed flow's
+\* Modeled keys: alice's, one full-access key (the key a relayed flow's
 \* delegate is signed with).
 ConfKeyAccts == {"alice"}
 ConfKeys0 == [a \in ConfKeyAccts |-> (DefaultKey :> FullPerm)]

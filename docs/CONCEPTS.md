@@ -57,7 +57,7 @@ the money, a callback starved of gas.
 
 TLA+ describes a system as **states** and **steps**. A state is a value for each variable.
 A step is a relation between one state and the next, written with primed variables:
-`n' = n + 1` means "in the next state, `n` is one more than now". A **behaviour** is one
+`n' = n + 1` means "in the next state, `n` is one more than now". A **behavior** is one
 possible run of the system: a sequence of states, starting from an initial state, each
 following from the one before by a step.
 
@@ -70,7 +70,7 @@ following from the one before by a step.
   state it reaches, until there are no new states. If an invariant is false in some state, it
   stops and prints a **counterexample**: the sequence of states from the start to the bad one.
 - **Constants** fix the size of what TLC explores: how many users, how many transactions, how
-  many faults. TLC checks every behaviour within those bounds, exhaustively. It does not prove
+  many faults. TLC checks every behavior within those bounds, exhaustively. It does not prove
   anything about larger bounds.
 
 In a near-tla model, each step is one of: a user submits a transaction, one runnable receipt
@@ -179,7 +179,7 @@ The constant `GasMode` picks how a receipt can fail for lack of gas.
 
 - **Fault mode** (`"fault"`) treats gas as abstract. A receipt fails for gas only when TLC
   chooses to fail it: every method listed in `MayFail` may fail, up to `MaxFails` times in a
-  behaviour. This is the quick way to ask "what if this call fails?". It needs no numbers.
+  behavior. This is the quick way to ask "what if this call fails?". It needs no numbers.
 - **Gas mode** (`"gas"`) treats gas as a quantity. A transaction carries prepaid gas, each
   child gets its static gas and a weighted share of the leftover, and a receipt whose need
   exceeds what it holds runs out. This answers "at which prepaid amounts does this fail?". It
@@ -192,7 +192,7 @@ callbacks whose failure matters.
 
 ## What a pass means
 
-A run that passes means: **in every behaviour TLC explored, every invariant held.** That is a
+A run that passes means: **in every behavior TLC explored, every invariant held.** That is a
 strong statement, with four limits.
 
 1. **Within the bounds.** TLC explored the runs' constants: so many users, so many
@@ -204,14 +204,14 @@ strong statement, with four limits.
    skips a branch the real code has, the model cannot find bugs in that branch
    ([N-wasm](SEMANTICS.md#scope-limits)).
 3. **Under the rules the library encodes.** Those are nearcore's at protocol version 88
-   (nearcore 2.14.0). Some runtime behaviour is left out, and each omission is listed in
-   [Not modelled](SEMANTICS.md#not-modelled). Over-approximations only add behaviours, so
+   (nearcore 2.14.0). Some runtime behavior is left out, and each omission is listed in
+   [Not modeled](SEMANTICS.md#not-modeled). Over-approximations only add behaviors, so
    they can give a counterexample no network reaches, but never hide a bug.
    Under-approximations can hide bugs. Some apply to every model: storage is not tracked per
    byte unless you turn it on, gas is not money (no gas price, purchase or refund of unused
    gas as NEAR), the protocol's size limits are not counted, and a failing receipt's burn is
-   not modelled. Others apply only when your contract uses the feature, or in gas mode. The
-   [at-a-glance table](SEMANTICS.md#not-modelled-at-a-glance) says which apply at the
+   not modeled. Others apply only when your contract uses the feature, or in gas mode. The
+   [at-a-glance table](SEMANTICS.md#not-modeled-at-a-glance) says which apply at the
    defaults; read it for the features your contract uses.
 4. **For the properties you wrote.** TLC checks the invariants you list and nothing else.
    A property that is too weak (a total that balances while one user's money moves to

@@ -173,7 +173,7 @@ Walk the trace step by step against the source and classify it:
   SEMANTICS entry cites. That is a near-tla bug, not a contract finding: give the user the
   trace and the entry so they can report it to near-tla.
 - **unreachable**: the schedule needs an order a network does not produce. Name the
-  over-approximation in `NT/docs/SEMANTICS.md` ("Not modelled") that allows it. A reorder of
+  over-approximation in `NT/docs/SEMANTICS.md` ("Not modeled") that allows it. A reorder of
   two receipts between the same pair of accounts is reachable (SEMANTICS S4), so it stays a
   hypothesis until the schedule is shown unreachable.
 
@@ -222,8 +222,8 @@ the code-reading argument (VALIDATING.md, "Without either: by reading the code")
 Write `model/FINDINGS.md` with the template in `NT/docs/VALIDATING.md`: for each finding, the
 impact, the property, the trace, the replay, the run's bounds and switches, the near-tla commit
 and protocol version, and a suggested fix. Then state what the passing runs cover, in the terms
-of CONCEPTS "What a pass means": the bounds, the modelled methods, the under-approximations in
-SEMANTICS "Not modelled" that apply to this contract, and the gaps accepted in the audit.
+of CONCEPTS "What a pass means": the bounds, the modeled methods, the under-approximations in
+SEMANTICS "Not modeled" that apply to this contract, and the gaps accepted in the audit.
 
 Findings in a contract the user does not own are confidential: give them to the user, who
 reports them privately to the maintainers' security contact.

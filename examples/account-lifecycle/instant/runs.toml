@@ -114,7 +114,7 @@ class = "dropped effect"
 killed_by = ["NoUseAfterClose"]
 runs = ["instant_on_passes"]
 
-# The library mutant: instant receipts not prioritised.
+# The library mutant: instant receipts not prioritized.
 [[mutant]]
 id = "lib_runnable_ignores_instant"
 file = "NearAsync.tla"

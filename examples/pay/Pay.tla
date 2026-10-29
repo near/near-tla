@@ -15,7 +15,7 @@ CONSTANTS
     MaxTx,            \* number of pay transactions
     Amts,             \* amounts U may pay
     InitC, InitRx,    \* C's / RX's initial FT balance (ib starts at InitC)
-    RxResps,          \* RX.ft_on_transfer behaviours, subset of RecvResps
+    RxResps,          \* RX.ft_on_transfer behaviors, subset of RecvResps
     RxReg,            \* is RX registered (NEP-145) on FT
     Dev,              \* FT's deviations, subset of Deviations
     GasMenu           \* prepaid gas U may attach to pay (gas mode)

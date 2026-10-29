@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Summarise the counterexample in a TLC log.
+"""Summarize the counterexample in a TLC log.
 
-TLC prints a violating behaviour as numbered states:
+TLC prints a violating behavior as numbered states:
 
     State 1: <Initial predicate>
     /\\ x = 0

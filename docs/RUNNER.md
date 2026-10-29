@@ -213,7 +213,7 @@ and keep them when the job fails or with `--keep`.
 
 After the tables, the runner prints one audit report per `runs.toml`. It counts the owed
 receipts (receipts that must not fail, such as a callback that refunds) and the callbacks with
-a fixed gas budget that the runs executed, then lists each gap: something the runs modelled
+a fixed gas budget that the runs executed, then lists each gap: something the runs modeled
 but never pushed to its edge. A receipt counts as owed only if you mark it, so a refunding
 callback you left unmarked can leave the report at `0 open gap(s)`
 ([What the audit judges](#what-the-audit-judges)).
@@ -316,7 +316,7 @@ Fault      == \E r \in Runnable : ForcedFail(r) /\ UNCHANGED mine
 Next       == Ping \/ RunReceipt \/ Fault
 ```
 
-With the disjuncts written inline in `Next`, every step is labelled `Next` and only the line
+With the disjuncts written inline in `Next`, every step is labeled `Next` and only the line
 number tells them apart. A stuttering step prints its header and nothing else.
 
 **Receipts** are written `#id method predecessor->receiver`: `#2 work c->d` is receipt 2, a
@@ -354,7 +354,7 @@ it waits for.
 | `warning: receipts share an id (#7): check the ids the model gave them` | two receipts in flight have the same id (below) |
 | `(no change)` | nothing the printer shows changed in this step |
 
-**Receipts that share an id** are a modelling error, not a contract bug. An `Outcome` whose
+**Receipts that share an id** are a modeling error, not a contract bug. An `Outcome` whose
 `ids` count is too small no longer gets this far: `Commit` asserts the ids of its children.
 A shared id can still come from a receipt the model builds outside an outcome, such as a
 `Submit` with a fixed id. The library removes a receipt by its id, so running one of the pair
@@ -1045,8 +1045,8 @@ scanning).
 
 ## Auditing what the runs reach
 
-The runs check what you modelled. The audit reports what you modelled but never pushed to its
-edges and, from an inventory you give it, what you never modelled at all. It is on for every
+The runs check what you modeled. The audit reports what you modeled but never pushed to its
+edges and, from an inventory you give it, what you never modeled at all. It is on for every
 plain run; `--no-audit` turns it off.
 
 This is the minimal model's report. Its one owed receipt, `c.done`, has three gaps, all
@@ -1120,7 +1120,7 @@ The credit comes from `runs.toml`: the sweep need not have run in this invocatio
 ### Methods with two roles
 
 Some methods run in two roles: as an owed callback in one place and as a plain callback in
-another. The audit judges each role on its own runs and reports its gaps per role, labelled
+another. The audit judges each role on its own runs and reports its gaps per role, labeled
 `(owed)` or `(callback)`. A direct call of the method, not as a callback, closes neither.
 
 A `covers` entry for such a method must name the role, as in `"on_refund least-gas owed"`, or

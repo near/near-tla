@@ -1,6 +1,6 @@
 ------------------------------ MODULE Factory ------------------------------
 (***************************************************************************)
-(* An account factory: one receipt creates, funds and initialises the     *)
+(* An account factory: one receipt creates, funds and initializes the     *)
 (* account (docs/SEMANTICS.md, A6, A8).                                    *)
 (*                                                                         *)
 (* Users call F.create() with a deposit D.  F sends the factory batch      *)
@@ -33,7 +33,7 @@
 (* factory_funds_code: a 100 KB contract, which D covers: Served holds.    *)
 (* factory_owner_label: as factory_underfunds_code, with the owner label   *)
 (*   written on failure too (OwnerOnFail): Served still fails, since the   *)
-(*   labelled account does not exist.                                     *)
+(*   labeled account does not exist.                                      *)
 (* factory_global: the same 300 KB child code, published once as a global *)
 (*   contract (A10, InitGCode); the batch is [CreateAccount, Transfer(D),  *)
 (*   UseGlobalContract(GHash(child)), FunctionCall(init)] (GlobalChild).   *)
