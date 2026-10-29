@@ -59,16 +59,17 @@ noise. The rest of this guide is the mechanics.
    is the coarse tool: use it to explore, then use gas mode to find out at which prepaid
    amounts a failure is reachable.
 3. **Calibrate before trusting windows.** A gas window is only as good as the burn table. Use
-   measured burns (from the sandbox's `gas_burnt`, or the calibrator if you have the sim), record
-   their provenance, and check that the leftover split reproduces before believing any
-   gas-mode verdict ([Calibrating](#calibrating)).
+   measured burns (from the `calibrate` tool, which runs your wasm in near-contract-sim, or
+   from the `gas_burnt` of a sim or sandbox replay), record their provenance, and check that
+   the leftover split reproduces before believing any gas-mode verdict
+   ([Calibrating](#calibrating)).
 4. **Replay every counterexample on real wasm.** The model over-approximates some ordering
    (it has no chunks or shards) and abstracts your contract. Do not dismiss a counterexample
    only because two receipts from one account to another run in the opposite order to their
    creation: nearcore can do that ([S4](SEMANTICS.md#s4-no-per-pair-order)). A trace is a
    hypothesis until the same receipt tree, with the same gas and faults, reproduces against
-   the compiled contract, in a near-workspaces sandbox or in near-contract-sim
-   ([VALIDATING.md](VALIDATING.md)).
+   the compiled contract: in near-contract-sim, which injects the faults and forces the order,
+   or in a near-workspaces sandbox ([VALIDATING.md](VALIDATING.md)).
 5. **Make every invariant able to fail.** For each invariant, add a deliberately wrong
    variant that TLC must report, and confirm from the trace that it fails for the reason you
    intended. An invariant that has never failed may be vacuous. Then show that each
@@ -1524,17 +1525,19 @@ measure.
 
 There are two ways to measure:
 
-- **In a local sandbox (public).** Run each path of your contract with near-workspaces and
-  read each receipt's `gas_burnt`; [Measure your own burns](VALIDATING.md#measure-your-own-burns)
-  shows how. You fit the `GasBurn` entries by hand, and should measure with realistic state,
-  since burns grow with storage reads and writes.
-- **With the `calibrate` tool (needs the sim).** It runs your wasm in near-contract-sim
+- **With the `calibrate` tool.** It runs your wasm in near-contract-sim
   ([Fetching the sim](CONFORMANCE.md#fetching-the-sim)), over a grid of
   prepaid gas, checks the leftover split, and writes the TLA+ table with its provenance. The
   rest of this section describes it.
+- **By hand, from a replay.** Run each path of your contract and read each receipt's
+  `gas_burnt`, in the sim ([Measure burns in the sim](VALIDATING.md#measure-burns-in-the-sim))
+  or in a near-workspaces sandbox
+  ([Measure your own burns](VALIDATING.md#measure-your-own-burns)). You fit the `GasBurn`
+  entries by hand, none of the calibrator's checks run, and you should measure with realistic
+  state, since burns grow with storage reads and writes.
 
-Without either, keep gas windows illustrative and base conclusions on fault mode and the
-host-cost floor ([The method](#the-method)).
+Without measured burns, keep gas windows illustrative and base conclusions on fault mode and
+the host-cost floor ([The method](#the-method)).
 
 ### Your own contract
 

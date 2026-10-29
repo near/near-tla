@@ -182,22 +182,40 @@ SEMANTICS entry) written down.
 
 ## Step 7: validate on the compiled contract
 
-Follow `NT/docs/VALIDATING.md`. First, for each forced fault in the trace, name what makes
-that call fail on a real network: the callee panics on these arguments, the receiver account
-does not exist, an untrusted contract chooses to fail. A forced fault with no such cause means
-the finding is "not reproduced", and you say so.
+Replay each contract-bug hypothesis in near-contract-sim. `NT/docs/VALIDATING.md`, Step 3,
+"In near-contract-sim", has the API and a worked replay of the tutorial's trace. For each
+hypothesis:
 
-Then build the contract's wasm and write a near-workspaces sandbox test that replays each
-contract-bug hypothesis: the same transactions, a stub receiver that fails only where you
-named a cause, and an assertion of the broken property. For a `caller-gas` trace, start from
-its prepaid gas and bisect on the wasm: the model's window says where to look, and the
-sandbox finds the real edges. near-contract-sim can also force faults and orders. When an order
-cannot be forced in the sandbox, replay the failure parts: the finding is then confirmed for
-its failures only, and the order is argued from the SEMANTICS ordering rules (S1-S5) and the
-code. Say which.
+1. **Name the causes.** For each forced fault in the trace, name what makes that call fail on
+   a real network: the callee panics on these arguments, the receiver account does not exist,
+   an untrusted contract chooses to fail, the call's share of gas runs out. A forced fault
+   with no such cause makes the finding "not reproduced": record the reason and go to the next
+   hypothesis.
+2. **Build the replay.** Build the contract's wasm and a sim test crate; start the crate's
+   first build in the background, since it compiles nearcore. Send the trace's transactions
+   with their arguments and deposits. Reproduce each failure from its named cause: inject a
+   fault on that receipt (`tx.inject`), or deploy a stub for a receiver that really answers
+   that way. Where the trace chose an order, hold receipts back (`Fault::Hold`, `HoldResult`,
+   `HoldUntil`) to force it. Assert that each fault and hold landed on its receipt.
+3. **Assert the property.** Assert the broken property itself, as the model states it, so the
+   test goes red on the contract as written. The sim's built-in `findings()` check only
+   generic failures; your property is the assertion.
+4. **Find the gas edges on the wasm.** For a `caller-gas` trace, pin its prepaid gas with
+   `.gas(..)`, then run `gas_edges` keyed on the receipt that runs out in the trace. The
+   model's window says where to look; the wasm decides where the edge is. With no edge on the
+   wasm, the finding is "not reproduced", and the reason is the gas table.
+5. **Argue the orders.** For each order the trace chose, forced or not, write down the
+   argument from SEMANTICS S1-S5 that a network produces it. A hold shows that the order
+   happens on nearcore's runtime; the argument shows that a network delays that receipt.
 
-**Done when** each finding has a passing replay test that shows the bug, or is marked "not
-reproduced" or "not replayed" with the reason and the code-reading argument.
+Use the near-workspaces sandbox instead when the project already tests with it or the user
+asks for a real node. It has no fault injection and no holds, so a sandbox replay builds every
+failure from its cause and argues every order.
+
+**Done when** each hypothesis has one of: a replay test that goes red on the contract as
+written by failing the property's assertion, with its causes and order arguments written
+down; "not reproduced" with the reason; or, when the wasm cannot be built, "not replayed" with
+the code-reading argument (VALIDATING.md, "Without either: by reading the code").
 
 ## Step 8: report
 
