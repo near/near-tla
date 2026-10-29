@@ -1,0 +1,42 @@
+# release-plz (https://release-plz.dev): .github/workflows/release-plz.yml runs it on every push
+# to main. It keeps a release PR open that bumps the root Cargo.toml's version and adds the
+# release's section to CHANGELOG.md; merging that PR tags vX.Y.Z and makes the GitHub release.
+# docs/VERSIONING.md describes the process.
+[workspace]
+# Not on crates.io: the current version comes from the newest vX.Y.Z git tag, and a release is a
+# tag plus a GitHub release.
+git_only = true
+# The root package carries a version, not a Rust API.
+semver_check = false
+# The tags v0.1.0 started with.
+git_tag_name = "v{{ version }}"
+# docs/VERSIONING.md: a new operator or module is a minor change, also before 1.0.0, and a
+# breaking change moves the minor version while the version is 0.x. A fix moves the patch.
+features_always_increment_minor = true
+# Open a release PR only when there is something for CHANGELOG.md: a feat or fix title, a `!`
+# title, or a BREAKING CHANGE footer (the regex sees the whole message).
+release_commits = '(?m)^(feat|fix)(\(.*\))?!?:|^[a-z]+(\(.*\))?!:|^BREAKING[ -]CHANGE:'
+
+# CHANGELOG.md's header explains these groups.
+[changelog]
+protect_breaking_commits = true
+sort_commits = "oldest"
+trim = false
+commit_parsers = [
+  { message = '^[a-z]+(\(.*\))?!:', group = "<!-- 0 -->Breaking" },
+  { footer = "^BREAKING[ -]CHANGE", group = "<!-- 0 -->Breaking" },
+  { message = "^feat", group = "<!-- 1 -->Added" },
+  { message = "^fix", group = "<!-- 2 -->Fixed" },
+  { message = ".*", skip = true },
+]
+# A breaking entry ends with its BREAKING CHANGE footer, which holds the migration.
+body = """
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}{{ commit.scope }}: {% endif %}{{ commit.message | upper_first }}\
+{% if commit.breaking and commit.breaking_description != commit.message %}. \
+{{ commit.breaking_description | replace(from="\n", to=" ") }}{% endif %}\
+{% endfor %}
+{% endfor %}"""

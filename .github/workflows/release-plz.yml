@@ -1,0 +1,80 @@
+name: release-plz
+
+# The release-plz quickstart workflow (https://release-plz.dev/docs/github/quickstart), without
+# CARGO_REGISTRY_TOKEN (release-plz.toml: git_only, nothing goes to crates.io), with the PR job
+# after the release job, and with one added step: CI on the release branch.
+# docs/VERSIONING.md describes the release process.
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  # Tags vX.Y.Z and makes the GitHub release when the root Cargo.toml's version has no tag yet,
+  # that is, when a release PR has just been merged. Otherwise it does nothing.
+  release:
+    name: Release-plz release
+    if: github.repository == 'near/near-tla'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the tag and the GitHub release
+      pull-requests: read # the release PR and its commits
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Opens or updates the release PR. It runs after the release job so that it sees the tag that
+  # job made: it reads the last release from the newest vX.Y.Z tag.
+  release-pr:
+    name: Release-plz PR
+    needs: release
+    if: github.repository == 'near/near-tla'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the release branch
+      pull-requests: write # the release PR
+      actions: write # the CI dispatch below
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - id: release-plz
+        uses: release-plz/action@f67a7e724bdad4a0f6875f186060a0ca2770d76c # v0.5.147
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A push made with GITHUB_TOKEN starts no workflow, so neither ci.yml nor
+      # conventional-commits.yml would run on the release branch; a dispatch is the exception.
+      # Both report on the branch's head commit, which is what main's required checks read.
+      - name: Run CI and the Conventional Commits check on the release branch
+        if: steps.release-plz.outputs.pr != '' && steps.release-plz.outputs.pr != '{}'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ fromJSON(steps.release-plz.outputs.pr).head_branch }}
+          PR: ${{ fromJSON(steps.release-plz.outputs.pr).number }}
+        run: |
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          gh workflow run conventional-commits.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH" -f pr="$PR"
