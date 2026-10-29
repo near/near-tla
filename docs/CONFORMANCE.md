@@ -1,9 +1,9 @@
 # Conformance
 
 > **For maintainers.** This page is about how the library itself is checked against nearcore.
-> You do not need it to model a contract. The suite needs near-contract-sim, which is a private
-> repository today ([Access to the sim](#access-to-the-sim)); its results are committed here
-> and CI reruns them nightly. To check your own counterexamples on real wasm, see
+> You do not need it to model a contract. The suite needs near-contract-sim
+> ([Fetching the sim](#fetching-the-sim)); its results are committed here and CI reruns them
+> nightly. To check your own counterexamples on real wasm, see
 > [VALIDATING.md](VALIDATING.md).
 
 The conformance suite checks the model against nearcore. It runs generic probe contracts in
@@ -20,15 +20,12 @@ flow-spec format and JSONL schema; this page links there instead of repeating it
 
 ## Running it locally
 
-### Access to the sim
+### Fetching the sim
 
-near-contract-sim is a private repository. Cargo fetches it over git, so it needs credentials
-once, for the first fetch. Pass them through a git credential helper for that one command, as
-[Fetching the sim](../conformance/README.md#fetching-the-sim) shows: the helper reads the token
-from the GitHub CLI (`gh auth token`) at fetch time.
+near-contract-sim is a public repository, pinned by tag in `Cargo.toml` and by rev in
+`Cargo.lock`. Cargo fetches it over https with no credentials
+([Fetching the sim](../conformance/README.md#fetching-the-sim)).
 
-- Never write a token into a file, a remote URL, `Cargo.toml`, `.cargo/config.toml` or an
-  environment file in the repo.
 - After the first fetch, cargo builds offline from its git cache.
 - With a local checkout of the sim instead, use the uncommitted `[patch]` described in
   [Using a local sim checkout instead](../conformance/README.md#using-a-local-sim-checkout-instead),
@@ -251,14 +248,12 @@ CI on every push checks the TLA+ side only. It SANY-parses every module, every e
 conformance specs in `conformance/tla/` (`ProbeConf.tla`, `Probe2Conf.tla`, `MtConf.tla` and their tables), and it runs every
 example's expectations. It also runs `conform.py`'s self-tests
 (`conformance/scripts/test_conform.py`), which use toy data. It neither runs TLC on the conformance flows nor builds the
-conformance crate, because near-contract-sim is a private git dependency that pulls in
-nearcore, so a cold build is slow. The calibrated tables are committed, so models and
+conformance crate, because near-contract-sim pulls in nearcore, so a cold build is slow. The calibrated tables are committed, so models and
 examples that use them run in CI without the sim.
 
 The whole suite runs nightly and on demand (`workflow_dispatch`) in
-`.github/workflows/conformance.yml`. It fetches near-contract-sim at the rev pinned in
-`Cargo.lock` with a read-only deploy key (the `NEAR_CONTRACT_SIM_DEPLOY_KEY` secret), which
-exists only for the fetch step; every later cargo step runs offline. It then:
+`.github/workflows/conformance.yml`. It fetches near-contract-sim over https at the rev pinned
+in `Cargo.lock`; every later cargo step runs offline. It then:
 
 1. runs every sim test;
 2. sweeps every flow of the three flow sets on the standard grid;

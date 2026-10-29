@@ -88,17 +88,10 @@ flows use of it, is in [Async patterns](#async-patterns-joint-promises-and-yield
 
 ### Fetching the sim
 
-near-contract-sim is a private repository, so cargo has to fetch it over git with credentials.
-The following works with the GitHub CLI signed in. It passes the token through a credential
-helper for one command only, and never writes it to a file or remote URL:
+near-contract-sim is a public repository, so cargo fetches it over https with no credentials:
 
 ```sh
 export CARGO_TARGET_DIR=~/.targets/near-tla   # any directory; one per checkout is fine
-CARGO_NET_GIT_FETCH_WITH_CLI=true \
-GIT_CONFIG_COUNT=2 \
-GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
-GIT_CONFIG_KEY_1=credential.helper \
-GIT_CONFIG_VALUE_1='!f() { echo username=x-access-token; echo "password=$(gh auth token)"; }; f' \
 cargo fetch
 ```
 
