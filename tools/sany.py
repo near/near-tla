@@ -14,12 +14,17 @@ is checked as well: any of the patterns in ERRORS, or a nonzero exit, is a failu
 
 from __future__ import annotations
 
-import argparse
-import os
-import re
-import subprocess
 import sys
-from pathlib import Path
+
+if sys.version_info < (3, 11):  # before run.py is imported: it would refuse in its own name
+    sys.exit(f"tools/sany.py needs Python 3.11 or newer (it imports tools/run.py, which needs tomllib); "
+             f"this is {sys.version.split()[0]}")
+
+import argparse  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
