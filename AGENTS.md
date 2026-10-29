@@ -75,6 +75,13 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
   do not set `GIT_AUTHOR_*` / `GIT_COMMITTER_*`.
 - **No AI attribution:** no `Co-Authored-By` trailers, no "Generated with" footers, in commits,
   PRs or docs.
+- **Conventional Commits, through pull requests.** `main` takes changes only by pull request,
+  squash-merged, so the PR title becomes the commit. Titles and commit messages are
+  `type(scope): summary` (`feat`, `fix`, `docs`, `test`, `ci`, `refactor`, `chore`; scope
+  optional, lower case). `!` after the type, or a `BREAKING CHANGE:` footer, marks a breaking
+  change as `docs/VERSIONING.md` defines it; put the migration in that footer. release-plz writes
+  `CHANGELOG.md` and the next version from the titles. CI's `conventional-commits` check fails
+  otherwise.
 - **Rust:** build with plain `cargo`, not an absolute toolchain path. Keep any resource limits
   you are given (`-j`).
 - **TLC:** at most **2 workers** per run (the runner caps at 4). Use `-metadir /tmp/tlc-<name>`

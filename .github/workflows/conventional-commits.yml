@@ -1,0 +1,52 @@
+name: conventional-commits
+
+# Pull requests are squash-merged with their title as the commit on main, and release-plz writes
+# CHANGELOG.md and the next version from those titles. So the title, and every commit in the
+# pull request, must be a Conventional Commit: `type(scope)!: summary`, scope and `!` optional.
+# The title and messages reach the shell only through env, never interpolated into the script.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PATTERN: '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^ ]'
+    steps:
+      - name: The title is a Conventional Commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if printf '%s\n' "$TITLE" | grep -Eq "$PATTERN"; then
+            echo "title ok: $TITLE"
+          else
+            echo "::error::The title is not a Conventional Commit: '$TITLE'. Write 'type(scope): summary', e.g. 'fix(conformance): ...', 'feat!: ...' (see CONTRIBUTING.md)."
+            exit 1
+          fi
+
+      - name: Every commit is a Conventional Commit (merge commits excepted)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/commits" \
+            --jq '.[] | select((.parents | length) == 1) | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"' \
+            > "$RUNNER_TEMP/commits.txt"
+          bad=0
+          while IFS= read -r line; do
+            if printf '%s\n' "${line#* }" | grep -Eq "$PATTERN"; then
+              echo "ok   $line"
+            else
+              echo "::error::Not a Conventional Commit: $line"
+              bad=1
+            fi
+          done < "$RUNNER_TEMP/commits.txt"
+          exit $bad
