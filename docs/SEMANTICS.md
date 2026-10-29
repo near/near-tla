@@ -2026,8 +2026,9 @@ Each rule has four fields:
   order (`chain/chain/src/stateless_validation/chunk_validation.rs:510-514`, S2), and the
   buffer bypass needs the earlier receipt not to fit the link's remaining limits. A
   counterexample that reverses such receipts can still be spurious, so its particular
-  schedule must still be shown reachable (N-shards). Replay it on the compiled contract (or in
-  near-contract-sim, which can force the order). The sandbox cannot force an
+  schedule must still be shown reachable (N-shards). Replay it on the compiled contract in
+  near-contract-sim, which can force the order
+  ([VALIDATING.md](VALIDATING.md#force-an-order)). The sandbox cannot force an
   order: replay the failures there and argue the order from S1-S5
   ([VALIDATING.md](VALIDATING.md#what-the-sandbox-cannot-do-force-an-order)). The library
   offers no switch that imposes a pair order, because no such order holds for all shard

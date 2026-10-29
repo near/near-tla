@@ -73,8 +73,9 @@ It holds:
 - for the properties you wrote, and no others.
 
 **A failure** is a counterexample: a hypothesis about your contract. Confirm it on the compiled
-contract before you report it. [VALIDATING.md](docs/VALIDATING.md) shows how to replay it in a
-local sandbox.
+contract before you report it. [VALIDATING.md](docs/VALIDATING.md) shows how to replay it in
+[near-contract-sim](https://github.com/near/near-contract-sim), which runs your wasm on
+nearcore's runtime and can force the trace's failures and receipt order, or in a local sandbox.
 
 [CONCEPTS.md](docs/CONCEPTS.md#what-a-pass-means) explains both in more detail.
 
@@ -89,7 +90,7 @@ local sandbox.
   a grid of prepaid gas. Every receipt's status matched the model, every attached gas was
   within 5 Ggas, and every one of 108,986 gas splits between child calls matched exactly
   ([CONFORMANCE.md](docs/CONFORMANCE.md) has the counts). Users replay their own
-  counterexamples in the same sim or in the near-workspaces sandbox
+  counterexamples in the same sim (or in the near-workspaces sandbox)
   ([VALIDATING.md](docs/VALIDATING.md)).
 - **Receipt order is not part of that comparison.** The ordering rules rest on targeted
   simulator tests (local receipts first, no order between a pair of accounts) and on reading
@@ -121,7 +122,7 @@ local sandbox.
 [`skills/near-tla/SKILL.md`](skills/near-tla/SKILL.md) is an agent skill that walks a coding
 agent through the whole method on your contract: inventory the methods and callbacks, write
 the properties, model the handlers, write must-pass and must-fail runs, run TLC, close the
-audit gaps, triage counterexamples, replay them in the sandbox and write up the findings.
+audit gaps, triage counterexamples, replay them in near-contract-sim and write up the findings.
 
 For Claude Code, copy or link the directory into your skills:
 

@@ -16,8 +16,8 @@ and C's callback `done` counts the work. The buggy `done` counts even when `work
 - [Step 1: read the trace](#step-1-read-the-trace)
 - [Step 2: decide what each failure needs](#step-2-decide-what-each-failure-needs)
 - [Step 3: replay it](#step-3-replay-it)
-  - [In a local sandbox with near-workspaces](#in-a-local-sandbox-with-near-workspaces)
   - [In near-contract-sim](#in-near-contract-sim)
+  - [In a local sandbox with near-workspaces](#in-a-local-sandbox-with-near-workspaces)
   - [Without either: by reading the code](#without-either-by-reading-the-code)
 - [When it does not reproduce](#when-it-does-not-reproduce)
 - [Writing up a finding](#writing-up-a-finding)
@@ -42,13 +42,14 @@ accounts running in the opposite order to their creation. nearcore does that
 schedule is reachable.
 
 To validate a trace, run the same receipt tree, with the same gas and the same failures,
-against the compiled contract, and check the same property. There are three ways to do it:
+against the compiled contract, and check the same property. There are three ways to do it,
+and the first is the default:
 
-| | who can use it | failures | orders |
+| | what runs your wasm | failures | orders |
 |---|---|---|---|
-| [near-workspaces sandbox](#in-a-local-sandbox-with-near-workspaces) | anyone (public) | by cause: a stub receiver, the prepaid gas, the state | no switch: argued, or provoked by load |
-| [near-contract-sim](#in-near-contract-sim) | anyone (public) | injected directly | forced by holding receipts |
-| [code reading](#without-either-by-reading-the-code) | anyone | argued | argued |
+| [near-contract-sim](#in-near-contract-sim) | nearcore's runtime, inside a Rust test | injected directly, or by cause | forced by holding receipts |
+| [near-workspaces sandbox](#in-a-local-sandbox-with-near-workspaces) | a local nearcore node | by cause: a stub receiver, the prepaid gas, the state | no switch: argued, or provoked by load |
+| [code reading](#without-either-by-reading-the-code) | nothing: you walk the source | argued | argued |
 
 ## Step 1: read the trace
 
@@ -141,11 +142,12 @@ is reachable.
 On a real network nothing fails "because the model said so". Each failure in the trace needs
 a cause the replay can produce, and you name that cause before you build the replay.
 
-A **stub**, a small contract you deploy in place of another, may stand in only for a
-*receiver* that can really fail, or answer that way, on the network: an untrusted token, a
-callee that panics on some input or state. Never stub the contract under test: its own code
-must run as compiled. With no real-network cause, the trace does not reproduce, and a stub
-would only make it look as if it did.
+The sim can force a failure directly, with an injected fault, and both the sim and the sandbox
+can deploy a **stub**, a small contract, in place of another. Use either only where you have
+named a cause. A stub may stand in only for a *receiver* that can really fail, or answer that
+way, on the network: an untrusted token, a callee that panics on some input or state. Never
+stub the contract under test: its own code must run as compiled. With no real-network cause,
+the trace does not reproduce, and a fault or a stub would only make it look as if it did.
 
 - **`failed (forced fault)`.** The forced-fault switch fired: the method is in `MayFail`, and
   TLC failed it without a reason ([F1](SEMANTICS.md#f1-forced-fault-switch-versus-gas-mode)).
@@ -179,8 +181,8 @@ would only make it look as if it did.
   `RecvOutcome`). If the real receiver can answer with those bytes, reproduce it with a stub
   receiver that returns them.
 - **An order the model chose.** A trace with no failure at all needs only an order. Force the
-  order where you can (the sim), and otherwise argue it from nearcore's rules
-  ([below](#what-the-sandbox-cannot-do-force-an-order)).
+  order in the sim, and argue from nearcore's rules that a network can produce it
+  ([Force an order](#force-an-order)).
 
 The trace's last line, `Label: ...`, gives the library's label for the whole trace: `forced`
 if any forced fault fired, else `caller-gas` if a receipt ran out of gas, else `no-fault`
@@ -193,17 +195,462 @@ needed (`need`) ([Owed callbacks and detached work](USAGE.md#owed-callbacks-and-
 
 ## Step 3: replay it
 
-In the sandbox, a counterexample that depends on receipt order is confirmed in its failures
-only; its order is argued from SEMANTICS S1-S5 and the code, and the write-up says so. The
-sandbox cannot force an order
-([What the sandbox cannot do](#what-the-sandbox-cannot-do-force-an-order)); near-contract-sim
-can.
+Replay in near-contract-sim when you can. It runs your compiled wasm on nearcore's own
+runtime, injects the trace's failures directly, and forces its orders by holding receipts
+back. The near-workspaces sandbox is the alternative: a real local node, with no fault
+injection and no way to force an order. Without either, walk the trace through the source.
+
+Whatever forces a failure or an order in a replay, the cause is still yours to name. An
+injected fault needs the real-network cause from
+[Step 2](#step-2-decide-what-each-failure-needs). A forced order needs the argument from
+SEMANTICS S1-S5 that a network can produce it ([Force an order](#force-an-order)). A replay
+that cannot force the trace's order, as in the sandbox, confirms its failures only, and the
+write-up says so.
+
+### In near-contract-sim
+
+[near-contract-sim](https://github.com/near/near-contract-sim) runs a contract's wasm inside
+`cargo test`, on nearcore's `Runtime::apply` over an in-memory chain. Every receipt, callback
+and refund runs, with a node's gas. Its release v0.1.0 pins nearcore 2.14.0 (protocol 88), the
+revision this library encodes ([Reference revision](SEMANTICS.md#reference-revision)). On top
+of that it can fail any receipt a transaction spawns, make a callee answer as the test says,
+and hold a receipt back so that others overtake it.
+
+Its guides are an agent skill in its repository,
+[skills/near-contract-sim](https://github.com/near/near-contract-sim/tree/v0.1.0/skills/near-contract-sim),
+and its API is in rustdoc. This section shows what a replay needs, and links the guide page
+for each part.
+
+#### Set up the test crate
+
+Put the replay in a crate of its own beside the contract's, since the contract's crate builds
+for wasm32. The sim is not on crates.io. It is a git dependency, pinned by tag:
+
+```toml
+[dev-dependencies]
+near-contract-sim = { git = "https://github.com/near/near-contract-sim", tag = "v0.1.0" }
+serde_json = "1"
+borsh = { version = "1", features = ["derive"] }   # only for typed contract state
+
+[profile.dev.package."*"]
+opt-level = 2   # nearcore is slow unoptimized
+debug = false
+```
+
+The crate's `rust-toolchain.toml` pins `channel = "1.95.0"`, the Rust version nearcore 2.14
+requires. Its `.cargo/config.toml` caps the test threads with `RUST_TEST_THREADS = "4"` under
+`[env]`, since nearcore's VM allows 1000 wasm instances per process. Commit the crate's
+`Cargo.lock`, so that a rerun builds the same nearcore. The first build compiles nearcore: 10
+to 30 minutes and several GB, with a C/C++ compiler, libclang, perl and make installed. Build
+the contract's wasm as you deploy it and copy it to the test crate's `tests/res/`, or build it
+in the test. The sim's
+[quickstart](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/quickstart.md)
+has the layout, the system packages and both ways to build the wasm.
+
+#### The sim replay of `tally_trusting`
+
+The test below replays the trace from [Step 1](#step-1-read-the-trace). `tests/res/tally.wasm`
+is C compiled, with an init method `new(worker)` and a view method `count` that returns `n`.
+`tests/res/worker.wasm` is D, the tutorial's worker, with a view method `works` that returns
+its count. Use your contracts' own names. Any account id works in the sim, so the model's `c`,
+`d` and `u` become made-up ids.
+
+```rust
+use near_contract_sim::prelude::*;
+use serde_json::json;
+
+const C: &str = "c.test.near"; // the tally contract
+const D: &str = "d.test.near"; // the worker it calls
+const U: &str = "u.test.near"; // a user
+
+fn wasm(name: &str) -> Vec<u8> {
+    let path = format!("{}/tests/res/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The model's Init: u, d running the worker, and c initialised on d.
+fn world() -> Sim {
+    Fixture::new()
+        .account(U, Balance::from_near(10))
+        .contract(D, wasm("worker.wasm"))
+        .contract(C, wasm("tally.wasm"))
+        .init("new")
+        .args_json(json!({ "worker": D }))
+        .build()
+}
+
+/// A `u64` view.
+fn view(sim: &Sim, id: &str, method: &str) -> u64 {
+    sim.view(id, method, ()).json()
+}
+
+/// u's call to `ping`, as the trace's `submitted` line has it.
+fn ping(sim: &mut Sim) -> Tx<'_> {
+    sim.call(U, C, "ping").deposit(Balance::from_yoctonear(1))
+}
+
+#[test]
+fn replay_tally_trusting() {
+    let mut sim = world();
+
+    // State 2: u submits ping with a deposit. State 4: d's work fails (forced fault).
+    let out = ping(&mut sim).inject(Receipts::call(D, "work"), Fault::OutOfGas).transact();
+
+    // The fault landed on work, and done ran after it (State 5).
+    assert_eq!(out.expect_receipt("work").fault, Some(Fault::OutOfGas), "{out}");
+    assert!(out.expect_receipt("done").is_success(), "{out}");
+
+    // The property: Counted, n = works once nothing is in flight.
+    let (n, works) = (view(&sim, C, "count"), view(&sim, D, "works"));
+    assert_eq!(n, works, "Counted is false: n = {n}, works = {works}\n{out}");
+    sim.findings().assert_none();
+}
+```
+
+The test asserts the model's property, so it fails while the bug is there. On the buggy
+`done` it fails at the last assertion, with the state the trace ends in (the gas table that
+follows the tree is cut here):
+
+```
+assertion `left == right` failed: Counted is false: n = 1, works = 0
+tx 2gEtkq… signed by u.test.near at #7 (conversion 0.31 Tgas) -> SUCCESS
+└─ #8 c.test.near::ping  attached 300.00 Tgas, burnt 1.91 Tgas (1.03 + 0.89 exec fees), headroom 295.20 Tgas  ok (returns a promise)
+   ├─ #9 d.test.near::work [fault: OutOfGas]  attached 0.00 Tgas, burnt 0.89 Tgas (0.00 + 0.89 exec fees)  FAILED: out of gas (Exceeded the prepaid gas)
+   └─ #10 c.test.near::done [callback of d.test.near::work]  attached 2.00 Tgas, burnt 1.19 Tgas (0.31 + 0.89 exec fees), headroom 1.69 Tgas  ok
+(3 refund receipt(s) not shown)
+```
+
+With the correct `done` the same test passes. Keep it: it is the finding's regression test.
+The snippets in the rest of this section go in tests like this one, after
+`let mut sim = world();`, unless they set up their own `Sim`.
+
+Notes on each part:
+
+- **The fault.** [Step 2](#step-2-decide-what-each-failure-needs) names the cause first:
+  `work` can panic, and its gas is 5 Tgas plus a share of what `ping` leaves. Then
+  `tx.inject(Receipts::call(D, "work"), Fault::OutOfGas)` fails that call. It runs with 1 gas
+  and fails at load, before its code changes anything, as the model's forced fault does. A
+  selector that matches no receipt changes nothing, so assert that the fault landed: `fault`
+  on the receipt (`held` for a hold).
+- **Other forced faults.** `Fault::PromiseFailed` on a callback (`Receipts::callback("done")`)
+  fails every call the callback waits on, and the callback reads `Failed`. Repeated calls of
+  one method are told apart with `Receipts::occurrence(receiver, m, k)` or `.nth(k)`. The
+  sim's
+  [faults page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/faults.md)
+  lists every fault and selector, and which faults a network can cause.
+- **The property is yours to assert.** `sim.findings()` runs the sim's built-in checks: a
+  failure nobody learned of, a failed callback, NEAR created or destroyed. They all pass on
+  the buggy `done`, because `work`'s failure reaches `done` and `done` commits. Write each
+  property of the model as an assertion.
+- **Accounts.** `Fixture` writes the setup as data and builds it once per test binary; each
+  test gets its own copy. Its `init` is signed by the contract itself. Any id works without a
+  parent account. If your contract checks account ids (an owner, an allowed token), use the
+  ids it expects.
+- **Transactions.** Each `submitted` line (a `Submit`, `SubmitAs` or `SubmitSigned` step) is
+  one `sim.call(signer, receiver, method)` with `.args_json(..)` and `.deposit(..)`. Use the
+  deposit your contract expects, not the model's toy number. If the model pinned the prepaid
+  gas (`WithGas(r, p)`), pin it with `.gas(..)`
+  ([below](#pin-the-prepaid-gas-and-find-the-edge)). Without `.gas(..)` a call attaches 300
+  Tgas, as wallets do, which suits a fault-mode trace.
+- **Receipts.** Each model receipt is a sim receipt with the same receiver and method, and its
+  outcome names that method.
+
+#### Read the sim's outcome
+
+`transact()` produces blocks until every receipt of the transaction has run, refunds
+included, and returns a `TxOutcome`. Printing it (`{out}`) draws the receipt tree above: each
+receipt's gas, status and logs, and any fault forced on it, then a gas table. To check it in
+code:
+
+- `out.is_success()` is the transaction's status. It follows the value the transaction
+  returns, not every receipt: `ping` returns the promise that ends in `done`, so the
+  transaction succeeds although `work` failed. Check each receipt.
+- `out.receipts` has every receipt in the order they ran, refunds included. Each
+  `ReceiptOutcome` has `receiver_id`, `method_names`, `block_height`, `attached_gas`,
+  `gas_burnt`, `logs`, `is_success()` and `failure()`, and what the test forced on it: `fault`
+  and `held`. `out.receipt(m)` is the first receipt that ran method `m`, and
+  `out.expect_receipt(m)` panics with the tree if none did.
+- `out.value()` is the transaction's return value, `out.failure()` why it failed
+  (`Failure::OutOfGas`, `Failure::Panic(msg)`, ...), and `out.effects()` who paid whom, in
+  NEAR and in the tokens you watch.
+- Views read state afterwards: `sim.view(id, method, args).json()`.
+
+A yield's callback is the exception to "every receipt": [Time out a yield](#time-out-a-yield).
+The sim's
+[outcomes page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/outcomes-and-effects.md)
+has the rest.
+
+#### Fail a receiver, or make it answer
+
+An injected fault fails a call whatever its code does. A stub replaces the receiver's code, so
+the failure or the answer comes from the receiver itself. Use a stub for a receiver that
+really answers that way on the network, never for the contract under test
+([Step 2](#step-2-decide-what-each-failure-needs)). `sim.deploy_stub(id, stub)` deploys it in
+the receiver's place. In the replay above, instead of the fault:
+
+```rust
+sim.deploy_stub(D, Stub::new().on("work", Reply::panic("stub: work fails on purpose")));
+let out = ping(&mut sim).transact();
+
+// The stub keeps no count: d's works are the calls it received that succeeded.
+let calls = sim.calls_to(D);
+assert!(calls.len() == 1 && !calls[0].succeeded, "{out}");
+let works = calls.iter().filter(|c| c.succeeded).count() as u64;
+assert_eq!(view(&sim, C, "count"), works, "Counted is false\n{out}");
+```
+
+This fails on the buggy `done` too. `sim.calls_to(id)` lists every function call an account
+received, failed ones included, with its method, arguments, deposit and gas. Choose the stub's
+`Reply` from the result the trace's callback saw
+([section 7 of USAGE](USAGE.md#7-reading-promise-results)):
+
+| the callback sees | the stub's reply | `work` returns |
+|---|---|---|
+| `Failed` | `Reply::panic(msg)` | nothing: it panics |
+| a number, say 7, read as a `U128` | `Reply::json("7")` | `"7"` (near-sdk's `U128` is a JSON string) |
+| `EMPTY` | `Reply::json(())` | empty bytes |
+| `MAL`, bytes the reader cannot parse | `Reply::bytes("oops")` where a number is expected | `oops` |
+| `NONEMPTY`, other bytes | `Reply::json(None::<u8>)` | `null` |
+
+A stub answers only the methods it declares. A call to any other fails, as on chain. To change
+only the result a callback reads, and leave the callee's effects standing, put
+`Fault::ReturnValue(bytes)` on the callback instead: a forced answer, for a callee that is
+untrusted or can be upgraded. The sim's
+[stubs page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/stubs.md)
+has the rest: logs, gas burns, and a stub that calls back into the contract.
+
+#### Pin the prepaid gas, and find the edge
+
+Gas-mode traces carry the prepaid gas. `tally_gas_trusting` submits with 8600 Ggas, and
+`work` runs out:
+
+```
+State 2: Ping (Tally:70)
+    submitted #1 ping u->c (tx 1, deposit 1, gas 8600, args [x |-> 0])
+...
+State 4: RunReceipt (Tally:82)
+    ran #2 work c->d: out of gas
+        (tx 1, gas 5000, result to #3, args [x |-> 0])
+```
+
+The model's `p` Ggas is `Gas::from_gigagas(p)`, or `Gas::from_teragas(p / 1000)` when `p` is
+whole Tgas:
+
+```rust
+let p: u64 = 8_600; // Ggas, from the trace's `submitted` line
+let out = ping(&mut sim).gas(Gas::from_gigagas(p)).transact();
+```
+
+You set only the transaction's prepaid gas. A child's attached gas (the `gas 5000` on `work`)
+follows from it: the static gas the code attaches plus a weighted share of what the creator
+leaves ([G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)), and the
+creator's real burn decides that share. The receipt tree shows what each child got.
+
+A gas-mode trace is only as good as its burn table, and the tally example's burns are
+illustrative. On a build of the tutorial's contracts (near-sdk 5.29.1, Rust 1.95.0, release
+profile), `ping` itself runs out at 8600 Ggas:
+its own burn, the 7 Tgas of static gas it attaches and the exec fees it prepays for its two
+calls come to about 9.8 Tgas. Two tools find the real edges:
+
+- `least_gas` bisects, on copies of the sim, for the least prepaid gas at which the
+  transaction succeeds:
+
+  ```rust
+  let least = ping(&mut sim).least_gas().expect("it succeeds at the most");
+  ```
+
+  The transaction's result is `done`'s, which succeeds whether `work` committed or failed. So
+  this is the least gas at which `ping` makes its calls, not the gas at which `work` runs out.
+- `gas_edges` splits a range of prepaid gas into regions where a key of the outcome is the
+  same, and bisects each edge to 1 gas. Key it on the receipt that fails in the trace:
+
+  ```rust
+  let regions = ping(&mut sim).gas_edges(
+      Gas::from_teragas(1)..=Gas::from_teragas(300),
+      Gas::from_teragas(1),
+      |out| out.receipt("work").map(|w| w.is_success()), // None: work never ran
+  );
+  for r in &regions {
+      println!("{:?} gas: {:?}", r.range, r.key);
+  }
+  ```
+
+On that build `gas_edges` finds two regions: `None` below about 9.8 Tgas, where `ping` runs
+out, and `Some(true)` above it. `work` always gets at least its 5 Tgas of static gas, and burns
+about 0.2 Tgas of it. So `work` never runs out, and the gas-mode trace does not reproduce: the
+burn table was wrong for this path ([When it does not reproduce](#when-it-does-not-reproduce)).
+`Fault::Gas(g)` runs one call with `g` gas instead. That is a forced fault: use it only where a
+caller can attach that little, or the contract forwards a share that small. The sim's
+[transactions page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/transactions.md)
+covers gas.
+
+#### Arrange state
+
+The trace starts from the model's `Init` and builds the rest with transactions. Prefer the
+same: make the calls a user would make (register, deposit) before the trace's transactions, in
+the `Fixture` or in the test. When that is slow or impossible, write state directly:
+
+- `sim.update_contract_state::<T>(id, |s| ..)` edits a near-sdk contract's root struct, read
+  as a type of the test's own with the contract's fields in order, and
+  `sim.contract_state::<T>(id)` reads it. For C, with this mirror of its struct:
+
+  ```rust
+  use borsh::{BorshDeserialize, BorshSerialize};
+
+  /// C's root struct, its fields in order.
+  #[derive(BorshSerialize, BorshDeserialize)]
+  struct TallyState {
+      worker: String,
+      n: u64,
+  }
+  ```
+
+  a test writes `n` and reads it back through the contract:
+
+  ```rust
+  sim.update_contract_state::<TallyState>(C, |s| s.n = 41);
+  assert_eq!(view(&sim, C, "count"), 41);
+  ```
+- `sim.set_state(id, key, value)` writes one storage key and keeps the account's
+  `storage_usage` right. A collection keeps each entry under its prefix and the entry's
+  borsh-encoded key, which `key::borsh(prefix, &k)` builds. `sim.apply_state_records(records)`
+  writes nearcore `StateRecord`s, as a state dump holds them.
+- To replay against the deployed build, deploy its bytes with `sim.deploy(id, wasm)` (the RPC
+  query `view_code` returns them), and assert their hash.
+
+The sim's
+[sim page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/sim.md)
+shows how to mirror each near-sdk collection. A patched state must be one users can reach
+through the contract's methods. Otherwise the replay shows a state no one can arrange, and
+proves nothing.
+
+#### Time out a yield
+
+A yield times out from 200 blocks after the block that created it
+([C7](SEMANTICS.md#c7-yield-and-resume-nep-519)). In the sim, blocks happen only when the test
+asks, so a test reaches any height at once. `transact()` returns with the yield's callback
+parked. `sim.yields()` lists each parked yield with `expires_at`, the height at which its
+timeout fires, and `sim.expire(&y)` advances there, settles and returns the transaction's
+outcome. With a contract at C whose `request` yields to a callback that returns `"timeout"`
+when it reads `Failed`:
+
+```rust
+let mut sim = Sim::new();
+sim.create_account(U, Balance::from_near(10));
+sim.deploy(C, wasm("yielder.wasm")); // request yields; its callback returns "timeout" on Failed
+let out = sim.call(U, C, "request").transact(); // returns with the yield parked
+assert!(!out.is_complete(), "{out}");
+let [y] = <[_; 1]>::try_from(sim.yields()).expect("one parked yield");
+let out = sim.expire(&y); // advances to y.expires_at, settles, returns the outcome
+assert_eq!(out.json::<String>(), "timeout", "{out}");
+```
+
+In that run the yield was created in block 4, `expires_at` was 204, and the callback ran in
+block 205. `sim.advance_to(h)` moves to any later height. To race a resume against the
+timeout, play each side from a clone of the `Sim`; the sim's
+[blocks and clock page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/blocks-and-clock.md)
+shows how, and which side wins at the edge.
+
+#### Force an order
+
+Where the trace chose an order (the order line of your list from Step 1), hold receipts back
+so that the others overtake them:
+
+- `Fault::Hold(n)`: the receipt leaves `n` blocks late;
+- `Fault::HoldResult(n)`: its result reaches the callback `n` blocks late;
+- `Fault::HoldUntil(receipts)`: it leaves after the receipt that `receipts` names has run.
+
+`transact()` runs until everything settles, held receipts included. To put a second
+transaction in the gap, `submit()` the first, `run_until` the hold is in place, then send the
+second. The tally trace chose no order. With two pings (`MaxTx = 2`), a trace that runs
+transaction 2's `work` before transaction 1's replays as:
+
+```rust
+// tx 1's work leaves 5 blocks late; tx 2 runs meanwhile.
+let first = ping(&mut sim).inject(Receipts::call(D, "work"), Fault::Hold(5)).submit();
+sim.run_until(10, |s| s.outcome(first).receipt("ping").is_some()).unwrap();
+let second = ping(&mut sim).transact(); // settles the held one too
+let first = sim.outcome(first);
+let (w1, w2) = (first.expect_receipt("work"), second.expect_receipt("work"));
+assert_eq!(w1.held, Some(5), "{first}");
+assert!(w2.block_height < w1.block_height, "tx 2's work ran first\n{first}\n{second}");
+```
+
+A hold shows that the order happens on nearcore's runtime. It does not show that a network
+delays the receipt that long: a hold has no cause of its own. The sim also has one shard, and
+a hold cannot reach a transaction's first receipt, a gas refund, a yield's callback or the
+resume that wakes it (the sim's
+[fidelity page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/fidelity.md)).
+So for every order the trace chose, forced or not, argue from nearcore's rules and the
+contract's code that a network can produce it, and write the argument down:
+
+- [S1](SEMANTICS.md#s1-local-receipts-first-the-exact-rule): a transaction's first receipt is
+  local when its receiver is its signer, and runs in the same chunk before delayed and incoming
+  receipts, unless the chunk is full. Receipts created by a receipt (self-calls, callbacks,
+  refunds) are never local.
+- [S2](SEMANTICS.md#s2-ordering-otherwise): a chunk runs local receipts, then the delayed
+  queue, then incoming receipts, then yield timeouts. Receipts in one receipt proof (one
+  source chunk to one destination shard) keep their order.
+- [S3](SEMANTICS.md#s3-block-clock): a receipt created by a receipt runs in a later block,
+  except instant receipts.
+- [S4](SEMANTICS.md#s4-no-per-pair-order): there is no per-pair order. A later, smaller
+  receipt can overtake an earlier one waiting in the outgoing buffer (the earlier one must not
+  fit the link's remaining gas or size limits), and after missed chunks receipts from a newer
+  block run first.
+- [S5](SEMANTICS.md#s5-instant-receipts): a lone `DeleteAccount` created by a receipt runs
+  right after it, with nothing in between.
+
+If the trace runs a non-local receipt to an account while a local receipt to that account is
+pending, it uses an order `LocalPriorityOK` forbids. nearcore produces that order when the
+receiving chunk is full (S1), so the violation is real unless you can show the receiving shard
+is never at its limit ([section 11 of USAGE](USAGE.md#11-local-receipt-priority)).
+
+#### Measure burns in the sim
+
+The sim's gas is nearcore's, receipt by receipt, so a sim run measures your contract's burns
+for gas mode. For a table you rely on, use the `calibrate` tool. It runs your wasm in the sim
+over a grid of prepaid gas, checks that nearcore's leftover split reproduces from the static
+gas and weights you declare, and writes the TLA+ table with its provenance
+([Calibrating](USAGE.md#calibrating)). For a first look, read the receipts of one run:
+
+```rust
+let out = ping(&mut sim).transact();
+for r in out.receipts.iter().filter(|r| !r.is_refund()) {
+    let burn = r.gas_burnt.as_gas() - r.prepaid_exec_fees.as_gas();
+    println!("{} {:?}: burnt {burn} gas besides its exec fees", r.receiver_id, r.method_names);
+}
+```
+
+`gas_burnt` is everything a receipt burnt, and `prepaid_exec_fees` is the part its creator
+prepaid: the receipt's own exec fees. A `GasBurn` entry is `gas_burnt` minus those fees minus
+the send fees of the action-only children the receipt created, in Ggas, rounded up
+([Calibrating your own contract](../conformance/README.md#calibrating-your-own-contract),
+step 2; the fees are in `modules/NearFees.tla`). On the build above `work` burns about 174
+Ggas besides its fees, against the example table's 5500. Burns grow with storage reads and
+writes, so give the contract realistic state first, and measure at a prepaid gas where the
+receipt succeeds. `r.headroom()` is the attached gas a successful receipt left unused, and
+`out.assert_headroom(method, min)` asserts a fixed-budget callback's margin. None of the
+calibrator's checks run on a hand measurement; [Calibrating](USAGE.md#calibrating) says how to
+treat such tables.
 
 ### In a local sandbox with near-workspaces
 
 [near-workspaces](https://github.com/near/near-workspaces-rs) (Rust) starts a local nearcore
-node, the sandbox, deploys your compiled wasm to it, and sends real transactions. It is public,
-and the sandbox runs on macOS (Intel and Apple silicon) and on x86-64 Linux.
+node, the sandbox, deploys your compiled wasm to it, and sends real transactions. It has no
+fault injection and no way to hold a receipt. Each failure needs a cause you build (a stub
+receiver, the prepaid gas, the state), and every order the trace chose is argued
+([What the sandbox cannot do](#what-the-sandbox-cannot-do-force-an-order)). Prefer it to the
+sim when:
+
+- the project already tests with near-workspaces, and the replay belongs beside those tests;
+- you want the check on a real node. The sim matches a nearcore 2.14.0 sandbox receipt by
+  receipt (its
+  [fidelity page](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/fidelity.md)),
+  but runs one shard, in process;
+- you want the deployed contract with its state: `import_contract` copies both from testnet
+  or mainnet ([Set up state](#set-up-state)).
+
+The sandbox runs on macOS (Intel and Apple silicon) and on x86-64 Linux.
 
 The model encodes nearcore 2.14 (protocol 88, nearcore 2.14.0;
 [Reference revision](SEMANTICS.md#reference-revision)). near-workspaces 0.24 runs a
@@ -220,11 +667,11 @@ serde_json = "1"
 anyhow = "1"
 ```
 
-#### The replay of `tally_trusting`
+#### The sandbox replay of `tally_trusting`
 
-The test below replays the trace from [Step 1](#step-1-read-the-trace). It assumes C has an
-init method `new(worker)` and a view method `count` that returns `n`; use your contract's
-own names. `res/tally.wasm` is C compiled, `res/stub.wasm` the stub from
+The test below replays the trace from [Step 1](#step-1-read-the-trace) with a stub in D's
+place, since the sandbox cannot inject the fault. `res/tally.wasm` is C compiled, as in the
+sim replay, and `res/stub.wasm` the stub from
 [Make a receiver fail or answer](#make-a-receiver-fail-or-answer).
 
 ```rust
@@ -273,6 +720,10 @@ async fn replay_tally_trusting() -> anyhow::Result<()> {
 }
 ```
 
+This test asserts the bug itself (`n = 1`), so it passes while the bug is there. To keep it as
+a regression test, assert the property instead, as the sim replay does: here, `n = 0`, since
+the stub's `work` never succeeds.
+
 Notes on each part:
 
 - **Accounts.** `dev_deploy` and `dev_create_account` make accounts with random names under
@@ -297,9 +748,8 @@ Notes on each part:
 `transact()` waits until every receipt of the transaction has run, and returns an
 `ExecutionFinalResult`:
 
-- `is_success()` is the transaction's status. It follows the value the transaction returns,
-  not every receipt: `ping` returns the promise that ends in `done`, so the transaction
-  succeeds although `work` failed. Check each receipt.
+- `is_success()` is the transaction's status, which follows the value the transaction returns,
+  as in the sim. Check each receipt.
 - `receipt_outcomes()` has one `ExecutionOutcome` per receipt: `executor_id` (the account it
   ran on), `gas_burnt`, `logs`, `receipt_ids` (the receipts it created), `block_hash`, and its
   own `is_success()` / `is_failure()`. `o.clone().into_result()` gives its error; for out of
@@ -371,21 +821,11 @@ a deposit must be `#[payable]`, or near-sdk rejects the deposit.
 
 #### Pin the prepaid gas from a gas-mode trace
 
-Gas-mode traces carry the prepaid gas. `tally_gas_trusting` submits with 8600 Ggas, and
-`work` runs out:
-
-```
-State 2: Ping (Tally:70)
-    submitted #1 ping u->c (tx 1, deposit 1, gas 8600, args [x |-> 0])
-...
-State 4: RunReceipt (Tally:82)
-    ran #2 work c->d: out of gas
-        (tx 1, gas 5000, result to #3, args [x |-> 0])
-```
-
-The model's `p` Ggas is `p × 10^9` gas. near-workspaces' `Gas` is near-gas's `NearGas`
-(`near_workspaces::types::Gas`), not the sim's type, so its constructors are `from_gas`,
-`from_ggas` and `from_tgas`:
+Take the prepaid gas from the trace's `submitted` line, as in the sim
+([Pin the prepaid gas, and find the edge](#pin-the-prepaid-gas-and-find-the-edge) shows
+`tally_gas_trusting`'s). The model's `p` Ggas is `p × 10^9` gas. near-workspaces' `Gas` is
+near-gas's `NearGas` (`near_workspaces::types::Gas`), not the sim's type, so its constructors
+are `from_gas`, `from_ggas` and `from_tgas`:
 
 ```rust
 let p: u64 = 8_600; // Ggas, from the trace
@@ -397,15 +837,9 @@ let outcome = u
     .await?;
 ```
 
-You set only the transaction's prepaid gas. A child's attached gas (the `gas 5000` on `work`)
-follows from it: the static gas the code attaches plus a weighted share of what the creator
-leaves ([G3](SEMANTICS.md#g3-weight-and-the-leftover-split-distribute_gas)), and the creator's
-real burn decides that share. `worker.receipt(..)` shows what the child got.
-
-A gas-mode trace is only as good as its burn table. The tally example's burns are
-illustrative, so on real wasm the edge sits somewhere else, or nowhere. If the receipt does not
-run out at the trace's amount, look for the real edge: lower the prepaid gas step by step (or
-bisect) and watch that receipt's outcome.
+A child's attached gas follows from the prepaid gas, as in the sim; `worker.receipt(..)` shows
+what the child got. If the receipt does not run out at the trace's amount, the sandbox has no
+`gas_edges`: lower the prepaid gas step by step (or bisect) and watch that receipt's outcome.
 
 #### Set up state
 
@@ -424,15 +858,14 @@ When that is slow or impossible, write state directly:
   deployed wasm; `.with_data()` copies its state too (up to 50 kB through a public RPC node),
   `.block_height(h)` takes both as of block `h`, and `.transact().await?` runs the import.
 
-A patched state must be one users can reach through the contract's methods. Otherwise the
-replay shows a state no one can arrange, and proves nothing.
+As in the sim, a patched state must be one users can reach through the contract's methods.
 
 #### Advance blocks for yield timeouts
 
 A yield times out from 200 blocks after the block that created it
-([C7](SEMANTICS.md#c7-yield-and-resume-nep-519)). `worker.fast_forward(n)` moves the sandbox's
-block height, timestamp and epoch forward by `n` blocks, in a fraction of the time producing
-them would take.
+([Time out a yield](#time-out-a-yield)). `worker.fast_forward(n)` moves the sandbox's block
+height, timestamp and epoch forward by `n` blocks, in a fraction of the time producing them
+would take.
 
 The yield's callback belongs to the transaction that yielded, so `transact()` returns no result
 until the callback has run (or its RPC request times out first). Send the transaction with
@@ -465,86 +898,25 @@ fault injected: large calls (about 1.2 MB each) filled the link's grant, and a l
 between the same two accounts ran a block before the ones still buffered. You can try to build
 that load in the sandbox. Short of that, a counterexample whose bug needs a specific
 interleaving cannot be forced there. Replay the failure parts in the sandbox, then argue the
-order from nearcore's rules and the contract's code, and write the argument down:
-
-- [S1](SEMANTICS.md#s1-local-receipts-first-the-exact-rule): a transaction's first receipt is
-  local when its receiver is its signer, and runs in the same chunk before delayed and incoming
-  receipts, unless the chunk is full. Receipts created by a receipt (self-calls, callbacks,
-  refunds) are never local.
-- [S2](SEMANTICS.md#s2-ordering-otherwise): a chunk runs local receipts, then the delayed
-  queue, then incoming receipts, then yield timeouts. Receipts in one receipt proof (one
-  source chunk to one destination shard) keep their order.
-- [S3](SEMANTICS.md#s3-block-clock): a receipt created by a receipt runs in a later block,
-  except instant receipts.
-- [S4](SEMANTICS.md#s4-no-per-pair-order): there is no per-pair order. A later, smaller
-  receipt can overtake an earlier one waiting in the outgoing buffer (the earlier one must not
-  fit the link's remaining gas or size limits), and after missed chunks receipts from a newer
-  block run first.
-- [S5](SEMANTICS.md#s5-instant-receipts): a lone `DeleteAccount` created by a receipt runs
-  right after it, with nothing in between.
-
-If the trace runs a non-local receipt to an account while a local receipt to that account is
-pending, it uses an order `LocalPriorityOK` forbids. nearcore produces that order when the
-receiving chunk is full (S1), so the violation is real unless you can show the receiving shard
-is never at its limit ([section 11 of USAGE](USAGE.md#11-local-receipt-priority)).
+order from nearcore's rules (S1-S5, listed under [Force an order](#force-an-order)) and the
+contract's code, and write the argument down.
 
 #### Measure your own burns
 
-The sandbox burns real gas, so it is also how you measure your contract's burns for gas mode
-without the sim. Each receipt outcome's `gas_burnt` is a measurement, on the state the
-sandbox holds; give it realistic state first, because burns grow with storage reads and
-writes, and measure at a prepaid gas where the receipt succeeds.
-
-`gas_burnt` is not the model's burn. A `GasBurn` entry is `gas_burnt` minus the receipt's own
-exec fees (which its creator prepaid) minus the send fees of the action-only children it
-created ([Calibrating your own contract](../conformance/README.md#calibrating-your-own-contract),
-step 2; the fees are in `modules/NearFees.tla`). Convert to Ggas and round up. None of the
-calibrator's checks (the leftover split, a declared static for every child) run on a hand
-measurement; [Calibrating](USAGE.md#calibrating) says how to treat such tables.
-
-### In near-contract-sim
-
-near-contract-sim ([Fetching the sim](CONFORMANCE.md#fetching-the-sim)) runs your compiled
-wasm on nearcore's runtime at the pinned revision, and adds what the sandbox lacks: fault injection,
-and holding receipts, so orderings can be forced. The sim's own docs describe its API; the
-steps below use its names. Start from the list you made in [Step 1](#step-1-read-the-trace).
-
-1. **List the transactions.** Every `Submit` / `SubmitAs` / `SubmitSigned` step is one sim
-   transaction: `sim.call(signer, receiver, method)` with the same arguments and deposit. If the
-   model pinned prepaid gas (`WithGas(r, p)`, `p` in Ggas), pin the same amount with `.gas(..)`:
-   `p` Ggas is `p × 10^9` gas, `Gas::from_gigagas(p)`, or `Gas::from_teragas(p / 1000)` when
-   `p` is whole Tgas.
-2. **Map receipts to sim receipts.** Each model receipt is a sim receipt with the same
-   receiver and method. Callbacks are the receipts that wait on a result
-   (`Receipts::callback(m)`). Repeated calls are told apart with
-   `Receipts::occurrence(receiver, m, k)` or `.nth(k)`.
-3. **Reproduce the failures.**
-   - A `"forced"` failure of method `m` on `receiver` (`failed (forced fault)` in the story):
-     `tx.inject(Receipts::call(receiver, m), Fault::OutOfGas)`. If the model failed the call a
-     callback waits on, `Fault::PromiseFailed` on the callback (`Receipts::callback(cb)`) gives
-     the callback a Failed result.
-   - A `"caller-gas"` failure (`out of gas` in the story): reproduce it with the transaction's
-     gas (`Tx::gas`), not with a fault. To pin one child's gas, use `Fault::Gas(g)`.
-     `Tx::least_gas` finds the least gas at which the transaction still succeeds, a quick
-     check of a predicted edge.
-   - A receiver's answer the model chose (`MAL`, `NONEMPTY`, a number): deploy a stub
-     receiver (`sim.deploy_stub`), or put `Fault::ReturnValue(bytes)` on the callback.
-4. **Reproduce the order.** The model interleaves receipts freely. Where the trace runs one
-   transaction's receipt before another's, delay the other with `Fault::Hold(n)` (a receipt
-   leaves `n` blocks late) or `Fault::HoldResult(n)` (its result reaches the callback late).
-   `submit()` the first transaction, `run_until` the hold is in place, then submit the second.
-5. **Check the same property.** Assert on the outcome (statuses, `value()`, balances and token
-   moves via `effects()`), and read `sim.findings()`. If the model's invariant breaks in the
-   sim too, it is real.
-
-The sim also calibrates: the `calibrate` tool measures your contract's burns and checks the
-leftover split ([Calibrating](USAGE.md#calibrating)).
+The sandbox burns real gas too, so it also measures your contract's burns for gas mode. Each
+receipt outcome's `gas_burnt` is a measurement, on the state the sandbox holds. Convert it to
+a `GasBurn` entry as in the sim ([Measure burns in the sim](#measure-burns-in-the-sim)):
+subtract the receipt's own exec fees, which its creator prepaid, and the send fees of the
+action-only children it created (the fees are in `modules/NearFees.tla`), and round up to
+Ggas. The same caveats hold: realistic state, a prepaid gas where the receipt succeeds, and
+none of the calibrator's checks.
 
 ### Without either: by reading the code
 
-When you cannot run the wasm (no build of the deployed code, no machine the sandbox runs on),
-walk the trace against the contract's source by hand, receipt by receipt, and say in your
-write-up that it was not replayed. For each receipt in your list from Step 1:
+When you cannot run the wasm (no build of the deployed code, no machine that builds the sim
+or runs the sandbox), walk the trace against the contract's source by hand, receipt by
+receipt, and say in your write-up that it was not replayed. For each receipt in your list from
+Step 1:
 
 - find the method in the source, and check that the code takes the handler's branch for those
   arguments and that state;
@@ -553,7 +925,7 @@ write-up that it was not replayed. For each receipt in your list from Step 1:
 - for each callback, check how the code reads the result the trace gave it;
 - for each failure, name the cause on a real network ([Step 2](#step-2-decide-what-each-failure-needs));
 - for each order the model chose, give the argument from S1-S5
-  ([above](#what-the-sandbox-cannot-do-force-an-order)).
+  ([Force an order](#force-an-order)).
 
 Gas verdicts need the same care without measured burns
 ([The method](USAGE.md#the-method)):
@@ -574,14 +946,16 @@ Gas verdicts need the same care without measured burns
 If it does not reproduce, find out why before discarding it:
 
 - the order needs timing a network does not produce (see the over-approximations in
-  [Not modelled](SEMANTICS.md#over-approximations)). A sim without fault injection rarely
-  shows a same-pair reorder, but nearcore produces one under load
-  ([S4](SEMANTICS.md#s4-no-per-pair-order)); reproduce it with `Fault::Hold`, not by waiting
-  for it. The sandbox has no hold: build the load S4 describes (large receipts that do not
-  fit the link's limits), or argue the reorder from S4;
-- the gas tables are wrong for this path ([Calibrating](USAGE.md#calibrating));
+  [Not modelled](SEMANTICS.md#over-approximations)). Without a hold the sim runs receipts in
+  the order they were sent, so it rarely shows a same-pair reorder, but nearcore produces one
+  under load ([S4](SEMANTICS.md#s4-no-per-pair-order)); reproduce it with `Fault::Hold`, not
+  by waiting for it. The sandbox has no hold: build the load S4 describes (large receipts that
+  do not fit the link's limits), or argue the reorder from S4;
+- the gas tables are wrong for this path ([Calibrating](USAGE.md#calibrating)), as for
+  `tally_gas_trusting` on real wasm
+  ([Pin the prepaid gas, and find the edge](#pin-the-prepaid-gas-and-find-the-edge));
 - your handler does not match the contract (re-read the source);
-- or the library is wrong: open an issue with the trace and the replay (the sandbox or sim
+- or the library is wrong: open an issue with the trace and the replay (the sim or sandbox
   test).
 
 A forced fault for which you find no cause ([Step 2](#step-2-decide-what-each-failure-needs))
@@ -608,11 +982,11 @@ from it: transactions, receipts, failures, orders.
 panics, prepaid gas p, a state).
 
 **Replay.** One of:
+- sim: the test file, the wasm's sha256, what it showed, and each fault and hold it injected;
 - sandbox: the test file, the wasm's sha256, and what it showed;
-- sim: the test file, the sim's revision, and what it showed;
 - by code reading: not replayed, and the walk-through.
-Whether the trace's order was reproduced or argued. For any order the replay could not force,
-the argument from SEMANTICS S1-S5.
+Whether the trace's order was forced or argued, and for each order, the argument from
+SEMANTICS S1-S5 that a network can produce it (for a hold, what would delay that receipt).
 
 **Run.** The model directory and run name, the command, and the bounds and switches of the
 run: MaxTx, MayFail, MaxFails, GasMode (and GasMenu, the gas tables and where their numbers
@@ -620,9 +994,10 @@ come from), whether the model conjoins LocalPriorityOK, MaxBlk, InstantFirst, Fe
 TrieGasWorst, HostFloorGas.
 
 **Versions.** The near-tla commit (`git rev-parse HEAD` in your checkout) and release; the
-nearcore rules it encodes (protocol 88, nearcore 2.14.0, from SEMANTICS); for a sandbox
-replay, the near-workspaces version and the sandbox's nearcore and protocol versions
-(`worker.status()`); the contract's commit and the wasm's sha256.
+nearcore rules it encodes (protocol 88, nearcore 2.14.0, from SEMANTICS); for a sim replay,
+the near-contract-sim tag and rev (from the test crate's `Cargo.lock`) and the nearcore it
+pins; for a sandbox replay, the near-workspaces version and the sandbox's nearcore and
+protocol versions (`worker.status()`); the contract's commit and the wasm's sha256.
 
 **Fix.** The change, the model run that passes with it, and the must-fail run that still
 fails on the old code.

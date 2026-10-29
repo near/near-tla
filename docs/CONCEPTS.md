@@ -235,8 +235,8 @@ contract**, not yet a finding.
   that alone is never a reason to dismiss a trace.
 - The gas numbers may be wrong for that path, if it is a gas-mode run.
 
-[VALIDATING.md](VALIDATING.md) shows how to replay a counterexample in a local sandbox and how
-to write it up.
+[VALIDATING.md](VALIDATING.md) shows how to replay a counterexample in near-contract-sim (or in
+a local sandbox) and how to write it up.
 
 ## Bounds and the size of the state space
 
