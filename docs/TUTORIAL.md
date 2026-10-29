@@ -30,19 +30,25 @@ to the names used here.
 
 ## Before you start
 
-You need Java 21, Python 3.11 or later, and the TLC jar the README's
+You need Java 17 or later (CI uses 21), Python 3.11 or later, and the TLC jar the README's
 [Quickstart](../README.md#quickstart) fetches. Check that the examples run:
 
 ```sh
 python3 tools/run.py examples/minimal
 ```
 
-Your own model can live anywhere. Call your checkout's `run.py` from any directory and it
-finds the library. Once you have written the model and its `runs.toml` (Step 6):
+Your own model can live anywhere. This tutorial puts it in `~/models/tally`, so create that
+directory now. The commands below start from the root of the near-tla checkout, as
+`python3 tools/run.py` does. Call your checkout's `run.py` from any directory and it finds the
+library. Once you have written the model and its `runs.toml` (Step 6), you can run it from
+anywhere:
 
 ```sh
 python3 ~/src/near-tla/tools/run.py ~/models/tally      # wherever your checkout and model are
 ```
+
+`examples/minimal` is the finished model. Steps 7 to 10 run yours; run `examples/minimal`
+instead to compare with it or to skip ahead, but then you are not checking what you typed.
 
 ## The contract
 
@@ -150,8 +156,9 @@ invariants (`Conserved == NearConserved(InitU)`, and so on) to see which one bro
 
 ## Step 2: state and the initial state
 
-The model `EXTENDS NearAsync`, the platform module. It declares its own constants and
-variables:
+The model `EXTENDS NearAsync`, the platform module. Save it as `~/models/tally/Tally.tla`: the
+file name must match the module name. Each snippet from here to Step 5 goes into that file
+(Step 5 says in what order). The model declares its own constants and variables:
 
 ```tla
 -------------------------------- MODULE Tally --------------------------------
@@ -360,8 +367,8 @@ Check that it parses: `python3 tools/sany.py <your model directory>`.
 
 ## Step 6: the runs
 
-`runs.toml`, beside the `.tla` file, says which TLC runs to do. Each run sets constants and
-says whether it must pass or must fail:
+`runs.toml`, beside the `.tla` file (`~/models/tally/runs.toml`), says which TLC runs to do.
+Each run sets constants and says whether it must pass or must fail:
 
 ```toml
 spec = "Tally"
@@ -417,8 +424,11 @@ Trusting = 'TRUE'
 ## Step 7: run it and read the counterexample
 
 ```sh
-python3 tools/run.py examples/minimal tally_ok tally_trusting --print-trace
+python3 tools/run.py ~/models/tally tally_ok tally_trusting --print-trace
 ```
+
+The output looks like this (from `examples/minimal`; yours should match it in shape, not in every
+number):
 
 ```
 run            | expect            | actual            | generated | distinct | depth | secs | result
@@ -457,12 +467,21 @@ tally_trusting | violation Counted | violation Counted | 22        | 21       | 
         works = 0
         gas = <<0, 0>>
     Label: forced (the forced-fault switch fired; ask whether the network can cause that failure)
+
+2/2 runs as expected
 ```
 
 Both runs did what they were expected to do: `tally_ok` passed after exploring 86 distinct
 states, and `tally_trusting` violated `Counted`. `ok` in the last column means "as expected".
 A failing run stops at the first violation it finds, so its counts, and sometimes its trace,
-can differ from run to run when TLC uses more than one worker.
+can differ from run to run when TLC uses more than one worker. The counts for
+`tally_trusting` above will not be reproduced exactly (a run with two workers gives a few more
+or fewer states), the `secs` column depends on your machine, and the line numbers in
+`Ping (Tally:70)` are lines of the file you typed.
+
+After the `2/2 runs as expected` line the runner prints an audit report. For the model so far
+it says that no receipt is marked owed and notes that the callback `done` is not marked. Ignore
+it until Step 10.
 
 `--print-trace` prints the failing run's counterexample under its row, as a story with one
 block per state. Each block names the step that `Next` took (`Ping`, `RunReceipt`, `Fault`),
@@ -498,7 +517,10 @@ the property is about, and if the property would catch a broken contract. A pass
 **vacuous**: for example, if `work` could never fail in that run, `done` would never see
 Failed and `Counted` would pass trivially.
 
-Two checks guard against that. They live in `runs.toml` and run with `--anti-vacuity`.
+Two checks guard against that. They live in `runs.toml` and run with `--anti-vacuity`. Append
+the snippets below to your `runs.toml`, after the runs. `--anti-vacuity` also fails on the
+audit's open gaps, which Step 10 covers, and your model has no audit setup yet, so until Step 10
+run it with `--no-audit` (the command is below).
 
 A **witness** is a situation that must be reachable. Write the situation `S` inside `~( )`.
 The runner checks `~(S)` as an invariant on the listed runs. A violation means TLC found a
@@ -533,14 +555,15 @@ runs = ["tally_ok"]
 ```
 
 ```sh
-python3 tools/run.py examples/minimal --anti-vacuity
+python3 tools/run.py ~/models/tally --anti-vacuity --no-audit
 ```
 
-`--anti-vacuity` also fails on the audit's open gaps, which Step 10 covers. If you are typing
-along, add `--no-audit` until then.
+This should end with `2/2 checks as expected`: the witness reached, the mutant killed (by
+`Sane`).
 
-The example has four witnesses: the system settles, it settles at the maximum gas, `done`
-sees success, and `done` sees Failed. It has five mutants:
+The finished example (`examples/minimal/runs.toml`) has four witnesses: the system settles,
+it settles at the maximum gas, `done` sees success, and `done` sees Failed. It has five
+mutants. You have typed one of each; copy the others from there if you want to see them work:
 
 - `ok_guard_dropped`: `RunD` counts a work without `Ok(r, O)`. This is the easiest mistake to
   make in a model, and only a gas-mode run catches it: a forced fault fails `work` without
@@ -565,7 +588,9 @@ static gas and weight are tuples with one entry per FunctionCall action in the r
 batch can have several; here there is one). `GasBurn` gives the gas each method burns, as
 `base + per * size` for a size the handler declares (here every `per` is 0). The numbers below are **illustrative**, not
 measured; a real model measures them ([Calibrating](USAGE.md#calibrating)) or uses the
-host-cost floor ([USAGE section 12](USAGE.md#gas-without-a-calibration-the-host-cost-floor)):
+host-cost floor ([USAGE section 12](USAGE.md#gas-without-a-calibration-the-host-cost-floor)).
+Add the tables, and the `WorkFits` and `WinCounted` definitions further down, to `Tally.tla`
+above its closing line of `=` signs, and the `[[run]]` blocks to the end of `runs.toml`:
 
 ```tla
 \* Gas tables (Ggas).  ILLUSTRATIVE numbers, not measured (docs/USAGE.md, Calibrating).
@@ -626,7 +651,7 @@ WorkFits == (Idle /\ \A t \in 1..ntx : gas[t] = 1000000) => works = ntx
 
 `Counted` alone would not notice if `work` always ran out of gas: the correct `done` would see
 Failed every time and never count. `WorkFits` catches that, which is how the
-`weights_swapped` mutant of Step 8 is killed.
+`weights_swapped` mutant of the finished example (Step 8) is killed.
 
 A third run, `tally_gas_win`, maps the whole range of prepaid amounts at which `Counted`
 breaks. Its invariant never fails; it prints each bad end state with its prepaid gas, and the
@@ -665,13 +690,19 @@ looks at two kinds of receipt:
 `done` is owed: if it failed after `work` committed, D would have counted a work that C never
 counts, and nothing would put that right. Mark it by name (or with `WithOwed` where the
 receipt is created), and add the library's `OwedOK` invariant, which fails if an owed receipt
-fails ([USAGE.md](USAGE.md#owed-callbacks-and-detached-work)):
+fails ([USAGE.md](USAGE.md#owed-callbacks-and-detached-work)). These are three edits to lines
+already in your `runs.toml`, not text to append (a second `[constants]` table is an error, and
+`invariants` is a top-level key that must stay above the first table):
 
 ```toml
-invariants = ["Counted", "Sane", "OwedOK"]      # and add "OwedOK" to tally_gas_ok's list
+# 1. The top-level line, above the first table: add "OwedOK".
+invariants = ["Counted", "Sane", "OwedOK"]
 
-[constants]
+# 2. In the existing [constants] table, add one line.
 OwedMethods = '{"done"}'        # done must not fail: it records that the work happened
+
+# 3. In [[run]] tally_gas_ok, add "OwedOK" to its own list.
+invariants = ["Counted", "WorkFits", "Sane", "OwedOK"]
 ```
 
 For an owed receipt like `done`, the audit reports a gap for each of these it is missing (a
@@ -684,7 +715,8 @@ fixed-budget callback that is not owed gets only the `trie` and `least-gas` ones
 - `logs`: the logs it writes, declared in its outcome, since logs cost gas.
 
 It also checks that every method you list in `[audit] methods` runs in some run. Close each gap
-with a run, or accept it with a reason that names the evidence:
+with a run, or accept it with a reason that names the evidence. This block is new, so append it
+to the end of `runs.toml`:
 
 ```toml
 # C's methods, from the source: the call users make and the callback it schedules.
