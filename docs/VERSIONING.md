@@ -46,6 +46,12 @@ with that text. A commit of another type is released with the next listed change
 documentation or citation fix that users should see is a `fix`. A squash merge's commit
 takes the pull request's title, so the title carries the type and the `!`.
 
+The title decides what is listed: `release-plz.toml` selects entries by their titles, not by
+the paths they touch, so a `feat` or `fix` is listed even when it changes the runner, the
+documentation or the conformance crate rather than `modules/`. The compatibility promise in the
+table above is about the library. Give a change that does not touch it a type that is not listed
+(`docs`, `test`, `ci`, `chore`), unless users should see it.
+
 ## Making a release
 
 `.github/workflows/release-plz.yml` runs release-plz on every push to `main` (configuration:
@@ -54,8 +60,8 @@ takes the pull request's title, so the title carries the type and the `!`.
 1. Once a listed change is on `main`, release-plz opens a release pull request, titled
    `chore: release vX.Y.Z`, and updates it as more changes land. It bumps the version in
    `Cargo.toml` and `Cargo.lock` and adds the release's section to `CHANGELOG.md`. The workflow
-   then starts `ci.yml` on the release branch, since a branch that GITHUB_TOKEN pushed starts no
-   workflow by itself.
+   then starts `ci.yml` and `conventional-commits.yml` on the release branch, since a branch that
+   GITHUB_TOKEN pushed starts no workflow by itself.
 2. Before merging it, check the bump against the table above and fix it if needed (the version
    in `Cargo.toml` and `Cargo.lock` and the section's heading, or `release-plz set-version`), add
    the protocol assumptions below under the section's heading, and edit the entries if they

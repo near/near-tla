@@ -9,7 +9,7 @@
 # BytesBooked V's bytes are its initial bytes plus the table's record bytes per recorded user.
 #
 # The pair is vault_per_byte_unrecorded (must fail) / vault_per_byte_atomic_ok (must pass);
-# vault_floor_misses_it is the same wrong vault under the 0.1.0 fixed floor, a false pass.
+# vault_floor_misses_it is the same wrong vault under the default fixed floor (StoragePerByte = FALSE), a false pass.
 # The vault_measured_* runs repeat them with the record's bytes from the measured table
 # StorKv (Measured = TRUE: 40 + RecLen = 69 bytes) instead of the hand count RecBytes.
 

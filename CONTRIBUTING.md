@@ -2,7 +2,7 @@
 
 ## Setup
 
-- Java 21 (what CI uses).
+- Java 17 or later (CI uses 21).
 - `tools/tla2tools.jar`: tla2tools **v1.7.4** (TLC 2.19). The file is gitignored. Fetch it the
   way CI does:
 
