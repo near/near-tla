@@ -34,13 +34,14 @@ tools/audit.py        the runner's audit of what the runs reach
 tools/check_links.py  offline Markdown link check (CI runs it)
 tools/test_run.py     the runner's self-tests (python3 -m unittest tools/test_run.py)
 tools/tlcparse.py     TLC output parsing shared by the tools
-conformance/          Rust conformance + calibration crate (standalone; CI does not build it)
+conformance/          Rust conformance + calibration crate (standalone; built nightly, not by the PR CI)
 Cargo.toml            carries near-tla's version for release-plz (never built; tools/version.rs is
                       its empty target); release-plz.toml configures the releases
 conformance/probes/   probe contracts (Rust -> wasm), committed with their hashes
-conformance/flows/    flow specs (probes.toml, actions.toml, storage.toml, example.toml)
+conformance/flows/    flow specs (probes.toml, probes2.toml, mt.toml, actions.toml, storage.toml, example.toml)
 conformance/tla/      the model side of conformance runs
-conformance/scripts/  gen_probes.py, mkconf.py, tlc.sh, conform.py
+conformance/scripts/  gen_probes.py, gen_probes2.py, gen_mt.py (write the flow specs), flowsets.py,
+                      mkconf.py, tlc.sh, conform.py, test_conform.py
 docs/                 CONCEPTS.md (NEAR and TLA+ basics, vocabulary, what results mean),
                       TUTORIAL.md (first model), USAGE.md (modeling guide), RUNNER.md (runs.toml,
                       traces, witnesses, mutants, sweeps, audit), VALIDATING.md (replaying a
@@ -52,7 +53,7 @@ skills/near-tla/      the agent skill for modeling a user's contract (SKILL.md)
 ## How to run things
 
 ```sh
-python3 tools/sany.py modules examples       # parse everything
+python3 tools/sany.py modules examples conformance/tla   # parse everything
 python3 tools/run.py                         # all example runs; nonzero exit on any unexpected verdict
 python3 tools/run.py 'pay_*' --print-trace   # some runs, with traces
 python3 tools/run.py path/to/model/ my_run   # one run of a model outside examples/
@@ -89,7 +90,7 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
 - **TLC:** at most **2 workers** per run (the runner caps at 4). Use `-metadir /tmp/tlc-<name>`
   for ad-hoc runs and delete those directories afterwards. `-deadlock` is normal: quiescence is
   not an error. Keep each example run under about 60 s.
-- Run `python3 tools/sany.py modules examples` before handing work back.
+- Run `python3 tools/sany.py modules examples conformance/tla` before handing work back.
 
 ## The method that works
 
@@ -102,7 +103,9 @@ python3 tools/run.py path/to/model/ my_run   # one run of a model outside exampl
 3. **Calibrate before trusting windows.** A gas window is only as good as the burn table. Measure
    burns in the sim for every path that creates a different set of promises, record the table's
    provenance (wasm sha256, crate version, sim rev, nearcore rev, protocol), and check that the
-   leftover split reproduces with zero mismatches before believing any gas-mode verdict.
+   leftover split reproduces with zero mismatches before believing any gas-mode verdict
+   (`calibrate` does this; a hand-fitted table is unchecked, so replay its window edges on the
+   wasm: `docs/USAGE.md`, "Calibrating").
 4. **Replay every counterexample on real wasm.** The model over-approximates ordering and
    abstracts the contract. A trace is a hypothesis until the same receipt tree, with the same gas
    and faults, reproduces against the compiled contract: in near-contract-sim, or in a

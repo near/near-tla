@@ -241,7 +241,10 @@ The crate's `rust-toolchain.toml` pins `channel = "1.95.0"`, the Rust version ne
 requires. Its `.cargo/config.toml` caps the test threads with `RUST_TEST_THREADS = "4"` under
 `[env]`, since nearcore's VM allows 1000 wasm instances per process. Commit the crate's
 `Cargo.lock`, so that a rerun builds the same nearcore. The first build compiles nearcore: 10
-to 30 minutes and several GB, with a C/C++ compiler, libclang, perl and make installed. Build
+to 30 minutes and several GB, with a C/C++ compiler, libclang, perl and make installed (on
+Linux, the conformance workflow also installs cmake, pkg-config, libssl-dev and
+protobuf-compiler; see its
+[build prerequisites](../conformance/README.md#build-prerequisites)). Build
 the contract's wasm as you deploy it and copy it to the test crate's `tests/res/`, or build it
 in the test. The sim's
 [quickstart](https://github.com/near/near-contract-sim/blob/v0.1.0/skills/near-contract-sim/references/quickstart.md)
@@ -250,9 +253,10 @@ has the layout, the system packages and both ways to build the wasm.
 #### The sim replay of `tally_trusting`
 
 The test below replays the trace from [Step 1](#step-1-read-the-trace). `tests/res/tally.wasm`
-is C compiled, with an init method `new(worker)` and a view method `count` that returns `n`.
-`tests/res/worker.wasm` is D, the tutorial's worker, with a view method `works` that returns
-its count. Use your contracts' own names. Any account id works in the sim, so the model's `c`,
+is C compiled, and `tests/res/worker.wasm` is D, the tutorial's worker. The tutorial's code
+leaves out three methods the test uses, so add them to a copy: in C, an init method
+`new(worker)` that sets `worker` and starts `n` at 0, and a view method `count` that returns
+`n`; in D, a view method `works` that returns its count. Use your contracts' own names. Any account id works in the sim, so the model's `c`,
 `d` and `u` become made-up ids.
 
 ```rust
@@ -631,7 +635,7 @@ writes, so give the contract realistic state first, and measure at a prepaid gas
 receipt succeeds. `r.headroom()` is the attached gas a successful receipt left unused, and
 `out.assert_headroom(method, min)` asserts a fixed-budget callback's margin. None of the
 calibrator's checks run on a hand measurement; [Calibrating](USAGE.md#calibrating) says how to
-treat such tables.
+treat such tables (as leads, until their window edges are replayed on the wasm).
 
 ### In a local sandbox with near-workspaces
 
@@ -713,16 +717,17 @@ async fn replay_tally_trusting() -> anyhow::Result<()> {
     // State 4: d's work failed.
     assert!(outcome.receipt_failures().iter().any(|o| &o.executor_id == d.id()));
 
-    // State 5: done ran and counted it. n = 1 while d did no work: Counted is false.
+    // State 5: the property. d did no work, so Counted needs n = 0. On the contract as written,
+    // done counted it anyway (n = 1) and this assertion fails.
     let n: u64 = c.view("count").await?.json()?;
-    assert_eq!(n, 1, "done counted a work that failed");
+    assert_eq!(n, 0, "Counted is false: done counted a work that failed (n = {n})");
     Ok(())
 }
 ```
 
-This test asserts the bug itself (`n = 1`), so it passes while the bug is there. To keep it as
-a regression test, assert the property instead, as the sim replay does: here, `n = 0`, since
-the stub's `work` never succeeds.
+This test asserts the property (`n = 0`, since the stub's `work` never succeeds), as the sim
+replay does, so it goes red on the contract as written. After the fix it passes and stays as a
+regression test.
 
 Notes on each part:
 

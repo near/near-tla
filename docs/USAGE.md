@@ -62,7 +62,8 @@ noise. The rest of this guide is the mechanics.
    measured burns (from the `calibrate` tool, which runs your wasm in near-contract-sim, or
    from the `gas_burnt` of a sim or sandbox replay), record their provenance, and check that
    the leftover split reproduces before believing any gas-mode verdict
-   ([Calibrating](#calibrating)).
+   ([Calibrating](#calibrating); the calibrator does the split check, and a hand-fitted table
+   needs its windows replayed instead).
 4. **Replay every counterexample on real wasm.** The model over-approximates some ordering
    (it has no chunks or shards) and abstracts your contract. Do not dismiss a counterexample
    only because two receipts from one account to another run in the opposite order to their
@@ -97,9 +98,12 @@ noise. The rest of this guide is the mechanics.
 
 **Without measured burns**, keep to fault mode for conclusions that depend on a burn you
 estimated, and use gas mode with the host-cost floor for each callback with a fixed budget: a
-callback that runs out on the floor runs out on real wasm too
-([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor)). Treat other gas
-windows, and every pass on the floor, as illustrative.
+callback with weight 0 that runs out on the floor runs out on real wasm too, if its declared
+writes and logs happen on that path, its static gas is the code's, and its trie charge, if the
+trace uses one, is reachable. Replay it at the trace's gas before you report it
+([Gas without a calibration](#gas-without-a-calibration-the-host-cost-floor);
+[VALIDATING.md](VALIDATING.md)). Treat other gas windows, and every pass on the floor, as
+illustrative.
 
 ## 1. Choose the modules
 
@@ -1535,6 +1539,12 @@ There are two ways to measure:
   ([Measure your own burns](VALIDATING.md#measure-your-own-burns)). You fit the `GasBurn`
   entries by hand, none of the calibrator's checks run, and you should measure with realistic
   state, since burns grow with storage reads and writes.
+
+A hand-fitted table is unchecked: nothing has shown that the leftover split reproduces from it.
+Record how you measured it (the wasm sha256, the state, the sim or sandbox build) and measure
+every path that creates a different set of promises. Treat the windows it gives as leads, not
+results: before you rely on one, replay its edges on the wasm (`gas_edges`, or stepping the
+prepaid gas in a sandbox; [VALIDATING.md](VALIDATING.md)) and report the table as hand-measured.
 
 Without measured burns, keep gas windows illustrative and base conclusions on fault mode and
 the host-cost floor ([The method](#the-method)).

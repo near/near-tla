@@ -14,7 +14,7 @@
 (*  Wrong = FALSE: the record is written in the paying receipt, so a       *)
 (*    storage shortfall fails the payout with it.                          *)
 (* The model gives both storage descriptions; StoragePerByte picks one:    *)
-(*  FALSE: the 0.1.0 rule, a fixed StorageFloor (VFloor: the 1000 bytes V  *)
+(*  FALSE: the default, a fixed StorageFloor (VFloor: the 1000 bytes V     *)
 (*    starts with, 10 units).  The records' growth is invisible, so the    *)
 (*    wrong vault passes: a false pass.                                    *)
 (*  TRUE: V's bytes (VStor, then each record's RecBytes via OStor) priced  *)

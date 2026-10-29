@@ -22,7 +22,7 @@ Two words carry the method:
 
 `NT` is the near-tla checkout: the directory holding `tools/run.py`, `modules/` and `docs/`.
 If this skill sits at `NT/skills/near-tla/`, NT is two levels up. Otherwise use the parent of
-`$NEAR_TLA_LIBRARY`, or ask the user where their checkout is. TLC needs Java 21 and
+`$NEAR_TLA_LIBRARY`, or ask the user where their checkout is. TLC needs Java 17 or later (CI uses 21) and
 `NT/tools/tla2tools.jar` (the README's Quickstart fetches it).
 
 Read `NT/docs/CONCEPTS.md` once: the vocabulary table maps NEAR terms to model names, and
@@ -135,7 +135,10 @@ near-sdk default) and each call with a fixed gas budget, add a gas-mode run. Wit
 burns, use the host-cost floor (`HostFloorGas`, USAGE section 12). Its verdicts differ:
 
 - a callback with a fixed budget (weight 0) that runs out on the floor runs out on real wasm
-  too: a finding;
+  too, provided the floor's conditions hold (its declared writes and logs happen on that path,
+  its static gas is the code's, and its trie charge, if any, is reachable). Replay it at the
+  trace's gas before you report it as a finding (VALIDATING.md, "Gas verdicts need the same
+  care");
 - a window for a weighted callback is illustrative: the floor under-counts the creator's burn,
   which leaves the callback more gas than nearcore would. It says where to look; step 7 finds
   the real edges on the wasm.
@@ -200,9 +203,11 @@ hypothesis:
 3. **Assert the property.** Assert the broken property itself, as the model states it, so the
    test goes red on the contract as written. The sim's built-in `findings()` check only
    generic failures; your property is the assertion.
-4. **Find the gas edges on the wasm.** For a `caller-gas` trace, pin its prepaid gas with
-   `.gas(..)`, then run `gas_edges` keyed on the receipt that runs out in the trace. The
-   model's window says where to look; the wasm decides where the edge is. With no edge on the
+4. **Find the gas edges on the wasm.** For a `caller-gas` trace, replay it with its prepaid
+   gas pinned by `.gas(..)`. Then build the same call again without `.gas(..)` and run
+   `gas_edges` on that, keyed on the receipt that runs out in the trace: `gas_edges` varies only
+   the calls `.gas(..)` did not pin, and panics if none is left. The model's window says where
+   to look; the wasm decides where the edge is. With no edge on the
    wasm, the finding is "not reproduced", and the reason is the gas table.
 5. **Argue the orders.** For each order the trace chose, forced or not, write down the
    argument from SEMANTICS S1-S5 that a network produces it. A hold shows that the order
