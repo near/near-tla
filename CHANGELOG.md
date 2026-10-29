@@ -16,6 +16,12 @@ format. Its entries are relative to the pre-release module set that existing mod
 written against (NearAsync, TokenCommon, Nep145, Nep141, WNear, Tokens, Nep245, plus a
 separate NearKeys).
 
+## [0.1.2] - 2026-10-29
+
+### Fixed
+
+- runner: Clearer errors and a closing verdict line ([#9](https://github.com/near/near-tla/pull/9))
+
 ## [0.1.1] - 2026-10-29
 
 ```
