@@ -20,8 +20,9 @@ near-sdk-contract-tools NEP-245 token) are generated this way. With `--stor` it
 measures the storage bytes each method and path adds instead, for `OStorKey`
 ([Storage bytes](#storage-bytes)); `../modules/StorStd.tla` is generated that way.
 
-This is a standalone crate. It is outside any workspace and CI does not build it, because the sim
-is a git dependency.
+This is a standalone crate, outside any workspace. The pull-request CI does not build it, because
+the sim pulls in nearcore and a cold build is slow. The `conformance` workflow
+(`.github/workflows/conformance.yml`) builds and runs it nightly and on demand; nothing gates on it.
 
 ## Pins
 
@@ -37,7 +38,7 @@ is a git dependency.
 `calibrate` prints all of these and writes them into every table it emits. It reads the nearcore
 pin from `Cargo.lock` and the protocol version from the running sim.
 
-This sim rev has `Config::minimum_stake`, `Tx::gas_edges` (which replaced `Tx::gas_windows`) and
+This sim rev has `Config::minimum_stake`, `Tx::gas_edges` and
 `Fault::HoldUntil`, but the crate uses none of them. Instead of `gas_edges`, it sweeps the grid
 itself, cloning the sim once per point. What the sim offers for yields at this rev, and what the
 flows use of it, is in [Async patterns](#async-patterns-joint-promises-and-yieldresume).
@@ -86,16 +87,33 @@ flows use of it, is in [Async patterns](#async-patterns-joint-promises-and-yield
 
 ## Setup
 
+### Build prerequisites
+
+The first build compiles nearcore (10 to 30 minutes and several GB). It needs the Rust version
+in `rust-toolchain.toml` (1.95.0; rustup installs it on the first `cargo` run) and, for
+nearcore's C code, a C/C++ compiler, libclang, perl and make. On macOS, `xcode-select --install`
+is enough. The `conformance` workflow builds on Ubuntu 24.04 after installing these packages, and
+that list is known to work:
+
+```sh
+sudo apt-get install -y --no-install-recommends \
+  clang libclang-dev llvm-dev cmake pkg-config libssl-dev protobuf-compiler
+```
+
+The model side (`scripts/tlc.sh`, `conform.py`) also needs Java and `tools/tla2tools.jar`, as
+in the [README](../README.md#quickstart).
+
 ### Fetching the sim
 
 near-contract-sim is a public repository, so cargo fetches it over https with no credentials:
 
 ```sh
-export CARGO_TARGET_DIR=~/.targets/near-tla   # any directory; one per checkout is fine
 cargo fetch
 ```
 
-After the first fetch, cargo builds offline from its git cache.
+After the first fetch, cargo builds offline from its git cache. Cargo builds into
+`conformance/target` by default; set `CARGO_TARGET_DIR` to another directory if you prefer
+(optional).
 
 ### Using a local sim checkout instead
 
@@ -132,7 +150,7 @@ instead of the `panic_utf8` host call. With it, a probe's panic shows its messag
 
 ## Running
 
-All commands run from `conformance/`, with `CARGO_TARGET_DIR` set as above. Tests run one at a
+All commands run from `conformance/`. Tests run one at a
 time (`.cargo/config.toml` sets `RUST_TEST_THREADS=1`; `--test-threads 1` says the same).
 
 ```sh
@@ -150,6 +168,10 @@ cargo test --release --test accounts -- --test-threads 1
 cargo test --release --test tokens -- --test-threads 1
 cargo test --release --test mt -- --test-threads 1
 cargo test --release --test limits -- --test-threads 1
+# gas that depends on more than the arguments (trie-node charge, result-read cost), and
+# the NEP-297 event log lengths
+cargo test --release --test gas -- --test-threads 1
+cargo test --release --test events -- --test-threads 1
 
 # full sweep of every probe flow on the standard grid (0.5-130 Tgas by 0.1, 140-300 by 10;
 # 1313 points per flow), JSONL and .meta.json to data/probes/, then the calibration report
@@ -279,7 +301,10 @@ cargo run --release --bin calibrate -- --flows flows/storage.toml --stor --group
 
 ## Calibrating your own contract
 
-1. Copy `flows/example.toml`. Set `wasm = "${WASM}"` on your contract.
+1. Copy `flows/example.toml` to another file in `flows/` (for example `flows/my.toml`). Wasm
+   paths in a spec are relative to the spec file, and the template's other contracts point at
+   `../probes/res/`, so the copy must sit beside the original. Set `wasm = "${WASM}"` on your
+   contract.
 2. Describe the world: accounts, other contracts, `[[setup]]` calls.
 3. Declare the static gas and weight of every call the contract makes (`[[static]]`), and what
    each burn grows with (`[[size]]`).
@@ -287,7 +312,7 @@ cargo run --release --bin calibrate -- --flows flows/storage.toml --stor --group
 5. Run it:
 
 ```sh
-cargo run --release --bin calibrate -- --flows my.toml --wasm path/to/contract.wasm \
+cargo run --release --bin calibrate -- --flows flows/my.toml --wasm path/to/contract.wasm \
   --tla MyCalib.tla --prefix My --params app
 ```
 

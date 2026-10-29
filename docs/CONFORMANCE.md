@@ -1,7 +1,8 @@
 # Conformance
 
 > **For maintainers.** This page is about how the library itself is checked against nearcore.
-> You do not need it to model a contract. The suite needs near-contract-sim
+> You do not need it to model a contract. To calibrate your own contract's gas, start from
+> [Calibrating](USAGE.md#calibrating) in USAGE.md. The suite needs near-contract-sim
 > ([Fetching the sim](#fetching-the-sim)); its results are committed here and CI reruns them
 > nightly. To check your own counterexamples on real wasm, see
 > [VALIDATING.md](VALIDATING.md).
@@ -22,6 +23,8 @@ flow-spec format and JSONL schema; this page links there instead of repeating it
 
 ### Fetching the sim
 
+First install the build prerequisites (Rust 1.95.0, a C/C++ compiler, libclang, and on Linux a
+few more packages: [Build prerequisites](../conformance/README.md#build-prerequisites)).
 near-contract-sim is a public repository, pinned by tag in `Cargo.toml` and by rev in
 `Cargo.lock`. Cargo fetches it over https with no credentials
 ([Fetching the sim](../conformance/README.md#fetching-the-sim)).
@@ -33,15 +36,18 @@ near-contract-sim is a public repository, pinned by tag in `Cargo.toml` and by r
 
 ### Build, test, sweep
 
-All commands run from `conformance/`, with `CARGO_TARGET_DIR` set to a directory outside the
-repo. Use plain `cargo`.
+All commands run from `conformance/`. Cargo builds into `conformance/target` unless you set
+`CARGO_TARGET_DIR` (optional; a directory outside the repo keeps the build out of the tree).
 
 1. **Probes.** The probe `.wasm` files are committed with their hashes in
    `probes/res/SHA256SUMS`, so you only rebuild them when you change a probe:
    `cd probes && ./build.sh` (or `./build.sh --check` to verify). See
    [The probe contracts](../conformance/README.md#the-probe-contracts).
-2. **Tests.** The smoke grid and the receipt-semantics tests, one test at a time:
-   `cargo test --release --test smoke` and `cargo test --release --test semantics`.
+2. **Tests.** The smoke grid and the sim tests, one test at a time:
+   `cargo test --release --test smoke`, `cargo test --release --test semantics` and the rest.
+   There are 11 suites in `conformance/tests/` (`smoke`, `semantics`, `lifecycle`, `global`,
+   `receipts`, `accounts`, `tokens`, `mt`, `limits`, `gas`, `events`);
+   `cargo test --release -- --test-threads 1` runs them all, as the nightly workflow does.
 3. **The full grid.** `cargo run --release --bin calibrate -- --flows flows/probes.toml` sweeps
    every probe flow over the standard grid, writes the sweeps to `data/` with their provenance
    (`.meta.json`, bound to the sweep by its sha256), and prints the calibration report. The
@@ -124,9 +130,7 @@ The sweeps were taken on 2026-10-28 through `c40ce15`, the sim's first public co
 through v0.1.0, whose `src`, `Cargo.toml` and `Cargo.lock` are byte-identical to `c40ce15`'s:
 the two sets of sweeps are byte-identical, `conform.py` gives the results below on both, and
 the calibrated tables regenerate from the v0.1.0 sweeps with only their header's `sim rev`
-line changed. Every sweep's JSONL, for all 121 flows, is also byte-identical to the one taken
-through the previous pin (sim `4be2815`, on the same nearcore); only the sim rev in its
-`.meta.json` differs. Every sweep's flows file and probe wasm hashes match the committed ones.
+line changed. Every sweep's flows file and probe wasm hashes match the committed ones.
 
 The flow set `probes`:
 
