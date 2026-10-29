@@ -6,7 +6,7 @@ body:
     id: what
     attributes:
       label: What you need
-      description: The nearcore behaviour (with a link to the code or a NEP if you have one), or the tool or doc.
+      description: The nearcore behavior (with a link to the code or a NEP if you have one), or the tool or doc.
     validations:
       required: true
   - type: textarea
