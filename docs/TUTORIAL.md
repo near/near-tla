@@ -481,7 +481,7 @@ or fewer states), the `secs` column depends on your machine, and the line number
 
 After the `2/2 runs as expected` line the runner prints an audit report. For the model so far
 it says that no receipt is marked owed and notes that the callback `done` is not marked. Ignore
-it until Step 10.
+it until Step 10. The last line repeats the result: `verdict: all as expected (2/2 runs)`.
 
 `--print-trace` prints the failing run's counterexample under its row, as a story with one
 block per state. Each block names the step that `Next` took (`Ping`, `RunReceipt`, `Fault`),
