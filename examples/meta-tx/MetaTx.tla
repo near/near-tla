@@ -20,7 +20,7 @@
 (* always fresh); every other check is unchanged.  The relayer's replays   *)
 (* then credit a claim twice: the nonce check is what stops them.          *)
 (*                                                                         *)
-(* Credited:     no account is credited more claims than it authorised     *)
+(* Credited:     no account is credited more claims than it authorized     *)
 (*               (signed a delegate for, or sent directly) that are good:  *)
 (*               a bad claim must never be credited.                       *)
 (* NoUserProfit: once idle, no user holds more NEAR than it started with.  *)

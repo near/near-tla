@@ -20,14 +20,14 @@
 (*   "after_answer"    cancel also refunds an answered request whose       *)
 (*                     callback is still in flight.                        *)
 (* NoEarlyTimeout (ghost): no on_answer saw Failed before its deadline.    *)
-(* NoEarlyCancel, CancelHonoured (ghost cw, against asked, each request's  *)
+(* NoEarlyCancel, CancelHonored (ghost cw, against asked, each request's   *)
 (* true height): no cancel commits before its window opens, and none is    *)
 (* refused for an open request once it has.  Forgotten: once idle, no      *)
 (* request is left behind.                                                 *)
 (* With the clock bound MaxBlk below a deadline it can fail:               *)
 (* YieldDeadlinesInBound reports that case.                                *)
 (*                                                                         *)
-(* The clock stops at MaxBlk, so a pass covers only behaviours that fit    *)
+(* The clock stops at MaxBlk, so a pass covers only behaviors that fit     *)
 (* below it.  HorizonOK (ClockHorizonOK) states when the bound is enough:  *)
 (* the clock-relevant steps are request (records blk), cancel (reads it)   *)
 (* and on_answer (a timeout; Early reads blk), at most 2 * MaxTx; the      *)
@@ -88,7 +88,7 @@ HQ(r) ==
     [] r.m = "on_answer" ->
          LET y == r.a.y IN
          IF y \notin DOMAIN reqs /\ Bug # "trusts_timeout"
-         THEN K                                     \* cancelled: nothing left to do
+         THEN K                                     \* canceled: nothing left to do
          ELSE IF IsFailed(r.res)
          THEN [K EXCEPT !.cr = cr + 1, !.esc = esc - 1, !.reqs = Forget(y)]   \* timed out
          ELSE [K EXCEPT !.reqs = Forget(y)]
@@ -140,7 +140,7 @@ NoNegEscrow    == esc >= 0
 Settled        == Idle => esc = 0
 NoEarlyTimeout == ~early
 NoEarlyCancel  == ~cw.early
-CancelHonoured == ~cw.refused
+CancelHonored == ~cw.refused
 Forgotten      == Idle => DOMAIN reqs = {}
 HorizonOK      == ClockHorizonOK(2 * MaxTx, IF CancelAt > ReqUntil + 1 THEN CancelAt ELSE ReqUntil + 1)
 Sane           == NoOrphans /\ NearConserved(0)

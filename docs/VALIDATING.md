@@ -6,7 +6,7 @@ refute it on the real compiled contract, and how to write it up.
 
 It assumes you can run a model and print its trace; the
 [tutorial](TUTORIAL.md#step-7-run-it-and-read-the-counterexample) walks through one. The
-running example here is the tutorial's tally contract, modelled in
+running example here is the tutorial's tally contract, modeled in
 [`examples/minimal`](../examples/minimal/): a user calls `C.ping()`, `ping` asks D to `work`,
 and C's callback `done` counts the work. The buggy `done` counts even when `work` failed.
 
@@ -120,7 +120,7 @@ Now turn the story into a list. Write down every transaction, every receipt, eve
 and every place where the order was a choice:
 
 ```
-Transactions:  1. u calls c.ping, deposit 1 (any deposit ping accepts), prepaid gas not modelled (fault mode)
+Transactions:  1. u calls c.ping, deposit 1 (any deposit ping accepts), prepaid gas not modeled (fault mode)
 Receipts:      #1 ping on c; #2 work on d, result to #3; #3 done on c, the callback
 Failures:      #2 work fails (forced fault)
 Order:         none chosen: #1 creates #2 and #3, and #3 waits for #2's result
@@ -268,7 +268,7 @@ fn wasm(name: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
-/// The model's Init: u, d running the worker, and c initialised on d.
+/// The model's Init: u, d running the worker, and c initialized on d.
 fn world() -> Sim {
     Fixture::new()
         .account(U, Balance::from_near(10))
@@ -946,7 +946,7 @@ Gas verdicts need the same care without measured burns
 If it does not reproduce, find out why before discarding it:
 
 - the order needs timing a network does not produce (see the over-approximations in
-  [Not modelled](SEMANTICS.md#over-approximations)). Without a hold the sim runs receipts in
+  [Not modeled](SEMANTICS.md#over-approximations)). Without a hold the sim runs receipts in
   the order they were sent, so it rarely shows a same-pair reorder, but nearcore produces one
   under load ([S4](SEMANTICS.md#s4-no-per-pair-order)); reproduce it with `Fault::Hold`, not
   by waiting for it. The sandbox has no hold: build the load S4 describes (large receipts that
@@ -1007,6 +1007,6 @@ The [VERSIONING](VERSIONING.md) page says what each release assumes about protoc
 
 **Report security bugs privately.** If the finding lets someone take funds, lock them, or
 break the contract's guarantees, send it to the contract's maintainers through their
-disclosure channel (a security policy, a bug bounty programme, a security contact), not in a
+disclosure channel (a security policy, a bug bounty program, a security contact), not in a
 public issue, pull request or chat. The model and the trace are a recipe for the exploit: keep
 them private too until the maintainers have fixed it.

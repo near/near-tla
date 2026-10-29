@@ -38,7 +38,7 @@
 \* changes is create_account (85.yaml:16-27). Fees outside the table also change:
 \* action_deterministic_state_init at 85 (85.yaml:28-39) and the universal
 \* state-init per-entry and per-byte fees at 88 (88.yaml:18-49). State-init
-\* actions are not modelled.
+\* actions are not modeled.
 \* The global-contract fees (deploy_global_*, use_global_*) are not in the
 \* SNAP files; they cite core/parameters/res/runtime_configs/77.yaml, which
 \* introduced them; no later diff changes them (84.yaml:39-40 adds the

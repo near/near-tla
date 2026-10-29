@@ -75,19 +75,19 @@ Every release section in `CHANGELOG.md` carries these lines, which release-plz d
 write (step 2 above):
 
 ```
-nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+nearcore: 2.14.0 (bc4e9e8)   behavior: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: <rev>          near-contract-standards (token gas defaults): <version>
 ```
 
 - **nearcore:** the revision every citation in `docs/SEMANTICS.md` and in module comments points
   to.
-- **behaviour:** the protocol version whose rules `NearAsync` and `NearKeys` encode.
+- **behavior:** the protocol version whose rules `NearAsync` and `NearKeys` encode.
 - **fees:** the `FeeProtocol` default in `modules/NearFees.tla`, plus the versions its
   `...At(pv, ...)` operators cover, and the `FeeRounding` default ("rounded up" or "rounded to
   nearest").
 - **near-contract-sim:** the sim revision the conformance suite and the shipped calibrations ran
   on.
-- **near-contract-standards:** the version whose `ft_transfer_call` gas behaviour the token
+- **near-contract-standards:** the version whose `ft_transfer_call` gas behavior the token
   defaults encode. The other version-dependent token default, the resolver's 42-byte read
   bound (`TokResolveMaxLen`), holds from 5.24.0 (SEMANTICS T2).
 
@@ -103,21 +103,21 @@ the named-account Transfer fee (`NearFees.tla` `TransferSendAt` / `TransferExecA
 create_account part is charged for universal ids from 88 only). To model the rule before 88 as
 well, add `UniversalOn <- FALSE`: the Transfer then fails and refunds, as to a missing named
 account.
-These behaviours are gated by version between 83 and 88 (`core/primitives-core/src/version.rs`
+These behaviors are gated by version between 83 and 88 (`core/primitives-core/src/version.rs`
 `ProtocolFeature::protocol_version` at `:514-659` @ bc4e9e8, and the parameter yamls):
 
-| version | behaviour | in the model |
+| version | behavior | in the model |
 |---|---|---|
 | 83 | `max_total_prepaid_gas` and `max_gas_burnt` 300 → 1000 Tgas (`83.yaml:6-8`) | gas menus are user-chosen; no cap enforced |
 | 85 | create_account repriced (fee table) | `NearFees` per version |
-| 85 | `account_creation_charge` 0.007 NEAR taken from the gas refund (`AccountCostIncrease`) | not modelled (gas money) |
-| 85 | `one_yocto_on_promise` | not modelled |
-| 85 | gas keys, `DelegateV2`, `StrictNonce`, `YieldWithId`, ML-DSA verification cost | not modelled |
-| 86 | per-receipt storage-proof limit (`EnforcePerReceiptStorageProofLimit`) | not modelled |
+| 85 | `account_creation_charge` 0.007 NEAR taken from the gas refund (`AccountCostIncrease`) | not modeled (gas money) |
+| 85 | `one_yocto_on_promise` | not modeled |
+| 85 | gas keys, `DelegateV2`, `StrictNonce`, `YieldWithId`, ML-DSA verification cost | not modeled |
+| 86 | per-receipt storage-proof limit (`EnforcePerReceiptStorageProofLimit`) | not modeled |
 | 87 | gas rewards to contracts 30% → 0 (`RemoveGasRewards`, `87.yaml:1-7`) | the model pays no reward, which is right for 87+ and wrong for 84-86 |
-| 87 | `RejectEmptyMethodName`, `EnforceStorageProofLimitForAllActions`, `FixContractLoadingError`, `RejectUniversalAccountTransfers` | not modelled |
+| 87 | `RejectEmptyMethodName`, `EnforceStorageProofLimitForAllActions`, `FixContractLoadingError`, `RejectUniversalAccountTransfers` | not modeled |
 | 88 | universal (`0u`) accounts (`UniversalAccounts`, `88.yaml:1-3`) | fee kind by `FeeProtocol`; creation by Transfer by `UniversalOn` (default on, independent of `FeeProtocol`) |
-| 88 | canonical universal state init; universal state-init fees (`88.yaml:18-49`) | not modelled |
+| 88 | canonical universal state init; universal state-init fees (`88.yaml:18-49`) | not modeled |
 
 So a model of mainnet at 86 differs from the library's rules at least in gas rewards (N-reward
 in `docs/SEMANTICS.md`), in universal-account creation unless it sets `UniversalOn <- FALSE`,
@@ -133,7 +133,7 @@ change" in the PR description.
 1. **Find the versions.** In the new nearcore, read `STABLE_PROTOCOL_VERSION`,
    `PROTOCOL_VERSION` and `MIN_SUPPORTED_PROTOCOL_VERSION` in
    `core/primitives-core/src/version.rs`. Diff the `ProtocolFeature` → version table in the same
-   file: every newly enabled feature is a candidate behaviour change, even with no parameter
+   file: every newly enabled feature is a candidate behavior change, even with no parameter
    change.
 2. **Diff the parameters.**
    - `core/parameters/src/snapshots/near_parameters__config_store__tests__<v>.json.snap`: the
@@ -172,7 +172,7 @@ change" in the PR description.
    - `runtime/runtime/src/actions.rs` (existence, permissions, implicit creation, Stake,
      DeleteAccount);
    - `runtime/runtime/src/congestion_control.rs` (delayed queue, outgoing buffers).
-5. **Re-check behaviour, not only line numbers.** For each rule in `docs/SEMANTICS.md`, read the
+5. **Re-check behavior, not only line numbers.** For each rule in `docs/SEMANTICS.md`, read the
    cited code at the new revision and confirm it still does what the rule says. Then update the
    line numbers and the reference revision at the top of `SEMANTICS.md`. A moved line with
    changed logic is a semantic change: it needs a module change, a must-fail example and a
@@ -181,7 +181,7 @@ change" in the PR description.
 6. **Edit `NearFees.tla`.** Add the version to `FeeVersions`, add `IF pv >= <v>` branches for
    changed rows, update every citation, and extend the `ASSUME` self-checks with the new totals.
    Change `FeeProtocol` only if the default should move; that is a major change.
-7. **Update the behaviour table** above and the "behaviour" line of the release.
+7. **Update the behavior table** above and the "behavior" line of the release.
 8. **Check the sim matches.** The sim builds its runtime config from its own nearcore
    dependency. Confirm that its `Cargo.lock` pins the same nearcore revision, that it runs the
    protocol version you expect, and that the config it applies at that version equals nearcore's

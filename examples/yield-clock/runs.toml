@@ -6,7 +6,7 @@ spec = "Deadline"
 workers = 2
 library = "../../modules"
 budget_s = 60
-invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "NoEarlyCancel", "CancelHonoured", "Sane"]
+invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "NoEarlyCancel", "CancelHonored", "Sane"]
 tags = ["semantics:yield-timeout"]
 
 [constants]
@@ -30,7 +30,7 @@ Bug = '"none"'
 YieldTicks = "2"
 
 # Timed, without cancel: no timeout before its deadline, and the bound was never reached by a
-# pending deadline (3 requests x 2 ticks).  No handler's behaviour depends on blk here
+# pending deadline (3 requests x 2 ticks).  No handler's behavior depends on blk here
 # (request only records it), so ticking only while a deadline is ahead is exact.
 [[run]]
 name = "yield_ok_timed"
@@ -62,7 +62,7 @@ MaxBlk = "1"
 TickAnytime = "FALSE"
 
 # cancel reads blk, so blocks pass freely (TickAnytime, the default).  A bounded pass: with
-# 3 transactions HorizonOK needs MaxBlk >= (2 * 3 + 1) * CancelAt = 21, so behaviours that need a
+# 3 transactions HorizonOK needs MaxBlk >= (2 * 3 + 1) * CancelAt = 21, so behaviors that need a
 # later height (a request late in the run, then its cancel window) are not explored here.
 [[run]]
 name = "cancel_guarded"
@@ -145,11 +145,11 @@ MaxBlk = "3"
 Bug = '"trusts_timeout"'
 
 # The correct handler at a justified bound: HorizonOK holds, so this pass covers every
-# behaviour of the model, at any height.
+# behavior of the model, at any height.
 [[run]]
 name = "horizon_justified"
 expect = "pass"
-invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "NoEarlyCancel", "CancelHonoured", "Sane",
+invariants = ["Books", "NoNegEscrow", "Settled", "Forgotten", "NoEarlyCancel", "CancelHonored", "Sane",
               "NoEarlyTimeout", "YieldDeadlinesInBound", "HorizonOK"]
 [run.constants]
 MaxTx = "2"
@@ -168,7 +168,7 @@ id = "request_settles"
 expr = '~(Idle /\ ntx > 0)'
 runs = ["yield_ok_timed", "cancel_guarded", "horizon_justified"]
 
-# on_answer's arms: resumed, timed out, and a request already cancelled.
+# on_answer's arms: resumed, timed out, and a request already canceled.
 [[witness]]
 id = "on_answer_resumed"
 expr = '~(\E r \in Runnable : r.m = "on_answer" /\ ~IsFailed(r.res))'

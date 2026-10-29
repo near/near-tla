@@ -706,7 +706,7 @@ You have written every part of a model: properties, state, handlers, the run ste
 dispatcher, transactions, runs, witnesses, mutants, gas tables and the audit. For your own
 contract:
 
-- [USAGE.md](USAGE.md) is the modelling guide: tokens (NEP-141, NEP-245, wNEAR), receiving
+- [USAGE.md](USAGE.md) is the modeling guide: tokens (NEP-141, NEP-245, wNEAR), receiving
   tokens, signers and access keys, local receipts, joint callbacks (`promise_and`), yield and
   resume, storage staking, creating and deleting accounts, and calibrating gas.
 - [RUNNER.md](RUNNER.md) is the runner's reference.

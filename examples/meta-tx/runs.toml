@@ -83,7 +83,7 @@ Mbh = "1"
 
 # Delegates valid through height 1, on a block clock: a relay may run before or after expiry.
 # The only clock comparison is blk > 1 (ExecDelegate), so every height >= 2 behaves alike and
-# MaxBlk = 2 covers every behaviour.
+# MaxBlk = 2 covers every behavior.
 [[run]]
 name = "meta_expiry_clock"
 expect = "pass"
@@ -111,7 +111,7 @@ id = "relayed_claim_runs"
 expr = '~(\E r \in Runnable : r.m = "claim" /\ Signer(r) = RL /\ ~r.a.bad)'
 runs = ["meta_predecessor_ok", "meta_expiry_anytime", "meta_expiry_clock"]
 
-# Credited at its bound: a user credited every good claim it authorised.
+# Credited at its bound: a user credited every good claim it authorized.
 [[witness]]
 id = "credited_at_bound"
 expr = '~(\E u \in Users : credit[u] = auth[u] /\ auth[u] > 0)'
@@ -186,7 +186,7 @@ find = 'DelegMayExpire(sd)  == sd.mbh # NoExpiry /\ (MaxBlk = 0 \/ blk > sd.mbh)
 replace = 'DelegMayExpire(sd)  == FALSE'
 class = "removed precondition"
 runs = ["meta_expiry_anytime"]
-equivalent = "expiry only removes relays: without it the behaviours are those of meta_predecessor_ok (no expiry), which passes; the expiry rule itself is pinned by platform-selftest's deleg_expired"
+equivalent = "expiry only removes relays: without it the behaviors are those of meta_predecessor_ok (no expiry), which passes; the expiry rule itself is pinned by platform-selftest's deleg_expired"
 
 # ---- audit (docs/RUNNER.md, "Auditing what the runs reach") ----
 

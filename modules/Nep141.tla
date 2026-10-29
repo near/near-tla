@@ -107,7 +107,7 @@ ResolveGas(r, res) ==
 \* gas, a forced fault): the receiver keeps the whole amount.  Every
 \* ft_transfer_call marks its resolver, so a model that lists OwedOK checks
 \* that no resolver fails.  TokOwedResolve <- FALSE leaves it unmarked (the
-\* 0.2 behaviour; ofail then stays empty for resolvers).
+\* 0.2 behavior; ofail then stays empty for resolvers).
 TokOwedResolve == TRUE
 OwedResolve(c) == IF TokOwedResolve THEN WithOwed(c) ELSE c
 

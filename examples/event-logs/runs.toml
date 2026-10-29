@@ -64,7 +64,7 @@ K = "163"
 
 # ---- anti-vacuity: python3 tools/run.py examples/event-logs --anti-vacuity ----
 # Witnesses must be reached (TLC violates Wit_<id>); mutants must be killed by a run.
-# No behaviour, so no witnesses: every case is evaluated in the one state.  Each mutant
+# No behavior, so no witnesses: every case is evaluated in the one state.  Each mutant
 # changes a piece of the formulas or of the handlers' logs and LensOK must catch it.
 
 [[mutant]]

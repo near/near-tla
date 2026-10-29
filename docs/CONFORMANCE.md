@@ -175,7 +175,7 @@ With the default `MtGasShape = "reserve"` instead, `mt_bcall2_keep` fails at eve
 shape.
 
 The calibration figures for the shipped tables (split check, action-only fees, multi-call
-burns, `ft_transfer_call`'s gas behaviour) are in
+burns, `ft_transfer_call`'s gas behavior) are in
 [Results at the pins](../conformance/README.md#results-at-the-pins). What the joint-promise and
 yield/resume flows check, the sim's yield API they use, and what they leave out are in
 [Async patterns](../conformance/README.md#async-patterns-joint-promises-and-yieldresume). The differences found so

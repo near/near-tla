@@ -25,7 +25,7 @@
 (*   balance > 0 and not force      -> panic                               *)
 (*   otherwise unregister, burn its balance (total supply decreases) and   *)
 (*   transfer min + 1 yocto to it (min + TokYocto: with TokYocto = 0 the   *)
-(*   yocto is not modelled); returns true.                                 *)
+(*   yocto is not modeled); returns true.                                  *)
 (*   Both booleans are NONEMPTY bytes; ev.unreg / ev.unregBurnt say what   *)
 (*   happened.  The NEP-141 resolver's burn path needs this method.        *)
 (* Storage bytes (with StoragePerByte): a registration is the only change  *)
@@ -41,7 +41,7 @@ CONSTANTS
     TokenAccts,      \* accounts running a standard FT contract (NEP-141 + NEP-145)
     TokHolders,      \* [TokenAccts -> SUBSET accounts]: who can ever hold a balance there
     TokStorageMin,   \* [TokenAccts -> Nat]: storage_balance_bounds.min (= max)
-    TokDev,          \* [TokenAccts -> SUBSET Deviations]: selected non-standard behaviour
+    TokDev,          \* [TokenAccts -> SUBSET Deviations]: selected non-standard behavior
     TokCallReserve   \* [TokenAccts -> Nat]: gas mode, "reserve" shape only (Nep141
                      \* TokFtGasShape).  ft_transfer_call keeps this much
                      \* (GAS_FOR_FT_TRANSFER_CALL) and gives ft_on_transfer
@@ -98,7 +98,7 @@ TAcc0(r) == [L |-> tk[r.to], n |-> nid, rd |-> {}, ps |-> {}, out |-> 0,
              lgn |-> 0, lgb |-> 0]
 
 \* Overridable: account a "batch" receipt per action (Tokens header).
-\* TRUE (nearcore's behaviour): each call has its own gas and burn key
+\* TRUE (nearcore's behavior): each call has its own gas and burn key
 \* "<acct>.batch/<shape>#<method>".  FALSE: one pool, key "<acct>.batch/<shape>".
 TokBatchPerAction == TRUE
 

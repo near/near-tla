@@ -2,7 +2,7 @@
 (***************************************************************************)
 (* The event-log lengths of TokenCommon / Nep245 (docs/SEMANTICS.md T8)    *)
 (* against the lengths nearcore logged in the sim                          *)
-(* (conformance/tests/events.rs), case by case.  No behaviour: one state,  *)
+(* (conformance/tests/events.rs), case by case.  No behavior: one state,   *)
 (* and LensOK says every case's length is the observed one.                *)
 (*                                                                         *)
 (* Two kinds of case:                                                      *)

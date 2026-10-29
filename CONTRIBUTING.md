@@ -86,7 +86,7 @@ flow-spec format used to add a probe flow.
 of these:
 
 1. **A nearcore citation:** `path:line @ <rev>` at the reference revision (currently bc4e9e8,
-   2.14.0), in the module comment and in `docs/SEMANTICS.md`. If the behaviour depends on
+   2.14.0), in the module comment and in `docs/SEMANTICS.md`. If the behavior depends on
    the protocol version, say which. Do not cite a newer nearcore's line numbers without checking
    them at the reference revision.
 2. **A must-fail example:** in `examples/<name>/`, a correct toy contract with
@@ -97,7 +97,7 @@ of these:
    per-receipt outcomes with the model. If it is not feasible, say why in `SEMANTICS.md` and mark
    the rule "nearcore reading" or "recalled", not "sim".
 4. **`docs/SEMANTICS.md` updated:** the rule, the citation, the operator, and the validation
-   level. If the change adds or removes an approximation, update "Not modelled" as well.
+   level. If the change adds or removes an approximation, update "Not modeled" as well.
 5. **A Conventional Commit title** that release-plz turns into the `CHANGELOG.md` entry:
    `feat` for an addition, `fix` for a correction. A break of an operator name, arity or meaning
    is a `!` title with a `BREAKING CHANGE:` footer that gives the one-line migration.
@@ -148,6 +148,8 @@ check fails a pull request whose title or commits don't follow this.
 - No personal details in files, logs or commit messages: no names, emails, machine names or
   home-directory paths (write `~`). The runner rewrites `$HOME` to `~` in logs.
 - Commit with your normal git identity. Do not add AI-attribution trailers or footers.
+- Write US English (behavior, modeled, initialize, toward). Quote other projects verbatim
+  (nearcore's `gas_burnt`).
 
 ## Releases
 

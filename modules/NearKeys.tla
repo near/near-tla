@@ -55,7 +55,7 @@
 (***************************************************************************)
 EXTENDS NearAsync
 
-CONSTANTS KeyAccts     \* accounts whose access keys are modelled
+CONSTANTS KeyAccts     \* accounts whose access keys are modeled
 \* Contracts (accounts with code) is a NearAsync definition; a cfg
 \* `Contracts = {...}` or `Contracts <- Def` sets it as before.
 
@@ -183,7 +183,7 @@ KeyCanSign(a, k, r) ==
 \* :282-303, :365-373).  Each gas refund of the transaction adds back to the
 \* key when it runs (runtime/runtime/src/lib.rs:3041-3047,
 \* runtime/runtime/src/actions.rs:133-157).  The model credits the whole
-\* refund at conversion.  While the key stays, its modelled allowance is
+\* refund at conversion.  While the key stays, its modeled allowance is
 \* then never below nearcore's, so it can sign every transaction it can
 \* sign in nearcore, and more while refunds are in flight (an
 \* over-approximation).  nearcore credits a refund to whatever key holds
@@ -216,7 +216,7 @@ Charged(p, r) == IF HasAllowance(p) THEN [p EXCEPT !.al = @ - TxCost(r) + TxRefu
 \* gas refund of a transaction signed with (a, k) may still be in flight.
 \* nearcore reads the key by its public key when the refund runs and adds
 \* the refund to the new key's allowance (actions.rs:133-157); the model
-\* credited it to the old key at conversion, so the new key's modelled
+\* credited it to the old key at conversion, so the new key's modeled
 \* allowance would be below nearcore's (an under-approximation).  Refunds
 \* are not receipts in the model, so any transaction ever signed with
 \* (a, k) may still have one in flight: AllowanceAddOK asserts when txsig
@@ -556,7 +556,7 @@ DelegMustExpire(sd) == sd.mbh # NoExpiry /\ MaxBlk > 0 /\ blk > sd.mbh
 DelegInner(r) == [r.a.inner EXCEPT !.fr = r.to]
 
 \* The first failing check of the outer receipt r other than expiry, or "".
-\* The account must exist and be initialised (actions.rs:861-886); the
+\* The account must exist and be initialized (actions.rs:861-886); the
 \* delegate's sender must be r's receiver (:483-490); for a user in KeyAccts,
 \* the key must exist (:587-602), the nonce must be above the key's
 \* (:648-657) and below the ceiling (:657-665, NonceTooLarge above), and a

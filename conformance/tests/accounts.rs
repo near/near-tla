@@ -1,6 +1,6 @@
 //! Accounts, keys and stake, observed in the sim for the docs/SEMANTICS.md
 //! rules the conformance comparison cannot see: account existence and
-//! uninitialised universal accounts (A1), fees by account pattern for
+//! uninitialized universal accounts (A1), fees by account pattern for
 //! deterministic and universal ids (A2), what an implicit Transfer creates
 //! and when (A3, A4), a call to an account without code (A5), function-call
 //! keys, their allowance and transaction nonces (K2, K5),
@@ -75,7 +75,7 @@ fn burns(o: &TxOutcome) -> (u64, u64) {
 /// absent, a Transfer may create it (A3), and DeterministicStateInit and
 /// UniversalStateInit pass either way (:851-861; not exercised here: the
 /// test builds no state init). Every other action needs it to exist
-/// (:862-882), and an uninitialised universal account counts as absent for
+/// (:862-882), and an uninitialized universal account counts as absent for
 /// them (:883-888).
 /// A FunctionCall to an existing account without code fails with
 /// CodeDoesNotExist (runtime/runtime/src/function_call.rs:309-312), and its
@@ -98,7 +98,7 @@ fn existence_and_code() {
     assert!(err(&o).contains("CodeDoesNotExist"), "{o}");
     assert_eq!(refunds, [(ALICE.to_string(), near(1))]);
 
-    // A universal id funded by a Transfer: uninitialised.
+    // A universal id funded by a Transfer: uninitialized.
     sim.tx(ALICE, UNI).transfer(near(1)).transact().assert_success();
     let a = sim.account(UNI).unwrap();
     println!("universal {}..: {} bytes, balance {}", &UNI[..8], a.storage_usage, a.amount);
@@ -121,7 +121,7 @@ fn existence_and_code() {
 /// What is created (:221-287): NEAR-implicit 182 bytes and a full-access key
 /// derived from the id; eth-implicit 132 bytes and a global-contract
 /// reference by hash, the eth-wallet contract's in nearcore (:255-269); deterministic 100 bytes, no key; universal 100
-/// bytes, uninitialised (:276-282).
+/// bytes, uninitialized (:276-282).
 #[test]
 fn implicit_creation_by_kind() {
     let base = world();

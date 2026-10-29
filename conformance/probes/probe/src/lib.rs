@@ -1,5 +1,5 @@
 //! The generic conformance probe. One contract, deployed on several
-//! accounts, whose methods each exercise one receipt-level behaviour the
+//! accounts, whose methods each exercise one receipt-level behavior the
 //! TLA+ model encodes:
 //!
 //! - `chain`: creates function-call children with chosen static gas and

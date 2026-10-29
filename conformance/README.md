@@ -179,7 +179,7 @@ sweeps (`data/<flows stem>`, `calibrate`'s default), its build directory (`tla/b
 replace the driver's definitions. Without `--set` every script works on `probes` as before, and
 the sets never read each other's sweeps or logs: a sweep's `.meta.json` must name its own
 set's flows file. In `probes2` deposit refunds are compared as well: each is an action-only
-receipt labelled by its receiver (`tx1:bob[REFUND]`), so the refund target of R5 is checked;
+receipt labeled by its receiver (`tx1:bob[REFUND]`), so the refund target of R5 is checked;
 gas refunds, which the model does not make, stay out. `probes2` also compares deposit amounts:
 a receipt with a nonzero deposit gets it in its label on both sides, `(d)` in the model's unit,
 1 mNEAR, so `tx1:bob[REFUND](2000)` is a 2 N refund to bob. A sim amount in whole mNEAR is
@@ -213,7 +213,7 @@ A flow passes `conform.py` only if:
 - at every point the receipts pair up one to one by label and status with attached gas within
   `--tol` (5 Ggas). Status and gas are compared together, so two receipts of one method whose
   statuses and gas are swapped between model and sim fail. Within a (label, status) group the
-  sorted gas values are paired in order, which minimises the largest difference. The model's
+  sorted gas values are paired in order, which minimizes the largest difference. The model's
   log (`rlog`) carries no parent and no order, so receipts are matched by label, not by their
   place in the receipt tree, and the order in which they ran is not compared.
 
@@ -811,7 +811,7 @@ None is open after `356fd7b`; the joint-promise and yield/resume flows found non
    Ggas) is calibrated from that failure. Its children are function calls, whose send fees
    belong in a burn, so nothing needs subtracting.
 3. **ft_call_panic, 8.4-8.6 Tgas.** The receiver runs out of gas before it reaches its panic.
-   Fixed by the library's panic labelling (`09b28f5`, made explicit in `1ba96ff`: `OPanicKey`)
+   Fixed by the library's panic labeling (`09b28f5`, made explicit in `1ba96ff`: `OPanicKey`)
    with the panic path's burn, `q.ft_on_transfer/panic` (288 Ggas, the burn up to the failure;
    the receiver creates no children).
 4. **Token batches with `ft_transfer_call`: attached gas of `ft_on_transfer`.** nearcore splits
@@ -837,7 +837,7 @@ None is open after `356fd7b`; the joint-promise and yield/resume flows found non
    second create passes `probe2.yield_id` a `key` argument, which the probe only logs ("key
    reuse"), and a `[[path_rule]]` on that log gives it the path `yield_id/on_yield/reuse`
    (`yid_twice`'s keys take the flow path `twice`). The marker is a calibration-key choice: it
-   changes no behaviour, and the model runs the whole history (yield, resume, its callback,
+   changes no behavior, and the model runs the whole history (yield, resume, its callback,
    the create again) in one run, so the id's release after its callback is checked: with the
    model never releasing it, `yid_reuse` fails (its second create parks nothing in the model).
 

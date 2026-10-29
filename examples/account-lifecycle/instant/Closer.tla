@@ -15,7 +15,7 @@
 (* instant_empty_join_passes: the same with the delete as a joint callback *)
 (* with no inputs (EmptyJoin).                                             *)
 (* instant_off_spurious: InstantFirst <- FALSE, the rule before the        *)
-(* library modelled it; a use in flight runs between close and its delete *)
+(* library modeled it; a use in flight runs between close and its delete  *)
 (* and NoUseAfterClose fails, a false positive.  So a model of such a      *)
 (* contract needs InstantFirst, and a contract that adds anything to the   *)
 (* delete's receipt (a Transfer: then it is not instant) needs a flag.     *)

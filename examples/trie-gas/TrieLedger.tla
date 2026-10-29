@@ -29,7 +29,7 @@ CONSTANTS U, V, T,
     MaxTx,      \* send transactions
     Amts,       \* amounts U may send
     InitBal,    \* U's balance in V
-    TResps,     \* T.take behaviours: subset of {"ok", "panic"}
+    TResps,     \* T.take behaviors: subset of {"ok", "panic"}
     GasMenu,    \* prepaid gas U may attach, Ggas
     CbBudget,   \* on_take's fixed static gas, Ggas
     KeyLen      \* bytes of each key on_take writes

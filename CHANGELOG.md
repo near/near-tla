@@ -19,7 +19,7 @@ separate NearKeys).
 ## [0.1.1] - 2026-10-29
 
 ```
-nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+nearcore: 2.14.0 (bc4e9e8)   behavior: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: 96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2
 near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ```
@@ -31,7 +31,7 @@ near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ## [0.1.0] - 2026-10-27
 
 ```
-nearcore: 2.14.0 (bc4e9e8)   behaviour: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+nearcore: 2.14.0 (bc4e9e8)   behavior: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
 near-contract-sim: 4be28150bce8a564836eafdaf4caa49e43b1dca5
 near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
 ```
@@ -62,8 +62,8 @@ Each entry ends with its migration.
 
 **New platform variables, in one place.** Since the pre-release module set `NearAsync` has
 gained `txsig`, `created`, `burnt`, `blk`, `stor`, `deleted`, `code`, `gcode`, `guse`,
-`gnonce` and `ofail` (each has its own entry below; `PlatformInitOwed` initialises `ofail`, and so
-does `PlatformInitAccounts`). A model that initialises the platform with
+`gnonce` and `ofail` (each has its own entry below; `PlatformInitOwed` initializes `ofail`, and so
+does `PlatformInitAccounts`). A model that initializes the platform with
 `PlatformInit` / `PlatformInitStaked`, or conjoins `PlatformInitExtra` or `PlatformInitAccounts` to its own `Init`, and
 writes `UNCHANGED platformVars` and `vars == <<platformVars, ...>>`, needs no change for any of
 them. A model that lists platform variables one by one must add each.
@@ -74,14 +74,14 @@ them. A model that lists platform variables one by one must add each.
   eth-implicit one 8150 (was 8146), near-implicit 8354 (8350), a Stake receipt 463 (460),
   DeleteKey 408 (406), full-access AddKey 422 (420), function-call AddKey 424 (420). Gas-mode
   verdicts and windows move by less than 4 Ggas per action-only receipt (a Transfer or Stake
-  child, a key action), always towards "needs more gas": a budget that was a few Ggas short
+  child, a key action), always toward "needs more gas": a budget that was a few Ggas short
   in nearcore but passed in the model now fails (`examples/fee-edge`). Models that compare
   `XferFee`, `StakeFee`, `KeyFee` or `NearFeeTable!...` results with literals, or whose gas
   windows sit within that margin of an edge, change verdict. In the repo only
   `eth-implicit-fee` pinned literals; its `FeesPinned` now reads them by mode. No other
   example run changed verdict or state count. Migration: `"NearFees!FeeRounding" =
   '"nearest"'` in a run's `[constants]` (or `[constants]` of the file) restores the old
-  behaviour exactly (every table entry, and `Bytes(n, u)` for all `n` up to 3000 and at 20 KB,
+  behavior exactly (every table entry, and `Bytes(n, u)` for all `n` up to 3000 and at 20 KB,
   1, 4 and 16 MiB, were checked equal); or update the literals (450, 8150, ...). A model that
   `EXTENDS NearFees` can write `FeeRounding <- FeeNearest` unqualified in its cfg. In a
   hand-written cfg the right of `<-` must be a definition, not a literal (TLC rejects
@@ -101,7 +101,7 @@ them. A model that lists platform variables one by one must add each.
   Every example run keeps its verdict, state counts (compared at one worker; `selftest_gas`
   grows only by its new scenario) and windows; `weight-split`'s `SplitExact` reads the
   expected split by mode. In other models the last weighted child of a split gets up to
-  `n - 1` Ggas less, so verdicts and windows within that margin of an edge can move, towards
+  `n - 1` Ggas less, so verdicts and windows within that margin of an edge can move, toward
   "needs more gas". Migration: `"NearFees!FeeRounding" = '"nearest"'` restores the old split together with the
   old fees; a model that checks a child's gas against the remainder rule reads it by mode
   (`NearFeeTable!FeeRounding`).
@@ -151,7 +151,7 @@ them. A model that lists platform variables one by one must add each.
 
 - **New platform variable `blk` in `NearAsync`** (the block height, advanced only by the new
   `BlockTick`; it stays 0 unless a model sets `MaxBlk > 0`). It is in `platformVars`, and
-  `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialise it, so models that
+  `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialize it, so models that
   use those and write `UNCHANGED platformVars` need no change (every example is such a
   model). A step that lists platform variables one by one in `UNCHANGED` must add `blk`
   (in the library: `NearKeys.ExecKeyAct`), a hand-written `Init` must set it, and so must a
@@ -168,7 +168,7 @@ them. A model that lists platform variables one by one must add each.
   default) unless a model sets `StoragePerByte <- TRUE`, so models that do not are unchanged:
   every example run kept its verdict and its generated, distinct and depth counts (all 97
   runs compared at one worker, the pass runs also at two). It is in `platformVars`, and
-  `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialise it. Like `blk`: a
+  `PlatformInit`, `PlatformInitStaked` and `PlatformInitExtra` initialize it. Like `blk`: a
   step that lists platform variables one by one in `UNCHANGED` must add `stor` (in the
   library: `NearKeys.ExecDelegate`; `ExecKeyAct` now sets it), a hand-written `Init` must set
   it, and a hand-written `vars` must include it. Two more changes come with it, inert without
@@ -188,7 +188,7 @@ them. A model that lists platform variables one by one must add each.
   unless a model runs a DeleteAccount, so models that do not are unchanged: every example run kept its verdict and its generated,
   distinct and depth counts (all 109 runs compared at one worker). It is
   in `platformVars`, and `PlatformInit`, `PlatformInitStaked`, `PlatformInitAccounts` and
-  `PlatformInitExtra` initialise it. Like `blk` and `stor`: a step that lists platform
+  `PlatformInitExtra` initialize it. Like `blk` and `stor`: a step that lists platform
   variables one by one in `UNCHANGED` must add `deleted` (in the library:
   `NearKeys.ExecKeyAct`, `ExecDelegate`), a hand-written `Init` must set it, and a
   hand-written `vars` must include it. Migration: write `UNCHANGED platformVars` or add
@@ -201,7 +201,7 @@ them. A model that lists platform variables one by one must add each.
   unless a model deploys or uses a global contract, so models that do not are unchanged: every
   example run kept its verdict and its generated, distinct and depth counts (all 139 runs
   compared at one worker). They are in `platformVars`, and `PlatformInit`,
-  `PlatformInitStaked`, `PlatformInitAccounts` and `PlatformInitExtra` initialise them (from
+  `PlatformInitStaked`, `PlatformInitAccounts` and `PlatformInitExtra` initialize them (from
   the overridable `InitGCode` and `InitUses`). A new built-in receipt kind, `GDIST`, is in
   `IsBuiltin`, so a dispatcher that routes `IsBuiltin(r)` to `ExecBuiltin(r)` (or
   `ExecBuiltinK`) runs it. Like `code`: a step that lists platform variables one by one in
@@ -217,7 +217,7 @@ them. A model that lists platform variables one by one must add each.
   models that do not are unchanged: every example run kept its verdict and its generated,
   distinct and depth counts (all 132 runs compared at one worker). It is in `platformVars`,
   and `PlatformInit`, `PlatformInitStaked`, `PlatformInitAccounts` and `PlatformInitExtra`
-  initialise it. Like `blk`, `stor` and `deleted`: a step that lists platform variables one
+  initialize it. Like `blk`, `stor` and `deleted`: a step that lists platform variables one
   by one in `UNCHANGED` must add `code` (in the library: `NearKeys.ExecKeyAct`,
   `ExecDelegate`), a hand-written `Init` must set it, and a hand-written `vars` must include
   it. Migration: write `UNCHANGED platformVars` or add `code` to the list; conjoin
@@ -227,7 +227,7 @@ them. A model that lists platform variables one by one must add each.
   `IsCall(r) /\ ~CodeSeen(r) /\ FailP(r, FALSE)`: it sees the code a receipt's own
   CreateAccount and DeployContract leave (it used `HasCode(r.to)`).
 - **`CallsNeedCode = FALSE` no longer lets a call reach a missing account** (nor an
-  uninitialised universal one): `CallTargetOK` requires `AcctExists` and not
+  uninitialized universal one): `CallTargetOK` requires `AcctExists` and not
   `UninitUniversal` whatever the switch says, as nearcore does (`AccountDoesNotExist`,
   `AccountNotInitialized`, `actions.rs:874-887`); the switch now turns off the code check
   only. Every example run kept its verdict and its generated, distinct and depth counts (all
@@ -248,26 +248,26 @@ them. A model that lists platform variables one by one must add each.
 
 - **New platform variables `txsig` and `created` in `NearAsync`** (the transaction
   signer per tx id, and accounts created at run time by an implicit-account
-  Transfer). A model must initialise them, and any step that lists platform
+  Transfer). A model must initialize them, and any step that lists platform
   variables one by one in `UNCHANGED` must add them. Migration: add
   `/\ PlatformInitExtra` to `Init` (or replace the platform part of `Init` with
   `PlatformInit(near0, txIds)` / `PlatformInitStaked(near0, locked0, txIds)`), and
   write `UNCHANGED platformVars` rather than the individual names. The helpers
   compose: `PlatformInitExtra` is `PlatformInitSigner /\ PlatformInitAccounts`; a
-  model that keeps its own (e.g. pre-sized) `txsig` initialiser conjoins
+  model that keeps its own (e.g. pre-sized) `txsig` initializer conjoins
   `PlatformInitAccounts` alone (`created = {}`, `burnt = 0`). The `pay` and
   `mt-smoke` examples were migrated this way, to `/\ PlatformInit([a \in Accts |-> 0], TxIds)`.
   State cost: settled transactions keep their `txsig` entry, which grew the state
   space by up to about 17% in models that never read the signer;
   `TrackSigner <- FALSE` leaves `txsig` unchanged in `SubmitAs`. Do not read the
-  signer then: with `txsig` initialised empty (`PlatformInit`) that is a TLC
+  signer then: with `txsig` initialized empty (`PlatformInit`) that is a TLC
   error, but with a pre-sized `txsig` it silently returns the initial value.
 - **`txsig` moved from `NearKeys` to `NearAsync`; `keyVars` is now `<<keys, sigpaid>>`.**
-  `SignerOf(t)` is unchanged. Migration: initialise `txsig` once, either with
+  `SignerOf(t)` is unchanged. Migration: initialize `txsig` once, either with
   `PlatformInitSigner` (`txsig = <<>>`) or with your existing function, plus
   `PlatformInitAccounts` for the other new variables. `Submit`
   overrides the entry of the submitted tx with `@@`, so no pre-sized domain is needed.
-  Initialise `keys` and `sigpaid` with `KeysInit(keys0)` or as before.
+  Initialize `keys` and `sigpaid` with `KeysInit(keys0)` or as before.
 - **`NoRes.v` is now `NOPR` (-4), not 0.** A ready receipt has no promise results,
   and `IsNum(NoRes)` is now FALSE. Migration: code that read `r.res` on a
   receipt that is not a callback must test `NoResults(r.res)` (or `r.res.v = NOPR`)
@@ -283,7 +283,7 @@ them. A model that lists platform variables one by one must add each.
   up to the receiver's balance even when the bytes are a valid number (a `"0"`
   padded with 40 spaces). A result's length is `r.res.len` when stated
   (`RValLen`), else what `r.res.sz` implies (`sz >= 2` is over 1000 bytes). The
-  resolver used to honour any number whatever its size. `Nep245` keeps an
+  resolver used to honor any number whatever its size. `Nep245` keeps an
   unbounded read. Migration: for a token on near-contract-standards 5.23.0 or
   older (3.x/4.x), set `TokResolveMaxLen <- Unbounded` with
   `Unbounded == [t \in TokenAccts |-> -1]`; a model whose receiver returns a
@@ -337,7 +337,7 @@ them. A model that lists platform variables one by one must add each.
 - **A refund to a missing account is burnt** (`lib.rs:1046-1054`): it used to
   stay pending. New ghost variable `burnt` (in `platformVars`), and
   `NearConserved(total0)` now reads `... = total0 + minted - burnt`.
-  Migration: initialise `burnt = 0` (`PlatformInit*` and `PlatformInitExtra` do);
+  Migration: initialize `burnt = 0` (`PlatformInit*` and `PlatformInitExtra` do);
   steps that list platform variables one by one add `burnt` to `UNCHANGED`;
   `BurnLostRefunds <- FALSE` restores the pending refund. The burn is a step of
   `ExecTransferFail` (part of `ExecBuiltin`): a model that runs `REFND`
@@ -346,7 +346,7 @@ them. A model that lists platform variables one by one must add each.
 - **Gas mode: a function-call child left with 0 gas fails its creator**
   (`action_validation.rs:350-351`, applied at `lib.rs:968-978`). Migration: give
   such a child static gas or an unused-gas weight; there is no switch.
-- **Gas mode: a panic the receipt could not reach can be labelled out of gas**
+- **Gas mode: a panic the receipt could not reach can be labeled out of gas**
   (`gas_counter.rs:136-141`, `:155-174`, `:205-213`): when the outcome names its
   panic-path burn key with `OPanicKey(O, k)` (per action: `OPanicAt(O, i, k)`) and
   that burn plus the static gas and fees of the children created before the panic
@@ -478,10 +478,10 @@ them. A model that lists platform variables one by one must add each.
   method-name bytes, a promise count that nested `promise_and` calls could take past 1024
   when the handler does not state them (`OJoins`), and a receipt of several function calls
   whose children could pass 1024 in all without `pa`, are `Assert`s. The limits are
-  unconditional: an older model that crosses one changes behaviour, a call that committed
+  unconditional: an older model that crosses one changes behavior, a call that committed
   before now fails (and its receipts are dropped) or the run stops on an `Assert`, so its
   verdicts can change. Every example run has the same verdict and state counts as before:
-  none comes near a limit. Migration: a model that crosses a limit was modelling something
+  none comes near a limit. Migration: a model that crosses a limit was modeling something
   nearcore refuses; keep its receipts within the limits, give a returned value near 4 MiB its
   bytes with `RValLen`, an AddKey's real byte count with `WithMethodBytes`, a call's
   `promise_and` count with `OJoins`, and a receipt of several calls a `pa` (in fault mode too).
@@ -618,7 +618,7 @@ them. A model that lists platform variables one by one must add each.
 - **The runner's audit** (`tools/audit.py`; RUNNER "Auditing what the runs reach", habit 7
   of "The method"). On by default for plain runs, `--no-audit` to turn it off. The runner sets
   `NearAsync.AuditOn`, so `Exec` prints one fact per distinct receipt it runs, once per TLC
-  worker (`AuditFact`; an `ASSUME` initialises the register `AuditReg` that remembers them). After the runs it reports, per `runs.toml`:
+  worker (`AuditFact`; an `ASSUME` initializes the register `AuditReg` that remembers them). After the runs it reports, per `runs.toml`:
   - owed receipts that no gas-mode run executes;
   - owed receipts and fixed-budget callbacks that run in gas mode but never under
     `TrieGasWorst`, declare no writes there, or have no `least_gas` sweep on a run that
@@ -696,7 +696,7 @@ them. A model that lists platform variables one by one must add each.
   (`mt_resolver_cases`, `mt_resolver_cases_self`). Vectors travel as one integer
   (`MtVecCode`, `MtVecOf`, `MtRet`; `["v"]` is the number `v`; fewer than 16 entries and
   length × bits per entry ≤ 21, so two entries up to 1023; beyond that an Assert,
-  `mt_vec_code_long`). New `MtDev` behaviours `"zeroAmountSkipped"` and
+  `mt_vec_code_long`). New `MtDev` behaviors `"zeroAmountSkipped"` and
   `"selfTransferCredits"` follow near-sdk-contract-tools 4.0.0, which drops a zero amount
   before any other check (a zero transfer to oneself included) and lets a transfer to
   oneself raise one's balance; by default the model still panics on both. An arbitrary receiver answers any label of
@@ -816,7 +816,7 @@ them. A model that lists platform variables one by one must add each.
   sweeps, table, driver and build directory, and a sweep's `.meta.json` must name its own
   set's flows file (`flows_file` is now checked). The set `probes2` runs 28 flows on
   `z-probe.near`, all matching the model: `refund_to` (R5; this set compares deposit refunds,
-  labelled by receiver, and every receipt's deposit amount, in mNEAR), one joint result by
+  labeled by receiver, and every receipt's deposit amount, in mNEAR), one joint result by
   index 0, 1 and 2 over flat and nested joins and a failed middle input (C6), the `_with_id`
   yield's duplicate check, resume by id and reuse (the whole history in one run), a yield's
   deposit and a returned yield (C7), a callback after a Stake (B1, `"STAKE"` now paired with
@@ -851,7 +851,7 @@ them. A model that lists platform variables one by one must add each.
   the `ft` probe), and in `semantics.rs` a full chunk delaying local receipts (S1,
   N-local-congested), the yield timeout at 200 blocks (C7) and a delegate's sender, signature
   and nonce checks (K4); K1, M1 and S4 now cite their existing tests. Each test asserts
-  nearcore's behaviour against the rule as written, with no model run. None refuted a rule.
+  nearcore's behavior against the rule as written, with no model run. None refuted a rule.
   A call to an eth-implicit account running the wallet contract is not sim-testable (the
   sim's chain has not published the wallet code). No probe wasm or flow changed.
 - **Storage bytes from the calibrator** (SEMANTICS B2, N-storage; docs/USAGE.md section 15,
@@ -945,8 +945,8 @@ them. A model that lists platform variables one by one must add each.
   Sim: `conformance/tests/global.rs`.
 - **SEMANTICS N-upgrade** (contract upgrades mid-flow: a handler runs the new code only if it
   branches on `CodeOf(r.to)`), and the `NearAsync` / `NearKeys` header comments now list
-  DeployContract, instant receipts and DeleteAccount as modelled and point to SEMANTICS "Not
-  modelled".
+  DeployContract, instant receipts and DeleteAccount as modeled and point to SEMANTICS "Not
+  modeled".
 - **`BalSeen(r)`: the balance a handler sees** (`env::account_balance`, SEMANTICS A8):
   `near[r.to]` after the receipt's earlier actions (0 for an account the receipt creates,
   plus a factory batch's Transfer) plus the call's attached deposit
@@ -963,7 +963,7 @@ them. A model that lists platform variables one by one must add each.
   CreateAccount and Transfer, before its call and DeleteAccount; a second one, or a tag over
   4 MiB, is an Assert) with its fee, deploy_base plus deploy_byte per byte (`d0.gf = 660`
   Ggas for 1000 bytes on the same account); `DeployRcpt(id, tx, acct, a, t, cb)` is a lone
-  deploy. The checks are `AcctErr`'s (existence, initialised, actor = the account); the bytes
+  deploy. The checks are `AcctErr`'s (existence, initialized, actor = the account); the bytes
   lose the old code and gain the new (`CodeBytes` reads `code`, `DplDelta`, `AcctBytes`), so
   the storage check and the DeleteAccount's 10,000-byte check see them; on success `code`
   changes (`CodeNext`: a delete, or a create without a deploy, drops the entry). A call sees
@@ -1012,7 +1012,7 @@ them. A model that lists platform variables one by one must add each.
   `DeletesAcct(r)` tells a model to reset its own state. In gas mode `AcctFee` puts the
   receipt's whole send + exec fee in `gf`: the prepaid reservation, whatever the outcome
   (nearcore stops a failed receipt at its failing action and refunds the exec fees of the
-  actions after it as gas, which is not modelled). An uninitialised universal account
+  actions after it as gas, which is not modeled). An uninitialized universal account
   (`UninitUniversal`, which needs `UniversalOn`) fails key actions, DeleteAccount and the
   delegates it signs with `AccountNotInitialized`; with `UniversalOn <- FALSE` a `0u` id is
   an ordinary named account. `ExecTransfer` takes a deleted implicit account
@@ -1048,7 +1048,7 @@ them. A model that lists platform variables one by one must add each.
   `RevokeTakesEffect`, `OpenApplied`, `WorkFits`, `Forgotten`); checks against the
   counterparty's recorded answer instead of a handler ghost (`ResolvedAsAsked`,
   `SenderCredited` in `nep141-refund-cap`); the cancel-window ghost of `yield-clock`
-  (`NoEarlyCancel`, `CancelHonoured`); `VaultCovered` in `storage-stake`; `meta-tx`'s
+  (`NoEarlyCancel`, `CancelHonored`); `VaultCovered` in `storage-stake`; `meta-tx`'s
   `Credited` counts good claims only. Runs with asymmetric constants where symmetric ones hid
   a mutant: `weight_split_123` (weights `<<1, 2, 3>>`), `yield_ok_tx4` (four transactions),
   `vault_per_byte_atomic_room` (room for two payouts). `mt-smoke` gains a `Sane`.
@@ -1150,8 +1150,8 @@ them. A model that lists platform variables one by one must add each.
   premature; it says nothing about coverage; `ClockBoundOK` in the pre-release tree) and
   `ClockHorizonOK(n, T)` (`MaxBlk >= (n + 1) * max(T, YieldTicks)`, with `T` the largest
   number of blocks a clock comparison counts and `n` the most clock-relevant steps per
-  behaviour; the `+ 1` is the gap after the last step, where an invariant still reads the
-  clock: then the bound covers every behaviour).
+  behavior; the `+ 1` is the gap after the last step, where an invariant still reads the
+  clock: then the bound covers every behavior).
 - Examples `joint-promise` (`Pair`), `yield-resume` (`Oracle`, the double-resume trap) and
   `yield-clock` (`Deadline`: early timeouts at a too small bound, `cancel_trusts_timeout`,
   `cancel_after_answer`, and `horizon_*`: a double refund that passes at `MaxBlk = 2`, is
@@ -1257,7 +1257,7 @@ them. A model that lists platform variables one by one must add each.
   `"deterministic"`): a Transfer may create them (`actions.rs:929-946`;
   universal from protocol 88, also inside a batch). An account created by a
   Transfer has no code unless it is eth-implicit (`actions.rs:221-290`; universal
-  ones are also uninitialised, `:880-887`), so calls to it fail. Whether
+  ones are also uninitialized, `:880-887`), so calls to it fail. Whether
   universal accounts exist is `UniversalOn`, an overridable definition, default
   TRUE (88's rule). It does not follow `NearFees.FeeProtocol`, which selects fees
   only: `FeeProtocol == 86` keeps the creation and charges 86's fee;
@@ -1275,7 +1275,7 @@ them. A model that lists platform variables one by one must add each.
   `signer-propagation`, `deletekey-atomicity`, `eth-implicit-fee`,
   `nep141-refund-cap`, `nep145-refund-to-predecessor`. `nep141-refund-cap` also
   covers the oversized result: `refund_cap_oversized` (a 43-byte `"0"` is fully
-  refunded) and `refund_cap_oversized_unbounded` (an unbounded resolver honours
+  refunded) and `refund_cap_oversized_unbounded` (an unbounded resolver honors
   it; `OversizedRefunded` fails).
 - `examples/minimal`: the walkthrough model from `docs/USAGE.md` (`Tally`), in
   fault and gas mode, with a must-fail variant and a printed gas window.
@@ -1402,11 +1402,11 @@ them. A model that lists platform variables one by one must add each.
 
 ### Deprecated
 
-These settings exist only to keep an older model's behaviour, and will be removed in a later
+These settings exist only to keep an older model's behavior, and will be removed in a later
 release. A new model sets none of them.
 
 - `CallsNeedCode = FALSE` (calls run whatever code the receiver has).
 - `BurnLostRefunds = FALSE` (a refund to a missing account stays in flight).
 - `ResultReadGas = FALSE` (reads declared with `OReadRes` cost no gas).
-- `TokEvents = FALSE` for older behaviour. Setting it because the model declares the
+- `TokEvents = FALSE` for older behavior. Setting it because the model declares the
   token's events itself stays supported.

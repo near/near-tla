@@ -440,7 +440,7 @@ expect = "pass"
 [run.constants]
 Scns = '{"accall_prom"}'
 
-# CallsNeedCode = FALSE switches off the code check only: a missing or uninitialised receiver
+# CallsNeedCode = FALSE switches off the code check only: a missing or uninitialized receiver
 # still fails the call.
 [[run]]
 name = "selftest_code_off_missing"

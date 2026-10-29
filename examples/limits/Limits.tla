@@ -36,7 +36,7 @@
 (*                                                                         *)
 (* Receipts run one at a time, in a fixed order (CHOOSE): the outcome does *)
 (* not depend on the order here, and a fixed one keeps the 1024-receipt    *)
-(* fan-out to one behaviour.                                               *)
+(* fan-out to one behavior.                                                *)
 (*                                                                         *)
 (* Done: once the scenario has started and the system is idle, P was paid  *)
 (* N times ("batch", "tx", "fan", "multi"; and 3 quotes gathered,        *)

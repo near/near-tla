@@ -150,7 +150,7 @@ Tids = "<<>>"
 Amts = "<<>>"
 RxVecs = '{<<>>}'
 
-# An id class of 0 ids is a modelling error: an Assert.
+# An id class of 0 ids is a modeling error: an Assert.
 [[run]]
 name = "mt_batch_class_zero"
 expect = "assert"

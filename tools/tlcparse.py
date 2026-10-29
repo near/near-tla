@@ -14,7 +14,7 @@
     "assumption"  "Assumption line ... is false"
     "deadlock"    "Deadlock reached" (only when TLC runs without -deadlock)
     "error"       parse/semantic errors, evaluation errors, unknown config names,
-                  or a nonzero exit code with no recognised verdict
+                  or a nonzero exit code with no recognized verdict
     "unfinished"  none of the above (e.g. the run was killed)
 - `name`: the violated invariant/property, or None;
 - `message`: a one-line detail (the Assert message, the error text, ...);

@@ -21,7 +21,7 @@
 (* 5.24.0 and later read the result with a 42-byte bound, so the resolver  *)
 (* treats it as all unused and refunds min(amt, X's balance):              *)
 (* OversizedRefunded holds.  Wrong: TokResolveMaxLen = -1, a resolver that *)
-(* reads the result unbounded (the 5.23.0 code) and honours the "0", so it *)
+(* reads the result unbounded (the 5.23.0 code) and honors the "0", so it  *)
 (* refunds nothing.                                                        *)
 (***************************************************************************)
 EXTENDS Tokens
@@ -30,7 +30,7 @@ CONSTANTS U, X, Y, FT,
           MaxTx,      \* transactions: U's transfers and X's spends together
           Amts,       \* amounts U may send
           InitU, InitX,
-          XResps,     \* X.ft_on_transfer behaviours, subset of RecvResps
+          XResps,     \* X.ft_on_transfer behaviors, subset of RecvResps
           Dev         \* FT deviations
 
 VARIABLES ntx, gT

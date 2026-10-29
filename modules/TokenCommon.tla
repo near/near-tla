@@ -3,7 +3,7 @@
 (* Shared vocabulary of the token-standard modules (no variables).         *)
 (*                                                                         *)
 (*  - one argument-record shape for every token-standard receipt           *)
-(*  - the selectable non-standard behaviours ("deviations")                *)
+(*  - the selectable non-standard behaviors ("deviations")                 *)
 (*  - the NEP-141 / NEP-245 resolver arithmetic                            *)
 (*  - a generic arbitrary receiver (ft_on_transfer / mt_on_transfer)       *)
 (*                                                                         *)
@@ -15,7 +15,7 @@
 EXTENDS NearAsync
 
 CONSTANT TokYocto   \* 1-yocto attachment required by ft_transfer[_call], near_withdraw,
-                    \* mt_transfer[_call]; 0 = not modelled (no check, nothing attached)
+                    \* mt_transfer[_call]; 0 = not modeled (no check, nothing attached)
 
 TMin(a, b) == IF a < b THEN a ELSE b
 TMax(a, b) == IF a > b THEN a ELSE b
@@ -63,7 +63,7 @@ BatchArgs(nd, sd, sdAcct, xf, rc, amt, msg) ==
                 !.rc = rc, !.amt = amt, !.msg = msg]
 
 ----------------------------------------------------------------------------
-(* Non-standard behaviour, selectable per token account (TokDev[acct]).    *)
+(* Non-standard behavior, selectable per token account (TokDev[acct]).     *)
 (*  "retBytes"             ft_transfer (and a batch ending in it) may      *)
 (*                         return non-empty bytes on success (chosen       *)
 (*                         nondeterministically per call: EMPTY|NONEMPTY)  *)
@@ -143,12 +143,12 @@ ResolveRefund(res, amt, rcvBal, dev) == ResolveRefundLim(res, amt, rcvBal, dev, 
 (* memos and token ids are given as their escaped byte length.             *)
 (* The NEP-141 logs are near-contract-standards 5.29.1's whatever          *)
 (* TokFtGasShape selects; an older version may log differently (not        *)
-(* modelled).  WNear's own methods declare no logs (their source was not   *)
+(* modeled).  WNear's own methods declare no logs (their source was not    *)
 (* read).                                                                  *)
 (*                                                                         *)
 (* Knobs (overridable zero-arity definitions):                             *)
 (*   TokEvents   TRUE (default): the handlers declare their logs; FALSE:   *)
-(*               none (the 0.2 behaviour)                                  *)
+(*               none (the 0.2 behavior)                                   *)
 (*   EvAcctLen   a partial function account -> its real id length in       *)
 (*               bytes; an account outside its domain counts Len(a), the   *)
 (*               model's own string                                        *)

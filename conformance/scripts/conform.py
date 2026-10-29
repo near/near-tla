@@ -71,7 +71,7 @@ def label(tx, body):
 def sim_dep(d):
     """A sim deposit (yocto) as the model writes it: whole milliNEAR exactly; a
     nonzero amount under 1 mNEAR, and the storage minimum, as `mkconf.dep`'s 1.
-    Any other amount is labelled in yocto (`2000000000000000000000001y`), which
+    Any other amount is labeled in yocto (`2000000000000000000000001y`), which
     no model deposit equals, so a deposit off by less than 1 mNEAR still fails."""
     d = int(d or 0)
     if d >= 10**21 and d != REG and d % 10**21:
@@ -238,7 +238,7 @@ def joint(mrecs, srecs):
     Receipts of different (label, status) never pair, so the pairing splits
     into one per group, and a group pairs only if both sides have as many
     receipts in it (the status check). Within a group, pairing the sorted
-    gas values in order minimises the largest difference: for a1 <= a2 and
+    gas values in order minimizes the largest difference: for a1 <= a2 and
     b1 <= b2, max(|a1-b1|, |a2-b2|) <= max(|a1-b2|, |a2-b1|), so uncrossing
     two pairs never makes the largest difference worse, and some pairing
     within tolerance exists iff the sorted one is within it. A receipt

@@ -51,7 +51,7 @@ RxReg = "TRUE"
 Dev = "{}"
 GasMenu = "{0}"
 
-# Standard FT, two pay transactions, every receiver behaviour.
+# Standard FT, two pay transactions, every receiver behavior.
 [[run]]
 name = "pay_std"
 expect = "pass"

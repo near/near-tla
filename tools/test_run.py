@@ -1202,7 +1202,7 @@ class SweepTest(unittest.TestCase):
 
     def test_least_gas_non_monotone_bisection_vs_exact(self):
         # Success at 20 and from 50 up.  Bisection reports the boundary 50 and passes (it
-        # cannot see 20), labelled as a boundary; the exact scan finds 20 and fails as
+        # cannot see 20), labeled as a boundary; the exact scan finds 20 and fails as
         # non-monotone, naming 21..49 and 50.
         self.outputs = lambda v: PASS if v == 20 or v >= 50 else INV
         by, (sw,) = self.load(LEAST)

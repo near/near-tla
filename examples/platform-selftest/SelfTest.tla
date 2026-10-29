@@ -17,7 +17,7 @@
 (* (bc4e9e8); the comments in Expect name the source file.                 *)
 (* Delegate actions (the deleg_ scenarios): a script entry Dl is a        *)
 (* relayer's transaction carrying a user's signed delegate; u relays with  *)
-(* its key "ku" (u's keys are not modelled), c and d are the users.        *)
+(* its key "ku" (u's keys are not modeled), c and d are the users.         *)
 (* Per-byte storage (the stor_ scenarios, run with StoragePerByte): one    *)
 (* unit covers 100 bytes (SCost); v starts with 900 bytes, c and d with    *)
 (* 700 (exempt: at most 770), ft with 1000, and one ft registration is 200 *)
@@ -27,7 +27,7 @@
 (* create it) and nimp (NEAR-implicit) do not exist; 0xa (eth-implicit,    *)
 (* with code) does.  A script entry Ac is an ACCOUNT transaction           *)
 (* (CreateAccount, Transfer, key actions, DeleteAccount); s.c, nimp and    *)
-(* 0u1 have modelled keys (universal_off: without UniversalOn 0u1 is an    *)
+(* 0u1 have modeled keys (universal_off: without UniversalOn 0u1 is an     *)
 (* ordinary id).  The lifecycle_storage run gives w 10,001 bytes and v     *)
 (* 10,500, 600 of them code, at 2,000 bytes a unit.  A script entry AcD    *)
 (* adds a DeployContract(t) (A9); the code tags' sizes are SCodeLen.       *)
@@ -640,7 +640,7 @@ Script(s) ==
     [] s = "accall_prom"      -> << Tx(C, U, "closeprom", G0, 0) >>
     [] s = "code_off_missing" -> << Tx(GH, U, "foo", G0, 1),                              \* missing
                                     Tx(C, U, "send", G("", "", UA, 2, 0, "", ""), 0),
-                                    Tx(UA, U, "foo", G0, 1) >>                            \* uninitialised
+                                    Tx(UA, U, "foo", G0, 1) >>                            \* uninitialized
     [] s = "accall_del_stor"  -> << Tx(C, U, "closecall", G("", "", C, 4, 5000, "", ""), 0) >>
     \* Without UniversalOn (protocol < 88) 0u1 is a named top-level id.
     [] s = "universal_off"    -> << Ac(UA, W, TRUE, 2, "", <<AddK("k0")>>),             \* w creates it
@@ -1208,7 +1208,7 @@ Expect(s) ==
          \* empty bytes, not the promise's result.  lib.rs:507-514, :1146-1189
          deleted = {C} /\ near[U] = 15 /\ near[D] = 0 /\ S1("lastp", 1) \in seen /\ S1("empty", 0) \in seen
     [] s = "code_off_missing" ->  \* CallsNeedCode = FALSE: a missing receiver still fails the call
-         \* (AccountDoesNotExist), as does an uninitialised universal one.  actions.rs:874-887
+         \* (AccountDoesNotExist), as does an uninitialized universal one.  actions.rs:874-887
          near[U] = 10 /\ near[UA] = 2 /\ GH \notin created /\ <<1, GH, "foo">> \notin ran
          /\ <<3, UA, "foo">> \notin ran
     [] s = "accall_del_stor" ->   \* the call adds 5000 bytes and leaves c 1 NEAR (2000 bytes'
