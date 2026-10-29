@@ -191,7 +191,7 @@ Then build the contract's wasm and write a near-workspaces sandbox test that rep
 contract-bug hypothesis: the same transactions, a stub receiver that fails only where you
 named a cause, and an assertion of the broken property. For a `caller-gas` trace, start from
 its prepaid gas and bisect on the wasm: the model's window says where to look, and the
-sandbox finds the real edges. Use near-contract-sim if the user has access. When an order
+sandbox finds the real edges. near-contract-sim can also force faults and orders. When an order
 cannot be forced in the sandbox, replay the failure parts: the finding is then confirmed for
 its failures only, and the order is argued from the SEMANTICS ordering rules (S1-S5) and the
 code. Say which.

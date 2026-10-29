@@ -47,7 +47,7 @@ against the compiled contract, and check the same property. There are three ways
 | | who can use it | failures | orders |
 |---|---|---|---|
 | [near-workspaces sandbox](#in-a-local-sandbox-with-near-workspaces) | anyone (public) | by cause: a stub receiver, the prepaid gas, the state | no switch: argued, or provoked by load |
-| [near-contract-sim](#in-near-contract-sim) | maintainers and anyone with access (private) | injected directly | forced by holding receipts |
+| [near-contract-sim](#in-near-contract-sim) | anyone (public) | injected directly | forced by holding receipts |
 | [code reading](#without-either-by-reading-the-code) | anyone | argued | argued |
 
 ## Step 1: read the trace
@@ -193,11 +193,11 @@ needed (`need`) ([Owed callbacks and detached work](USAGE.md#owed-callbacks-and-
 
 ## Step 3: replay it
 
-With public tools, a counterexample that depends on receipt order is confirmed in its failures
+In the sandbox, a counterexample that depends on receipt order is confirmed in its failures
 only; its order is argued from SEMANTICS S1-S5 and the code, and the write-up says so. The
 sandbox cannot force an order
-([What the sandbox cannot do](#what-the-sandbox-cannot-do-force-an-order)); only the private
-sim can.
+([What the sandbox cannot do](#what-the-sandbox-cannot-do-force-an-order)); near-contract-sim
+can.
 
 ### In a local sandbox with near-workspaces
 
@@ -504,9 +504,8 @@ measurement; [Calibrating](USAGE.md#calibrating) says how to treat such tables.
 
 ### In near-contract-sim
 
-near-contract-sim is a private repository
-([Access to the sim](CONFORMANCE.md#access-to-the-sim)). It runs your compiled wasm on
-nearcore's runtime at the pinned revision, and adds what the sandbox lacks: fault injection,
+near-contract-sim ([Fetching the sim](CONFORMANCE.md#fetching-the-sim)) runs your compiled
+wasm on nearcore's runtime at the pinned revision, and adds what the sandbox lacks: fault injection,
 and holding receipts, so orderings can be forced. The sim's own docs describe its API; the
 steps below use its names. Start from the list you made in [Step 1](#step-1-read-the-trace).
 

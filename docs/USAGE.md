@@ -1528,8 +1528,8 @@ There are two ways to measure:
   read each receipt's `gas_burnt`; [Measure your own burns](VALIDATING.md#measure-your-own-burns)
   shows how. You fit the `GasBurn` entries by hand, and should measure with realistic state,
   since burns grow with storage reads and writes.
-- **With the `calibrate` tool (needs the sim).** It runs your wasm in near-contract-sim, a
-  private repository ([Access to the sim](CONFORMANCE.md#access-to-the-sim)), over a grid of
+- **With the `calibrate` tool (needs the sim).** It runs your wasm in near-contract-sim
+  ([Fetching the sim](CONFORMANCE.md#fetching-the-sim)), over a grid of
   prepaid gas, checks the leftover split, and writes the TLA+ table with its provenance. The
   rest of this section describes it.
 

@@ -84,12 +84,12 @@ local sandbox.
 
 - **Every rule cites nearcore** at a pinned revision (2.14.0, commit `bc4e9e8`): the
   `path:line` it comes from, the operator that encodes it, and how far it has been checked.
-- **Gas and fees are checked against nearcore.** A private simulator, near-contract-sim, runs
+- **Gas and fees are checked against nearcore.** A simulator, near-contract-sim, runs
   nearcore's own `Runtime::apply` on small test contracts written to exercise the rules, across
   a grid of prepaid gas. Every receipt's status matched the model, every attached gas was
   within 5 Ggas, and every one of 108,986 gas splits between child calls matched exactly
   ([CONFORMANCE.md](docs/CONFORMANCE.md) has the counts). Users replay their own
-  counterexamples with the public near-workspaces sandbox instead
+  counterexamples in the same sim or in the near-workspaces sandbox
   ([VALIDATING.md](docs/VALIDATING.md)).
 - **Receipt order is not part of that comparison.** The ordering rules rest on targeted
   simulator tests (local receipts first, no order between a pair of accounts) and on reading
