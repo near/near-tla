@@ -212,12 +212,12 @@ fn create_batch_atomic() {
         "duplicate AddKey: {}; account exists {}; deposit refunds {:?}",
         err(&o),
         exists(&sim, "d.alice.near"),
-        refund.iter().map(|r| (r.executor_id.as_str(), r.deposit)).collect::<Vec<_>>()
+        refund.iter().map(|r| (r.receiver_id.as_str(), r.deposit)).collect::<Vec<_>>()
     );
     assert!(err(&o).contains("AddKeyAlreadyExists"), "{o}");
     assert!(!exists(&sim, "d.alice.near"));
     assert_eq!(refund.len(), 1);
-    assert_eq!((refund[0].executor_id.as_str(), refund[0].deposit), (ALICE, near(1)));
+    assert_eq!((refund[0].receiver_id.as_str(), refund[0].deposit), (ALICE, near(1)));
     let fail_cost = yocto(before) - yocto(sim.balance(ALICE));
     assert_eq!(fail_cost, yocto(o.effects().gas_paid()), "alice lost only gas");
     let fail_gas: u64 = o.transaction.as_ref().unwrap().gas_burnt.as_gas()
@@ -268,7 +268,7 @@ fn create_batch_atomic() {
         .transfer(near(1))
         .add_key(sk("early").public_key(), AccessKey::full_access())
         .transact();
-    let rcpt = o.receipts.iter().find(|r| r.executor_id.as_str() == "d.alice.near" && r.refund.is_none()).unwrap();
+    let rcpt = o.receipts.iter().find(|r| r.receiver_id.as_str() == "d.alice.near" && r.refund.is_none()).unwrap();
     let base_exec = rc.fees.fee(ActionCosts::new_action_receipt).exec_fee().gas.as_gas();
     println!(
         "[CreateAccount, Transfer, AddKey] on an existing account: {}; receipt burnt {:.3} Ggas = receipt base {:.3} + create_account {:.3}: {}",
@@ -293,18 +293,18 @@ fn create_batch_atomic() {
     assert!(exists(&sim, "s.p-probe.near"));
     let p0 = sim.balance(P);
     let o = spawn(&mut sim);
-    let child = o.receipts.iter().find(|r| r.executor_id.as_str() == "s.p-probe.near").unwrap();
+    let child = o.receipts.iter().find(|r| r.receiver_id.as_str() == "s.p-probe.near").unwrap();
     let refund: Vec<_> = o.receipts.iter().filter(|r| r.refund == Some(Refund::Deposit)).collect();
     println!(
         "p.spawn of an existing child: {}; deposit refunds {:?}; p's balance {} -> {}",
         rerr(child),
-        refund.iter().map(|r| (r.executor_id.as_str(), r.deposit)).collect::<Vec<_>>(),
+        refund.iter().map(|r| (r.receiver_id.as_str(), r.deposit)).collect::<Vec<_>>(),
         p0.as_yoctonear(),
         sim.balance(P).as_yoctonear()
     );
     assert!(rerr(child).contains("AccountAlreadyExists"));
     assert_eq!(refund.len(), 1);
-    assert_eq!((refund[0].executor_id.as_str(), refund[0].deposit), (P, near(1)));
+    assert_eq!((refund[0].receiver_id.as_str(), refund[0].deposit), (P, near(1)));
     assert_eq!(sim.balance(P), p0, "p got its deposit back");
 
     // L8: [CreateAccount, AddKey x 9] with no Transfer is 100 + 9 x 82 = 838
@@ -356,13 +356,13 @@ fn delete_beneficiary() {
             "{what}: {id} -> {b}: {id} exists {}; payouts {:?}; {b} exists {}",
             exists(&sim, id),
             ps.iter()
-                .map(|r| (r.executor_id.as_str(), r.predecessor_id.as_str(), r.deposit.as_yoctonear(), rerr(r)))
+                .map(|r| (r.receiver_id.as_str(), r.predecessor_id.as_str(), r.deposit.as_yoctonear(), rerr(r)))
                 .collect::<Vec<_>>(),
             exists(&sim, b)
         );
         assert!(!exists(&sim, id));
         assert_eq!(ps.len(), 1);
-        assert_eq!((ps[0].executor_id.as_str(), ps[0].predecessor_id.as_str(), ps[0].deposit), (b, "system", near(5)));
+        assert_eq!((ps[0].receiver_id.as_str(), ps[0].predecessor_id.as_str(), ps[0].deposit), (b, "system", near(5)));
         if b == BOB {
             assert!(ps[0].is_success());
             assert_eq!(yocto(sim.balance(BOB)) - yocto(bob0), yocto(near(5)));
@@ -374,10 +374,10 @@ fn delete_beneficiary() {
                 o.receipts.iter().skip_while(|r| r.refund != Some(Refund::AccountDeletion)).skip(1).collect();
             println!(
                 "  after it: {:?}",
-                later.iter().map(|r| (r.executor_id.as_str(), r.refund, r.deposit.as_yoctonear())).collect::<Vec<_>>()
+                later.iter().map(|r| (r.receiver_id.as_str(), r.refund, r.deposit.as_yoctonear())).collect::<Vec<_>>()
             );
             assert!(
-                later.iter().all(|r| r.refund == Some(Refund::Gas) && r.executor_id.as_str() == RELAYER),
+                later.iter().all(|r| r.refund == Some(Refund::Gas) && r.receiver_id.as_str() == RELAYER),
                 "only the relayer's gas refund"
             );
         }
@@ -401,7 +401,7 @@ fn delete_beneficiary() {
         .receipts
         .iter()
         .filter(|r| r.refund == Some(Refund::Gas))
-        .map(|r| (r.executor_id.as_str(), r.deposit.as_yoctonear(), rerr(r)))
+        .map(|r| (r.receiver_id.as_str(), r.deposit.as_yoctonear(), rerr(r)))
         .collect();
     println!(
         "self-signed: payout {} yocto (5 NEAR less the prepaid gas {}); gas refunds {gas:?}",
@@ -523,7 +523,7 @@ fn receipts_to_deleted() {
         .receipts
         .iter()
         .filter(|r| r.refund == Some(Refund::Deposit))
-        .map(|r| (r.executor_id.as_str(), r.deposit))
+        .map(|r| (r.receiver_id.as_str(), r.deposit))
         .collect();
     println!("call with 1 NEAR to deleted {gone}: {}; deposit refunds {refunds:?}", err(&o));
     assert!(matches!(o.failure(), Some(Failure::AccountDoesNotExist(_))), "{o}");
@@ -535,7 +535,7 @@ fn receipts_to_deleted() {
         .receipts
         .iter()
         .filter(|r| r.refund == Some(Refund::Deposit))
-        .map(|r| (r.executor_id.as_str(), r.deposit))
+        .map(|r| (r.receiver_id.as_str(), r.deposit))
         .collect();
     println!(
         "transfer of 1 NEAR to deleted {gone}: {}; deposit refunds {refunds:?}; exists {}",
@@ -594,7 +594,7 @@ fn receipts_to_deleted() {
         hdel,
         od.transaction.as_ref().map(|t| t.block_height).unwrap_or(0),
         failed.block_height,
-        refund.executor_id,
+        refund.receiver_id,
         refund.block_height,
         rerr(refund),
         oc.receipts
@@ -604,7 +604,7 @@ fn receipts_to_deleted() {
             .filter(|x| !x.deposit.is_zero() && x.refund != Some(Refund::Gas))
             .count()
     );
-    assert_eq!(refund.executor_id.as_str(), r);
+    assert_eq!(refund.receiver_id.as_str(), r);
     assert!(rerr(refund).contains("AccountDoesNotExist"));
     assert!(!exists(&sim, r));
 }
@@ -699,7 +699,7 @@ fn promise_call_then_delete() {
         .deposit(Balance::from_yoctonear(1))
         .action(del(ALICE))
         .transact();
-    let kids: Vec<_> = o.receipts.iter().filter(|r| r.executor_id.as_str() == x && r.method_names.is_empty() && r.refund.is_none()).collect();
+    let kids: Vec<_> = o.receipts.iter().filter(|r| r.receiver_id.as_str() == x && r.method_names.is_empty() && r.refund.is_none()).collect();
     println!(
         "[near_withdraw (returns a promise), DeleteAccount]: {}, value {:?}, account exists {}; the Transfer child: {:?}",
         err(&o),
@@ -748,7 +748,7 @@ fn chain_tx<'a>(sim: &'a mut Sim, x: &str) -> Tx<'a> {
 
 /// The callback `x.mark` of transaction `tx`, if it ran.
 fn cb_of(sim: &Sim, tx: CryptoHash, x: &str) -> Option<ReceiptOutcome> {
-    sim.outcome(tx).receipts.into_iter().find(|r| r.executor_id.as_str() == x && r.method_names == ["mark"])
+    sim.outcome(tx).receipts.into_iter().find(|r| r.receiver_id.as_str() == x && r.method_names == ["mark"])
 }
 
 /// x deletes itself (local: runs in the block that converts it).
@@ -786,7 +786,7 @@ fn delete_leaves_postponed_callback() {
     let x = "x.alice.near";
     create(&mut sim, ALICE, x, near(10), "x1", Some(&wasm)).assert_success();
     let tx = chain_tx(&mut sim, x).inject(Receipts::call(Q, "mark"), Fault::HoldResult(12)).submit();
-    sim.run_until(10, |s| s.outcome(tx).receipts.iter().any(|r| r.executor_id.as_str() == Q)).unwrap();
+    sim.run_until(10, |s| s.outcome(tx).receipts.iter().any(|r| r.receiver_id.as_str() == Q)).unwrap();
     sim.step();
     assert!(cb_of(&sim, tx, x).is_none(), "the callback waits for q's result");
     delete_now(&mut sim, x);
@@ -824,7 +824,7 @@ fn delete_leaves_received_data() {
     let x = "x.alice.near";
     create(&mut sim, ALICE, x, near(10), "x1", Some(&wasm)).assert_success();
     let tx = chain_tx(&mut sim, x).inject(Receipts::callback("mark"), Fault::Hold(12)).submit();
-    sim.run_until(10, |s| s.outcome(tx).receipts.iter().any(|r| r.executor_id.as_str() == Q)).unwrap();
+    sim.run_until(10, |s| s.outcome(tx).receipts.iter().any(|r| r.receiver_id.as_str() == Q)).unwrap();
     sim.step();
     sim.step();
     assert!(cb_of(&sim, tx, x).is_none(), "the callback is held");
@@ -965,7 +965,7 @@ fn deploy_storage_delta() {
 
 /// The position of each receipt in the order receipts ran.
 fn pos(order: &[ReceiptOutcome], id: CryptoHash) -> usize {
-    order.iter().position(|r| r.id == id).unwrap()
+    order.iter().position(|r| r.receipt_id == id).unwrap()
 }
 
 /// D6: a receipt holding one DeleteAccount and no inputs is instant: it
@@ -1001,21 +1001,21 @@ fn instant_delete_via_delegate() {
         let inner = o
             .receipts
             .iter()
-            .find(|r| r.refund.is_none() && r.id != outer.id && r.actions.iter().any(|a| a.contains(kind)))
+            .find(|r| r.refund.is_none() && r.receipt_id != outer.receipt_id && r.actions.iter().any(|a| a.contains(kind)))
             .unwrap();
         let mark_of =
-            |t: CryptoHash| sim.outcome(t).receipt("mark").map(|r| (r.block_height, pos(&order, r.id))).unwrap();
+            |t: CryptoHash| sim.outcome(t).receipt("mark").map(|r| (r.block_height, pos(&order, r.receipt_id))).unwrap();
         println!(
             "{what}: Delegate on {sender} at #{} pos {}; inner at #{} pos {}; other marks (#, pos): first {:?}, after {:?}{}",
             outer.block_height,
-            pos(&order, outer.id),
+            pos(&order, outer.receipt_id),
             inner.block_height,
-            pos(&order, inner.id),
+            pos(&order, inner.receipt_id),
             mark_of(first),
             after.iter().map(|t| mark_of(*t)).collect::<Vec<_>>(),
             if delete {
                 let p = &payouts(&o)[0];
-                format!("; payout to {} at #{}", p.executor_id, p.block_height)
+                format!("; payout to {} at #{}", p.receiver_id, p.block_height)
             } else {
                 String::new()
             }
@@ -1024,11 +1024,11 @@ fn instant_delete_via_delegate() {
             assert!(inner.is_success());
             assert!(!exists(&sim, sender));
             assert_eq!(inner.block_height, outer.block_height, "same block");
-            assert_eq!(pos(&order, inner.id), pos(&order, outer.id) + 1, "right after its creator");
+            assert_eq!(pos(&order, inner.receipt_id), pos(&order, outer.receipt_id) + 1, "right after its creator");
             for t in &after {
                 let (hb, p) = mark_of(*t);
                 assert_eq!(hb, outer.block_height, "the later marks share the block");
-                assert!(p > pos(&order, inner.id), "and run after the delete");
+                assert!(p > pos(&order, inner.receipt_id), "and run after the delete");
             }
             assert!(payouts(&o)[0].block_height > outer.block_height, "the payout is not instant");
         } else {
@@ -1053,19 +1053,19 @@ fn instant_delete_via_delegate() {
     let inner = o
         .receipts
         .iter()
-        .find(|r| r.refund.is_none() && r.actions.iter().any(|a| a.contains("DeleteAccount")) && r.id != outer.id)
+        .find(|r| r.refund.is_none() && r.actions.iter().any(|a| a.contains("DeleteAccount")) && r.receipt_id != outer.receipt_id)
         .unwrap();
     println!(
         "local: converted at #{conv}; Delegate at #{} pos {}; inner DeleteAccount at #{} pos {}: {}",
         outer.block_height,
-        pos(&order, outer.id),
+        pos(&order, outer.receipt_id),
         inner.block_height,
-        pos(&order, inner.id),
+        pos(&order, inner.receipt_id),
         rerr(inner)
     );
     o.assert_success();
     assert_eq!((outer.block_height, inner.block_height), (conv, conv));
-    assert_eq!(pos(&order, inner.id), pos(&order, outer.id) + 1);
+    assert_eq!(pos(&order, inner.receipt_id), pos(&order, outer.receipt_id) + 1);
     assert!(!exists(&sim, s));
 }
 
@@ -1119,7 +1119,7 @@ fn account_action_fees() {
     let o = create(&mut sim, ALICE, c, near(1), "f", None);
     o.assert_success();
     let send = o.transaction.as_ref().unwrap().gas_burnt.as_gas();
-    let exec = o.receipts.iter().find(|r| r.executor_id.as_str() == c).unwrap().gas_burnt.as_gas();
+    let exec = o.receipts.iter().find(|r| r.receiver_id.as_str() == c).unwrap().gas_burnt.as_gas();
     let (ts, te) = transfer_fees(&sim, false, c);
     let parts = [
         f(ActionCosts::new_action_receipt, false),
@@ -1143,7 +1143,7 @@ fn account_action_fees() {
     o.assert_success();
     let send = o.transaction.as_ref().unwrap().gas_burnt.as_gas();
     let exec =
-        o.receipts.iter().find(|r| r.executor_id.as_str() == c && r.refund.is_none()).unwrap().gas_burnt.as_gas();
+        o.receipts.iter().find(|r| r.receiver_id.as_str() == c && r.refund.is_none()).unwrap().gas_burnt.as_gas();
     let parts = [f(ActionCosts::new_action_receipt, true), f(ActionCosts::delete_account, true)];
     let rounded: u64 = parts.iter().map(|(s, e)| up(*s) + up(*e)).sum();
     println!(
@@ -1161,7 +1161,7 @@ fn account_action_fees() {
     let o = create(&mut sim, ALICE, g, near(10), "g", Some(&wasm));
     o.assert_success();
     let send = o.transaction.as_ref().unwrap().gas_burnt.as_gas();
-    let exec = o.receipts.iter().find(|r| r.executor_id.as_str() == g).unwrap().gas_burnt.as_gas();
+    let exec = o.receipts.iter().find(|r| r.receiver_id.as_str() == g).unwrap().gas_burnt.as_gas();
     let (ts, te) = transfer_fees(&sim, false, g);
     let (ds, de) = f(ActionCosts::deploy_contract_base, false);
     let want_s = ws - transfer_fees(&sim, false, c).0 + ts + ds + bn * n;
@@ -1176,7 +1176,7 @@ fn account_action_fees() {
     o.assert_success();
     let send = o.transaction.as_ref().unwrap().gas_burnt.as_gas();
     let exec =
-        o.receipts.iter().find(|r| r.executor_id.as_str() == g && r.refund.is_none()).unwrap().gas_burnt.as_gas();
+        o.receipts.iter().find(|r| r.receiver_id.as_str() == g && r.refund.is_none()).unwrap().gas_burnt.as_gas();
     let (rs, re) = f(ActionCosts::new_action_receipt, true);
     let (ds, de) = f(ActionCosts::deploy_contract_base, true);
     println!("[Deploy({n} bytes)] to itself: send {:.3} exec {:.3} Ggas", ggas(send), ggas(exec));

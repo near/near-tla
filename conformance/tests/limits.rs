@@ -127,7 +127,7 @@ fn actions_per_receipt() {
         let calls: Vec<_> = (0..n).map(|_| json!({ "method": "burn", "args": "{\"ggas\":0}", "static_ggas": 0, "weight": 1 })).collect();
         let o = sim.call(ALICE, P, "batch").args_json(json!({ "receiver": Q, "calls": calls })).transact();
         let first = o.first_call().unwrap();
-        let kids: Vec<_> = o.receipts.iter().filter(|r| r.executor_id.as_str() == Q).map(|r| r.actions.len()).collect();
+        let kids: Vec<_> = o.receipts.iter().filter(|r| r.receiver_id.as_str() == Q).map(|r| r.actions.len()).collect();
         println!("p creates one receipt of {n} calls: p {}; receipts on q with {kids:?} actions", rerr(first));
         if n == lim {
             assert!(first.is_success(), "{o}");
@@ -161,7 +161,7 @@ fn promises_per_function_call_action() {
         let mut sim = base.clone();
         let o = sim.tx(ALICE, W).call("many").args(vec![b'x'; n as usize]).transact();
         let first = o.first_call().unwrap();
-        let kids = o.receipts.iter().filter(|r| r.executor_id.as_str() == BOB && r.actions.is_empty()).count();
+        let kids = o.receipts.iter().filter(|r| r.receiver_id.as_str() == BOB && r.actions.is_empty()).count();
         println!("w makes {n} promises: {}, {} gas burnt; {kids} empty receipts ran on bob", rerr(first), first.gas_burnt);
         if n == lim {
             assert!(first.is_success(), "{o}");
@@ -176,7 +176,7 @@ fn promises_per_function_call_action() {
         let o = sim.tx(ALICE, W).call("many").args(vec![b'x'; a as usize]).call("many").args(vec![b'x'; b as usize]).transact();
         let first = o.first_call().unwrap();
         assert_eq!(first.actions.len(), 2, "one receipt of two function calls");
-        let kids = o.receipts.iter().filter(|r| r.executor_id.as_str() == BOB && r.actions.is_empty()).count();
+        let kids = o.receipts.iter().filter(|r| r.receiver_id.as_str() == BOB && r.actions.is_empty()).count();
         println!("w makes {a} then {b} promises in one receipt: {}; {kids} empty receipts ran on bob", rerr(first));
         if b <= lim {
             assert!(first.is_success(), "{o}");

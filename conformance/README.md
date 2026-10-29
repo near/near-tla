@@ -27,7 +27,7 @@ is a git dependency.
 
 | | |
 |---|---|
-| near-contract-sim | `4be28150bce8a564836eafdaf4caa49e43b1dca5` (git dependency, `Cargo.toml`) |
+| near-contract-sim | `v0.1.0`, rev `96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2` (git dependency by tag, `Cargo.toml`; the rev from `Cargo.lock`) |
 | nearcore | `2.14.0`, rev `bc4e9e8cfb03d9e82f027883055624e18576993e` (from the sim's lock file, copied to `Cargo.lock`) |
 | protocol version | 88 (read from the sim at run time; matches `NearFees.tla`'s `FeeProtocol`) |
 | Rust | 1.95.0 (`rust-toolchain.toml`) |
@@ -525,7 +525,7 @@ whichever transaction resumed it.
 **Sim capabilities used** (near-contract-sim at the pinned rev, `src/sim.rs`):
 
 - `Tx::transact()` returns with a yield still parked (it does not advance to the timeout);
-  `Sim::yields()` lists the parked ones (`PendingYield { account_id, data_id, expires_at,
+  `Sim::yields()` lists the parked ones (`PendingYield { receiver_id, data_id, expires_at,
   callback_methods, callback_args, receipt_id, tx }`), leaving out resumed ones.
 - A resume is a contract call (`promise_yield_resume`) in a later transaction: no sim API is
   needed. `Tx::submit()` with `Sim::step()` / `Sim::settle()` runs several in one block
@@ -543,7 +543,7 @@ whichever transaction resumed it.
 - the deadline's length (200 blocks): the model runs on a one-tick clock;
 - the race at the deadline (a resume that runs before the timeout's resume receipt wins): one
   outcome per point leaves no room for it; near-contract-sim's own tests cover it
-  (`tests/yields.rs:70-92` at its rev 4be2815);
+  (`tests/yields.rs:70-92` at its v0.1.0, `96bc8fb`);
 - what a callback reads (the payload or `Failed`, each joint result): the comparison sees
   statuses and gas, not results; only `on_order` (and `probe2`'s `on_expect`, in the set
   `probes2`) turns a result into a status;

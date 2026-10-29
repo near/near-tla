@@ -256,7 +256,7 @@ fn yield_payload_limit_is_1024_bytes() {
         assert_eq!(sim.yields().len(), 1, "the yield stays parked");
         assert_eq!(on_yield_logs(&sim, tx), None);
         let y = sim.yields().pop().unwrap();
-        sim.expire(&y);
+        let _ = sim.expire(&y);
         assert_eq!(on_yield_logs(&sim, tx), Some(vec!["timeout".to_owned()]));
     }
 }
@@ -288,7 +288,7 @@ fn resume_after_timeout_returns_false() {
     let mut sim = yield_world();
     let tx = park(&mut sim);
     let y = sim.yields().pop().unwrap();
-    sim.expire(&y);
+    let _ = sim.expire(&y);
     let r = resume(&mut sim, ALICE, 10).transact();
     println!("late resume: {}; callback logs {:?}", r.json::<bool>(), on_yield_logs(&sim, tx));
     r.assert_success();
@@ -321,7 +321,7 @@ fn resume_by_another_account_returns_false() {
 /// calls fill the grant of the route the (single) shard has to itself, so
 /// some wait a block in the buffer; a small call p-probe makes after them,
 /// in the same block, goes out at once and runs first. The same as the
-/// sim's own tests/order.rs:402-435, on the probe contracts; nothing is
+/// sim's own tests/order.rs:414-447, on the probe contracts; nothing is
 /// injected, this is nearcore's congestion control.
 #[test]
 fn later_receipt_overtakes_buffered() {
@@ -342,16 +342,16 @@ fn later_receipt_overtakes_buffered() {
     let small = chain(&mut sim, small_user, kid("mark", r#"{"tag":"small"}"#.to_owned()));
     sim.settle();
     // Execution order of every receipt that ran.
-    let order: Vec<CryptoHash> = sim.receipts_in(..).iter().map(|r| r.id).collect();
+    let order: Vec<CryptoHash> = sim.receipts_in(..).iter().map(|r| r.receipt_id).collect();
     let at = |id: &CryptoHash| order.iter().position(|x| x == id).expect("it ran");
     // (height, position) of tx's p.chain receipt, and of the q receipt it made.
     let link = |sim: &Sim, tx: CryptoHash| {
         let o = sim.outcome(tx);
         o.assert_success();
-        let r = |acct: &str| o.receipts.iter().find(|r| r.executor_id.as_str() == acct && !r.is_refund()).unwrap();
+        let r = |acct: &str| o.receipts.iter().find(|r| r.receiver_id.as_str() == acct && !r.is_refund()).unwrap();
         let (p, q) = (r(P), r(Q));
         assert_eq!(q.predecessor_id.as_str(), P);
-        ((p.block_height, at(&p.id)), (q.block_height, at(&q.id)))
+        ((p.block_height, at(&p.receipt_id)), (q.block_height, at(&q.receipt_id)))
     };
     let (sp, sq) = link(&sim, small);
     println!("small: p.chain at #{} (pos {}), its q receipt at #{} (pos {})", sp.0, sp.1, sq.0, sq.1);
@@ -417,11 +417,11 @@ fn delegate_signer_is_relayer_predecessor_is_sender() {
     let o = sim.call(ALICE, P, "chain").args_json(json!({ "kids": kids, "cb": cb })).relay(RELAYER);
     o.assert_success();
     let d = outer(&o);
-    println!("outer: on {} from {}", d.executor_id, d.predecessor_id);
-    assert_eq!((d.executor_id.as_str(), d.predecessor_id.as_str()), (ALICE, RELAYER));
+    println!("outer: on {} from {}", d.receiver_id, d.predecessor_id);
+    assert_eq!((d.receiver_id.as_str(), d.predecessor_id.as_str()), (ALICE, RELAYER));
     let chain = o.receipt("chain").unwrap();
-    println!("inner: on {} from {}", chain.executor_id, chain.predecessor_id);
-    assert_eq!((chain.executor_id.as_str(), chain.predecessor_id.as_str()), (P, ALICE));
+    println!("inner: on {} from {}", chain.receiver_id, chain.predecessor_id);
+    assert_eq!((chain.receiver_id.as_str(), chain.predecessor_id.as_str()), (P, ALICE));
     let rs = records(&o);
     println!("records: {rs:?}");
     assert_eq!(rs.len(), 2);
@@ -797,11 +797,11 @@ fn local_receipt_delayed_when_chunk_full() {
     let local: Vec<CryptoHash> = (0..6).map(|_| burn(&mut sim, P)).collect();
     sim.step();
     sim.settle();
-    let order: Vec<CryptoHash> = sim.receipts_in(..).iter().map(|r| r.id).collect();
+    let order: Vec<CryptoHash> = sim.receipts_in(..).iter().map(|r| r.receipt_id).collect();
     let run = |tx: &CryptoHash| {
         let r = sim.outcome(tx).expect_receipt("burn").clone();
         assert!(r.failure().is_none(), "{:?}", r.status);
-        (r.block_height, order.iter().position(|x| *x == r.id).unwrap())
+        (r.block_height, order.iter().position(|x| *x == r.receipt_id).unwrap())
     };
     let inc: Vec<(u64, usize)> = incoming.iter().map(run).collect();
     let loc: Vec<(u64, usize)> = local.iter().map(run).collect();
@@ -1008,7 +1008,7 @@ fn returned_yield_forwards_its_result() {
                 }
                 None => {
                     let y = sim.yields().pop().unwrap();
-                    sim.expire(&y);
+                    let _ = sim.expire(&y);
                 }
             }
             let out = sim.outcome(o.hash);
@@ -1042,7 +1042,7 @@ fn yield_callback_signer_is_the_yielding_signer() {
             }
             None => {
                 let y = sim.yields().pop().unwrap();
-                sim.expire(&y);
+                let _ = sim.expire(&y);
             }
         }
         let cb = sim.outcome(o.hash).expect_receipt("on_yield").clone();
@@ -1135,7 +1135,7 @@ fn storage_std_registration_bytes() {
         .account(BOB, Balance::from_near(100))
         .account(W, Balance::from_near(10))
         .contract(W, wasm)
-        .init("new", json!({}))
+        .init("new").args_json(json!({}))
         .build();
     let min: Value = sim.view(W, "storage_balance_bounds", json!({})).json();
     let min: u128 = min["min"].as_str().unwrap().parse().unwrap();

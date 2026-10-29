@@ -328,7 +328,7 @@ impl Resolved {
             let wasm = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
             f = f.account(c.id.as_str(), Balance::from_near(c.near as u128)).contract(c.id.as_str(), wasm);
             if let Some(i) = &c.init {
-                f = f.init(&i.method, i.args.json());
+                f = f.init(&i.method).args_json(i.args.json());
             }
         }
         let mut sim = f.build();
@@ -375,7 +375,7 @@ pub fn run_flow(sim: &mut Sim, flow: &Flow, gas: Gas) -> Vec<TxOutcome> {
                 for y in sim.yields() {
                     // expiring one fires every yield due before it
                     if sim.yields().contains(&y) {
-                        sim.expire(&y);
+                        let _ = sim.expire(&y);
                     }
                 }
             }
