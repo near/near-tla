@@ -40,11 +40,10 @@ cd near-tla
 # Fetch the pinned TLC jar (tla2tools v1.7.4) and check its hash, as CI does.
 curl -sSfL -o tools/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
-# Check the hash with whichever tool your system has (macOS: shasum; Linux: sha256sum).
+# Check its hash. On macOS:
 echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  tools/tla2tools.jar" \
   | shasum -a 256 -c -
-echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  tools/tla2tools.jar" \
-  | sha256sum -c -
+# On Linux, replace the last line with:  | sha256sum -c -
 ```
 
 Run the minimal example. It models a contract whose callback must check its promise result,
