@@ -1,0 +1,16 @@
+name: A runtime rule or tool the library lacks
+description: Something nearcore does that no module models, or a tool or doc you need.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you need
+      description: The nearcore behaviour (with a link to the code or a NEP if you have one), or the tool or doc.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The contract pattern it matters for, as a toy example if you can.

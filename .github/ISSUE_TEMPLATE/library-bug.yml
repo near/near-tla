@@ -1,0 +1,44 @@
+name: The library is wrong
+description: A module, the runner or a doc disagrees with nearcore, or with itself.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when a counterexample does not reproduce and the cause is the library, not your
+        model ([When it does not reproduce](https://github.com/near/near-tla/blob/main/docs/VALIDATING.md#when-it-does-not-reproduce)),
+        or when a tool or doc misbehaves. Use a toy contract: do not post models or traces of
+        contracts you do not own.
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong
+      description: The rule, operator, tool or doc, and what it gets wrong. Name the SEMANTICS entry if there is one (for example G3 or S4).
+    validations:
+      required: true
+  - type: textarea
+    id: model
+    attributes:
+      label: Model and run
+      description: The smallest model that shows it, the run name, and the command.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace or output
+      description: The `--print-trace` output or the tool's output, trimmed to what matters.
+      render: text
+  - type: textarea
+    id: replay
+    attributes:
+      label: Replay
+      description: What the compiled contract did instead, in near-contract-sim or a near-workspaces sandbox, with the test or its key lines.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The near-tla commit (`git rev-parse --short HEAD`), and the near-contract-sim tag or the sandbox's nearcore version, if you replayed.
+    validations:
+      required: true
