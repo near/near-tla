@@ -120,13 +120,16 @@ truncated or duplicated sweep fails.
 ## Results
 
 Results at the pins in [conformance/README.md](../conformance/README.md#pins), recorded on
-2026-10-27 through near-contract-sim `4be2815` on nearcore 2.14.0 (`bc4e9e8`), the revision the
-library cites. The model side of all three sets was run on the library at commit `b7dc6fe`; the
-commit that records these results changes only comments in the library. All three sweeps were taken on 2026-10-27, and the calibrated tables regenerate from them with only
-their header's pin lines changed. Every sweep's JSONL, for all 121 flows, is byte-identical to
-the one taken through the previous pin (sim `29e9090` on nearcore 2.14.0-rc.5); only the
-provenance in its `.meta.json` differs. Every sweep's flows file and probe wasm hashes match the
-committed ones.
+2026-10-28 through near-contract-sim v0.1.0 (`96bc8fb`) on nearcore 2.14.0 (`bc4e9e8`), the
+revision the library cites. The model side of all three sets was run once, on the library at
+commit `eb18d77`; the commits that record these results change only comments in the library.
+The sweeps were taken on 2026-10-28 through `c40ce15`, the sim's first public commit, and again
+through v0.1.0, whose `src`, `Cargo.toml` and `Cargo.lock` are byte-identical to `c40ce15`'s:
+the two sets of sweeps are byte-identical, `conform.py` gives the results below on both, and
+the calibrated tables regenerate from the v0.1.0 sweeps with only their header's `sim rev`
+line changed. Every sweep's JSONL, for all 121 flows, is also byte-identical to the one taken
+through the previous pin (sim `4be2815`, on the same nearcore); only the sim rev in its
+`.meta.json` differs. Every sweep's flows file and probe wasm hashes match the committed ones.
 
 The flow set `probes`:
 

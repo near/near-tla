@@ -925,7 +925,7 @@ pub fn collect_stor(res: &Resolved, flow: &Flow, gas: u64, os: &[near_contract_s
     let mut sum: BTreeMap<String, i64> = BTreeMap::new();
     for r in &all {
         st.checked += 1;
-        let rx = r.executor_id.as_str();
+        let rx = r.receiver_id.as_str();
         for c in &r.storage {
             *sum.entry(c.account.to_string()).or_default() += c.bytes;
             if c.account.as_str() != rx {
@@ -939,7 +939,7 @@ pub fn collect_stor(res: &Resolved, flow: &Flow, gas: u64, os: &[near_contract_s
     let mut ids: BTreeSet<String> = sum.keys().cloned().collect();
     ids.extend(res.spec.accounts.iter().map(|a| a.id.clone()));
     ids.extend(res.spec.contracts.iter().map(|c| c.id.clone()));
-    ids.extend(all.iter().map(|r| r.executor_id.to_string()));
+    ids.extend(all.iter().map(|r| r.receiver_id.to_string()));
     let (u0, u1) = (usages(before, &ids), usages(after, &ids));
     for a in &ids {
         let (seen, want) = (sum.get(a).copied().unwrap_or(0), u1[a] - u0[a]);
@@ -948,7 +948,7 @@ pub fn collect_stor(res: &Resolved, flow: &Flow, gas: u64, os: &[near_contract_s
         }
     }
     // Only now: what is fitted (successful call receipts, refunds aside).
-    let by_id: HashMap<String, &ReceiptOutcome> = all.iter().map(|r| (r.id.to_string(), *r)).collect();
+    let by_id: HashMap<String, &ReceiptOutcome> = all.iter().map(|r| (r.receipt_id.to_string(), *r)).collect();
     let v = crate::dump_all(os);
     let rs: Vec<&Value> = v["receipts"].as_array().unwrap().iter().filter(|r| !r["conversion"].as_bool().unwrap()).collect();
     for p in &rs {
@@ -956,7 +956,7 @@ pub fn collect_stor(res: &Resolved, flow: &Flow, gas: u64, os: &[near_contract_s
             continue;
         }
         let r = by_id[s(&p["id"])];
-        let rx = r.executor_id.as_str();
+        let rx = r.receiver_id.as_str();
         let bytes: i64 = r.storage.iter().filter(|c| c.account.as_str() == rx).map(|c| c.bytes).sum();
         if methods(p).is_empty() {
             st.action_only.entry(format!("{rx}[{}]", actions(p).join(","))).or_default().insert(bytes);

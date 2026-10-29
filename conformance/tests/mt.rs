@@ -36,7 +36,7 @@ fn world() -> Sim {
         .account(ALICE, near(100))
         .account(BOB, near(100))
         .contract(MT, mt)
-        .init("new", json!({ "owner_id": ALICE, "token_ids": ["t1", "t2", "t3"], "supply": SUPPLY.to_string() }))
+        .init("new").args_json(json!({ "owner_id": ALICE, "token_ids": ["t1", "t2", "t3"], "supply": SUPPLY.to_string() }))
         .contract(RX, rx)
         .build()
 }
@@ -209,7 +209,7 @@ fn mt_transfer_call_receipts() {
         let o = batch_call(&mut sim, ALICE, &ids, &amounts, "keep", 1).transact();
         o.assert_success();
         let calls: Vec<_> = o.receipts.iter().filter(|r| !r.is_refund()).collect();
-        let order: Vec<String> = calls.iter().map(|r| format!("{}::{}", r.executor_id, r.method_names.join("+"))).collect();
+        let order: Vec<String> = calls.iter().map(|r| format!("{}::{}", r.receiver_id, r.method_names.join("+"))).collect();
         assert_eq!(order, [format!("{MT}::mt_batch_transfer_call"), format!("{RX}::mt_on_transfer"), format!("{MT}::mt_resolve_transfer")]);
         let on = calls[1].attached_gas.as_gas() as i128;
         let res = calls[2].attached_gas.as_gas() as i128;
@@ -231,7 +231,7 @@ fn mt_transfer_call_receipts() {
         .args_json(json!({ "receiver_id": RX, "token_id": "t2", "amount": "7", "msg": "return" }))
         .deposit(Balance::from_yoctonear(1))
         .transact();
-    let order: Vec<String> = o.receipts.iter().filter(|r| !r.is_refund()).map(|r| format!("{}::{}", r.executor_id, r.method_names.join("+"))).collect();
+    let order: Vec<String> = o.receipts.iter().filter(|r| !r.is_refund()).map(|r| format!("{}::{}", r.receiver_id, r.method_names.join("+"))).collect();
     println!("mt_transfer_call t2:7, receiver returns all: {order:?}; returns {:?}", o.json::<Vec<String>>());
     assert_eq!(order, [format!("{MT}::mt_transfer_call"), format!("{RX}::mt_on_transfer"), format!("{MT}::mt_resolve_transfer")]);
     assert_eq!(o.json::<Vec<String>>(), ["0"]);
@@ -388,7 +388,7 @@ fn world_ids(ids: &[String]) -> Sim {
     let (mt, _) = probe_wasm("mt");
     let (rx, _) = probe_wasm("mtrecv");
     let per = (16000 / (ids[0].len() + 180)).min(100);
-    let init = |sim: Fixture, chunk: &[String]| sim.contract(MT, mt.clone()).init("new", json!({ "owner_id": ALICE, "token_ids": chunk, "supply": SUPPLY.to_string() }));
+    let init = |sim: Fixture, chunk: &[String]| sim.contract(MT, mt.clone()).init("new").args_json(json!({ "owner_id": ALICE, "token_ids": chunk, "supply": SUPPLY.to_string() }));
     let mut chunks = ids.chunks(per);
     let mut sim = init(Fixture::new().account(ALICE, near(100)).account(BOB, near(100)), chunks.next().unwrap())
         .contract(RX, rx)

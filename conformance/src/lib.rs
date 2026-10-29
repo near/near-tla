@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// near-contract-sim's rev, as pinned in `Cargo.toml` (checked against
-/// `Cargo.lock` by `provenance`).
-pub const SIM_REV: &str = "4be28150bce8a564836eafdaf4caa49e43b1dca5";
+/// near-contract-sim's rev: the commit of the tag pinned in `Cargo.toml`,
+/// `v0.1.0` (checked against `Cargo.lock` by `provenance`).
+pub const SIM_REV: &str = "96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2";
 
 /// 1 Ggas, the model's gas unit.
 pub const GGAS: u64 = 1_000_000_000;
@@ -132,7 +132,7 @@ pub fn dump_all(os: &[TxOutcome]) -> Value {
     for o in os {
         for r in o.transaction.iter().chain(&o.receipts) {
             for c in &r.receipt_ids {
-                parent.insert(c.to_string(), r.id.to_string());
+                parent.insert(c.to_string(), r.receipt_id.to_string());
             }
         }
     }
@@ -141,13 +141,13 @@ pub fn dump_all(os: &[TxOutcome]) -> Value {
         .enumerate()
         .flat_map(|(t, o)| o.transaction.iter().map(move |r| (t, r, true)).chain(o.receipts.iter().map(move |r| (t, r, false))))
         .map(|(t, r, conv)| {
-            let id = r.id.to_string();
+            let id = r.receipt_id.to_string();
             json!({
                 "tx": t,
                 "id": id,
                 "parent": parent.get(&id),
                 "conversion": conv,
-                "receiver": r.executor_id.as_str(),
+                "receiver": r.receiver_id.as_str(),
                 "predecessor": r.predecessor_id.as_str(),
                 "methods": r.method_names,
                 "actions": r.actions,

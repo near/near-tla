@@ -54,7 +54,7 @@ fn world() -> Sim {
         .contract(Y, async_probe)
         .contract(Z, probe2)
         .contract(FT, ft)
-        .init("new", json!({ "owner_id": P, "total_supply": "1000000" }))
+        .init("new").args_json(json!({ "owner_id": P, "total_supply": "1000000" }))
         .ft_register(FT, [Q])
         .build()
 }
@@ -237,7 +237,7 @@ fn failed_receipt_reverts_and_drops_children() {
         .gas(Gas::from_teragas(20))
         .transact();
     let first = o.first_call().unwrap();
-    let on_q = o.receipts.iter().filter(|r| r.executor_id.as_str() == Q).count();
+    let on_q = o.receipts.iter().filter(|r| r.receiver_id.as_str() == Q).count();
     println!(
         "[put, chain(q.mark), record, fail]: {}; receipts on q: {on_q}; a = {:?}, b = {:?}; logs kept: {:?}; gas burnt {}",
         rerr(first),
@@ -268,7 +268,7 @@ fn deposit_refunds(o: &TxOutcome) -> Vec<(String, String, Balance)> {
     o.receipts
         .iter()
         .filter(|r| r.refund == Some(Refund::Deposit))
-        .map(|r| (r.executor_id.to_string(), r.predecessor_id.to_string(), r.deposit))
+        .map(|r| (r.receiver_id.to_string(), r.predecessor_id.to_string(), r.deposit))
         .collect()
 }
 
@@ -294,7 +294,7 @@ fn deposit_and_gas_refunds() {
         .transact();
     let first = o.first_call().unwrap();
     let refunds = deposit_refunds(&o);
-    let gas_refunds: Vec<_> = o.receipts.iter().filter(|r| r.refund == Some(Refund::Gas)).map(|r| (r.executor_id.to_string(), r.deposit)).collect();
+    let gas_refunds: Vec<_> = o.receipts.iter().filter(|r| r.refund == Some(Refund::Gas)).map(|r| (r.receiver_id.to_string(), r.deposit)).collect();
     let lost = yocto(a0) - yocto(sim.balance(ALICE));
     println!(
         "[Transfer(1 N), burn] out of gas: {}; deposit refunds {refunds:?}; gas refunds {gas_refunds:?}; alice lost {lost} yocto, tokens burnt {}",
@@ -552,7 +552,7 @@ fn joint_promise_restrictions() {
     }
     let mut sim = base.clone();
     let o = sim.call(ALICE, Z, "join").args_json(json!({ "kids": kids })).transact();
-    let ran: Vec<String> = o.receipts.iter().filter(|r| r.refund.is_none() && !r.method_names.is_empty()).map(|r| format!("{}.{}", r.executor_id, r.method_names.join("+"))).collect();
+    let ran: Vec<String> = o.receipts.iter().filter(|r| r.refund.is_none() && !r.method_names.is_empty()).map(|r| format!("{}.{}", r.receiver_id, r.method_names.join("+"))).collect();
     println!("join with no misuse and no .then: {ran:?}");
     o.assert_success();
     assert_eq!(ran, [format!("{Z}.join"), format!("{Q}.mark"), format!("{Q}.mark")]);
@@ -623,7 +623,7 @@ fn shares(sim: &mut Sim, prepaid: Gas) -> ([u64; 3], u64) {
     let kid = |tag: &str| {
         o.receipts
             .iter()
-            .find(|r| r.executor_id.as_str() == Q && r.args_json::<Value>().map(|a| a["tag"] == tag).unwrap_or(false))
+            .find(|r| r.receiver_id.as_str() == Q && r.args_json::<Value>().map(|a| a["tag"] == tag).unwrap_or(false))
             .unwrap()
     };
     let p = o.expect_receipt("chain");
@@ -669,7 +669,7 @@ fn interleaved(sim: &mut Sim, prepaid: Gas, order: &str) -> ([u64; 2], u64) {
     let kid = |tag: &str| {
         o.receipts
             .iter()
-            .find(|r| r.executor_id.as_str() == Q && r.args_json::<Value>().map(|a| a["tag"] == tag).unwrap_or(false))
+            .find(|r| r.receiver_id.as_str() == Q && r.args_json::<Value>().map(|a| a["tag"] == tag).unwrap_or(false))
             .unwrap()
     };
     let z = o.expect_receipt("interleave");

@@ -93,7 +93,7 @@ fn existence_and_code() {
 
     // bob exists and has no code.
     let o = sim.call(ALICE, BOB, "mark").args_json(json!({ "tag": "x" })).deposit(near(1)).transact();
-    let refunds: Vec<_> = o.receipts.iter().filter(|r| r.refund == Some(Refund::Deposit)).map(|r| (r.executor_id.to_string(), r.deposit)).collect();
+    let refunds: Vec<_> = o.receipts.iter().filter(|r| r.refund == Some(Refund::Deposit)).map(|r| (r.receiver_id.to_string(), r.deposit)).collect();
     println!("call with 1 N to bob.near (no code): {}; deposit refunds {refunds:?}", err(&o));
     assert!(err(&o).contains("CodeDoesNotExist"), "{o}");
     assert_eq!(refunds, [(ALICE.to_string(), near(1))]);

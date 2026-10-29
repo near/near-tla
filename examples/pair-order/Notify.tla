@@ -9,7 +9,7 @@
 (* it can still run second: a new receipt skips the sender shard's         *)
 (* outgoing buffer whenever it fits the link's limits, while an earlier    *)
 (* one waits there (runtime/runtime/src/congestion_control.rs:292-325,     *)
-(* :451 @ bc4e9e8; the sim shows it, sim tests/order.rs:402-435, and so    *)
+(* :451 @ bc4e9e8; the sim shows it, sim tests/order.rs:414-447, and so    *)
 (* does conformance/tests/semantics.rs,                                    *)
 (* later_receipt_overtakes_buffered).  The model lets any ready receipt    *)
 (* run next, so it finds that order without any switch.                    *)

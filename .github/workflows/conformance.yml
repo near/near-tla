@@ -3,8 +3,8 @@ name: conformance
 # The sim conformance suite (conformance/): every sim test, a full sweep of each flow set's flows
 # (probes, probes2, mt: conformance/scripts/flowsets.py), the generated tables regenerated and diffed
 # against the committed ones, then the model side (TLC on every flow of each set) and conform.py.
-# Nightly and on demand only: near-contract-sim is private
-# and pulls in nearcore, so a cold build is slow. Nothing gates on this workflow.
+# Nightly and on demand only: near-contract-sim pulls in nearcore, so a cold build is slow.
+# Nothing gates on this workflow.
 
 on:
   schedule:
@@ -23,8 +23,6 @@ env:
   TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
   CARGO_TARGET_DIR: ${{ github.workspace }}/conformance/target
   CARGO_TERM_COLOR: never
-  # GitHub's published ed25519 host key (GET /meta, ssh_keys).
-  GITHUB_HOST_KEY: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
 
 jobs:
   conformance:
@@ -66,26 +64,10 @@ jobs:
           key: conformance-${{ runner.os }}-rust1.95.0-${{ hashFiles('conformance/Cargo.lock', 'conformance/rust-toolchain.toml') }}
           restore-keys: conformance-${{ runner.os }}-rust1.95.0-
 
-      # The read-only deploy key exists only for this step: cargo fetches near-contract-sim
-      # (pinned by rev in Cargo.toml and Cargo.lock) over ssh, then the key is deleted and every
-      # later cargo step runs offline. Nothing here prints the key or the ssh settings.
-      - name: Fetch dependencies (near-contract-sim over ssh with the deploy key)
-        env:
-          SIM_KEY: ${{ secrets.NEAR_CONTRACT_SIM_DEPLOY_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          d="$RUNNER_TEMP/sim-ssh"
-          mkdir -p "$d"
-          trap 'rm -rf "$d"' EXIT
-          printf '%s\n' "$SIM_KEY" > "$d/key"
-          printf '%s\n' "$GITHUB_HOST_KEY" > "$d/known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $d/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$d/known_hosts -o StrictHostKeyChecking=yes"
-          export CARGO_NET_GIT_FETCH_WITH_CLI=true
-          export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=url.ssh://git@github.com/near/near-contract-sim.insteadOf
-          export GIT_CONFIG_VALUE_0=https://github.com/near/near-contract-sim
-          cargo fetch --locked
+      # cargo fetches near-contract-sim (public; pinned by tag in Cargo.toml, by rev in Cargo.lock)
+      # over https here; every later cargo step runs offline.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
 
       - name: Build (release; tests and the calibrator)
         id: build

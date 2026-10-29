@@ -2533,7 +2533,7 @@ dependencies = [
 [[package]]
 name = "near-contract-sim"
 version = "0.1.0"
-source = "git+https://github.com/near/near-contract-sim?rev=4be28150bce8a564836eafdaf4caa49e43b1dca5#4be28150bce8a564836eafdaf4caa49e43b1dca5"
+source = "git+https://github.com/near/near-contract-sim?tag=v0.1.0#96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2"
 dependencies = [
  "borsh",
  "near-crypto",

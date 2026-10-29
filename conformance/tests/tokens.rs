@@ -41,7 +41,7 @@ fn world() -> Sim {
     }
     fx.contract(P, probe)
         .contract(FT, ft)
-        .init("new", json!({ "owner_id": ALICE, "total_supply": SUPPLY.to_string() }))
+        .init("new").args_json(json!({ "owner_id": ALICE, "total_supply": SUPPLY.to_string() }))
         .ft_register(FT, [BOB, P])
         .token(Token::nep141(FT))
         .build()
@@ -105,7 +105,7 @@ fn ft_transfer_requirements() {
     println!("ft_transfer_call with no deposit: {}", err(&o));
     assert!(panics(&o, one), "{o}");
     let o = call(&mut sim, 1);
-    let order: Vec<String> = o.receipts.iter().filter(|r| !r.is_refund()).map(|r| format!("{}::{}", r.executor_id, r.method_names.join("+"))).collect();
+    let order: Vec<String> = o.receipts.iter().filter(|r| !r.is_refund()).map(|r| format!("{}::{}", r.receiver_id, r.method_names.join("+"))).collect();
     println!("ft_transfer_call: {order:?}; returns {}", o.json::<String>());
     assert_eq!(order, [format!("{FT}::ft_transfer_call"), format!("{P}::ft_on_transfer"), format!("{FT}::ft_resolve_transfer")]);
     assert_eq!(o.json::<String>(), "7", "the resolver's value: the amount used");
@@ -183,7 +183,7 @@ fn payouts(o: &TxOutcome) -> Vec<(String, Balance)> {
     o.receipts
         .iter()
         .filter(|r: &&ReceiptOutcome| r.predecessor_id.as_str() == FT && r.actions == ["Transfer"])
-        .map(|r| (r.executor_id.to_string(), r.deposit))
+        .map(|r| (r.receiver_id.to_string(), r.deposit))
         .collect()
 }
 

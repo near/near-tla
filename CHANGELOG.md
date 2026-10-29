@@ -10,6 +10,22 @@ Tokens, Nep245, plus a separate NearKeys).
 
 ## [Unreleased]
 
+### Changed
+
+- **Conformance re-pinned to the near-contract-sim v0.1.0 release** (git tag `v0.1.0`,
+  `96bc8fb`), from `4be2815`. The sim's public repository starts at `c40ce15`, and `4be2815`,
+  the pin of near-tla 0.1.0, is on none of its branches or tags. The sim's v0.1.0 is `c40ce15`
+  plus two commits that change only its docs, its release configuration and a docs test: its
+  `src`, `Cargo.toml` and `Cargo.lock` are byte-identical to `c40ce15`'s, still on nearcore
+  2.14.0 (`bc4e9e8`). The conformance crate follows the sim's renames (a receipt outcome's
+  `receipt_id` and `receiver_id`) and gives `Fixture::init` its arguments with
+  `.args_json(..)`. The sweeps of all 121 flows, taken through both `c40ce15` and v0.1.0, are
+  byte-identical to those on `4be2815`, the generated tables change only their `sim rev`
+  line, and all 121 flows pass with no mismatch. The sim test citations are at v0.1.0:
+  `tests/order.rs:414-447` (was `402-435`); `tests/yields.rs:70-92` did not move. The sim is
+  public, so `conformance.yml` fetches it over https with no credentials; the deploy key is no
+  longer used. Migration: none (no rule, fee or calibrated number changes).
+
 ## [0.1.0] - 2026-10-27
 
 ```

@@ -86,7 +86,7 @@ fn not_found(o: &TxOutcome) -> bool {
 
 /// The receipt the transaction's signer ran on itself (not a refund).
 fn own(o: &TxOutcome, id: &str) -> ReceiptOutcome {
-    o.receipts.iter().find(|r| r.executor_id.as_str() == id && r.refund.is_none()).unwrap().clone()
+    o.receipts.iter().find(|r| r.receiver_id.as_str() == id && r.refund.is_none()).unwrap().clone()
 }
 
 fn ggas(g: u64) -> f64 {
@@ -127,7 +127,7 @@ fn deploy_global() {
         for r in &o.receipts {
             println!(
                 "  {what}: receipt on {} actions {:?} block {} burnt {:.3} Ggas",
-                r.executor_id,
+                r.receiver_id,
                 r.actions,
                 r.block_height,
                 ggas(r.gas_burnt.as_gas())
@@ -379,12 +379,12 @@ fn held_chain(sim: &mut Sim, u: &str) -> CryptoHash {
         .args_json(json!({ "kids": kids, "cb": cb }))
         .inject(Receipts::callback("mark"), Fault::Hold(12))
         .submit();
-    sim.run_until(10, |s| s.outcome(tx).receipts.iter().any(|r| r.executor_id.as_str() == Q)).unwrap();
+    sim.run_until(10, |s| s.outcome(tx).receipts.iter().any(|r| r.receiver_id.as_str() == Q)).unwrap();
     tx
 }
 
 fn cb_of(sim: &Sim, tx: CryptoHash, u: &str) -> Option<ReceiptOutcome> {
-    sim.outcome(tx).receipts.into_iter().find(|r| r.executor_id.as_str() == u && r.method_names == ["mark"])
+    sim.outcome(tx).receipts.into_iter().find(|r| r.receiver_id.as_str() == u && r.method_names == ["mark"])
 }
 
 /// G5: a callback runs the code its account has when the callback runs,

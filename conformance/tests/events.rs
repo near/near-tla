@@ -117,7 +117,7 @@ fn ft_world() -> Sim {
     }
     fx.contract(P, probe)
         .contract(FT, ft)
-        .init("new", json!({ "owner_id": ALICE, "total_supply": u128::MAX.to_string() }))
+        .init("new").args_json(json!({ "owner_id": ALICE, "total_supply": u128::MAX.to_string() }))
         .ft_register(FT, [BO, LONG, P])
         .token(Token::nep141(FT))
         .build()
