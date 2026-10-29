@@ -310,12 +310,15 @@ def render(rep: Report) -> str:
     own = [g for g in rep.gaps if not g.lib]
     lib = [g for g in rep.gaps if g.lib]
     open_ = [g for g in own if not g.accepted]
-    head += (f": {rep.subjects} owed or fixed-budget receipt(s), {len(open_)} open gap(s)"
-             + (f", {len(own) - len(open_)} accepted" if len(own) > len(open_) else "")
-             + ("" if rep.inventory else "; no [audit] methods, so a method no run executes "
-                "goes unreported"))
+    # as failures() counts it: a missing [audit] methods list is an open gap of a whole file
+    nolist = not rep.inventory and rep.whole
+    head += (f": {rep.subjects} owed or fixed-budget receipt(s), {len(open_) + nolist} open gap(s)"
+             + (f", {len(own) - len(open_)} accepted" if len(own) > len(open_) else ""))
     lines = [head]
     width = max([len(g.label) for g in own] + [8])
+    if nolist:
+        lines.append("  no [audit] methods list is set, so a method no run executes goes unreported: "
+                     "list the source's methods in [audit] methods")
     for g in open_:
         lines.append(f"  {g.label:{width}}  {g.rule:9}  {g.text}")
     for g in own:

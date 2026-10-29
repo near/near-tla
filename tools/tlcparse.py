@@ -74,9 +74,20 @@ def _int(s: str) -> int:
     return int(s.replace(",", ""))
 
 
-def _error_message(text: str) -> str:
-    """The most informative error line, for reports."""
-    for pat in (
+# SANY's specific complaints. The log's last line, "Error: Parsing or semantic analysis
+# failed.", says nothing more, so these come before it.
+SANY_MESSAGES = (
+    r"^(Multiply-defined symbol .*)$",
+    r"^(Cannot find source file for module .*)$",
+)
+# the first complaint SANY locates ("line 3, col 1 to ... of module M", a blank line, the text)
+SANY_LOCATED = r"^line \d+, col \d+ to line \d+, col \d+ of module \w+\s*\n\s*\n(.+)$"
+
+
+def _error_message(text: str, sany: bool = False) -> str:
+    """The most informative error line, for reports. `sany`: a parse or semantic failure,
+    whose specific message comes before the closing "Error: ... failed." line."""
+    for pat in (SANY_MESSAGES if sany else ()) + (
         r"^(Unknown operator: .*)$",
         r"^(Was expecting .*)$",
         r"^(Encountered .*)$",
@@ -84,6 +95,7 @@ def _error_message(text: str) -> str:
         r"^(Attempted .*)$",
         r"^(TLC threw .*)$",
         r"^(Error: Evaluating .*)$",
+    ) + ((SANY_LOCATED,) if sany else ()) + (
         r"^Error: (.*)$",
         r"^(Exception in thread .*)$",
     ):
@@ -117,7 +129,7 @@ def parse(text: str, exit_code: int | None) -> Result:
         return re.search(pat, text, re.M)
 
     if any(found(p) for p in PARSE_ERROR_PATTERNS):
-        r.verdict, r.message = "error", "parse/semantic: " + _error_message(text)
+        r.verdict, r.message = "error", "parse/semantic: " + _error_message(text, sany=True)
         return r
     m = found(r"^Error: The first argument of Assert evaluated to FALSE; the second argument was:[ \t]*\n?"
               r"((?:(?!Error:).+\n?)*)")

@@ -75,8 +75,8 @@ expected here. The audit is informational unless you pass `--anti-vacuity`
 To run every example in the repo: `python3 tools/run.py examples/`. That is about 250 runs and
 takes about 5 minutes on 4 cores (the run count and the time vary), and it prints several
 hundred lines, including `note:` lines from the audits of the shipped examples. Whether it
-passed is the `N/N runs as expected` line, which comes before the audit reports, and the exit
-code (0 when every run came out as expected).
+passed is the last line, `verdict: all as expected (N/N runs)` or `verdict: FAILED (...)`,
+and the exit code (0 when every run came out as expected).
 
 ## What a result means
 

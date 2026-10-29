@@ -218,7 +218,9 @@ from __future__ import annotations
 import sys
 
 if sys.version_info < (3, 11):
-    sys.exit(f"tools/run.py needs Python 3.11 or newer (for tomllib); this is {sys.version.split()[0]}")
+    # the script being run may be another that imports this one
+    sys.exit(f"tools/{sys.argv[0].rsplit('/', 1)[-1] or 'run.py'} needs Python 3.11 or newer "
+             f"(for tomllib); this is {sys.version.split()[0]}")
 
 import argparse  # noqa: E402
 import fnmatch  # noqa: E402
@@ -407,16 +409,17 @@ class AuditCfg:
 # ---------------------------------------------------------------- loading
 
 
-def tla_value(name: str, v) -> str:
+def tla_value(where: str, name: str, v) -> str:
     if isinstance(v, bool):
         return "TRUE" if v else "FALSE"
     if isinstance(v, int):
         return str(v)
     if isinstance(v, str):
         if not v.strip():
-            raise ConfigError(f"constant {name}: empty expression")
+            raise ConfigError(f"{where}: constant {name}: empty expression")
         return v
-    raise ConfigError(f"constant {name}: expected TLA+ expression text (a string), got {type(v).__name__}")
+    raise ConfigError(f"{where}: constant {name}: expected TLA+ expression text (a string), "
+                      f"got {type(v).__name__}")
 
 
 def _typed(where: str, d: dict, key: str, kinds, default=None):
@@ -487,13 +490,13 @@ def load_doc(path: Path) -> tuple[list[Run], list[Witness], list[Mutant]]:
         if "library" not in m and not os.path.isdir(libs[0]):
             libs = [str(ROOT / "modules")]  # a model outside examples/<name>/
         consts = {}
-        for src in (file_consts, raw.get("constants", {})):
+        for table, src in (("[constants]", file_consts), ("[run.constants]", raw.get("constants", {}))):
             if not isinstance(src, dict):
-                raise ConfigError(f"{where}: constants must be a table")
+                raise ConfigError(f"{where} {table}: constants must be a table")
             for k, v in src.items():
                 if not all(IDENT_RE.match(x) for x in k.split("!", 1)):
-                    raise ConfigError(f"{where}: bad constant name {k!r} (Name or Mod!Name)")
-                consts[k] = tla_value(k, v)
+                    raise ConfigError(f"{where} {table}: bad constant name {k!r} (Name or Mod!Name)")
+                consts[k] = tla_value(f"{where} {table}", k, v)
         if _typed(where, m, "platform_defaults", bool, False):
             consts = {**{k: v for k, v in PLATFORM_DEFAULTS.items() if k not in consts}, **consts}
         defs: dict[str, str] = {}
@@ -651,7 +654,8 @@ def load_sweeps(path: Path, doc: dict, runs: list[Run]) -> list[Sweep]:
         consts = raw.get("constants", {})
         if not isinstance(consts, dict):
             raise ConfigError(f"{where}: constants must be a table")
-        sw = Sweep(sid, path, kind, base, knobs, form, {k: tla_value(k, v) for k, v in consts.items()})
+        sw = Sweep(sid, path, kind, base, knobs, form,
+                   {k: tla_value(f"{where} constants", k, v) for k, v in consts.items()})
         if "covers" in raw:
             sw.covers = _str_list(where, raw, "covers")
             rules = ["log-size"] + (["least-gas"] if kind == "least_gas" else [])
@@ -2028,9 +2032,20 @@ def main(argv=None) -> int:
                      if len(whole) < len(reps) else ""))
     elif a.anti_vacuity:
         print("\naudit off (--no-audit): its gaps are not checked")
+    # the verdict again as the last line, after the audit block, for a reader of the tail only
+    failed = bad + bad_checks + bad_sweeps + bad_audit
+    counts = [f"{len(outs) - len(bad)}/{len(outs)} runs"]
+    if a.anti_vacuity:
+        counts.append(f"{len(checks) - len(bad_checks)}/{len(checks)} checks")
+    if sweeps:
+        counts.append(f"{len(swept) - len(bad_sweeps)}/{len(swept)} sweep rows")
+    if a.anti_vacuity and not a.no_audit:
+        counts.append(f"audit {len(bad_audit)} open")
+    print(f"\nverdict: {'FAILED' if failed else 'all as expected'} ({', '.join(counts)})"
+          + (f"; FAILED: {' '.join(failed)}" if failed else ""))
     if a.json:
         Path(a.json).write_text(json.dumps([asdict(o) for o in outs + checks + swept], indent=2, default=str) + "\n")
-    return 1 if bad or bad_checks or bad_sweeps or bad_audit else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -133,6 +133,8 @@ audit examples/minimal/runs.toml: 1 owed or fixed-budget receipt(s), 0 open gap(
   c.done    trie       accepted: done writes no storage in this toy (H_done declares no write)
   c.done    least-gas  accepted: done's budget is a fixed 2 Tgas against a 0.6 Tgas burn; tally_gas_win maps the prepaid edge
   c.done    logs       accepted: done logs nothing (H_done declares no log)
+
+verdict: all as expected (5/5 runs)
 ```
 
 Progress lines (`running tally_ok (examples/minimal) ...`) go to standard error; the table
@@ -158,7 +160,9 @@ Indented lines under a row are notes: an `Assert`'s message, `over budget`, `vac
 The line after the table counts the runs that matched (`5/5 runs as expected`) and names any
 that did not (`FAILED: ...`). With `--anti-vacuity`, a second table lists the witness and
 mutant checks ([Witnesses and mutants](#witnesses-and-mutants)); with `--sweep`, another lists
-the sweep rows ([Least gas and size sweeps](#least-gas-and-size-sweeps)).
+the sweep rows ([Least gas and size sweeps](#least-gas-and-size-sweeps)). The last line of the
+output restates the verdict, `verdict: all as expected (...)` or `verdict: FAILED (...)` with
+every failure named, so a reader who sees only the tail of a long run sees the result.
 
 ### When a row is ok
 
@@ -1177,7 +1181,8 @@ witness, and so does a `runs.toml` with no `[audit] methods`:
 audit: 3 runs.toml file(s) checked, 2 open; FAILED: audit:v.on_res gas@my/runs.toml audit:methods@my/runs.toml
 ```
 
-Gaps of the library's token methods never fail. Neither does a `runs.toml` of which only some
+The per-file report counts a missing `[audit] methods` as an open gap, so its line agrees with
+this one. Gaps of the library's token methods never fail. Neither does a `runs.toml` of which only some
 runs were selected: a run left out may close its gaps. Its header says so.
 
 ### Limits of the audit

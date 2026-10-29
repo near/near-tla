@@ -237,6 +237,28 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(r.verdict, "error")
         self.assertIn("Was expecting", r.message)
 
+    def test_name_clash_message(self):
+        """A name the spec shares with the library: SANY's message, not the closing line alone."""
+        clash = ("Semantic errors:\n\n*** Errors: 2\n\n"
+                 "line 116, col 1 to line 116, col 12 of module Vault\n\n"
+                 "Operator Entries already defined or declared.\n\n\n"
+                 "line 116, col 1 to line 116, col 12 of module Vault\n\n"
+                 "Multiply-defined symbol 'Entries': this definition or declaration conflicts \n"
+                 "with the one at line 1468, col 1 to line 1468, col 32 of module NearAsync.\n\n\n"
+                 "Starting... (2026-01-01 00:00:00)\nError: Parsing or semantic analysis failed.\n"
+                 "Finished in 00s at (2026-01-01 00:00:00)\n")
+        r = tlcparse.parse(clash, 150)
+        self.assertEqual(r.verdict, "error")
+        self.assertTrue(r.message.startswith("parse/semantic: Multiply-defined symbol 'Entries'"), r.message)
+        # a missing module, and a log with only a located complaint
+        r = tlcparse.parse("Fatal errors while parsing TLA+ spec in file MC\n\n*** Abort messages: 1\n\n"
+                           "Cannot find source file for module NearAsync imported in module Vault.\n\n"
+                           "Error: Parsing or semantic analysis failed.\n", 150)
+        self.assertIn("Cannot find source file for module NearAsync", r.message)
+        r = tlcparse.parse("*** Errors: 1\n\nline 3, col 1 to line 3, col 4 of module Vault\n\n"
+                           "Some new complaint.\n\nError: Parsing or semantic analysis failed.\n", 150)
+        self.assertEqual(r.message, "parse/semantic: Some new complaint.")
+
     def test_parse_error_wins_over_other_errors(self):
         self.assertEqual(tlcparse.parse(SEMANTIC + INV, 150).verdict, "error")
 
@@ -408,6 +430,24 @@ class LoadAndWrapperTest(unittest.TestCase):
         self.assertEqual(a.library, [str((self.d / "lib").resolve())])
         self.assertEqual((a.init, a.next, a.invariants, a.deadlock), ("Init", "Next", ["Inv"], False))
         self.assertEqual((a.workers, b.workers), (2, 1))
+
+    def test_config_errors_name_file_and_run(self):
+        """A bad constant value says which runs.toml and run (or table) it is in; so does a TOML error."""
+        head = 'spec = "Toy"\nlibrary = "lib"\ninvariants = ["Inv"]\n'
+        runs = '[[run]]\nname = "a"\nexpect = "pass"\n'
+        cases = {
+            "run table": (head + runs + '[run.constants]\nN = ["x"]\n', r"runs\.toml run a \[run\.constants\]: constant N: .*got list"),
+            "file table": (head + '[constants]\nN = 1.5\n' + runs, r"runs\.toml run a \[constants\]: constant N: .*got float"),
+            "empty": (head + runs + '[run.constants]\nN = " "\n', r"runs\.toml run a \[run\.constants\]: constant N: empty"),
+            "sweep": (head + runs + '[[sweep]]\nid = "s"\nkind = "least_gas"\nrun = "a"\nknob = "N"\n'
+                      'form = "%d"\nlo = 1\nhi = 2\n[sweep.constants]\nM = [1]\n',
+                      r"runs\.toml sweep s constants: constant M: .*got list"),
+            "toml": (head + '[constants]\nA = 1\n[constants]\nB = 2\n' + runs,
+                     r"runs\.toml: Cannot declare .*twice"),
+        }
+        for what, (text, rx) in cases.items():
+            with self.subTest(what=what), self.assertRaisesRegex(run.ConfigError, rx):
+                self.load(text)
 
     def test_name_clash_with_library_warns(self):
         lib = self.d / "lib"
@@ -1478,8 +1518,23 @@ class AuditTest(unittest.TestCase):
         self.assertEqual(rep.open, [])
         text = audit.render(rep)
         self.assertIn("1 of 2 runs", text)
-        self.assertIn("no [audit] methods", text)
         self.assertIn("library token methods", text)
+
+    def test_render_agrees_with_failures(self):
+        """The per-file line counts what --anti-vacuity fails on, a missing methods list included."""
+        f = {"a": {fact(owed=True, m="on_res")}}
+        gaps, n = audit.gaps(f, [], None, {"on_res": "x"})
+        rep = audit.Report("r.toml", 1, 1, gaps, n)
+        self.assertEqual(audit.failures(rep), ["audit:methods@r.toml"])
+        text = audit.render(rep)
+        self.assertIn("1 open gap(s)", text)
+        self.assertIn("no [audit] methods list is set", text)
+        rep.inventory = True
+        self.assertIn("0 open gap(s)", audit.render(rep))
+        # a file judged on some of its runs is not checked: nothing counted or failed
+        rep = audit.Report("r.toml", 1, 2, gaps, n)
+        self.assertEqual(audit.failures(rep), [])
+        self.assertIn("0 open gap(s)", audit.render(rep))
 
     def test_failures(self):
         f = {"a": {fact(owed=True, m="on_res")}}
@@ -1588,6 +1643,43 @@ class AuditTest(unittest.TestCase):
             write(d / "lib", "NearAsync.tla", "---- MODULE NearAsync ----\n====\n")
             run._AUDITABLE.clear()
             self.assertFalse(run.auditable(ra))
+
+
+class VersionRefusalTest(unittest.TestCase):
+    def test_scripts_name_themselves(self):
+        """On Python before 3.11, each script's refusal names that script (faked here)."""
+        here = Path(__file__).resolve().parent
+        for script in ("sany.py", "run.py"):
+            code = ("import runpy, sys; sys.version_info = (3, 10, 0); sys.version = '3.10.0'; "
+                    f"sys.argv = ['tools/{script}']; runpy.run_path({str(here / script)!r}, run_name='__main__')")
+            p = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn(f"tools/{script} needs Python 3.11", p.stderr)
+            self.assertEqual(p.stderr.count("needs Python 3.11"), 1)
+
+
+class FinalVerdictTest(unittest.TestCase):
+    def test_last_line_restates_verdict(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            write(d, "Toy.tla", "---- MODULE Toy ----\n====\n")
+            p = write(d, "runs.toml", 'spec = "Toy"\nlibrary = "."\ninvariants = ["Small"]\n'
+                      '[[run]]\nname = "a"\nexpect = "pass"\n')
+            texts = {}
+            for code, out in ((0, PASS), (12, INV)):
+                orig = run.subprocess.run
+                run.subprocess.run = lambda cmd, cwd=None, **kw: subprocess.CompletedProcess(
+                    cmd, code, stdout=out.encode())
+                buf = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+                        rc = run.main([str(p), "--anti-vacuity", "--jar", str(p)])
+                finally:
+                    run.subprocess.run = orig
+                texts[rc] = buf.getvalue().rstrip("\n").splitlines()
+        self.assertEqual(sorted(texts), [0, 1])
+        self.assertRegex(texts[0][-1], r"^verdict: all as expected \(1/1 runs, ")
+        self.assertRegex(texts[1][-1], r"^verdict: FAILED \(0/1 runs, .*; FAILED: a")
 
 
 class ParsePrintTTest(unittest.TestCase):
