@@ -228,8 +228,9 @@ sits at the end of that section
   `docs/VERSIONING.md`). The one behavior switch for those versions, `UniversalOn` (A2), is
   separate from `FeeProtocol`.
 - **Token standards:** the NEP texts at `neps/nep-0141.md`, `nep-0145.md` and `nep-0245.md` in
-  the NEPs repo, and near-contract-standards. The locally available versions of
-  near-contract-standards are 5.23.0, 5.24.0, 5.25.0, 5.28.1, 5.29.0 and 5.29.1. See
+  the NEPs repo, and near-contract-standards. The versions of
+  near-contract-standards whose source was read are 5.23.0, 5.24.0, 5.25.0, 5.28.1, 5.29.0,
+  5.29.1 and 5.30.0-rc.1. See
   [Tokens](#tokens) for which behavior the defaults encode.
 
 ## How to read the entries
@@ -247,8 +248,9 @@ Each rule has four fields:
     [`CONFORMANCE.md`](CONFORMANCE.md)) agreed with the model ("sim, model compared"). Rules the
     conformance flows were written to cover carry the marker `<!-- conformance -->` in the
     source of this page, and each such entry says what the sim checked, if anything. The run on
-    the current library (74 flows, 97,162 prepaid points, 227,922 sim receipts; and the flow set
-    `probes2`, 28 flows, 36,764 points, 122,825 receipts) found no status, window-edge,
+    the current library (74 flows, 97,162 prepaid points, 227,922 sim receipts; the flow set
+    `probes2`, 28 flows, 36,764 points, 122,825 receipts; and the flow set `mt`, 19 flows,
+    24,947 points, 55,487 receipts) found no status, window-edge,
     attached-gas or deposit mismatch ([results](../conformance/README.md#results-at-the-pins)).
     The comparison sees each receipt's status and attached gas (in `probes2` its deposit too),
     by transaction, the yields still parked at the end, and the window edges, but not the order
@@ -635,8 +637,8 @@ Each rule has four fields:
   `TokResolveMaxLen` (`Tokens.TokHandle`), so an unbounded resolver (5.23.0 and older) runs
   out of gas on a receiver's padded result and `OwedOK` reports it
   (`examples/result-read-gas`).
-- **SDK source:** near-sdk 5.28.1 (the closest locally available version to the `~5.29.1` that
-  near-contract-standards 5.29.1 requires; as read) `src/environment/env.rs:1833-1837`
+- **SDK source:** near-sdk 5.28.1 (the version read, the closest to the `~5.29.1` that
+  near-contract-standards 5.29.1 requires) `src/environment/env.rs:1833-1837`
   (`promise_result_checked`), `:129-137` (`read_register_bounded`: `len > max_len` is an error).
   The same code is in 5.24.0 and 5.25.0. The read's cost:
   `runtime/near-vm-runner/src/logic/host.rs:4616-4646` (`promise_result`: `set_rc_data`),
@@ -2291,7 +2293,7 @@ is available locally.
 ### T3. Gas behavior of `ft_transfer_call` (version-dependent)
 
 - **Rule:** It differs by near-contract-standards version.
-  - **5.23.0-5.29.1** (all locally available): `ft_on_transfer` gets static 0 and weight 1, so
+  - **5.23.0-5.29.1 and 5.30.0-rc.1** (all the versions read): `ft_on_transfer` gets static 0 and weight 1, so
     it takes all the leftover gas. `ft_resolve_transfer` gets static 5 Tgas and weight 0
     (`core_impl.rs:13`, `:141-151`).
   - **Older versions** (recalled, not read): `ft_on_transfer` gets static = prepaid − a fixed
@@ -2756,7 +2758,7 @@ example** is what the item itself names, if anything.
 | [N-views](#scope-limits) | scope | View calls | yes | |
 | [N-resharding](#scope-limits) | scope | Resharding and missing chunks | yes | |
 
-That makes 15 over-approximations, 25 under-approximations and 11 scope limits, 51 items in
+That makes 15 over-approximations, 24 under-approximations and 11 scope limits, 50 items in
 all.
 
 ### Over-approximations

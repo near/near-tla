@@ -2,6 +2,9 @@
 
 Model-check the cross-contract logic of NEAR smart contracts with TLA+.
 
+New to NEAR's receipts or to TLA+? [CONCEPTS.md](docs/CONCEPTS.md) explains both in a page each
+and defines the terms used below (receipt, callback, invariant, behavior, counterexample).
+
 On NEAR, a call to another contract is not part of one atomic transaction. It runs later, as
 a separate receipt. It can fail after the caller has already committed. The caller's callback
 runs either way, and has to cope with the failure. Deposits come back as separate refund
@@ -27,7 +30,8 @@ It catches bugs such as:
 
 ## Quickstart
 
-You need git, Java 21 and Python 3.11 or later (standard library only).
+You need git, curl, Java 17 or later (CI uses 21) and Python 3.11 or later (standard library
+only).
 
 ```sh
 git clone https://github.com/near/near-tla.git
@@ -36,8 +40,11 @@ cd near-tla
 # Fetch the pinned TLC jar (tla2tools v1.7.4) and check its hash, as CI does.
 curl -sSfL -o tools/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+# Check the hash with whichever tool your system has (macOS: shasum; Linux: sha256sum).
 echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  tools/tla2tools.jar" \
-  | shasum -a 256 -c -        # Linux: sha256sum -c -
+  | shasum -a 256 -c -
+echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  tools/tla2tools.jar" \
+  | sha256sum -c -
 ```
 
 Run the minimal example. It models a contract whose callback must check its promise result,
@@ -58,7 +65,19 @@ The trace reads like a story: the user's `ping`, the call to `work` failing, the
 `done` seeing Failed and counting anyway. The [tutorial](docs/TUTORIAL.md) builds this model
 from scratch and explains every line.
 
-To run every example in the repo: `python3 tools/run.py examples/`.
+After the table, the runner prints an audit. It lists the receipts the runs model but never push
+to their gas, storage or log edges, and says which gaps are open and which you accepted with a
+reason. The first command above ended with `0 open gap(s), 3 accepted`: the shipped model
+accepts its three gaps. The second command ran one run of five, so the audit judged only that
+run and reported `1 open gap(s)`: the gas-mode run that would close it was not selected. That is
+expected here. The audit is informational unless you pass `--anti-vacuity`
+([RUNNER.md](docs/RUNNER.md#the-audit-lines)).
+
+To run every example in the repo: `python3 tools/run.py examples/`. That is about 250 runs and
+takes about 5 minutes on 4 cores (the run count and the time vary), and it prints several
+hundred lines, including `note:` lines from the audits of the shipped examples. Whether it
+passed is the `N/N runs as expected` line, which comes before the audit reports, and the exit
+code (0 when every run came out as expected).
 
 ## What a result means
 
@@ -68,8 +87,9 @@ It holds:
 - within the run's bounds: the number of transactions, forced failures and prepaid gas amounts
   you chose;
 - for your model of the contract, which is a hand-written abstraction of the code;
-- under the runtime rules of protocol version 88 (nearcore 2.14.0); mainnet ran 86 as of
-  2026-10-23 and votes on 87 and 88 in early November, and [SEMANTICS.md](docs/SEMANTICS.md#reference-revision) says what differs;
+- under the runtime rules of protocol version 88 (nearcore 2.14.0); which protocol version
+  mainnet runs, as of what date, and what differs from 88 are in
+  [SEMANTICS.md](docs/SEMANTICS.md#reference-revision);
 - for the properties you wrote, and no others.
 
 **A failure** is a counterexample: a hypothesis about your contract. Confirm it on the compiled
@@ -88,7 +108,8 @@ nearcore's runtime and can force the trace's failures and receipt order, or in a
 - **Gas and fees are checked against nearcore.** A simulator, near-contract-sim, runs
   nearcore's own `Runtime::apply` on small test contracts written to exercise the rules, across
   a grid of prepaid gas. Every receipt's status matched the model, every attached gas was
-  within 5 Ggas, and every one of 108,986 gas splits between child calls matched exactly
+  within 5 Ggas, and every one of 210,283 gas splits between child calls matched exactly (across
+  the three flow sets)
   ([CONFORMANCE.md](docs/CONFORMANCE.md) has the counts). Users replay their own
   counterexamples in the same sim (or in the near-workspaces sandbox)
   ([VALIDATING.md](docs/VALIDATING.md)).
@@ -96,9 +117,9 @@ nearcore's runtime and can force the trace's failures and receipt order, or in a
   simulator tests (local receipts first, no order between a pair of accounts) and on reading
   nearcore (the rest), as each rule's entry in SEMANTICS says.
 - **What is not modeled is listed**, entry by entry, with what each omission could hide
-  ([Not modeled](docs/SEMANTICS.md#not-modeled)). Of its 51 entries, 15 are
+  ([Not modeled](docs/SEMANTICS.md#not-modeled)). Of its 50 entries, 15 are
   over-approximations (the model allows more than a network does, so it can report a
-  counterexample no network reaches), 25 are under-approximations (they can hide bugs; several
+  counterexample no network reaches), 24 are under-approximations (they can hide bugs; several
   apply at the default settings) and 11 are outside the library's scope.
 - **The library is checked like a model.** The examples carry their own checks that a pass
   means something: must-fail runs, mutants their properties must catch, and witnesses that
@@ -114,7 +135,7 @@ nearcore's runtime and can force the trace's failures and receipt order, or in a
 | [RUNNER.md](docs/RUNNER.md) | to run checks, read traces, and make sure a pass means something |
 | [VALIDATING.md](docs/VALIDATING.md) | when TLC finds a counterexample: replay it, write it up |
 | [SEMANTICS.md](docs/SEMANTICS.md) | to know exactly which runtime rule each operator encodes, and what is left out |
-| [CONFORMANCE.md](docs/CONFORMANCE.md) | maintainers: how the model is checked against nearcore |
+| [CONFORMANCE.md](docs/CONFORMANCE.md) | maintainers: how the model is checked against nearcore (to calibrate your own contract, see USAGE.md) |
 | [VERSIONING.md](docs/VERSIONING.md) | what a release promises, how releases are made, and how protocol upgrades are handled |
 
 ## Using it with an AI coding agent
@@ -127,7 +148,10 @@ audit gaps, triage counterexamples, replay them in near-contract-sim and write u
 For Claude Code, copy or link the directory into your skills:
 
 ```sh
+mkdir -p ~/.claude/skills
 ln -s "$PWD/skills/near-tla" ~/.claude/skills/near-tla              # for every project
+
+mkdir -p path/to/your-project/.claude/skills
 ln -s "$PWD/skills/near-tla" path/to/your-project/.claude/skills/   # for one project
 ```
 
@@ -141,7 +165,7 @@ Other agents can be pointed at the `SKILL.md` file directly.
 | [`examples/`](examples/) | small contracts, each with a `runs.toml` of must-pass and must-fail runs; `minimal` is the starting point, `platform-selftest` checks the library itself against known nearcore outcomes |
 | [`tools/`](tools/) | `run.py` (the runner), `tlctrace.py` (counterexample stories), `sany.py` (parse check), `windows.py` (print-only gas windows), `tlcparse.py` (TLC output parsing), `audit.py` (what the runs reach), `check_links.py` (offline link check), `test_run.py` (the tools' tests) |
 | [`skills/`](skills/) | the agent skill |
-| [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim, and produces calibrated gas tables (maintainers) |
+| [`conformance/`](conformance/) | a Rust crate that checks the model against nearcore through near-contract-sim, and produces calibrated gas tables. Maintainers run the suite; you can use its `calibrate` tool on your own contract ([USAGE.md](docs/USAGE.md#calibrating)) |
 | [`docs/`](docs/) | the documentation above |
 
 ### Modules
