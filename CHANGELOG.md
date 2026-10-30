@@ -16,6 +16,13 @@ format. Its entries are relative to the pre-release module set that existing mod
 written against (NearAsync, TokenCommon, Nep145, Nep141, WNear, Tokens, Nep245, plus a
 separate NearKeys).
 
+## [0.1.3] - 2026-10-30
+
+### Fixed
+
+- tokens: Count no separator in an empty event data list ([#12](https://github.com/near/near-tla/pull/12))
+- runner: Number progress lines, one unmarked-callback note per invocation, clearer logs gap ([#14](https://github.com/near/near-tla/pull/14))
+
 ## [0.1.2] - 2026-10-29
 
 ```
