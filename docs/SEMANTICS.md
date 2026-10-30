@@ -2587,7 +2587,7 @@ is available locally.
   `FtMintLog`, `FtBurnLog` (and `Nep245`'s `MtTransferLog`, `MtMintLog`, `MtBurnLog`) on
   model accounts and amounts. A handler's accumulator collects its logs (`ALog`) and the
   outcome declares them (`lgn`, `lgb`, the fields of `OLog`), so `HostLimitErr` applies.
-  `TokEvents` (default `TRUE`) turns this off. Lengths of model values: an account counts
+  `TokEvents` (default `TRUE`) turns this on; `FALSE` turns it off. Lengths of model values: an account counts
   `EvAcctLen[a]` bytes, else `Len(a)`; a token's amount `x` prints with `Digits(x) +
   EvAmtExp[t]` digits (`x` stands for `x × 10^e` base units; 0 prints `"0"`); a token id
   `MtIdLen[i]` bytes, else `Len(i)`; a call's memo is the field `memo` of its arguments

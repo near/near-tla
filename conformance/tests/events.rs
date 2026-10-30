@@ -64,7 +64,7 @@ fn digits(x: u128) -> usize {
 /// `","version":"` (13) `1.0.0` (5) `","event":"` (11) ev `","data":[` (10)
 /// the items, comma-separated, `]}` (2).
 fn ev_len(std: &str, ev: &str, items: &[usize]) -> usize {
-    11 + 13 + std.len() + 13 + 5 + 11 + ev.len() + 10 + items.iter().sum::<usize>() + items.len() - 1 + 2
+    11 + 13 + std.len() + 13 + 5 + 11 + ev.len() + 10 + items.iter().sum::<usize>() + items.len().saturating_sub(1) + 2
 }
 
 /// `,"memo":"` (9) memo `"` (1), or nothing.
