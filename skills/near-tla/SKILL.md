@@ -28,6 +28,12 @@ If this skill sits at `NT/skills/near-tla/`, NT is two levels up. Otherwise use 
 Read `NT/docs/CONCEPTS.md` once: the vocabulary table maps NEAR terms to model names, and
 "What a pass means" sets the claims you may make.
 
+If the contract has any cross-contract call you may replay in step 7, start that replay's
+slow build now. The sim test crate's first build compiles nearcore and takes 10 to 30 minutes
+cold. Create the crate as `NT/docs/VALIDATING.md`, Step 3, "In near-contract-sim", describes,
+with a placeholder test, and run its first build in the background (`cargo test --no-run`, log
+to a file). It will be warm by step 7.
+
 **Done when** `python3 NT/tools/run.py NT/examples/minimal` reports `5/5 runs as expected`.
 
 ## Step 1: inventory the contract
@@ -114,7 +120,11 @@ property:
   branch that does the success work, an inverted result check.
 
 TLC names the first invariant in a run's list that a state violates, so put the one a
-must-fail run targets first in that run's `invariants`. List the contract's methods in
+must-fail run targets first in that run's `invariants`. That settles two invariants breaking
+in the same state only. If another invariant breaks at an earlier state on the same path, TLC
+stops there and names it, whatever the order. Then give the must-fail run an `invariants` list
+of just the one it targets (a run's own `invariants` replaces the file's), or pick another run
+that differs from its passing twin only in the bug. List the contract's methods in
 `[audit] methods`.
 
 When a run of the contract as written fails, triage it (step 6) before going on. If it is a
@@ -144,8 +154,14 @@ burns, use the host-cost floor (`HostFloorGas`, USAGE section 12). Its verdicts 
   the real edges on the wasm.
 
 Declare storage writes (`OWriteKey`) and run with `TrieGasWorst`; find the least gas with a
-sweep. Then read the audit the runner prints after the table and close each gap with a run,
-or accept it in `[audit.accept]` with a reason that cites the source line or a run. The audit
+sweep. If a callback's fixed static gas is at least what it needs (say 5 Tgas at weight 0
+against a burn well below it), no prepaid gas starves it and a sweep on the prepaid gas finds
+nothing. Sweep the callback's static gas instead (the sweep's `knob`), with its weight set to
+0 in `[sweep.constants]`; the gas table must read both from constants (RUNNER.md, "Least gas"). Then read the audit the runner prints after the table and close each gap with a run,
+or accept it in `[audit.accept]` with a reason that cites the source line or a run. A `logs`
+gap ("declares no logs in any run") means no run reached an outcome that declares logs, not
+that the handler never logs: if one branch logs, add a run that reaches it and the gap closes.
+The audit
 keys on method names, not on switches, so a fixed variant's runs also close the as-written
 method's gaps: to see the gaps of the contract as written, name only its runs
 (`run.py <model-dir> <run> ...`), and the audit judges those alone.
@@ -194,8 +210,8 @@ hypothesis:
    an untrusted contract chooses to fail, the call's share of gas runs out. A forced fault
    with no such cause makes the finding "not reproduced": record the reason and go to the next
    hypothesis.
-2. **Build the replay.** Build the contract's wasm and a sim test crate; start the crate's
-   first build in the background, since it compiles nearcore. Send the trace's transactions
+2. **Build the replay.** Build the contract's wasm and a sim test crate (its first build
+   should already be warm: step 0 started it). Send the trace's transactions
    with their arguments and deposits. Reproduce each failure from its named cause: inject a
    fault on that receipt (`tx.inject`), or deploy a stub for a receiver that really answers
    that way. Where the trace chose an order, hold receipts back (`Fault::Hold`, `HoldResult`,
