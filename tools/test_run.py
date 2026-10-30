@@ -1091,6 +1091,20 @@ class AntiVacuityFakeTLCTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(run.main([str(self.d), "--jar", str(self.d / "Toy.tla")]), 0)
 
+    def test_progress_lines_are_numbered(self):
+        write(self.d, "runs.toml", TOY_RUNS + WIT)
+        jar = str(self.d / "Toy.tla")
+        self.outputs = [(PASS, 0), (PASS + '<<"WIN", "B", 1>>', 0), (INV, 12), (PASS, 0)]
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+            run.main([str(self.d), "--jar", jar, "--anti-vacuity", "--json", str(self.d / "r.json")])
+        lines = [l for l in err.getvalue().splitlines() if l.startswith("[")]
+        self.assertEqual([l.split("]")[0] for l in lines], ["[1/3", "[2/3", "[3/3", "[1/1"])
+        self.assertRegex(lines[0], r"^\[1/3\] running t_ok \(.*\) \.\.\.$")
+        self.assertRegex(lines[3], r"^\[1/1\] witness seen on t_ok \.\.\.$")
+        # the table and the closing verdict carry no progress prefix
+        self.assertNotRegex(out.getvalue(), r"(?m)^\[\d+/\d+\]")
+        self.assertRegex(out.getvalue().splitlines()[-1], r"^verdict: ")
+
     def test_main_off_by_default_and_on_with_flag(self):
         write(self.d, "runs.toml", TOY_RUNS + WIT)
         jar = str(self.d / "Toy.tla")
@@ -1461,6 +1475,24 @@ class AuditTest(unittest.TestCase):
         rep = audit.Report("r.toml", 1, 1, [], 0, True, 0, ["v.on_x"])
         self.assertIn("note: callbacks not marked owed, run in fault mode only: v.on_x", audit.render(rep))
 
+    def test_logs_gap_names_the_branch_not_reached(self):
+        (g,) = [g for g in audit.gaps({"a": {fact(owed=True)}}, [], None, {})[0] if g.rule == "logs"]
+        self.assertIn("no run reached an outcome that declares logs", g.text)
+        self.assertIn("add a run that reaches that branch", g.text)
+        self.assertEqual(g.key, "v.on_cb")  # the key an [audit.accept] entry matches is unchanged
+
+    def test_unmarked_note_is_one_line_for_several_files(self):
+        a = audit.Report("examples/a/runs.toml", 1, 1, [], 0, True, 0, ["v.on_x", "v.on_y"])
+        b = audit.Report("examples/b/runs.toml", 1, 1, [], 0, True, 0, ["w.on_z"])
+        c = audit.Report("examples/c/runs.toml", 1, 1, [], 0, True, 0, [])
+        note = audit.unmarked_note([a, b, c])
+        self.assertEqual(note.count("\n"), 0)
+        self.assertIn("in 2 runs.toml files", note)
+        self.assertIn("examples/a/runs.toml: v.on_x, v.on_y; examples/b/runs.toml: w.on_z", note)
+        self.assertNotIn("examples/c", note)
+        self.assertNotIn("note:", audit.render(a, note=False))
+        self.assertIn("note:", audit.render(a))
+
     def test_method_only_covers_and_library_apart(self):
         # a.on_cb owed, b.on_cb an unowed callback, in one base run: "on_cb" alone is ambiguous
         a = fact(to="a", owed=True, mode="gas", worst=True, known=True, fixed=True, trn=4, lgn=1, lgb=9)
@@ -1580,6 +1612,38 @@ class AuditTest(unittest.TestCase):
                 with self.subTest(what=what), self.assertRaises(run.ConfigError):
                     text = base + extra if what != "per-run audit" else base.replace('name = "a"', 'name = "a"\n' + extra)
                     run.load_file(write(d, "runs.toml", text))
+
+    def test_main_prints_one_unmarked_note_for_several_files(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t).resolve()
+            write(d, "Toy.tla", "---- MODULE Toy ----\nEXTENDS NearAsync\n====\n")
+            (d / "lib").mkdir()
+            write(d / "lib", "NearAsync.tla", "---- MODULE NearAsync ----\nAuditOn == FALSE\nAuditReg == 41\n====\n")
+            for sub in ("m1", "m2"):
+                (d / sub).mkdir()
+                write(d / sub, "Toy.tla", "---- MODULE Toy ----\nEXTENDS NearAsync\n====\n")
+                write(d / sub, "runs.toml", 'spec = "Toy"\nlibrary = "../lib"\ninvariants = ["I"]\n'
+                      f'[[run]]\nname = "{sub}_a"\nexpect = "pass"\n[audit]\nmethods = ["on_x"]\n')
+            f = fact(m="on_x")  # an unmarked callback, fault mode
+            fake = lambda cmd, cwd=None, **kw: subprocess.CompletedProcess(
+                cmd, 0, stdout=(tla_fact(f) + "\n" + PASS).encode())
+            orig, run.subprocess.run = run.subprocess.run, fake
+            try:
+                outs = {}
+                for name, args in (("both", [str(d / "m1"), str(d / "m2")]), ("one", [str(d / "m1")])):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                        run.main(args + ["--jar", str(d / "Toy.tla")])
+                    outs[name] = out.getvalue()
+            finally:
+                run.subprocess.run = orig
+            lines = [l for l in outs["both"].splitlines() if "note:" in l]
+            self.assertEqual(len(lines), 1, outs["both"])
+            self.assertIn("in 2 runs.toml files", lines[0])
+            self.assertEqual(lines[0].count("v.on_x"), 2)
+            # one file: the note stays inside its audit report
+            self.assertEqual(sum("note:" in l for l in outs["one"].splitlines()), 1)
+            self.assertIn("  note: callbacks not marked owed, run in fault mode only: v.on_x", outs["one"])
 
     def test_wrapper_and_main(self):
         with tempfile.TemporaryDirectory() as t:

@@ -1563,10 +1563,17 @@ def do_mutant(m: Mutant, runs: list[Run], jar: str, workers: int | None, keep: b
                    kind="mutant", check=m.id)
 
 
+def progress(k: int, n: int, text: str) -> None:
+    """One progress line on standard error, numbered `[k/n]` so a long invocation shows how far
+    it has got. The same text goes to a pipe or a file: nothing depends on a terminal."""
+    print(f"[{k:{len(str(n))}}/{n}] {text}", file=sys.stderr, flush=True)
+
+
 def run_checks(wits: list[Witness], muts: list[Mutant], by_name: dict[str, Run], failed: set[str],
                jar: str, workers: int | None, keep: bool) -> list[Outcome]:
     """Every witness x run and every mutant; checks of runs in `failed` are skipped."""
     outs = []
+    total = sum(len(w.runs) for w in wits) + len(muts)
 
     def skipped(kind, cid, names, example, budget):
         return Outcome(",".join(names), example, "-", "skipped", False, 0.0, budget,
@@ -1579,14 +1586,14 @@ def run_checks(wits: list[Witness], muts: list[Mutant], by_name: dict[str, Run],
             if n in failed:
                 outs.append(skipped("witness", w.id, [n], rel(run.dir), run.budget_s))
                 continue
-            print(f"witness {w.id} on {n} ...", file=sys.stderr, flush=True)
+            progress(len(outs) + 1, total, f"witness {w.id} on {n} ...")
             outs.append(do_witness(w, run, jar, workers, keep))
     for m in muts:
         runs = [by_name[n] for n in m.runs if n not in failed]
         if not runs:
             outs.append(skipped("mutant", m.id, m.runs, rel(by_name[m.runs[0]].dir), by_name[m.runs[0]].budget_s))
             continue
-        print(f"mutant {m.id} on {', '.join(r.name for r in runs)} ...", file=sys.stderr, flush=True)
+        progress(len(outs) + 1, total, f"mutant {m.id} on {', '.join(r.name for r in runs)} ...")
         outs.append(do_mutant(m, runs, jar, workers, keep))
     return outs
 
@@ -1992,7 +1999,7 @@ def main(argv=None) -> int:
         preflight(muts, by_name)
         outs = []
         for r in runs:
-            print(f"running {r.name} ({rel(r.dir)}) ...", file=sys.stderr, flush=True)
+            progress(len(outs) + 1, len(runs), f"running {r.name} ({rel(r.dir)}) ...")
             outs.append((do_peel if a.peel else do_run)(r, jar, a.workers, a.keep, a.print_trace,
                                                         not a.no_audit))
         failed = {o.run for o in outs if not o.ok}
@@ -2021,8 +2028,12 @@ def main(argv=None) -> int:
     bad_audit = []
     if not a.no_audit:
         reps = audit_reports(runs, outs)
+        # one note for the whole invocation when several files have unmarked callbacks
+        lump = sum(bool(rep.unmarked) for rep in reps) > 1
         for rep in reps:
-            print("\n" + audit.render(rep))
+            print("\n" + audit.render(rep, note=not lump))
+        if lump:
+            print("\n" + audit.unmarked_note(reps))
         if a.anti_vacuity:
             bad_audit = [f for rep in reps for f in audit.failures(rep)]
             whole = [rep for rep in reps if rep.whole]

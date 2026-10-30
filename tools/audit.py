@@ -12,7 +12,7 @@ from those facts, the file's `[[sweep]]` tables and its `[audit]` table
   writes     the same, run with TrieGasWorst, that declares no writes there (OWriteKey)
   least-gas  the same, with no least_gas sweep that covers it and whose base run executes it
              in gas mode
-  logs       an owed receipt that declares no logs in any run
+  logs       an owed receipt with no declared logs in any run (no run reached a logging outcome)
   log-size   an owed receipt or callback that logs, with no sweep that covers its log size
              (a size sweep, or "<method> log-size" in a least_gas sweep's covers) and whose
              base run executes it
@@ -287,8 +287,9 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, r
     logged = [(r, f) for r, f in sub if f.lgb > 0 or f.lgn > 0]
     if not logged:
         if owed:
-            yield "logs", (f"{what}; declares no logs in any run: if it emits events or logs, "
-                           "declare them (OLog, EvLen) with lengths from its input")
+            yield "logs", (f"{what}; no run reached an outcome that declares logs: if a branch "
+                           "emits events or logs, declare them (OLog, EvLen) with lengths from "
+                           "its input, and add a run that reaches that branch")
         return
     sizes = sorted({f.lgb for _, f in logged})
     if not any(s.credits(key, {r for r, _ in logged}, "log-size", role, ambiguous, shadowed)
@@ -300,7 +301,15 @@ def _role_gaps(key: str, owed: bool, fixed: bool, what: str, sub, gas, sweeps, r
                            "and MaxLogs")
 
 
-def render(rep: Report) -> str:
+def unmarked_note(reps: list[Report]) -> str:
+    """One `note:` for a whole invocation: the unmarked callbacks of every file, by file."""
+    by = [f"{r.toml}: {', '.join(r.unmarked)}" for r in reps if r.unmarked]
+    return (f"note: callbacks not marked owed, run in fault mode only, in {len(by)} runs.toml "
+            f"files ({'; '.join(by)}); mark each one that restores state or refunds "
+            "(OwedMethods), or the audit cannot judge it")
+
+
+def render(rep: Report, note: bool = True) -> str:
     head = f"audit {rep.toml}"
     if not rep.whole:
         head += f" ({rep.ran + rep.hookless} of {rep.total} runs; sweeps and gaps judged on those)"
@@ -324,7 +333,7 @@ def render(rep: Report) -> str:
     for g in own:
         if g.accepted:
             lines.append(f"  {g.label:{width}}  {g.rule:9}  accepted: {g.accepted}")
-    if rep.unmarked:
+    if rep.unmarked and note:
         lines.append(f"  note: callbacks not marked owed, run in fault mode only: {', '.join(rep.unmarked)}; "
                      "mark each one that restores state or refunds (OwedMethods), or the audit "
                      "cannot judge it")

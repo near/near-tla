@@ -137,8 +137,10 @@ audit examples/minimal/runs.toml: 1 owed or fixed-budget receipt(s), 0 open gap(
 verdict: all as expected (5/5 runs)
 ```
 
-Progress lines (`running tally_ok (examples/minimal) ...`) go to standard error; the table
-goes to standard output.
+Progress lines (`[1/5] running tally_ok (examples/minimal) ...`) go to standard error, one
+as each run starts, numbered `[k/N]`; the witness and mutant checks of `--anti-vacuity` are
+numbered the same way. The table goes to standard output. A pipe or a file gets the same
+lines as a terminal, and `--json` is unchanged.
 
 ### The table
 
@@ -229,6 +231,14 @@ header says so, and the gaps are judged on those runs only:
 
 ```
 audit examples/minimal/runs.toml (1 of 5 runs; sweeps and gaps judged on those): 1 owed or fixed-budget receipt(s), 0 open gap(s), 3 accepted
+```
+
+When several files' audits each have unmarked callbacks (a run of `examples/`, say), the
+runner prints one `note:` line after the last audit report instead of one under each, naming
+each file with its callbacks:
+
+```
+note: callbacks not marked owed, run in fault mode only, in 2 runs.toml files (examples/a/runs.toml: v.on_x, v.on_y; examples/b/runs.toml: w.on_z); mark each one that restores state or refunds (OwedMethods), or the audit cannot judge it
 ```
 
 In a plain invocation the report is for information. With `--anti-vacuity`, each open gap
@@ -617,7 +627,9 @@ source's methods and the accepted gaps ([Auditing what the runs reach](#auditing
   `allow_no_invariants = "why"` is the explicit exception.
 - **`expect = "violation"`** needs `invariant`, naming one of the run's `invariants` or
   `properties`; TLC must report that one. When a state breaks several invariants, TLC
-  reports the first in the run's list, so put the one the run targets first. TLC does not name a violated temporal property, so
+  reports the first in the run's list, so put the one the run targets first. That settles
+  only a tie within one state: an invariant that breaks at an earlier state on the same path is
+  reported whatever the order, so give such a run an `invariants` list of just its target. TLC does not name a violated temporal property, so
   when `invariant` names a property, that property must be the only entry of `properties`;
   TLC's "Temporal properties were violated" then matches it.
 - **`expect = "assert"`** needs TLC to stop on a failed `Assert`, such as a missing gas key.
@@ -1012,6 +1024,13 @@ whose verdict is neither a pass nor a violation of a `success` invariant (an `As
 deadlock, a timeout) stops the sweep with an error. The base run's own `expect` does not
 matter: a must-fail run is the natural base.
 
+**When prepaid gas is not the knob.** A callback whose fixed static gas is at least what it
+needs (say 5 Tgas at weight 0 against a much smaller burn) never runs out, whatever the prepaid
+gas, so a sweep of the prepaid gas finds no boundary. Sweep the callback's own static gas
+instead: make it the `knob`, and set the callback's weight to 0 under `[sweep.constants]` so
+that the leftover share does not add to the static gas. Your gas table must read both from
+constants, not literals, for the sweep to move them. List the callback in `covers`.
+
 **Ad hoc.** `--least-gas 'GasMenu={%d}' --gas-range 0:300000 [--success OwedOK]` runs the same
 search on each selected run, without a `[[sweep]]` table; add `--exact [--gas-step N]` to scan
 instead.
@@ -1104,7 +1123,7 @@ After the runs, the runner prints the gaps for each `runs.toml`:
 | `trie` | an owed receipt, or a callback with a fixed budget, that runs in gas mode but never with `TrieGasWorst` | a run with `TrieGasWorst = "TRUE"` |
 | `writes` | the same, which declares no writes in its `TrieGasWorst` runs | `OWriteKey` for each storage write and remove it makes |
 | `least-gas` | the same, with no `least_gas` sweep that covers it | a sweep of its budget or of the prepaid gas, listing it in `covers` |
-| `logs` | an owed receipt that declares no logs in any run | its logs and events, declared with lengths from its input (`OLog`, `EvLen`) |
+| `logs` | an owed receipt that declares no logs in any run: no run reached an outcome that declares logs, which is also the case when only one of the handler's branches logs and no run reaches it | its logs and events, declared with lengths from its input (`OLog`, `EvLen`), and a run that reaches each branch that logs |
 | `log-size` | an owed receipt or a callback that logs, with no sweep that covers its log size | a sweep of the input its log grows with, toward `MaxLogBytes` and `MaxLogs`, listing it in `covers` |
 | `inventory` | a method in `[audit] methods` that your contract's code runs in no run (the library's token implementations do not count) | a run that reaches it |
 
