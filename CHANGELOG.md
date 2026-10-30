@@ -18,6 +18,12 @@ separate NearKeys).
 
 ## [0.1.3] - 2026-10-30
 
+```
+nearcore: 2.14.0 (bc4e9e8)   behavior: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+near-contract-sim: 96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2
+near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
+```
+
 ### Fixed
 
 - tokens: Count no separator in an empty event data list ([#12](https://github.com/near/near-tla/pull/12))
