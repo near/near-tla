@@ -174,8 +174,8 @@ WithMemo(args, m) == [memo |-> m] @@ args
 \* EvLen(s, e, items): the log of event e of standard s whose data holds
 \* items of the given byte lengths: EVENT_JSON: (11) {"standard":" (13) s
 \* ","version":" (13) 1.0.0 (5) ","event":" (11) e ","data":[ (10) the
-\* items with a comma between each two, ]} (2).
-EvLen(s, e, items) == 65 + Len(s) + Len(e) + SumSeq(items) + Len(items) - 1
+\* items with a comma between each two (none for fewer than two), ]} (2).
+EvLen(s, e, items) == 65 + Len(s) + Len(e) + SumSeq(items) + (IF items = <<>> THEN 0 ELSE Len(items) - 1)
 \* ,"memo":"m" for a memo of m >= 0 bytes, nothing for None (m < 0).
 EvMemo(m) == IF m < 0 THEN 0 ELSE 10 + m
 \* A JSON array of n strings of b bytes in all, without its brackets.

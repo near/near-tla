@@ -65,6 +65,8 @@ Formulas == <<
     <<"ft refund",                FtX(7, 10, 2, 6), 166>>,
     <<"ft_burn refund",           EvLen("nep141", "ft_burn", <<FtOwnerItem(7, 2, 6)>>), 130>>,
     <<"ft_mint fixture",          EvLen("nep141", "ft_mint", <<FtOwnerItem(3, 3, -1)>>), 111>>,
+    \* no items, so no comma (EVENT_JSON:{"standard":"nep141","version":"1.0.0","event":"ft_mint","data":[]})
+    <<"ft_mint, empty data",      EvLen("nep141", "ft_mint", <<>>), 78>>,
     <<"two ft_mints fixture",     EvLen("nep141", "ft_mint", <<FtOwnerItem(3, 3, -1), FtOwnerItem(5, 3, 8)>>), 165>>,
     \* mt_mint by new: owner, ids, id bytes, amount digits
     <<"mt_mint t1",               MtM(10, 1, 2, 31), 168>>,
