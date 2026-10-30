@@ -16,6 +16,19 @@ format. Its entries are relative to the pre-release module set that existing mod
 written against (NearAsync, TokenCommon, Nep145, Nep141, WNear, Tokens, Nep245, plus a
 separate NearKeys).
 
+## [0.1.3] - 2026-10-30
+
+```
+nearcore: 2.14.0 (bc4e9e8)   behavior: protocol 88   fees: FeeProtocol 88, rounded up, covered 84-88
+near-contract-sim: 96bc8fb6a390c22d93cfd3ac30dcc0337a98e1d2
+near-contract-standards (token gas defaults): 5.x (measured on 5.29.1)
+```
+
+### Fixed
+
+- tokens: Count no separator in an empty event data list ([#12](https://github.com/near/near-tla/pull/12))
+- runner: Number progress lines, one unmarked-callback note per invocation, clearer logs gap ([#14](https://github.com/near/near-tla/pull/14))
+
 ## [0.1.2] - 2026-10-29
 
 ```
