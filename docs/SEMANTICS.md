@@ -183,7 +183,7 @@ sits at the end of that section
 | [S1](#s1-local-receipts-first-the-exact-rule) | Local receipts first (opt-in) | `LocalPriorityOK`, `Schedulable` | nearcore reading (the storage-proof limit) | sim |
 | [S2](#s2-ordering-otherwise) | Otherwise any enabled receipt runs next | `Runnable` | nearcore reading | sim (two parts only, through S1 and S4) |
 | [S3](#s3-block-clock) | Block clock | `blk`, `BlockTick`, `MaxBlk`, `ClockHorizonOK` | nearcore reading (the epoch height) | sim |
-| [S4](#s4-no-per-pair-order) | No per-pair order | none: no ordering constraint | nearcore reading (missed chunks) | sim |
+| [S4](#s4-no-per-pair-order) | No per-pair order | none: no ordering constraint | nearcore reading (missed chunks add no reordering; full congestion; resharding) | sim |
 | [S5](#s5-instant-receipts) | Instant receipts (a lone DeleteAccount) | `InstantTag`, `InstantPending`, `InstantFirst` | nearcore reading (a contract's own self-delete) | sim |
 
 **[Staking and balance](#staking-and-balance)**
@@ -1893,7 +1893,8 @@ Each rule has four fields:
   - incoming receipts run in the order of the chunk's incoming list. Within one receipt proof
     (one source chunk to one destination shard) they keep their order; proofs from different
     source shards in one block are shuffled, and a chunk after missed chunks takes the
-    receipts of the newest source block first.
+    receipts of the newest source block first (which reverses no pair: each source has at most
+    one batch for it, S4).
 
   None of this orders receipts by sender and receiver: there is no per-pair FIFO (S4). The
   model has no chunks or shards, so it encodes none of these rules. Some same-pair reorders
@@ -1987,8 +1988,8 @@ Each rule has four fields:
 ### S4. No per-pair order
 
 - **Rule:** nearcore does not keep the receipts from one account to another in the order they
-  were created, not even when both accounts sit on one shard or are the same account. Two
-  mechanisms reorder them at protocol 88:
+  were created, not even when both accounts sit on one shard or are the same account. In a
+  fixed shard layout at protocol 88 one mechanism reorders them, and only under load:
   - **A new receipt can bypass the outgoing buffer.** A receipt created by a receipt goes to
     `forward_or_buffer_receipt`, which forwards it at once whenever it fits the link's
     remaining gas and size limits, without checking whether that link's outgoing buffer
@@ -1996,30 +1997,82 @@ Each rule has four fields:
     buffer stops at the first receipt that does not fit, and the rest of the allowance stays
     usable. So an earlier, larger receipt (in bytes, or in attached gas under gas congestion)
     waits in the buffer while a later, smaller one to the same receiver goes out and runs
-    first. A shard's route to itself has a bandwidth grant too, so this holds for same-shard
-    pairs and self-calls.
-  - **Missed chunks reverse the order across heights.** After the destination shard misses
-    chunks, its next chunk collects incoming receipts from the newest source block to the
-    oldest, so a pair's receipts sent at height `h + 2` run before those sent at `h + 1`.
+    first. Data and resume receipts count no gas for admission, so under gas congestion a
+    data receipt can overtake an earlier, buffered refund or call on its link.
+  - **A shard's link to itself has a byte limit only.** Receipts that stay on their shard have
+    no gas limit, but the bandwidth scheduler grants that link bytes per chunk like any other.
+    So same-shard pairs and self-calls are reordered only when that chunk's grant on the
+    self-link runs out: the earlier receipt does not fit the bytes left and the later one
+    does. On an open link the grant is at least the base bandwidth, min(100,000, 305,696 /
+    max(1, N − 1)) bytes for N shards (305,696 is 4,500,000 bytes per shard less a
+    4,194,304-byte single grant), and the scheduler can grant more. A link can also be
+    closed, with no grant at all: a fully congested shard accepts receipts only from its
+    allowed shard, which rotates over all shards, so at other heights its own receipts wait in
+    its self-link buffer, and that backlog can exceed the grant when the link reopens.
 
-  Resumes of one yield (C7) are no exception: each `PromiseResume` leaves through the same
-  path, so a later resume can arrive first, and whichever arrives first wins; the others are
-  dropped by a status check, not by their order. Refunds, receipts from different source
-  shards, local against non-local receipts, and receipts waiting on data are not ordered
-  either. (Earlier versions of this page listed per-pair order as an over-approximation,
-  N-order, and the resume order as N-resume-order. Both were wrong: those reorderings are
-  reachable.)
+  **Missed chunks add no reordering of their own** in a fixed layout. After a shard misses
+  chunks, its next chunk takes the receipts of the newest source block first (S2), but no
+  source has more than one batch for it: a missing chunk runs no receipts and sends none, a
+  source's receipts travel in the source's next chunk (so a source's own missed chunks delay
+  its batch but never split it), and while a shard's chunk is missing the scheduler grants no
+  link into it, so no shard forwards to it. Everything the next chunk gets from one source
+  shard, its own included, is that source's last forwarding into it, in one receipt proof, in
+  order. Newest-first only interleaves different source shards, and in a fixed layout one
+  pair's receipts all leave from one source shard. The closed links do make receipts to the
+  missing shard wait in outgoing buffers, in order, and the buffer bypass can overtake that
+  backlog when the link reopens; the reorder is then the bypass, under the same limits.
+
+  **Resharding can reorder a same-shard pair or a self-call without load at the split.** When
+  a shard splits, the parent's last outgoing receipts and its outgoing buffers all go to the
+  child with the lowest id, whatever their receivers. Receipts sent before the split to an
+  account on another child then reach it from that lowest child, while the ones sent after
+  the split from the account's own shard reach it on its self-link: two source shards. The
+  newer ones run first if the lowest child misses its first chunk, or if receipts the parent
+  had buffered leave it in the same block as the newer ones (proofs from different source
+  shards are shuffled). Nearcore reading; the model has no layout (N-resharding).
+
+  Resumes of one yield (C7) are no exception, within these limits: a resume is a receipt from
+  the yielding account to itself that counts no gas, and its payload is at most 1,024 bytes,
+  so a later resume overtakes an earlier one only when the self-link has less than the
+  earlier one's size left (other receipts in that chunk, or a backlog) or across a
+  resharding. Among resumes with a payload, whichever arrives first wins and the others find
+  no yield left to run, whatever their order; a timeout that arrives first is dropped if a
+  resume was already sent. Refunds, receipts from different source shards,
+  local against non-local receipts, and receipts waiting on data are not ordered either.
+  (Earlier versions of this page listed per-pair order as an over-approximation, N-order, and
+  the resume order as N-resume-order. Both were wrong: those reorderings are reachable.
+  Earlier versions also named missed chunks as a second mechanism; they are not one.)
 - **nearcore:** `runtime/runtime/src/lib.rs:1222-1234` (a created receipt is instant or goes to
   `forward_or_buffer_receipt`), `runtime/runtime/src/congestion_control.rs:292-325`
   (`forward_or_buffer_receipt`: `try_forward` first, buffer only on failure), `:451`
   (`try_forward` admits a receipt if `forward_limit.gas >= admission_gas &&
-  forward_limit.size >= size`), `:379-381` (draining stops at the first misfit);
+  forward_limit.size >= size`), `:379-381` (draining stops at the first misfit), `:687-710`
+  (data and resume receipts count no gas); the self-link: `:104-117` (no gas limit on a
+  shard's own receipts; the size limit is the grant), `:437` (no grant, no bytes),
   `runtime/runtime/src/bandwidth_scheduler/scheduler.rs:427-435` (grants cover every shard
-  pair, a shard to itself included);
-  `chain/chain/src/stateless_validation/chunk_validation.rs:478-480` and
-  `chain/chain/src/chain.rs:3660-3671` (`[new_receipts, old_receipts]`); resumes:
-  `runtime/runtime/src/lib.rs:1554-1622` (the first `PromiseResume` runs the yield, `:1616-1620`
-  ignores the rest).
+  pair, a shard to itself included), `core/primitives/src/bandwidth_scheduler.rs:334-343`
+  (base bandwidth), `core/parameters/res/runtime_configs/74.yaml:2-5` (its parameters),
+  `runtime/runtime/src/bandwidth_scheduler/scheduler.rs:534-541` and
+  `runtime/runtime/src/bandwidth_scheduler/mod.rs:84-91` (a fully congested shard takes
+  receipts from its allowed shard only), `core/primitives/src/congestion_info.rs:370-384`
+  (which rotates);
+  missed chunks: `chain/chain/src/stateless_validation/chunk_validation.rs:478-480` and
+  `chain/chain/src/chain.rs:3660-3671` (`[new_receipts, old_receipts]`),
+  `runtime/runtime/src/lib.rs:1917-1923` and `:3096` (a missing chunk runs no receipts and
+  sends none), `chain/chain/src/store/mod.rs:390-431` and `chain/chain/src/chain.rs:1229-1238`
+  (a source's receipts travel in its next chunk),
+  `runtime/runtime/src/bandwidth_scheduler/scheduler.rs:506-521` (no link into a shard whose
+  chunk is missing), `runtime/runtime/src/bandwidth_scheduler/mod.rs:75`,
+  `core/primitives/src/block.rs:786-801` and `chain/chain/src/chain.rs:3045-3061` (missing in
+  the block being applied); resharding: `chain/chain/src/store/mod.rs:451-475` (outgoing
+  receipts to the lowest child), `core/store/src/trie/ops/resharding.rs:60-67` (outgoing
+  buffers to the lowest child), `chain/chain/src/sharding.rs:13-21` (proofs shuffled); resumes:
+  `runtime/runtime/src/function_call.rs:198-209` (a resume is addressed to its own account),
+  `runtime/near-vm-runner/src/logic/host.rs:4505` (`max_yield_payload_size`, 1,024 at
+  protocol 88), `runtime/runtime/src/lib.rs:1554-1622` (the first `PromiseResume` runs the
+  yield, `:1616-1622` ignores the rest, `:1554-1563` drops a timeout after a resume; nearcore's
+  comment at `:3192-3196` assumes same-shard order, which the bypass breaks, but the status
+  check makes it hold).
 - **Model:** no constraint: any enabled receipt may run next (S2), whatever its sender,
   receiver and creation order, and any resume in flight may be the one that wins (C7).
   nearcore can reorder a pair, so a same-pair reorder alone does not make a counterexample
@@ -2028,8 +2081,15 @@ Each rule has four fields:
   order (`chain/chain/src/stateless_validation/chunk_validation.rs:510-514`, S2), and the
   buffer bypass needs the earlier receipt not to fit the link's remaining limits. A
   counterexample that reverses such receipts can still be spurious, so its particular
-  schedule must still be shown reachable (N-shards). Replay it on the compiled contract in
-  near-contract-sim, which can force the order
+  schedule must still be shown reachable (N-shards). To judge a reorder between one account
+  and itself, or between two accounts on one shard (beyond S1's local receipts, S5's instant
+  receipts and receipts waiting on data): in a fixed layout it needs the self-link's byte
+  grant to run out in that chunk, so ask whether the earlier receipt can be large enough (a
+  large argument or payload), whether the shard can send itself that many bytes in one
+  chunk, or whether it can be fully congested long enough for its self-link backlog to
+  exceed the grant when the link reopens. Missed chunks alone never produce it; a resharding
+  can. Replay
+  it on the compiled contract in near-contract-sim, which can force the order
   ([VALIDATING.md](VALIDATING.md#force-an-order)). The sandbox cannot force an
   order: replay the failures there and argue the order from S1-S5
   ([VALIDATING.md](VALIDATING.md#what-the-sandbox-cannot-do-force-an-order)). The library
@@ -2042,8 +2102,11 @@ Each rule has four fields:
   `later_receipt_overtakes_buffered`: six ~1.2 MB calls from `p-probe` to `q-probe` fill the
   single shard's grant to itself; a small call `p-probe` makes after three of them, in the
   same block, runs a block before them). This is the sim's own `tests/order.rs:414-447`
-  (near-contract-sim v0.1.0, `96bc8fb`) on the probe contracts, with no fault injected. Missed
-  chunks: nearcore reading; not sim-testable (the sim misses no chunks).
+  (near-contract-sim v0.1.0, `96bc8fb`) on the probe contracts, with no fault injected; the
+  two accounts share the sim's one shard, so it is the self-link's grant that runs out. That
+  missed chunks add no reordering, the closed self-link of a fully congested shard, and the
+  resharding case: nearcore reading; not sim-testable (the sim has one shard and misses no
+  chunks).
   <!-- conformance --> The comparison does not see order.
 
 ### S5. Instant receipts
@@ -3188,4 +3251,5 @@ all.
   promise host function). `ft_balance_of`/`ft_total_supply` are modeled as reads of the
   ledger.
 - **N-resharding. Resharding and missing chunks.** The model assumes a fixed layout and a
-  finalized history.
+  finalized history. Its free order covers the reorders these cause: missed chunks add none
+  of their own, and a resharding can reorder a same-shard pair or a self-call (S4).
