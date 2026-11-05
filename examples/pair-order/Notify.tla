@@ -5,7 +5,7 @@
 (*                                                                         *)
 (* User U calls S.open(); S sends D.d_open(seq 1).  Only once S.open has   *)
 (* run does U call S.close(); S sends D.d_close(seq 2).  So D.d_open is    *)
-(* created first, by the same account, to the same account.  In nearcore   *)
+(* created first, by the same sender, to the same receiver.  In nearcore   *)
 (* it can still run second: a new receipt skips the sender shard's         *)
 (* outgoing buffer whenever it fits the link's limits, while an earlier    *)
 (* one waits there (runtime/runtime/src/congestion_control.rs:292-325,     *)

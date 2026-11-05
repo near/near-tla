@@ -599,8 +599,11 @@ contract's code that a network can produce it, and write the argument down:
   except instant receipts.
 - [S4](SEMANTICS.md#s4-no-per-pair-order): there is no per-pair order. A later, smaller
   receipt can overtake an earlier one waiting in the outgoing buffer (the earlier one must not
-  fit the link's remaining gas or size limits), and after missed chunks receipts from a newer
-  block run first.
+  fit the link's remaining gas or size limits). A shard's link to itself has a size limit
+  only, so a reorder between one account and itself, or two accounts on one shard, needs that
+  chunk's byte grant on the link used up, by large receipts or by the backlog of a fully
+  congested shard. Missed chunks add no reordering of their own; a resharding can reorder a
+  same-shard pair without load.
 - [S5](SEMANTICS.md#s5-instant-receipts): a lone `DeleteAccount` created by a receipt runs
   right after it, with nothing in between.
 

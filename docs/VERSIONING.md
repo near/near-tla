@@ -177,7 +177,13 @@ change" in the PR description.
    - `runtime/runtime/src/action_validation.rs` (action and receipt limits);
    - `runtime/runtime/src/actions.rs` (existence, permissions, implicit creation, Stake,
      DeleteAccount);
-   - `runtime/runtime/src/congestion_control.rs` (delayed queue, outgoing buffers).
+   - `runtime/runtime/src/congestion_control.rs` (delayed queue, outgoing buffers);
+   - `runtime/runtime/src/bandwidth_scheduler/`, `core/primitives/src/bandwidth_scheduler.rs`,
+     `core/primitives/src/congestion_info.rs`, `core/primitives/src/block.rs`,
+     `chain/chain/src/chain.rs`, `chain/chain/src/stateless_validation/chunk_validation.rs`,
+     `chain/chain/src/sharding.rs`, `chain/chain/src/store/mod.rs` and
+     `core/store/src/trie/ops/resharding.rs` (bandwidth grants, incoming receipt order,
+     resharding: S2, S4).
 5. **Re-check behavior, not only line numbers.** For each rule in `docs/SEMANTICS.md`, read the
    cited code at the new revision and confirm it still does what the rule says. Then update the
    line numbers and the reference revision at the top of `SEMANTICS.md`. A moved line with
